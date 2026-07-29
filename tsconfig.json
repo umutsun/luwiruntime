@@ -1,0 +1,20 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/protocol"
+    },
+    {
+      "path": "./packages/runtime"
+    },
+    {
+      "path": "./packages/redis"
+    },
+    {
+      "path": "./apps/daemon"
+    },
+    {
+      "path": "./apps/cli"
+    }
+  ]
+}

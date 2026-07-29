@@ -1,0 +1,25 @@
+{
+  "name": "@luwi/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "luwi": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/main.ts",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@luwi/protocol": "workspace:*",
+    "@luwi/runtime": "workspace:*",
+    "commander": "^15.0.0"
+  }
+}
