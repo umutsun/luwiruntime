@@ -1,3 +1,4 @@
+import { IdBadge } from '../components/id-badge.js';
 import { ResourcePanel, TableWrap, Unavailable } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
 import type { PulseAgent, PulseSnapshot } from '../pulse/model.js';
@@ -47,7 +48,7 @@ export function AgentsView({ snapshot }: { snapshot: PulseSnapshot }) {
                   <td>
                     {row.displayName}
                     <small>
-                      <code>{row.id}</code>
+                      <IdBadge id={row.id} label="agent" />
                     </small>
                   </td>
                   <td>{row.kind}</td>

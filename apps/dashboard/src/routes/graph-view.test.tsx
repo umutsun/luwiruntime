@@ -113,6 +113,36 @@ describe('GraphView', () => {
     expect(within(rowOf('Projection health')).getByText('degraded')).toBeTruthy();
   });
 
+  it('sorts kinds by magnitude and scales each bar against the largest', () => {
+    render(<GraphView summary={{ state: 'ready', data: observed }} />);
+
+    const kinds = within(screen.getByRole('region', { name: /nodes by kind/i }))
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => within(row).getAllByRole('cell')[0]?.textContent);
+    expect(kinds).toEqual(['session', 'project']);
+
+    const bar = (kind: string) =>
+      within(rowOf(kind)).getByTestId('magnitude-bar').style.getPropertyValue('--magnitude');
+    expect(bar('session')).toBe('100%');
+    expect(bar('project')).toBe('40%');
+  });
+
+  it('scales against the largest count even when it is zero', () => {
+    render(
+      <GraphView
+        summary={{
+          state: 'ready',
+          data: { ...observed, nodeCountsByKind: [{ kind: 'project', count: 0 }] },
+        }}
+      />,
+    );
+
+    expect(
+      within(rowOf('project')).getByTestId('magnitude-bar').style.getPropertyValue('--magnitude'),
+    ).toBe('0%');
+  });
+
   it('renders unavailable when the summary could not be read', () => {
     render(<GraphView summary={{ state: 'unavailable' }} />);
 

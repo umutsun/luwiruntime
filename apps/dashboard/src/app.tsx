@@ -59,6 +59,36 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   graph: { eyebrow: 'Operational graph', heading: 'Graph' },
 };
 
+function pluralize(count: number, noun: string): string {
+  return `${String(count)} ${noun}${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * What the current route is showing, in the runtime's own counts.
+ *
+ * This replaced a placeholder that advertised a unified search the daemon has
+ * no read contract for. An affordance that cannot act is worse than none, and
+ * the space is better spent on evidence the snapshot already carries. An
+ * unavailable count says so; it is never rendered as zero.
+ */
+function scopeSummary(route: DashboardRouteName, snapshot: PulseSnapshot): string {
+  const count = (value: PulseSnapshot['projectCount'], noun: string, label: string): string =>
+    value.state === 'unavailable' ? `${label} unavailable` : pluralize(value.value, noun);
+  if (route === 'projects') return count(snapshot.projectCount, 'project', 'Projects');
+  if (route === 'agents') return count(snapshot.agentCount, 'agent', 'Agents');
+  if (route === 'sessions') {
+    return snapshot.sessionsState === 'ready'
+      ? pluralize(snapshot.sessions.length, 'session')
+      : 'Sessions unavailable';
+  }
+  if (route === 'activity') return pluralize(snapshot.activity.length, 'retained event');
+  return `${count(snapshot.projectCount, 'project', 'Projects')} · ${count(
+    snapshot.activeSessionCount,
+    'active session',
+    'Sessions',
+  )}`;
+}
+
 function connectionLabel(state: WebSocketState): string {
   if (state === 'live') return 'Realtime live';
   if (state === 'connecting') return 'Realtime connecting';
@@ -205,12 +235,8 @@ export function DashboardApp({
             <h1>{titles.heading}</h1>
           </div>
           <div className="command-bar__right">
-            <span className="command-shell" aria-label="Search scope">
-              {route.name === 'activity'
-                ? 'Use bounded activity filters below'
-                : route.name === 'projects'
-                  ? 'Select a project to scope its evidence'
-                  : 'Unified search has no read contract yet'}
+            <span className="command-shell" aria-label="Current scope">
+              {scopeSummary(route.name, snapshot)}
             </span>
             <StatusChip tone={websocketTone}>{connectionLabel(websocketState)}</StatusChip>
             {invalidEventCount > 0 ? (
@@ -255,7 +281,12 @@ export function DashboardApp({
               }
             />
           ) : route.name === 'sessions' ? (
-            <SessionsView snapshot={snapshot} />
+            <SessionsView
+              snapshot={snapshot}
+              onOpenSession={(session, opener) =>
+                openInspector({ kind: 'session', sessionId: session.id }, opener)
+              }
+            />
           ) : route.name === 'agents' ? (
             <AgentsView snapshot={snapshot} />
           ) : route.name === 'usage' ? (

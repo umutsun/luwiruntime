@@ -552,4 +552,57 @@ describe('Phase 5D routes', () => {
     const panel = screen.getByRole('region', { name: /proposals/i });
     expect(within(panel).getByText('Unavailable')).toBeTruthy();
   });
+
+  it('opens the session inspector from the sessions route', () => {
+    window.location.hash = '#/sessions';
+    const value = input();
+    value.sessions = {
+      state: 'ready',
+      data: [
+        {
+          id: 's1',
+          agentId: 'a1',
+          projectId: 'p1',
+          status: 'thinking',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+        },
+      ],
+    };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect session s1' }));
+
+    expect(screen.getByRole('dialog', { name: /session inspector/i })).toBeTruthy();
+  });
+});
+
+describe('command bar scope line', () => {
+  it('states what the current route holds instead of advertising an absent search', () => {
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'Alpha', localPath: 'C:/work/alpha' }],
+    };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    const scope = screen.getByLabelText('Current scope');
+    expect(scope.textContent).toContain('1 project');
+    expect(screen.queryByText(/no read contract yet/i)).toBeNull();
+  });
+
+  it('reports an unavailable count as unavailable rather than as zero', () => {
+    const value = input();
+    value.projects = { state: 'unavailable' };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    expect(screen.getByLabelText('Current scope').textContent).toContain('Projects unavailable');
+  });
 });

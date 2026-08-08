@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { abbreviatePath, abbreviateSha } from './format.js';
+import { abbreviateId, abbreviatePath, abbreviateSha, formatRelativeTime } from './format.js';
 
 describe('abbreviatePath', () => {
   it('returns a short path unchanged', () => {
@@ -30,5 +30,47 @@ describe('abbreviateSha', () => {
 
   it('leaves an already short value alone', () => {
     expect(abbreviateSha('abc')).toBe('abc');
+  });
+});
+
+describe('abbreviateId', () => {
+  it('keeps the first UUID group so rows stay comparable', () => {
+    expect(abbreviateId('d01ed09b-0783-4ff4-b875-8cc61d39792b')).toBe('d01ed09b');
+  });
+
+  it('leaves a short opaque id alone', () => {
+    expect(abbreviateId('codex-sim')).toBe('codex-sim');
+  });
+
+  it('truncates a long id without hyphens', () => {
+    expect(abbreviateId('a'.repeat(30))).toBe(`${'a'.repeat(12)}…`);
+  });
+});
+
+describe('formatRelativeTime', () => {
+  const now = Date.parse('2026-08-09T12:00:00.000Z');
+
+  it('reports seconds as just now', () => {
+    expect(formatRelativeTime('2026-08-09T11:59:41.000Z', now)).toBe('just now');
+  });
+
+  it('reports minutes', () => {
+    expect(formatRelativeTime('2026-08-09T11:55:00.000Z', now)).toBe('5m ago');
+  });
+
+  it('reports hours', () => {
+    expect(formatRelativeTime('2026-08-09T09:30:00.000Z', now)).toBe('2h ago');
+  });
+
+  it('reports days', () => {
+    expect(formatRelativeTime('2026-08-06T12:00:00.000Z', now)).toBe('3d ago');
+  });
+
+  it('never claims the future; a clock skew reads as just now', () => {
+    expect(formatRelativeTime('2026-08-09T12:00:30.000Z', now)).toBe('just now');
+  });
+
+  it('reports an unparseable timestamp as unavailable rather than inventing one', () => {
+    expect(formatRelativeTime('not-a-date', now)).toBe('unavailable');
   });
 });

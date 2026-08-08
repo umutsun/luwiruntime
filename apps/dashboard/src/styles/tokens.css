@@ -1,5 +1,15 @@
+/*
+ * Tokens follow the Luwi design system (`temp/Luwi Runtime Dashboard Mockup`):
+ * dark-first, near-black navy base, indigo accent, Inter + a mono face.
+ *
+ * The design system loads Inter and JetBrains Mono from Google Fonts. This
+ * dashboard deliberately does not: it is a loopback-only surface, and a webfont
+ * fetch would be its only outbound request. The families are named first in
+ * each stack so a locally installed copy is used, and the stack falls back to
+ * system faces otherwise.
+ */
 :root {
-  color-scheme: dark;
+  color-scheme: dark light;
   --bg: #08080d;
   --bg-raised: #0c0d14;
   --surface-1: #11121a;
@@ -13,13 +23,17 @@
   --text-dim: #737c8f;
   --selection: #6366f1;
   --selection-soft: rgba(99, 102, 241, 0.15);
+  --sidebar-bg: #0a0a10;
+  --command-bar-bg: rgba(8, 8, 13, 0.94);
+  --magnitude-track: rgba(255, 255, 255, 0.07);
+  --magnitude-fill: #818cf8;
   --success: #35d07f;
   --warning: #f5b942;
   --danger: #f06473;
   --unknown: #8790a2;
   --info: #65bff3;
   --font-ui: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -32,4 +46,59 @@
   --focus: 0 0 0 3px rgba(129, 140, 248, 0.45);
   --z-sidebar: 20;
   --z-skip: 100;
+}
+
+/*
+ * The light theme the design system ships. It follows the operating system,
+ * and `[data-theme]` on the root element overrides that in either direction —
+ * the dark block is written so an explicit `light` choice wins over a dark OS.
+ */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --bg: #f7f8fb;
+    --bg-raised: #ffffff;
+    --surface-1: #ffffff;
+    --surface-2: #f1f3f8;
+    --surface-3: #e9ecf3;
+    --border: rgba(15, 23, 42, 0.1);
+    --border-strong: rgba(15, 23, 42, 0.18);
+    --text: #0d111c;
+    --text-secondary: #2c3444;
+    --text-muted: #586073;
+    --text-dim: #6b7488;
+    --selection-soft: rgba(99, 102, 241, 0.12);
+    --sidebar-bg: #ffffff;
+    --command-bar-bg: rgba(247, 248, 251, 0.94);
+    --magnitude-track: rgba(15, 23, 42, 0.08);
+    --magnitude-fill: #4f46e5;
+    --success: #0f9d58;
+    --warning: #b46b04;
+    --danger: #c8384a;
+    --unknown: #5c6479;
+    --info: #1273b8;
+  }
+}
+
+:root[data-theme='light'] {
+  --bg: #f7f8fb;
+  --bg-raised: #ffffff;
+  --surface-1: #ffffff;
+  --surface-2: #f1f3f8;
+  --surface-3: #e9ecf3;
+  --border: rgba(15, 23, 42, 0.1);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --text: #0d111c;
+  --text-secondary: #2c3444;
+  --text-muted: #586073;
+  --text-dim: #6b7488;
+  --selection-soft: rgba(99, 102, 241, 0.12);
+  --sidebar-bg: #ffffff;
+  --command-bar-bg: rgba(247, 248, 251, 0.94);
+  --magnitude-track: rgba(15, 23, 42, 0.08);
+  --magnitude-fill: #4f46e5;
+  --success: #0f9d58;
+  --warning: #b46b04;
+  --danger: #c8384a;
+  --unknown: #5c6479;
+  --info: #1273b8;
 }

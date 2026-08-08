@@ -65,7 +65,7 @@ button:focus-visible {
   flex-direction: column;
   overflow: hidden;
   border-right: 1px solid var(--border);
-  background: #0a0a10;
+  background: var(--sidebar-bg);
 }
 .identity {
   display: flex;
@@ -123,7 +123,8 @@ button:focus-visible {
   text-decoration: none;
 }
 .nav-item--active {
-  color: #fff;
+  color: var(--text);
+  font-weight: 600;
   background: var(--selection-soft);
   box-shadow: inset 2px 0 var(--selection);
 }
@@ -161,7 +162,7 @@ button:focus-visible {
   min-height: 64px;
   padding: 10px 22px;
   border-bottom: 1px solid var(--border);
-  background: rgba(8, 8, 13, 0.94);
+  background: var(--command-bar-bg);
   backdrop-filter: blur(14px);
 }
 .command-bar h1 {

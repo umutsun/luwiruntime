@@ -30,14 +30,21 @@ The production dashboard may reuse the ideas, not the generated implementation:
 - one compact runtime status area and one restrained pulse animation with reduced-motion
   support.
 
-The normalized production tokens will live in `apps/dashboard/src/styles/tokens.css`.
+The normalized production tokens live in `apps/dashboard/src/styles/tokens.css`. They carry the
+design system's light theme as well, selected by `prefers-color-scheme` and overridable in either
+direction by `data-theme` on the root element. The design system's own `styles.css` imports Inter
+and JetBrains Mono from Google Fonts; production does not, because a loopback-only surface must
+make no outbound request. Both families are named first in the stack so a locally installed copy
+is used, and the stack falls back to system faces.
 
 ## Patterns to reimplement
 
 - shell, navigation, command-bar shell, operational strip, tables, status chips, empty states,
   and degraded-state banners must be authored as typed React components;
 - responsive layout must use CSS grid/minmax rather than the mockup's fixed inline widths;
-- command palette markup is not copied because unified search does not exist;
+- command palette markup is not copied because unified search does not exist; the command bar
+  carries a scope summary derived from the current snapshot instead of a search affordance that
+  cannot act;
 - generated `sc-if`, `sc-for`, inline style strings, event handlers, and embedded static data
   are not accepted production patterns.
 

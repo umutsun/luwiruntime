@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
 import { AgentsView } from './agents-view.js';
@@ -68,7 +68,8 @@ describe('SessionsView', () => {
     render(<SessionsView snapshot={snapshot} />);
 
     expect(screen.getByText('s1')).toBeTruthy();
-    expect(screen.getByText('Unknown')).toBeTruthy();
+    // Scoped to the row: 'Unknown' is also a status filter option.
+    expect(within(screen.getByRole('row', { name: /s1/ })).getByText('Unknown')).toBeTruthy();
   });
 
   it('resolves the project name and marks an unresolvable one', () => {
@@ -98,6 +99,109 @@ describe('SessionsView', () => {
     );
     expect(screen.getByText('Unavailable')).toBeTruthy();
     expect(screen.queryByText(/no sessions/i)).toBeNull();
+  });
+
+  it('filters by status without discarding the total count', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [
+            session('s-active'),
+            session('s-done', { status: 'completed', presence: 'offline' }),
+          ],
+        },
+      }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'completed' } });
+
+    expect(screen.queryByText('s-active')).toBeNull();
+    expect(screen.getByText('s-done')).toBeTruthy();
+    expect(screen.getByText('1 of 2 shown')).toBeTruthy();
+  });
+
+  it('filters by presence', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [session('s-on'), session('s-off', { presence: 'offline' })],
+        },
+      }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    fireEvent.change(screen.getByLabelText('Presence'), { target: { value: 'offline' } });
+
+    expect(screen.queryByText('s-on')).toBeNull();
+    expect(screen.getByText('s-off')).toBeTruthy();
+  });
+
+  it('reports a filter that matches nothing instead of looking empty', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    fireEvent.change(screen.getByLabelText('Presence'), { target: { value: 'offline' } });
+
+    expect(screen.getByText(/no sessions match/i)).toBeTruthy();
+  });
+
+  it('sorts newest first by default and toggles on the started header', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [
+            session('s-old', { startedAt: '2026-08-07T00:00:00.000Z' }),
+            session('s-new', { startedAt: '2026-08-08T06:00:00.000Z' }),
+          ],
+        },
+      }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    const bodyRows = () =>
+      screen
+        .getAllByRole('row')
+        .slice(1)
+        .map((row) => within(row).getAllByRole('cell')[0]?.textContent ?? '');
+    expect(bodyRows()[0]).toContain('s-new');
+
+    fireEvent.click(screen.getByRole('button', { name: /sort by started/i }));
+
+    expect(bodyRows()[0]).toContain('s-old');
+  });
+
+  it('opens the session inspector from a row', () => {
+    const onOpenSession = vi.fn();
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    render(<SessionsView snapshot={snapshot} onOpenSession={onOpenSession} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect session s1' }));
+
+    expect(onOpenSession).toHaveBeenCalledTimes(1);
+    expect(onOpenSession.mock.calls[0]?.[0]).toMatchObject({ id: 's1' });
+  });
+
+  it('shows a relative start time and keeps the absolute value accessible', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [session('s1', { startedAt: '2026-08-08T10:00:00.000Z' })],
+        },
+      }),
+    );
+    render(<SessionsView snapshot={snapshot} now={() => new Date('2026-08-08T12:00:00.000Z')} />);
+
+    const started = screen.getByText('2h ago');
+    expect(started.closest('time')?.getAttribute('dateTime')).toBe('2026-08-08T10:00:00.000Z');
   });
 });
 

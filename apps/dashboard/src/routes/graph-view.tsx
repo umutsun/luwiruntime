@@ -1,3 +1,5 @@
+import type { CSSProperties } from 'react';
+
 import type { GraphSummary, KindCount } from '../api/intelligence-scope.js';
 import { ResourcePanel, TableWrap, Unavailable, type ResourceState } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
@@ -122,7 +124,15 @@ export function GraphView({ summary }: { summary: ResourceState<GraphSummary> | 
   );
 }
 
-/** Kinds are rendered verbatim; the dashboard owns no label map for them. */
+/**
+ * Kinds are rendered verbatim; the dashboard owns no label map for them.
+ *
+ * Rows are ordered by magnitude and carry a bar scaled against the largest
+ * count, because "which kinds dominate this generation" is the question a list
+ * of up to 55 kinds cannot answer by reading. The bar is a second encoding of
+ * the number already in the row, never a replacement: the exact count stays,
+ * and the bar is `aria-hidden` so a screen reader hears the count once.
+ */
 function KindTable({
   caption,
   heading,
@@ -132,19 +142,41 @@ function KindTable({
   heading: string;
   rows: KindCount[];
 }) {
+  const ordered = [...rows].sort(
+    (left, right) => right.count - left.count || left.kind.localeCompare(right.kind),
+  );
+  const largest = Math.max(...ordered.map((row) => row.count), 0);
+
   return (
     <TableWrap caption={caption}>
       <thead>
         <tr>
           <th scope="col">{heading}</th>
           <th scope="col">Count</th>
+          <th scope="col">
+            <span className="sr-only">Share of the largest kind</span>
+          </th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
+        {ordered.map((row) => (
           <tr key={row.kind}>
             <td>{row.kind}</td>
             <td>{row.count}</td>
+            <td className="magnitude-cell">
+              <span
+                className="magnitude-bar"
+                data-testid="magnitude-bar"
+                aria-hidden="true"
+                style={
+                  {
+                    // Scaled against the largest kind, so the column compares
+                    // kinds to each other rather than to an invented ceiling.
+                    '--magnitude': `${String(largest === 0 ? 0 : Math.round((row.count / largest) * 100))}%`,
+                  } as CSSProperties
+                }
+              />
+            </td>
           </tr>
         ))}
       </tbody>
