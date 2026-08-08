@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseRoute, routeHref, type DashboardRoute } from './routing.js';
+import { SIMPLE_ROUTES, parseRoute, routeHref, type DashboardRoute } from './routing.js';
 
 describe('parseRoute', () => {
   it('defaults to pulse for empty, bare, and unknown hashes', () => {
@@ -12,6 +12,18 @@ describe('parseRoute', () => {
   it('resolves the two Phase 5B routes', () => {
     expect(parseRoute('#/pulse')).toEqual({ name: 'pulse' });
     expect(parseRoute('#/activity')).toEqual({ name: 'activity' });
+  });
+
+  it('resolves every parameterless route', () => {
+    for (const name of SIMPLE_ROUTES) {
+      expect(parseRoute(`#/${name}`)).toEqual({ name });
+    }
+  });
+
+  it('does not resolve a parameterless route that carries an extra segment', () => {
+    for (const name of SIMPLE_ROUTES) {
+      expect(parseRoute(`#/${name}/extra`)).toEqual({ name: 'pulse' });
+    }
   });
 
   it('resolves the projects list without a selection', () => {
@@ -52,6 +64,11 @@ describe('routeHref', () => {
   const cases: ReadonlyArray<readonly [DashboardRoute, string]> = [
     [{ name: 'pulse' }, '#/pulse'],
     [{ name: 'activity' }, '#/activity'],
+    [{ name: 'sessions' }, '#/sessions'],
+    [{ name: 'agents' }, '#/agents'],
+    [{ name: 'usage' }, '#/usage'],
+    [{ name: 'context' }, '#/context'],
+    [{ name: 'optimization' }, '#/optimization'],
     [{ name: 'projects' }, '#/projects'],
     [{ name: 'projects', projectId: 'proj-1' }, '#/projects/proj-1'],
   ];

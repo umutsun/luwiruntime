@@ -1,83 +1,15 @@
-import type { ReactNode } from 'react';
-
 import type {
   Bounded,
   ProjectBinding,
   ProjectGit,
   ProjectPackage,
-  ProjectResourceState,
   ProjectScopeResources,
   ProjectTechnology,
 } from '../api/project-scope.js';
 import { abbreviatePath, abbreviateSha } from '../components/format.js';
-import { StatusChip, type StatusTone } from '../components/status-chip.js';
+import { ConfidenceChip, Panel, ResourcePanel } from '../components/panel.js';
+import { StatusChip } from '../components/status-chip.js';
 import type { PulseSnapshot } from '../pulse/model.js';
-
-const confidenceLabels = {
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-  unknown: 'Unknown',
-} as const;
-
-const confidenceTones: Record<ProjectTechnology['confidence'], StatusTone> = {
-  high: 'success',
-  medium: 'info',
-  low: 'warning',
-  unknown: 'unknown',
-};
-
-/**
- * A panel renders one project-scoped resource.
- *
- * `not-observed` and `unavailable` are deliberately different messages.
- * A 404 from the Git read means no scan has been recorded for this project,
- * which is a complete and true answer. Calling that "unavailable" would report
- * a fault that does not exist.
- */
-function Panel({ title, children }: { title: string; children: ReactNode }) {
-  const id = `project-panel-${title.toLowerCase().replaceAll(' ', '-')}`;
-  return (
-    <section className="panel" aria-labelledby={id}>
-      <header className="panel__header">
-        <h2 id={id}>{title}</h2>
-      </header>
-      {children}
-    </section>
-  );
-}
-
-function ResourcePanel<T>({
-  title,
-  resource,
-  notObservedMessage,
-  emptyMessage,
-  isEmpty,
-  children,
-}: {
-  title: string;
-  resource: ProjectResourceState<T> | undefined;
-  notObservedMessage?: string;
-  emptyMessage: string;
-  isEmpty: (data: T) => boolean;
-  children: (data: T) => ReactNode;
-}) {
-  const state = resource ?? { state: 'unavailable' as const };
-
-  return (
-    <Panel title={title}>
-      {state.state === 'not-observed' ? (
-        <p className="empty-state">{notObservedMessage ?? 'Not observed'}</p>
-      ) : state.state === 'unavailable' ? (
-        <p className="empty-state">Unavailable</p>
-      ) : isEmpty(state.data) ? (
-        <p className="empty-state">{emptyMessage}</p>
-      ) : (
-        children(state.data)
-      )}
-    </Panel>
-  );
-}
 
 function RepositoryBody({ git }: { git: ProjectGit }) {
   return (
@@ -343,9 +275,7 @@ export function ProjectsView({
                           <td>{record.name}</td>
                           <td>{record.category}</td>
                           <td>
-                            <StatusChip tone={confidenceTones[record.confidence]}>
-                              {confidenceLabels[record.confidence]}
-                            </StatusChip>
+                            <ConfidenceChip confidence={record.confidence} />
                           </td>
                           <td>{record.evidenceCount}</td>
                         </tr>

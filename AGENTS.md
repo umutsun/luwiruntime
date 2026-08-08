@@ -914,14 +914,19 @@ Keep the implemented Phase 1 projects/sessions, Phase 2 request/reply/MCP, Phase
 agent/capability control, Phase 4 operational intelligence/optimization foundation, and
 Phase 5B native realtime Pulse verified and documented.
 
-Phase 5A, Phase 5B, and Phase 5C were subsequently approved and shipped. The read-only Pulse
-dashboard, bounded Activity, read-only inspectors, and read-only project scope in
-`apps/dashboard` are implemented. Those approvals covered the read-only dashboard only.
+Phase 5A through Phase 5D were subsequently approved and shipped. The read-only Pulse dashboard,
+bounded Activity, read-only inspectors, project scope, and the sessions, agents, usage, context,
+and optimization routes in `apps/dashboard` are implemented. Those approvals covered the read-only
+dashboard only.
 
 Phase 5C added the `#/projects` route and on-demand project-scoped reads for repository
-observation, bound agents, packages, and technologies. It called no mutation endpoint, added no
-dependency, and added no datastore. The operational graph remains a disabled label because the
-daemon exposes only rooted graph queries and no global summary can be proven.
+observation, bound agents, packages, and technologies. Phase 5D added five further read-only
+routes, two of which load a bounded collection only while their route is open. Neither phase
+called a mutation endpoint, added a dependency, or added a datastore.
+
+The operational graph remains a disabled label. The daemon exposes only rooted graph queries, so
+no global count, generation, or health figure can be proven; rendering one would be a fabricated
+claim. A global graph summary requires its own ADR before it is built.
 
 **Every other prohibition below still stands.** Do not begin dashboard mutations,
 lifecycle/release scoring, task/lease systems, a semantic or vector knowledge graph, memory

@@ -485,3 +485,72 @@ describe('Projects route', () => {
     expect(screen.getByRole('link', { name: /Activity/ })).toBeTruthy();
   });
 });
+
+describe('Phase 5D routes', () => {
+  const snapshot = () => {
+    const value = input();
+    value.agents = {
+      state: 'ready',
+      data: [
+        {
+          id: 'a1',
+          kind: 'other',
+          displayName: 'Runner',
+          adapterId: 'adapter-x',
+          enabled: true,
+          updatedAt: '2026-08-05T08:00:00.000Z',
+        },
+      ],
+    };
+    return buildPulseSnapshot(value);
+  };
+
+  const routes = [
+    ['#/sessions', 'Sessions'],
+    ['#/agents', 'Agents'],
+    ['#/usage', 'Usage'],
+    ['#/context', 'Context'],
+    ['#/optimization', 'Optimization'],
+  ] as const;
+
+  it.each(routes)('activates %s with its own heading', (hash, heading) => {
+    window.location.hash = hash;
+    render(<DashboardApp snapshot={snapshot()} websocketState="live" onRetry={vi.fn()} />);
+
+    expect(screen.getByRole('heading', { level: 1, name: heading })).toBeTruthy();
+    const nav = screen.getByRole('navigation', { name: /primary/i });
+    expect(within(nav).getByRole('link', { name: heading }).getAttribute('aria-current')).toBe(
+      'page',
+    );
+  });
+
+  it('leaves Graph as the only disabled destination', () => {
+    render(<DashboardApp snapshot={snapshot()} websocketState="live" onRetry={vi.fn()} />);
+
+    const nav = screen.getByRole('navigation', { name: /primary/i });
+    const disabled = within(nav)
+      .getAllByText(/.+/)
+      .filter((node) => node.closest('[aria-disabled="true"]') !== null)
+      .map((node) => node.textContent);
+    expect(disabled.some((text) => text?.includes('Graph'))).toBe(true);
+    for (const [, heading] of routes) {
+      expect(within(nav).getByRole('link', { name: heading })).toBeTruthy();
+    }
+  });
+
+  it('renders agent kinds verbatim without a vendor label map', () => {
+    window.location.hash = '#/agents';
+    render(<DashboardApp snapshot={snapshot()} websocketState="live" onRetry={vi.fn()} />);
+
+    expect(screen.getByText('other')).toBeTruthy();
+    expect(screen.getByText('adapter-x')).toBeTruthy();
+  });
+
+  it('treats unloaded intelligence collections as unavailable, not empty', () => {
+    window.location.hash = '#/optimization';
+    render(<DashboardApp snapshot={snapshot()} websocketState="live" onRetry={vi.fn()} />);
+
+    const panel = screen.getByRole('region', { name: /proposals/i });
+    expect(within(panel).getByText('Unavailable')).toBeTruthy();
+  });
+});

@@ -26,6 +26,35 @@ export type PulseContextContribution = {
   invoked: ObservedBoolean;
 };
 
+/**
+ * `kind` and `adapterId` are rendered verbatim as data. The dashboard never
+ * maps them to per-vendor labels or behaviour: `product-independence.test.ts`
+ * forbids vendor names in production source precisely so that no agent can be
+ * privileged by the code that displays it.
+ */
+export type PulseAgent = {
+  id: string;
+  kind: string;
+  displayName: string;
+  adapterId: string;
+  enabled: boolean;
+  detectedVersion?: string;
+  updatedAt: string;
+};
+
+export type PulseFinding = {
+  id: string;
+  projectId: string;
+  kind: string;
+  title: string;
+  summary: string;
+  state: 'open' | 'dismissed' | 'proposed' | 'resolved';
+  confidence: 'high' | 'medium' | 'low' | 'unknown';
+  sessionCount: number;
+  observationCount: number;
+  updatedAt: string;
+};
+
 export type PulseHealth = {
   status: 'ok' | 'degraded';
   runtimeState: string;
@@ -39,11 +68,11 @@ export type PulseResources = {
   health: Availability<PulseHealth>;
   projects: Availability<PulseProject[]>;
   sessions: Availability<PulseSession[]>;
-  agents: Availability<unknown[]>;
+  agents: Availability<PulseAgent[]>;
   usage: Availability<PulseUsageSource[]>;
   context: Availability<PulseContextContribution[]>;
   activity: Availability<DashboardEvent[]>;
-  findings: Availability<unknown[]>;
+  findings: Availability<PulseFinding[]>;
 };
 
 export type PulseInput = PulseResources & {
@@ -171,6 +200,8 @@ export function buildPulseSnapshot(input: PulseInput) {
     projectCount: countOf(input.projects),
     activeSessionCount,
     agentCount: countOf(input.agents),
+    agents: input.agents.state === 'ready' ? input.agents.data : [],
+    agentsState: input.agents.state,
     sessions,
     activeSessions,
     projects,
@@ -181,6 +212,9 @@ export function buildPulseSnapshot(input: PulseInput) {
     activityState: input.activity.state,
     activity: input.activity.state === 'ready' ? input.activity.data : [],
     findingCount: countOf(input.findings),
+    findings: input.findings.state === 'ready' ? input.findings.data : [],
+    findingsState: input.findings.state,
+    sessionsState: input.sessions.state,
     partial: [
       input.health,
       input.projects,

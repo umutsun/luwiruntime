@@ -126,7 +126,19 @@ export async function loadPulseResources(
           entry(
             key,
             client.get('/api/v1/agents', agentDefinitionCollectionSchema, options),
-            ({ agents: values }) => values,
+            ({ agents: values }) =>
+              values.map((agent) => ({
+                id: agent.id,
+                // Rendered verbatim; the dashboard never branches on vendor.
+                kind: agent.kind,
+                displayName: agent.displayName,
+                adapterId: agent.adapterId,
+                enabled: agent.enabled,
+                ...(agent.detectedVersion === undefined
+                  ? {}
+                  : { detectedVersion: agent.detectedVersion }),
+                updatedAt: agent.updatedAt,
+              })),
           ),
         );
         break;
@@ -175,7 +187,19 @@ export async function loadPulseResources(
               optimizationFindingCollectionSchema,
               options,
             ),
-            ({ findings: values }) => values,
+            ({ findings: values }) =>
+              values.map((finding) => ({
+                id: finding.id,
+                projectId: finding.projectId,
+                kind: finding.kind,
+                title: finding.title,
+                summary: finding.summary,
+                state: finding.state,
+                confidence: finding.confidence,
+                sessionCount: finding.evidenceWindow.sessionCount,
+                observationCount: finding.evidenceWindow.observationCount,
+                updatedAt: finding.updatedAt,
+              })),
           ),
         );
         break;

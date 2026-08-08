@@ -8,8 +8,8 @@ Claude Code, Gemini CLI, and Kimi; it does not replace or impersonate them.
 
 ## Current status
 
-Phase 5C — read-only project scope — is implemented on the Phase 5B realtime Pulse and the Phase 1–4
-runtime foundation:
+Phase 5D — read-only project scope and intelligence routes — is implemented on the Phase 5B
+realtime Pulse and the Phase 1–4 runtime foundation:
 
 - strict TypeScript/ESM pnpm workspace with `protocol`, `runtime`, and `redis` packages;
 - Fastify daemon bound to `127.0.0.1` with an owned lifecycle and explicit readiness states;
@@ -92,10 +92,16 @@ runtime foundation:
 - disclosed truncation on every bounded project collection and per-tier confidence rendered as
   text rather than colour alone;
 - project-scoped realtime refresh that runs only for the project currently on screen, with a
-  generation guard that drops a response when the selection has moved on.
+  generation guard that drops a response when the selection has moved on;
+- dedicated read-only routes for sessions, agent definitions, usage, context, and optimization,
+  where usage sources are never summed across differing provenance, context observations are shown
+  as four independent counts rather than pipeline stages, and context token figures stay labelled
+  as generic character estimates;
+- agent kinds rendered verbatim, with no vendor label map or per-vendor branch anywhere in the
+  dashboard.
 
-Dashboard mutations, lifecycle/release scoring, release readiness, a global operational-graph
-summary, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge
+Dashboard mutations, optimization accept/reject/evaluate, lifecycle/release scoring, release
+readiness, a global operational-graph summary, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge
 graph, memory federation, cloud accounts, and authentication are not implemented. The operational
 graph exposes only rooted queries, so no global graph overview can be derived honestly and the
 `Graph` route remains a disabled label.

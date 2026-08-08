@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { ActivityView } from './activity/activity-view.js';
+import type { IntelligenceResources } from './api/intelligence-scope.js';
 import type { ProjectScopeResources } from './api/project-scope.js';
 import type { PulseFreshness } from './api/refresh-state.js';
 import { StatusChip } from './components/status-chip.js';
 import { InspectorPanel, type InspectorSelection } from './inspectors/inspector-panel.js';
 import { ProjectsView } from './projects/projects-view.js';
+import { AgentsView } from './routes/agents-view.js';
+import { ContextView } from './routes/context-view.js';
+import { OptimizationView } from './routes/optimization-view.js';
+import { SessionsView } from './routes/sessions-view.js';
+import { UsageView } from './routes/usage-view.js';
 import type { PulseSnapshot } from './pulse/model.js';
 import { PulseView } from './pulse/pulse-view.js';
 import {
@@ -24,12 +30,30 @@ export type WebSocketState = RealtimeConnectionState;
  * `/graph/path`, `/graph/subgraph` — and no global summary, so no honest
  * overview can be derived. See `docs/phase5-dashboard-capability-matrix.md`.
  */
-const planned = ['Agents', 'Sessions', 'Usage', 'Context', 'Graph', 'Optimization'];
+const planned = ['Graph'];
+
+/** Routes reachable from the rail, in navigation order. */
+const scopeRoutes = [
+  { name: 'projects', label: 'Projects' },
+  { name: 'agents', label: 'Agents' },
+  { name: 'sessions', label: 'Sessions' },
+] as const;
+
+const intelligenceRoutes = [
+  { name: 'usage', label: 'Usage' },
+  { name: 'context', label: 'Context' },
+  { name: 'optimization', label: 'Optimization' },
+] as const;
 
 const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string }> = {
   pulse: { eyebrow: 'Operational snapshot', heading: 'Pulse' },
   activity: { eyebrow: 'Event observer', heading: 'Activity' },
   projects: { eyebrow: 'Project scope', heading: 'Projects' },
+  agents: { eyebrow: 'Registered definitions', heading: 'Agents' },
+  sessions: { eyebrow: 'Observed sessions', heading: 'Sessions' },
+  usage: { eyebrow: 'Observation sources', heading: 'Usage' },
+  context: { eyebrow: 'Context evidence', heading: 'Context' },
+  optimization: { eyebrow: 'Structural findings', heading: 'Optimization' },
 };
 
 function connectionLabel(state: WebSocketState): string {
@@ -49,6 +73,7 @@ export function DashboardApp({
   invalidEventCount = 0,
   projectResources = {},
   projectScopeLoading = false,
+  intelligenceResources = {},
   onRetry,
   onActivityStateChange,
 }: {
@@ -60,6 +85,7 @@ export function DashboardApp({
   invalidEventCount?: number;
   projectResources?: Partial<ProjectScopeResources>;
   projectScopeLoading?: boolean;
+  intelligenceResources?: Partial<IntelligenceResources>;
   onRetry: () => void;
   onActivityStateChange?: (state: ActivityState) => void;
 }) {
@@ -128,13 +154,27 @@ export function DashboardApp({
             ) : null}
           </a>
           <p className="nav-group">Scope</p>
-          <a
-            className={`nav-item${route.name === 'projects' ? ' nav-item--active' : ''}`}
-            href={routeHref({ name: 'projects' })}
-            aria-current={route.name === 'projects' ? 'page' : undefined}
-          >
-            Projects
-          </a>
+          {scopeRoutes.map((entry) => (
+            <a
+              key={entry.name}
+              className={`nav-item${route.name === entry.name ? ' nav-item--active' : ''}`}
+              href={routeHref({ name: entry.name })}
+              aria-current={route.name === entry.name ? 'page' : undefined}
+            >
+              {entry.label}
+            </a>
+          ))}
+          <p className="nav-group">Intelligence</p>
+          {intelligenceRoutes.map((entry) => (
+            <a
+              key={entry.name}
+              className={`nav-item${route.name === entry.name ? ' nav-item--active' : ''}`}
+              href={routeHref({ name: entry.name })}
+              aria-current={route.name === entry.name ? 'page' : undefined}
+            >
+              {entry.label}
+            </a>
+          ))}
           <p className="nav-group">Prepared routes</p>
           {planned.map((label) => (
             <span className="nav-item nav-item--disabled" aria-disabled="true" key={label}>
@@ -163,7 +203,7 @@ export function DashboardApp({
                 ? 'Use bounded activity filters below'
                 : route.name === 'projects'
                   ? 'Select a project to scope its evidence'
-                  : 'Search unavailable in Phase 5B'}
+                  : 'Unified search has no read contract yet'}
             </span>
             <StatusChip tone={websocketTone}>{connectionLabel(websocketState)}</StatusChip>
             {invalidEventCount > 0 ? (
@@ -205,6 +245,30 @@ export function DashboardApp({
               onStateChange={onActivityStateChange ?? (() => undefined)}
               onOpenEvent={(event, opener) =>
                 openInspector({ kind: 'event', streamId: event.streamId }, opener)
+              }
+            />
+          ) : route.name === 'sessions' ? (
+            <SessionsView snapshot={snapshot} />
+          ) : route.name === 'agents' ? (
+            <AgentsView snapshot={snapshot} />
+          ) : route.name === 'usage' ? (
+            <UsageView snapshot={snapshot} />
+          ) : route.name === 'context' ? (
+            <ContextView
+              snapshot={snapshot}
+              sources={
+                intelligenceResources.sources?.state === 'ready'
+                  ? intelligenceResources.sources.data
+                  : undefined
+              }
+            />
+          ) : route.name === 'optimization' ? (
+            <OptimizationView
+              snapshot={snapshot}
+              proposals={
+                intelligenceResources.proposals?.state === 'ready'
+                  ? intelligenceResources.proposals.data
+                  : undefined
               }
             />
           ) : route.name === 'projects' ? (

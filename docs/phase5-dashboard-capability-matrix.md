@@ -91,3 +91,45 @@ production module references a lifecycle stage or release-readiness field.
 
 No mutation endpoint is called. `POST .../git/scan` and `POST .../packages/scan` exist and are
 deliberately not invoked; the same test asserts that no production module issues a non-GET request.
+
+## Phase 5D delta — intelligence routes
+
+Date: 2026-08-08
+
+Five prepared labels became routes. Four read data the Pulse snapshot already fetched and
+discarded at render time; two added a bounded read.
+
+| Route            | Reads                                                                               | New request |
+| ---------------- | ----------------------------------------------------------------------------------- | ----------- |
+| `#/sessions`     | snapshot `sessions`                                                                 | no          |
+| `#/agents`       | snapshot `agents`, now typed rather than counted                                    | no          |
+| `#/usage`        | snapshot `usage`                                                                    | no          |
+| `#/context`      | snapshot `context` plus `GET /api/v1/context/sources?limit=100`                     | yes         |
+| `#/optimization` | snapshot `findings`, now typed, plus `GET /api/v1/optimization/proposals?limit=100` | yes         |
+
+The two new collections load only while their route is open, so the overview never pays for them.
+
+`Graph` is now the only disabled label. `/api/v1/graph/nodes/:nodeKind/:nodeId`,
+`/api/v1/graph/path`, and `/api/v1/graph/subgraph` all require a root node, so no global count,
+generation, or health figure can be proven. Rendering one would be a fabricated claim rather than
+a missing feature.
+
+### Honesty rules encoded in these routes
+
+- **Usage sources are never summed.** Exact, reported, adapter-extracted, and estimated records
+  carry different provenance, and `unavailable` records have no token value. A combined figure
+  would be a number the runtime never observed. An absent `totalTokens` renders as `Not reported`,
+  worded differently from the `unavailable` source label so the two facts are not confused.
+- **Context observations are not pipeline stages.** Assigned, effective, loaded, and invoked render
+  as four independent counts. A source can be observed as loaded without having been observed as
+  effective, so a funnel would assert a relationship that was never measured. `unknown` keeps its
+  own count, per ADR 0010.
+- **Context token figures are labelled as generic character estimates**, matching
+  `estimationMethod` on the record, and must not be read as measured consumption.
+- **Optimization is read-only.** Accept, reject, evaluate, and analyze endpoints exist and are
+  deliberately not called; acceptance leads to a Phase 3 ConfigPlan apply, which section 12 keeps
+  off every read surface.
+- **Agent kinds render verbatim.** `agentDefinitionSchema.kind` carries vendor identifiers, and
+  `product-independence.test.ts` forbids those names in dashboard source. There is no label map and
+  no per-vendor branch, so a new agent kind needs no dashboard change and no existing one is
+  privileged.

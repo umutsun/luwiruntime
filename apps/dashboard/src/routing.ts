@@ -12,10 +12,29 @@
 /** Matches `identifierSchema` in `@luwi/protocol`, which is `min(1).max(128)`. */
 const MAX_PROJECT_ID_LENGTH = 128;
 
+/**
+ * Routes that carry no parameter. `projects` is handled separately because it
+ * can carry a project id, and `pulse` is the fallback rather than a match.
+ */
+export const SIMPLE_ROUTES = [
+  'activity',
+  'sessions',
+  'agents',
+  'usage',
+  'context',
+  'optimization',
+] as const;
+
+type SimpleRouteName = (typeof SIMPLE_ROUTES)[number];
+
 export type DashboardRoute =
-  { name: 'pulse' } | { name: 'activity' } | { name: 'projects'; projectId?: string };
+  { name: 'pulse' } | { name: SimpleRouteName } | { name: 'projects'; projectId?: string };
 
 export type DashboardRouteName = DashboardRoute['name'];
+
+function isSimpleRoute(value: string | undefined): value is SimpleRouteName {
+  return SIMPLE_ROUTES.includes(value as SimpleRouteName);
+}
 
 function decodeSegment(segment: string): string {
   try {
@@ -32,7 +51,7 @@ export function parseRoute(hash: string): DashboardRoute {
   const segments = path.split('/').filter((segment) => segment !== '');
 
   const [head, second] = segments;
-  if (head === 'activity' && segments.length === 1) return { name: 'activity' };
+  if (isSimpleRoute(head) && segments.length === 1) return { name: head };
 
   if (head === 'projects') {
     if (second === undefined) return { name: 'projects' };
@@ -47,12 +66,11 @@ export function parseRoute(hash: string): DashboardRoute {
 }
 
 export function routeHref(route: DashboardRoute): string {
-  if (route.name === 'activity') return '#/activity';
   if (route.name === 'projects') {
     // Encoding keeps an id containing `/` from forging an extra path segment.
     return route.projectId === undefined
       ? '#/projects'
       : `#/projects/${encodeURIComponent(route.projectId)}`;
   }
-  return '#/pulse';
+  return `#/${route.name}`;
 }

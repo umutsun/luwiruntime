@@ -1,11 +1,13 @@
 export {
   agentDefinitionCollectionSchema,
+  contextSourceCollectionSchema,
   projectAgentBindingCollectionSchema,
 } from './control-plane.js';
 export {
   contextContributionCollectionSchema,
   gitObservationSchema,
   optimizationFindingCollectionSchema,
+  optimizationProposalCollectionSchema,
   packageCollectionSchema,
   technologyCollectionSchema,
   usageSummarySchema,

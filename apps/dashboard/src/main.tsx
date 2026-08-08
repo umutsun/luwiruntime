@@ -4,6 +4,13 @@ import { createRoot } from 'react-dom/client';
 import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
 import {
+  intelligenceResourceKeys,
+  intelligenceResourcesForEvent,
+  loadIntelligenceScope,
+  type IntelligenceResourceKey,
+  type IntelligenceResources,
+} from './api/intelligence-scope.js';
+import {
   loadProjectScope,
   projectResourcesForEvent,
   projectScopeResourceKeys,
@@ -42,6 +49,16 @@ const client = createDaemonClient();
 function selectedProjectOf(hash: string): string | undefined {
   const route = parseRoute(hash);
   return route.name === 'projects' ? route.projectId : undefined;
+}
+
+/**
+ * The context and optimization routes are the only consumers of the two extra
+ * collections, so they load when one of those routes is open and never
+ * otherwise.
+ */
+function needsIntelligenceOf(hash: string): boolean {
+  const route = parseRoute(hash);
+  return route.name === 'context' || route.name === 'optimization';
 }
 
 function resourcesOf(input: PulseInput): PulseResources {
@@ -92,11 +109,35 @@ function DashboardRoute() {
   const selectedProjectRef = useRef(selectedProjectId);
   selectedProjectRef.current = selectedProjectId;
 
+  const [needsIntelligence, setNeedsIntelligence] = useState(() =>
+    needsIntelligenceOf(window.location.hash),
+  );
+  const [intelligenceResources, setIntelligenceResources] = useState<
+    Partial<IntelligenceResources>
+  >({});
+  const needsIntelligenceRef = useRef(needsIntelligence);
+  needsIntelligenceRef.current = needsIntelligence;
+
   useEffect(() => {
-    const update = () => setSelectedProjectId(selectedProjectOf(window.location.hash));
+    const update = () => {
+      setSelectedProjectId(selectedProjectOf(window.location.hash));
+      setNeedsIntelligence(needsIntelligenceOf(window.location.hash));
+    };
     window.addEventListener('hashchange', update);
     return () => window.removeEventListener('hashchange', update);
   }, []);
+
+  useEffect(() => {
+    if (!needsIntelligence) return undefined;
+    const controller = new AbortController();
+    void loadIntelligenceScope(client, intelligenceResourceKeys, {
+      signal: controller.signal,
+    }).then((next) => {
+      if (controller.signal.aborted) return;
+      setIntelligenceResources(next);
+    });
+    return () => controller.abort();
+  }, [needsIntelligence, requestNumber]);
 
   useEffect(() => {
     if (selectedProjectId === undefined) {
@@ -118,6 +159,14 @@ function DashboardRoute() {
     });
     return () => controller.abort();
   }, [selectedProjectId, requestNumber]);
+
+  const refreshIntelligenceScope = useCallback((keys: readonly IntelligenceResourceKey[]) => {
+    if (!needsIntelligenceRef.current || keys.length === 0) return;
+    void loadIntelligenceScope(client, keys).then((next) => {
+      if (!needsIntelligenceRef.current) return;
+      setIntelligenceResources((current) => ({ ...current, ...next }));
+    });
+  }, []);
 
   const refreshProjectScope = useCallback((keys: readonly ProjectScopeResourceKey[]) => {
     const projectId = selectedProjectRef.current;
@@ -212,6 +261,7 @@ function DashboardRoute() {
         ) {
           refreshProjectScope(projectResourcesForEvent(event.type));
         }
+        refreshIntelligenceScope(intelligenceResourcesForEvent(event.type));
       },
       onInvalid: () => setInvalidEventCount((count) => Math.min(99, count + 1)),
     });
@@ -222,7 +272,7 @@ function DashboardRoute() {
       invalidation.stop();
       refreshController.stop();
     };
-  }, [bootstrap, refreshRequestRouter, refreshProjectScope]);
+  }, [bootstrap, refreshRequestRouter, refreshProjectScope, refreshIntelligenceScope]);
 
   const snapshot = useMemo(
     () => (input === undefined ? undefined : buildPulseSnapshot(input)),
@@ -248,6 +298,7 @@ function DashboardRoute() {
       invalidEventCount={invalidEventCount}
       projectResources={projectResources}
       projectScopeLoading={projectScopeLoading}
+      intelligenceResources={intelligenceResources}
       onRetry={retry}
       onActivityStateChange={(next) => {
         activityRef.current = next;
