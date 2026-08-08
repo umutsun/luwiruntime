@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(pnpm build:*)",
+      "Bash(pnpm lint:*)",
+      "Bash(pnpm format:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm typecheck:*)",
+      "Bash(pnpm clean:*)",
+      "Bash(pnpm install --frozen-lockfile)",
+      "Bash(pnpm --filter:*)",
+      "Bash(pnpm exec:*)",
+      "Bash(pnpm -v)",
+      "Bash(node -v)",
+      "Bash(npm -v)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch --list:*)",
+      "Bash(git ls-files:*)"
+    ],
+    "deny": [
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -fd:*)",
+      "Bash(git clean -df:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git stash:*)",
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  }
+}

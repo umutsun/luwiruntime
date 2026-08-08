@@ -9,3 +9,7 @@ coverage/
 .pnpm-store/
 .luwi/
 temp/
+
+# Claude Code: shared project configuration is committed; machine-specific
+# overrides and absolute hook paths are not.
+.claude/settings.local.json

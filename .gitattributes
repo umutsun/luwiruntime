@@ -1,0 +1,29 @@
+# Line-ending policy.
+#
+# `core.autocrlf` is enabled at the system level on at least one development
+# machine (Git for Windows sets it in the system gitconfig). Without an explicit
+# policy here, checked-out shell scripts and hook files receive CRLF and fail in
+# Git Bash with `$'\r': command not found`.
+#
+# The working tree is already LF-only, so this file records existing behavior
+# rather than changing it.
+
+* text=auto eol=lf
+
+# Windows-native launchers are the one place CRLF is required.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Adapter fixtures encode exact command-file bytes. The Windows cleanup tests
+# assert on process-tree behaviour driven by these files, so normalizing their
+# line endings would change what is actually being exercised. The committed
+# fixture uses LF and passes; leave it byte-identical on every checkout.
+packages/adapters/test-fixtures/** -text
+
+# Never normalize binary content.
+*.png binary
+*.jpg binary
+*.zip binary
+*.ico binary
+*.woff binary
+*.woff2 binary
