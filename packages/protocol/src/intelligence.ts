@@ -681,6 +681,7 @@ export const graphSummarySchema = z
   .strictObject({
     observed: z.boolean(),
     generation: identifierSchema.optional(),
+    retainedGenerationCount: z.number().int().nonnegative(),
     projectionHealth: graphProjectionHealthSchema,
     nodeCount: z.number().int().nonnegative().optional(),
     edgeCount: z.number().int().nonnegative().optional(),

@@ -345,6 +345,9 @@ describe('Phase 4 intelligence protocol', () => {
   it('keeps an unbuilt graph summary free of counts', () => {
     const unobserved = graphSummarySchema.parse({
       observed: false,
+      // ADR 0014: generation accounting is honest again, and it is independent
+      // of whether an active generation exists.
+      retainedGenerationCount: 0,
       projectionHealth: 'healthy',
       nodeCountsByKind: [],
       edgeCountsByKind: [],
@@ -361,6 +364,7 @@ describe('Phase 4 intelligence protocol', () => {
     expect(() =>
       graphSummarySchema.parse({
         observed: false,
+        retainedGenerationCount: 0,
         projectionHealth: 'healthy',
         nodeCount: 0,
         edgeCount: 0,
@@ -375,6 +379,7 @@ describe('Phase 4 intelligence protocol', () => {
       graphSummarySchema.parse({
         observed: true,
         generation: 'generation-1',
+        retainedGenerationCount: 1,
         projectionHealth: 'healthy',
         nodeCountsByKind: [],
         edgeCountsByKind: [],
@@ -387,6 +392,7 @@ describe('Phase 4 intelligence protocol', () => {
     const summary = graphSummarySchema.parse({
       observed: true,
       generation: 'generation-1',
+      retainedGenerationCount: 2,
       projectionHealth: 'degraded',
       nodeCount: 3,
       edgeCount: 1,
@@ -408,6 +414,7 @@ describe('Phase 4 intelligence protocol', () => {
       graphSummarySchema.parse({
         observed: true,
         generation: 'generation-1',
+        retainedGenerationCount: 1,
         projectionHealth: 'healthy',
         nodeCount: 0,
         edgeCount: 0,

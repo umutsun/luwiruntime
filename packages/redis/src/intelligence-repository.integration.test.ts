@@ -202,9 +202,16 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         'project-1',
         [packageRecord],
         [technology],
+        ['.', 'packages/bare'],
         event('event-packages', 'package.inventory.updated'),
       );
       await expect(repository.listPackages('project-1')).resolves.toEqual([packageRecord]);
+      // ADR 0014: workspace locations replace atomically with the records they
+      // describe, including one that declares no dependency.
+      await expect(repository.listWorkspaceLocations('project-1')).resolves.toEqual([
+        '.',
+        'packages/bare',
+      ]);
       await expect(repository.listTechnologies('project-1')).resolves.toEqual([technology]);
 
       const serialized = JSON.stringify([
@@ -306,8 +313,12 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       // One retained generation, not two: the generations index is written by
       // node and edge projection, so `generation-active` never enters it —
       // only the pointer was set. The count is generations holding content.
+      // Two generations indexed: 'generation-active' by the initial pointer and
+      // 'generation-shadow' by the node/edge puts. Before ADR 0014 the pointer
+      // recorded nothing, so this count could not be trusted.
       await expect(repository.getGraphSummary()).resolves.toEqual({
         generation: 'generation-shadow',
+        retainedGenerationCount: 2,
         projectionHealth: 'healthy',
         nodes: [
           { kind: 'project', count: 1 },
@@ -348,6 +359,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
 
       await expect(unbuilt.getGraphSummary()).resolves.toEqual({
         generation: null,
+        retainedGenerationCount: 0,
         projectionHealth: 'healthy',
         nodes: [],
         edges: [],
@@ -565,7 +577,10 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
 
       expect(result).toMatchObject({
         gitObservationsRemoved: 1,
-        graphGenerationsRemoved: 1,
+        // Two, not one: ADR 0014 made the initial pointer record its generation,
+        // so retention can finally see and reclaim a superseded generation that
+        // it was previously blind to.
+        graphGenerationsRemoved: 2,
         rejectedProposalsRemoved: 1,
         truncated: false,
       });

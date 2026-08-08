@@ -85,6 +85,7 @@ export interface RedisKeys {
   projectPackages(projectId: string): string;
   technology(projectId: string, technologyId: string): string;
   projectTechnologies(projectId: string): string;
+  projectWorkspaceLocations(projectId: string): string;
   graphNode(generation: string, nodeKind: string, nodeId: string): string;
   graphEdge(generation: string, edgeId: string): string;
   graphOutgoing(generation: string, nodeKind: string, nodeId: string): string;
@@ -219,6 +220,8 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     projectPackages: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:packages`,
     technology: (projectId, technologyId) =>
       `${prefix}:technology:${keyPart(projectId)}:${keyPart(technologyId)}`,
+    projectWorkspaceLocations: (projectId) =>
+      `${prefix}:index:project:${keyPart(projectId)}:workspace-locations`,
     projectTechnologies: (projectId) =>
       `${prefix}:index:project:${keyPart(projectId)}:technologies`,
     graphNode: (generation, nodeKind, nodeId) =>

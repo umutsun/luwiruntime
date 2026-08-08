@@ -11,6 +11,7 @@ afterEach(cleanup);
 const observed: GraphSummary = {
   observed: true,
   generation: 'generation-1',
+  retainedGenerationCount: 2,
   projectionHealth: 'healthy',
   nodeCount: 7,
   edgeCount: 4,
@@ -58,6 +59,7 @@ describe('GraphView', () => {
           state: 'ready',
           data: {
             observed: false,
+            retainedGenerationCount: 0,
             projectionHealth: 'healthy',
             nodeCountsByKind: [],
             edgeCountsByKind: [],
@@ -83,6 +85,7 @@ describe('GraphView', () => {
           data: {
             observed: true,
             generation: 'generation-2',
+            retainedGenerationCount: 1,
             projectionHealth: 'healthy',
             nodeCount: 0,
             edgeCount: 0,

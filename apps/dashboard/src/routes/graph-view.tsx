@@ -44,6 +44,10 @@ export function GraphView({ summary }: { summary: ResourceState<GraphSummary> | 
                   </td>
                 </tr>
                 <tr>
+                  <th scope="row">Retained generations</th>
+                  <td>{data.retainedGenerationCount}</td>
+                </tr>
+                <tr>
                   <th scope="row">Projection health</th>
                   <td>
                     <StatusChip tone={data.projectionHealth === 'healthy' ? 'success' : 'danger'}>

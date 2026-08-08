@@ -702,6 +702,7 @@ docs/decisions/0010-context-optimization-feedback-loop.md
 docs/decisions/0011-local-git-observation-and-attribution.md
 docs/decisions/0012-code-structure-observer.md
 docs/decisions/0013-bounded-global-graph-summary.md
+docs/decisions/0014-complete-graph-projection-inputs.md
 ```
 
 Each ADR contains context, decision, consequences, and status.
@@ -935,10 +936,15 @@ health, and exact per-kind node and edge counts, and it withholds totals entirel
 has never been built rather than reporting zero. The `#/graph` dashboard route renders that
 contract and calls no mutation endpoint.
 
-Rebuild history, historical generations, generation counts, and per-project graph counts are
-still unanswered. The generations index is written only by the incremental node/edge put path,
-so it does not describe generations created by snapshot replacement; per-project counts have no
-index at all. Both need projection changes and their own decision.
+ADR 0014 then closed the two projection gaps that were defects rather than absences. Every graph
+write path records its generation, so retention sees every generation it is responsible for and
+the summary reports a retained-generation count again. Module roots come from every parsed
+manifest rather than from dependency records, so a workspace package that declares nothing is
+still a module and its files are no longer misattributed to the enclosing one.
+
+Rebuild ordering and per-project graph counts remain unanswered, deliberately. Both would be
+straightforward and neither has a consumer, so building them now would add write cost and key
+cardinality to answer a question nothing asks. ADR 0014 records the reasoning.
 
 ADR 0012's code-structure observer was approved and its first increment implemented. The daemon
 parses the project's own TypeScript with the compiler API — never executing it — and projects

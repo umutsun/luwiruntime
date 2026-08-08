@@ -100,18 +100,19 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         ),
       ]);
       // Two workspace packages with a real cross-package import, so the ADR
-      // 0012 structural layer has something to resolve: a file-to-file edge and
-      // the module dependency aggregated from it.
+      // 0012 structural layer has something to resolve. Neither declares a
+      // dependency: before ADR 0014 that made them invisible as modules and the
+      // module dependency below could not be observed at all.
       await mkdir(join(projectRoot, 'packages', 'alpha', 'src'), { recursive: true });
       await mkdir(join(projectRoot, 'packages', 'beta', 'src'), { recursive: true });
       await Promise.all([
         writeFile(
           join(projectRoot, 'packages', 'alpha', 'package.json'),
-          `${JSON.stringify({ name: 'alpha', private: true, dependencies: { zod: '^4.0.0' } }, null, 2)}\n`,
+          `${JSON.stringify({ name: 'alpha', private: true }, null, 2)}\n`,
         ),
         writeFile(
           join(projectRoot, 'packages', 'beta', 'package.json'),
-          `${JSON.stringify({ name: 'beta', private: true, dependencies: { zod: '^4.0.0' } }, null, 2)}\n`,
+          `${JSON.stringify({ name: 'beta', private: true }, null, 2)}\n`,
         ),
         writeFile(
           join(projectRoot, 'packages', 'alpha', 'src', 'index.ts'),

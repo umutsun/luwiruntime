@@ -13,6 +13,7 @@ const observedAt = '2026-08-08T00:00:00.000Z';
 const graphFixture = {
   observed: true,
   generation: 'generation-1',
+  retainedGenerationCount: 2,
   projectionHealth: 'healthy',
   nodeCount: 7,
   edgeCount: 4,
@@ -26,6 +27,7 @@ const graphFixture = {
 
 const unbuiltFixture = {
   observed: false,
+  retainedGenerationCount: 0,
   projectionHealth: 'healthy',
   nodeCountsByKind: [],
   edgeCountsByKind: [],
@@ -72,6 +74,7 @@ describe('intelligence scope graph summary', () => {
       data: {
         observed: true,
         generation: 'generation-1',
+        retainedGenerationCount: 2,
         projectionHealth: 'healthy',
         nodeCount: 7,
         edgeCount: 4,

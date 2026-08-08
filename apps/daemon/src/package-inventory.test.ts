@@ -84,6 +84,30 @@ describe('package and technology inventory', () => {
     }
   }
 
+  it('reports a workspace location even when its manifest declares no dependency', async () => {
+    await writeFile(
+      join(root, 'package.json'),
+      JSON.stringify({ name: 'sandbox-root', dependencies: { fastify: '^5.0.0' } }),
+      'utf8',
+    );
+    await mkdir(join(root, 'packages', 'bare'), { recursive: true });
+    await writeFile(
+      join(root, 'packages', 'bare', 'package.json'),
+      JSON.stringify({ name: 'bare', private: true }),
+      'utf8',
+    );
+
+    const result = await createPackageInventoryScanner({
+      now: () => new Date('2026-08-08T00:00:00.000Z'),
+    }).scan({ projectId: 'project-1', localPath: root });
+
+    // ADR 0014: a module is a workspace package, and a package that declares
+    // nothing is still a package. Deriving this from dependency records made
+    // dependency-free packages invisible and misattributed their files.
+    expect(result.workspaceLocations).toEqual(['.', 'packages/bare']);
+    expect(result.packages.map(({ workspaceLocation }) => workspaceLocation)).toEqual(['.']);
+  });
+
   it('scans Node/pnpm and Flutter manifests without executing a package manager', async () => {
     await writeFile(
       join(root, 'package.json'),

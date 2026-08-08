@@ -44,6 +44,12 @@ export type PackageInventoryResult = {
   technologies: TechnologyRecord[];
   scannedAt: string;
   manifestCount: number;
+  /**
+   * Every directory whose manifest was parsed, regardless of whether it
+   * declared a dependency. ADR 0014: module identity is a fact about
+   * manifests, not about dependency records.
+   */
+  workspaceLocations: string[];
   fileCount: number;
   truncated: boolean;
   evidenceScope: 'git-tracked' | 'filesystem';
@@ -557,6 +563,7 @@ export function createPackageInventoryScanner(
         const candidates: CandidatePackage[] = [];
         const technologyCandidates: TechnologyCandidate[] = [];
         let manifestCount = 0;
+        const workspaceLocations = new Set<string>();
         const languageCounts = new Map<string, number>();
 
         for (const path of files) {
@@ -579,6 +586,7 @@ export function createPackageInventoryScanner(
 
           manifestCount += 1;
           const content = await readBoundedManifest(canonicalRoot, path);
+          workspaceLocations.add(normalizedRelative(root, dirname(path)));
           const text = content.toString('utf8');
           const manifestPath = normalizedRelative(root, path);
           const common = {
@@ -713,6 +721,7 @@ export function createPackageInventoryScanner(
           technologies,
           scannedAt: detectedAt,
           manifestCount,
+          workspaceLocations: [...workspaceLocations].toSorted(),
           fileCount: files.length,
           truncated,
           evidenceScope,

@@ -80,6 +80,7 @@ export type GraphProjectionFailure = {
  */
 export type GraphSummaryProjection = {
   generation: string | null;
+  retainedGenerationCount: number;
   projectionHealth: GraphProjectionHealth;
   nodes: GraphNodeKindCount[];
   edges: GraphEdgeKindCount[];
@@ -138,9 +139,11 @@ export interface IntelligenceRepository {
     projectId: string,
     packages: PackageRecord[],
     technologies: TechnologyRecord[],
+    workspaceLocations: string[],
     event: RuntimeEvent,
   ): Promise<void>;
   listPackages(projectId: string, limit?: number): Promise<PackageRecord[]>;
+  listWorkspaceLocations(projectId: string): Promise<string[]>;
   listTechnologies(projectId: string, limit?: number): Promise<TechnologyRecord[]>;
   putAttributions(attributions: AttributionRecord[], event: RuntimeEvent): Promise<void>;
   listAttributions(projectId: string, limit?: number): Promise<AttributionRecord[]>;
@@ -505,6 +508,22 @@ export function createIntelligenceRepository(
     }
   };
 
+  /**
+   * Adds a generation to the retention index. Scored by observation time so the
+   * index stays ordered oldest-first, which is what retention's tail slice
+   * assumes. Re-adding an existing generation refreshes nothing it should not:
+   * `ZADD` without flags updates the score, and a generation that is still
+   * being written is legitimately more recent.
+   */
+  const recordGeneration = async (generation: string, at: Date = new Date()): Promise<void> => {
+    await client.sendCommand([
+      'ZADD',
+      keys.graphGenerationsIndex,
+      String(at.getTime()),
+      generation,
+    ]);
+  };
+
   const scanSet = async (
     key: string,
     maximum: number,
@@ -860,7 +879,7 @@ export function createIntelligenceRepository(
         'Git commit',
         limit,
       ),
-    async replacePackageInventory(projectId, packages, technologies, event) {
+    async replacePackageInventory(projectId, packages, technologies, workspaceLocations, event) {
       const previousPackages = stringArray(
         await client.sendCommand(['SMEMBERS', keys.projectPackages(projectId)]),
       );
@@ -883,7 +902,17 @@ export function createIntelligenceRepository(
       operations.push(
         { kind: 'delete', key: keys.projectPackages(projectId) },
         { kind: 'delete', key: keys.projectTechnologies(projectId) },
+        // Replaced in the same atomic transition as the records it describes,
+        // so it cannot drift from the scan that produced it. ADR 0014.
+        { kind: 'delete', key: keys.projectWorkspaceLocations(projectId) },
       );
+      for (const location of workspaceLocations) {
+        operations.push({
+          kind: 'set_add',
+          key: keys.projectWorkspaceLocations(projectId),
+          member: location,
+        });
+      }
       for (const packageRecord of packages) {
         const member = `${packageRecord.ecosystem}:${packageRecord.id}`;
         operations.push(
@@ -912,6 +941,11 @@ export function createIntelligenceRepository(
         );
       }
       await transitionWithEvent(operations, event);
+    },
+    async listWorkspaceLocations(projectId) {
+      return stringArray(
+        await client.sendCommand(['SMEMBERS', keys.projectWorkspaceLocations(projectId)]),
+      ).toSorted();
     },
     async listPackages(projectId, limit = 1000) {
       const members = stringArray(
@@ -1127,13 +1161,20 @@ export function createIntelligenceRepository(
       }
       if (operations.length === 0) return;
       await transitionWithEvent(operations, event);
+      // ADR 0014: this is the path the running daemon actually uses, and it was
+      // the reason the index sat empty beside a populated generation.
+      await recordGeneration(generation);
     },
     async getActiveGraphGeneration() {
       return text(await client.sendCommand(['GET', keys.graphActiveGeneration]));
     },
     async setInitialGraphGeneration(generation) {
       await client.sendCommand(['SET', keys.graphActiveGeneration, generation, 'NX']);
-      return text(await client.sendCommand(['GET', keys.graphActiveGeneration])) ?? generation;
+      const active = text(await client.sendCommand(['GET', keys.graphActiveGeneration]));
+      // ADR 0014: every write path records its generation. Retention decides
+      // what it is responsible for from this index, and the summary counts it.
+      await recordGeneration(active ?? generation);
+      return active ?? generation;
     },
     async readGraphGeneration(generation, maximumNodes = 2000, maximumEdges = 8000) {
       const selectedGeneration = generation ?? (await this.getActiveGraphGeneration()) ?? 'initial';
@@ -1286,17 +1327,22 @@ export function createIntelligenceRepository(
     async getGraphSummary() {
       const generation = text(await client.sendCommand(['GET', keys.graphActiveGeneration]));
       const projectionHealth = await this.getGraphProjectionHealth();
-
-      // The generations index is deliberately not counted. It is written only
-      // by `putGraphNode` and `putGraphEdge`, so a graph maintained through
-      // `replaceGraphSnapshot` leaves it empty while holding a fully populated
-      // active generation. Publishing that as a generation count reads as a
-      // contradiction next to the node totals. ADR 0013 records the removal.
+      // ADR 0013 withheld this because the index was written by only one path.
+      // ADR 0014 fixed that, so counting it is honest again.
+      const retainedGenerationCount = cardinality(
+        await client.sendCommand(['ZCARD', keys.graphGenerationsIndex]),
+      );
 
       // Without an active generation there is nothing to count, and issuing the
       // per-kind reads anyway would return zeros that mean "unknown".
       if (generation === null) {
-        return { generation: null, projectionHealth, nodes: [], edges: [] };
+        return {
+          generation: null,
+          retainedGenerationCount,
+          projectionHealth,
+          nodes: [],
+          edges: [],
+        };
       }
 
       const nodes: GraphNodeKindCount[] = [];
@@ -1313,7 +1359,7 @@ export function createIntelligenceRepository(
         );
         if (count > 0) edges.push({ kind, count });
       }
-      return { generation, projectionHealth, nodes, edges };
+      return { generation, retainedGenerationCount, projectionHealth, nodes, edges };
     },
     async beginGraphRebuild(operation, event) {
       const lock = await client.sendCommand([

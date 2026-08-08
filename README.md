@@ -156,7 +156,9 @@ Phase 4 graph, optimization, and local Git boundaries are defined by [ADR
 its parser dependency, and the alternatives rejected for it are recorded in [ADR
 0012](docs/decisions/0012-code-structure-observer.md). The bounded global graph summary, and the
 alternatives rejected for it, are recorded in [ADR
-0013](docs/decisions/0013-bounded-global-graph-summary.md).
+0013](docs/decisions/0013-bounded-global-graph-summary.md), and the projection-input gaps it
+left behind — with the two that were deliberately not built — in [ADR
+0014](docs/decisions/0014-complete-graph-projection-inputs.md).
 
 ## Prerequisites
 

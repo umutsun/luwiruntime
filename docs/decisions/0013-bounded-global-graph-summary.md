@@ -1,6 +1,6 @@
 # ADR 0013: Bounded global operational-graph summary
 
-Status: Accepted  
+Status: Accepted, partly superseded by ADR 0014  
 Date: 2026-08-08
 
 ## Context
@@ -42,7 +42,7 @@ It is answered from index cardinality on the active generation, never from trave
 - `SCARD` each per-kind node index, one per node kind;
 - `SCARD` each per-kind edge index, one per edge kind.
 
-That is two commands plus one per kind — 57 today, with 29 node kinds and 26 edge kinds. The
+That is three commands plus one per kind — 58 today, with 29 node kinds and 26 edge kinds. The
 count is fixed by the `@luwi/protocol` kind enumerations rather than by how much data the graph
 holds, so it moves only when the protocol does, and a unit test pins it so that movement is
 deliberate. No `SSCAN`, no node or edge hydration, no adjacency read, and no traversal occurs.
@@ -59,6 +59,11 @@ contradiction on the face of the response, and shipping it would have been the s
 error as rendering an unobserved graph as zero. Reporting how many generations exist requires
 fixing the index on the write path, which is a projection change and belongs to whatever phase
 needs generation history.
+
+**Superseded by ADR 0014.** That phase arrived immediately: every write path now records its
+generation, so the index no longer misrepresents reality and the summary reports
+`retainedGenerationCount` again. The reasoning above stands as the reason it was withheld while
+the index was wrong, and the command budget is 58 rather than 57 because of the restored `ZCARD`.
 
 Honesty rules that bind the response shape:
 
@@ -87,7 +92,7 @@ projection already writes are read.
 ### Rejected alternatives
 
 **Counters maintained on write.** Incrementing a stored node/edge counter on every projection
-write would answer in one command instead of 57. It is rejected because it creates a second
+write would answer in one command instead of 58. It is rejected because it creates a second
 source of truth for a fact the membership sets already hold. Under a partial failure the counter
 and the sets diverge, and the divergence is silent. Section 2 requires derived views to be
 rebuildable from authoritative state; a cardinality read from the set is derived from the very
@@ -126,7 +131,7 @@ single bounded read, so the `Graph` navigation label can stop being disabled and
 render facts rather than estimates. The per-kind breakdown is obtained at no extra cost, because
 the per-kind index sets are what is being measured.
 
-The cost is 57 Redis round trips per request. On a loopback, single-user runtime that is
+The cost is 58 Redis round trips per request. On a loopback, single-user runtime that is
 acceptable, and it is acceptable specifically because it is constant: a graph ten times larger
 costs the same. Nothing caches the result, so a caller that polls pays it every time. The
 dashboard therefore loads it only while `#/graph` is open, following the on-demand pattern Phase

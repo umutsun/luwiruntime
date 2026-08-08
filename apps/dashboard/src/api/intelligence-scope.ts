@@ -61,6 +61,7 @@ export type KindCount = { kind: string; count: number };
 export type GraphSummary = {
   observed: boolean;
   generation?: string;
+  retainedGenerationCount: number;
   projectionHealth: 'healthy' | 'degraded';
   nodeCount?: number;
   edgeCount?: number;
@@ -188,6 +189,7 @@ export async function loadIntelligenceScope(
             collected(result, (summary) => ({
               observed: summary.observed,
               ...(summary.generation === undefined ? {} : { generation: summary.generation }),
+              retainedGenerationCount: summary.retainedGenerationCount,
               projectionHealth: summary.projectionHealth,
               ...(summary.nodeCount === undefined ? {} : { nodeCount: summary.nodeCount }),
               ...(summary.edgeCount === undefined ? {} : { edgeCount: summary.edgeCount }),

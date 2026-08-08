@@ -308,6 +308,7 @@ describe('Redis intelligence repository', () => {
       const [name, key] = command;
       if (name === 'GET' && key === keys.graphActiveGeneration) return 'generation-1';
       if (name === 'GET' && key === keys.graphProjectionHealth) return 'degraded';
+      if (name === 'ZCARD' && key === keys.graphGenerationsIndex) return 2;
       if (name === 'SCARD') return cardinalities.get(key!) ?? 0;
       throw new Error(`unexpected command ${command.join(' ')}`);
     });
@@ -334,11 +335,8 @@ describe('Redis intelligence repository', () => {
     expect(issued).not.toContain('SSCAN');
     expect(issued).not.toContain('SMEMBERS');
     expect(issued.filter((name) => name === 'SCARD')).toHaveLength(55);
-    // GET generation + GET health + 55 per-kind SCARD. No ZCARD: the
-    // generations index is not maintained by every write path, so counting
-    // it would publish a number that contradicts the totals. ADR 0013.
-    expect(client.commands).toHaveLength(57);
-    expect(issued).not.toContain('ZCARD');
+    // GET generation + GET health + ZCARD generations + 55 per-kind SCARD.
+    expect(client.commands).toHaveLength(58);
   });
 
   it('reports a graph that was never built as unobserved rather than empty', async () => {
@@ -347,6 +345,7 @@ describe('Redis intelligence repository', () => {
       const [name, key] = command;
       if (name === 'GET' && key === keys.graphActiveGeneration) return null;
       if (name === 'GET' && key === keys.graphProjectionHealth) return null;
+      if (name === 'ZCARD' && key === keys.graphGenerationsIndex) return 0;
       throw new Error(`unexpected command ${command.join(' ')}`);
     });
     const repository = createIntelligenceRepository({
@@ -386,6 +385,33 @@ describe('Redis intelligence repository', () => {
       await expect(repository.getGraphSummary()).rejects.toThrow(/invalid/i);
     },
   );
+
+  it('records the generation on every write path, not only the incremental put', async () => {
+    const keys = createRedisKeys('luwi:test:graph-generations:v1');
+    const client = new ScriptedClient((command) => {
+      const [name] = command;
+      if (name === 'GET') return null;
+      if (name === 'SET') return 'OK';
+      if (name === 'ZADD') return 1;
+      return null;
+    });
+    const repository = createIntelligenceRepository({
+      client,
+      keys,
+      functions: createFunctionRegistry(),
+    });
+
+    await repository.setInitialGraphGeneration('generation-initial');
+
+    // ADR 0014: retention reads this index to decide what it is responsible
+    // for, so a generation missing from it is invisible to retention.
+    expect(client.commands).toContainEqual([
+      'ZADD',
+      keys.graphGenerationsIndex,
+      expect.any(String),
+      'generation-initial',
+    ]);
+  });
 
   it('records graph projection failure and degraded health through one Function', async () => {
     const client = new RecordingClient();

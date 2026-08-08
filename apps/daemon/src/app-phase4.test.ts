@@ -172,6 +172,7 @@ describe('Phase 4 HTTP routes', () => {
     const graphSummary = vi.fn(async () => ({
       observed: true,
       generation: 'generation-1',
+      retainedGenerationCount: 2,
       projectionHealth: 'healthy' as const,
       nodeCount: 7,
       edgeCount: 4,
@@ -205,6 +206,7 @@ describe('Phase 4 HTTP routes', () => {
     // error handler maps every ZodError that way, response validation included.
     const graphSummary = vi.fn(async () => ({
       observed: true,
+      retainedGenerationCount: 0,
       projectionHealth: 'healthy' as const,
       nodeCountsByKind: [],
       edgeCountsByKind: [],

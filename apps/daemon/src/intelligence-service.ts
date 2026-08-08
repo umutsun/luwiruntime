@@ -672,11 +672,16 @@ export function createIntelligenceService(
         await options.repository.listTechnologies(project.id, GRAPH_REBUILD_MAX_INPUTS + 1),
         'technology',
       );
+      // ADR 0014: workspace locations come from every parsed manifest, not from
+      // dependency records, so a package that declares nothing is still a module
+      // and its files are not misattributed to the enclosing one. The package
+      // locations remain in the union for inventories written before that fix.
+      const workspaceLocations = await options.repository.listWorkspaceLocations(project.id);
       const moduleRoots: ModuleRoot[] = [
         { id: moduleId(project.id, '.'), path: '.' },
-        ...packages
-          .map(({ workspaceLocation }) => workspaceLocation)
+        ...[...workspaceLocations, ...packages.map(({ workspaceLocation }) => workspaceLocation)]
           .filter((path, index, values) => path !== '.' && values.indexOf(path) === index)
+          .toSorted()
           .map((path) => ({ id: moduleId(project.id, path), path })),
       ];
       for (const root of moduleRoots) {
@@ -1481,6 +1486,7 @@ export function createIntelligenceService(
           projectId,
           result.packages,
           result.technologies,
+          result.workspaceLocations,
           event(
             'package.inventory.updated',
             { projectId },
@@ -1546,6 +1552,7 @@ export function createIntelligenceService(
       return {
         observed: projection.generation !== null,
         ...observed,
+        retainedGenerationCount: projection.retainedGenerationCount,
         projectionHealth: projection.projectionHealth,
         nodeCountsByKind: projection.nodes,
         edgeCountsByKind: projection.edges,
