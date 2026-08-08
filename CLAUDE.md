@@ -42,6 +42,10 @@ History is short and every commit is a large checkpoint:
 | `ea487d9` | Documentation cleanup after the graph-summary phase            |
 | `6f20aec` | ADR 0012 first increment: TypeScript code-structure layer      |
 | `c462293` | ADR 0014 projection-input fixes                                |
+| `f25d208` | Repository-state and status sync                               |
+| `716369b` | Explicit test budgets for the two load-sensitive tests         |
+| `77c6e0a` | ADR 0015: internal validation failures are server errors       |
+| `1feb515` | Read-only dashboard UX pass and the light theme                |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
