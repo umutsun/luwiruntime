@@ -861,8 +861,9 @@ Phase 4 contains:
 - non-executing package and technology inventory for Node, Python, Dart/Flutter, PHP, Rust,
   and Go;
 - a standard-Redis operational graph with provenance, bounded named queries, incremental
-  projection, shadow-generation rebuild, and a bounded global summary answered from index
-  cardinality rather than traversal (ADR 0013);
+  projection, shadow-generation rebuild, a bounded global summary answered from index cardinality
+  rather than traversal (ADR 0013), and a non-executing TypeScript code-structure layer projected
+  into the same generation (ADR 0012);
 - structural findings and deterministic proposals;
 - explicit acceptance followed by the existing Phase 3 ConfigPlan approval/snapshot/apply
   path;
@@ -938,6 +939,13 @@ Rebuild history, historical generations, generation counts, and per-project grap
 still unanswered. The generations index is written only by the incremental node/edge put path,
 so it does not describe generations created by snapshot replacement; per-project counts have no
 index at all. Both need projection changes and their own decision.
+
+ADR 0012's code-structure observer was approved and its first increment implemented. The daemon
+parses the project's own TypeScript with the compiler API — never executing it — and projects
+`FILE_IMPORTS_FILE` and `MODULE_DEPENDS_ON_MODULE` into the existing Phase 4 graph generation
+alongside the event-derived edges, distinguished by provenance. `typescript` is now a production
+dependency of `apps/daemon`; ADR 0012 states the cost. Function-level nodes, call graphs, and
+multi-language extraction remain out of scope.
 
 **Every other prohibition below still stands.** Do not begin dashboard mutations,
 lifecycle/release scoring, task/lease systems, a semantic or vector knowledge graph, memory

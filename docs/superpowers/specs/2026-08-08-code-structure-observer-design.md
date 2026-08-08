@@ -1,12 +1,20 @@
 # Code-structure observer — design
 
-Status: Draft, not approved for implementation  
+Status: Approved and implemented, with two corrections  
 Date: 2026-08-08  
 Decision record: `docs/decisions/0012-code-structure-observer.md`
 
-This document designs the observer that ADR 0012 proposes. Nothing here is implemented. Section 21
-of `AGENTS.md` requires explicit scope approval before a new phase begins, and this design exists
-so that approval can be given or refused against something concrete.
+This document designed the observer that ADR 0012 proposes. The first increment is now
+implemented in `apps/daemon/src/code-structure-observer.ts`. Two things in this design did not
+survive contact with the code, and ADR 0012 records both:
+
+- **`FILE_EXPORTS_SYMBOL` was dropped.** `graphEdgeSchema` requires two node endpoints and a
+  symbol is not a node kind here. Export surface is a bounded `exportCount` on the `file` node.
+- **The parser question was settled** in favour of the TypeScript compiler API, with `typescript`
+  promoted to a production dependency of `apps/daemon`. The cost is stated in the ADR rather than
+  described as free.
+
+The rest of the design was implemented as written.
 
 ## Problem
 

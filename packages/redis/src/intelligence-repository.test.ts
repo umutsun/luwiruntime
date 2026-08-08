@@ -333,11 +333,11 @@ describe('Redis intelligence repository', () => {
     const issued = client.commands.map(([name]) => name);
     expect(issued).not.toContain('SSCAN');
     expect(issued).not.toContain('SMEMBERS');
-    expect(issued.filter((name) => name === 'SCARD')).toHaveLength(53);
-    // GET generation + GET health + 53 per-kind SCARD. No ZCARD: the
+    expect(issued.filter((name) => name === 'SCARD')).toHaveLength(55);
+    // GET generation + GET health + 55 per-kind SCARD. No ZCARD: the
     // generations index is not maintained by every write path, so counting
     // it would publish a number that contradicts the totals. ADR 0013.
-    expect(client.commands).toHaveLength(55);
+    expect(client.commands).toHaveLength(57);
     expect(issued).not.toContain('ZCARD');
   });
 

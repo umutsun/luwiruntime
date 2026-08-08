@@ -119,7 +119,7 @@ generation, or health figure could be proven, and rendering one would have been 
 claim rather than a missing feature.
 
 ADR 0013 added `GET /api/v1/graph/summary`, which answers the global question from index
-cardinality on the active generation — 55 constant-time Redis commands, no traversal and no
+cardinality on the active generation — 57 constant-time Redis commands, no traversal and no
 scan — so `#/graph` now renders proven facts and the rail has no disabled destination left.
 
 The response reports no generation count. The generations index is written only by the

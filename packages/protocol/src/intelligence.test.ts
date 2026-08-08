@@ -304,6 +304,44 @@ describe('Phase 4 intelligence protocol', () => {
     ).toThrow();
   });
 
+  it('carries structural edge kinds alongside the event-derived ones', () => {
+    const structural = ['FILE_IMPORTS_FILE', 'MODULE_DEPENDS_ON_MODULE'] as const;
+
+    for (const kind of structural) {
+      const edge = graphEdgeSchema.parse({
+        id: `edge-${kind}`,
+        source: { kind: 'file', id: 'file-a' },
+        target: { kind: 'file', id: 'file-b' },
+        kind,
+        projectId: 'project-1',
+        observedAt: timestamp,
+        // ADR 0012: provenance identifies the extractor and its version, so a
+        // structural edge is distinguishable from an event-derived one.
+        provenance: 'code-structure-observer@1',
+        confidence: 'high',
+        evidenceIds: ['src/a.ts:3'],
+        metadata: {},
+      });
+      expect(edge.kind).toBe(kind);
+    }
+
+    // Structural confidence reuses the intelligence vocabulary and must not
+    // borrow Git attribution's exact/correlated wording.
+    expect(() =>
+      graphEdgeSchema.parse({
+        id: 'edge-bad-confidence',
+        source: { kind: 'file', id: 'file-a' },
+        target: { kind: 'file', id: 'file-b' },
+        kind: 'FILE_IMPORTS_FILE',
+        observedAt: timestamp,
+        provenance: 'code-structure-observer@1',
+        confidence: 'correlated',
+        evidenceIds: ['src/a.ts:3'],
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
   it('keeps an unbuilt graph summary free of counts', () => {
     const unobserved = graphSummarySchema.parse({
       observed: false,

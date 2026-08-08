@@ -68,6 +68,9 @@ importers:
       pino:
         specifier: ^10.3.1
         version: 10.3.1
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
       zod:
         specifier: ^4.4.3
         version: 4.4.3

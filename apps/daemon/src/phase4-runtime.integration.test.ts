@@ -99,10 +99,34 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
           )}\n`,
         ),
       ]);
+      // Two workspace packages with a real cross-package import, so the ADR
+      // 0012 structural layer has something to resolve: a file-to-file edge and
+      // the module dependency aggregated from it.
+      await mkdir(join(projectRoot, 'packages', 'alpha', 'src'), { recursive: true });
+      await mkdir(join(projectRoot, 'packages', 'beta', 'src'), { recursive: true });
+      await Promise.all([
+        writeFile(
+          join(projectRoot, 'packages', 'alpha', 'package.json'),
+          `${JSON.stringify({ name: 'alpha', private: true, dependencies: { zod: '^4.0.0' } }, null, 2)}\n`,
+        ),
+        writeFile(
+          join(projectRoot, 'packages', 'beta', 'package.json'),
+          `${JSON.stringify({ name: 'beta', private: true, dependencies: { zod: '^4.0.0' } }, null, 2)}\n`,
+        ),
+        writeFile(
+          join(projectRoot, 'packages', 'alpha', 'src', 'index.ts'),
+          'export const alphaValue = 1;\n',
+        ),
+        writeFile(
+          join(projectRoot, 'packages', 'beta', 'src', 'index.ts'),
+          "import { alphaValue } from '../../alpha/src/index.js';\n\nexport const betaValue = alphaValue + 1;\n",
+        ),
+      ]);
+
       await git(projectRoot, 'init');
       await git(projectRoot, 'config', 'user.name', 'LUWI Fixture');
       await git(projectRoot, 'config', 'user.email', 'fixture@example.invalid');
-      await git(projectRoot, 'add', 'AGENTS.md', 'package.json');
+      await git(projectRoot, 'add', 'AGENTS.md', 'package.json', 'packages');
       await git(projectRoot, 'commit', '-m', 'Initial sandbox state');
 
       const config: DaemonConfig = {
@@ -288,6 +312,23 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       });
       expect(graph.statusCode, graph.body).toBe(200);
       expect(JSON.stringify(graph.json())).not.toContain('Use local evidence only');
+
+      // ADR 0012: the structural layer reaches the same generation as the
+      // event-derived one, and the ADR 0013 summary counts it.
+      const graphSummary = await runtime.app.inject({
+        method: 'GET',
+        url: '/api/v1/graph/summary',
+      });
+      expect(graphSummary.statusCode, graphSummary.body).toBe(200);
+      const edgeKinds = new Map<string, number>(
+        graphSummary
+          .json<{ edgeCountsByKind: Array<{ kind: string; count: number }> }>()
+          .edgeCountsByKind.map(({ kind, count }) => [kind, count]),
+      );
+      expect(edgeKinds.get('FILE_IMPORTS_FILE')).toBe(1);
+      expect(edgeKinds.get('MODULE_DEPENDS_ON_MODULE')).toBe(1);
+      // Structural edges never replace the event-derived ones.
+      expect(edgeKinds.get('COMMIT_TOUCHES_FILE')).toBeGreaterThan(0);
 
       const optimization = await runtime.app.inject({
         method: 'POST',

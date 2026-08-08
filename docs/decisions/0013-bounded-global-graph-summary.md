@@ -39,13 +39,15 @@ It is answered from index cardinality on the active generation, never from trave
 
 - `GET` the active-generation pointer;
 - `GET` the projection-health key;
-- `SCARD` each per-kind node index — 29 node kinds;
-- `SCARD` each per-kind edge index — 24 edge kinds.
+- `SCARD` each per-kind node index, one per node kind;
+- `SCARD` each per-kind edge index, one per edge kind.
 
-That is 55 constant-time Redis commands, and the number is fixed by the `@luwi/protocol` kind
-enumerations rather than by how much data the graph holds. No `SSCAN`, no node or edge hydration,
-no adjacency read, and no traversal occurs. The ADR 0009 traversal limits are neither re-derived
-nor relaxed, because nothing on this path traverses.
+That is two commands plus one per kind — 57 today, with 29 node kinds and 26 edge kinds. The
+count is fixed by the `@luwi/protocol` kind enumerations rather than by how much data the graph
+holds, so it moves only when the protocol does, and a unit test pins it so that movement is
+deliberate. No `SSCAN`, no node or edge hydration, no adjacency read, and no traversal occurs.
+The ADR 0009 traversal limits are neither re-derived nor relaxed, because nothing on this path
+traverses.
 
 The response does **not** report a retained-generation count, even though `ZCARD` on the
 generations index would cost one more constant-time command. That index is written only by
@@ -85,7 +87,7 @@ projection already writes are read.
 ### Rejected alternatives
 
 **Counters maintained on write.** Incrementing a stored node/edge counter on every projection
-write would answer in one command instead of 56. It is rejected because it creates a second
+write would answer in one command instead of 57. It is rejected because it creates a second
 source of truth for a fact the membership sets already hold. Under a partial failure the counter
 and the sets diverge, and the divergence is silent. Section 2 requires derived views to be
 rebuildable from authoritative state; a cardinality read from the set is derived from the very
@@ -124,7 +126,7 @@ single bounded read, so the `Graph` navigation label can stop being disabled and
 render facts rather than estimates. The per-kind breakdown is obtained at no extra cost, because
 the per-kind index sets are what is being measured.
 
-The cost is 55 Redis round trips per request. On a loopback, single-user runtime that is
+The cost is 57 Redis round trips per request. On a loopback, single-user runtime that is
 acceptable, and it is acceptable specifically because it is constant: a graph ten times larger
 costs the same. Nothing caches the result, so a caller that polls pays it every time. The
 dashboard therefore loads it only while `#/graph` is open, following the on-demand pattern Phase
@@ -137,5 +139,6 @@ index, and its generations index is not maintained by every write path. Answerin
 mean changing the projection, which is out of scope here and needs its own decision.
 
 Cost grows if the graph gains kinds, since the command count follows the schema enumerations —
-53 kinds today. That growth is bounded by protocol changes, which are reviewed, rather than by
-runtime data, which is not.
+55 kinds today. ADR 0012's two structural edge kinds moved it there within a day of this
+record, and the pinned unit test made that movement visible rather than silent. Growth is bounded
+by protocol changes, which are reviewed, rather than by runtime data, which is not.

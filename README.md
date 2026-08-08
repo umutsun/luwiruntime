@@ -104,6 +104,12 @@ The operational graph now has a bounded global read. `GET /api/v1/graph/summary`
 active generation, projection health, and exact per-kind node and edge cardinality, and the
 `#/graph` route renders it. A graph that has never been built reports no totals rather than zero.
 
+The graph also carries a code-structure layer. During a rebuild the daemon parses the project's
+own TypeScript with the compiler API — it parses and never executes — and projects resolved
+file-to-file imports and the module dependencies aggregated from them into the same generation as
+the event-derived relationships, kept apart by provenance. An import it cannot resolve is recorded
+as unresolved rather than pointed at the nearest plausible file.
+
 Dashboard mutations, optimization accept/reject/evaluate, lifecycle/release scoring, release
 readiness, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge
 graph, memory federation, cloud accounts, and authentication are not implemented.
@@ -146,8 +152,10 @@ and [ADR 0008](docs/decisions/0008-capability-scope-and-inheritance.md).
 Phase 4 graph, optimization, and local Git boundaries are defined by [ADR
 0009](docs/decisions/0009-event-derived-operational-graph.md), [ADR
 0010](docs/decisions/0010-context-optimization-feedback-loop.md), and [ADR
-0011](docs/decisions/0011-local-git-observation-and-attribution.md). The bounded global graph
-summary, and the alternatives rejected for it, are recorded in [ADR
+0011](docs/decisions/0011-local-git-observation-and-attribution.md). The code-structure observer,
+its parser dependency, and the alternatives rejected for it are recorded in [ADR
+0012](docs/decisions/0012-code-structure-observer.md). The bounded global graph summary, and the
+alternatives rejected for it, are recorded in [ADR
 0013](docs/decisions/0013-bounded-global-graph-summary.md).
 
 ## Prerequisites

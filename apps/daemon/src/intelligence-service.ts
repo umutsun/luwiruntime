@@ -61,6 +61,13 @@ import {
 
 import type { ConfigControlService } from './config-control-service.js';
 import type { ControlPlaneService } from './control-plane-service.js';
+import {
+  CODE_STRUCTURE_PROVENANCE,
+  createCodeStructureObserver,
+  moduleDependencyPairs,
+  type CodeStructureObservation,
+  type CodeStructureObserver,
+} from './code-structure-observer.js';
 import { createGitObserver, GitObservationError, type GitObserver } from './git-observer.js';
 import {
   createPackageInventoryScanner,
@@ -87,6 +94,7 @@ export type IntelligenceServiceOptions = {
   workspaceId: string;
   gitObserver?: GitObserver;
   packageScanner?: PackageInventoryScanner;
+  codeStructureObserver?: CodeStructureObserver;
   createId?: () => string;
   now?: () => Date;
   optimizationMinimumBaselineSessions?: number;
@@ -200,6 +208,22 @@ export function createIntelligenceService(
   const now = options.now ?? (() => new Date());
   const gitObserver = options.gitObserver ?? createGitObserver();
   const packageScanner = options.packageScanner ?? createPackageInventoryScanner();
+  const codeStructureObserver = options.codeStructureObserver ?? createCodeStructureObserver();
+  /**
+   * Structure is scanned during rebuild rather than persisted as its own record
+   * type: it derives from canonical filesystem state, so it is rebuildable at
+   * any time and needs no second source of truth. A project whose path is gone
+   * simply contributes no structural layer.
+   */
+  const observeCodeStructure = async (
+    localPath: string,
+  ): Promise<CodeStructureObservation | null> => {
+    try {
+      return await codeStructureObserver.scan({ localPath });
+    } catch {
+      return null;
+    }
+  };
   const minimumBaselineSessions =
     options.optimizationMinimumBaselineSessions ?? DEFAULT_MINIMUM_BASELINE_SESSIONS;
   const minimumPostSessions =
@@ -723,6 +747,84 @@ export function createIntelligenceService(
             evidenceIds: technology.evidence.map(({ value }) => value).slice(0, 1000),
           }),
         );
+      }
+
+      // Structural projection (ADR 0012). A failed or absent scan leaves the
+      // structural layer out entirely rather than degrading the operational
+      // one — the graph is allowed to be incomplete, never wrong.
+      const structure = await observeCodeStructure(project.localPath);
+      if (structure !== null) {
+        const structuralFiles = new Map<string, string>();
+        for (const relativePath of structure.files) {
+          const file = createFileIdentity(project.id, relativePath);
+          structuralFiles.set(relativePath, file.id);
+          const exportCount = structure.exports.filter(
+            (value) => value.path === relativePath,
+          ).length;
+          addNode(
+            createGraphNode({
+              kind: 'file',
+              entityId: file.id,
+              projectId: project.id,
+              observedAt: structure.observedAt,
+              provenance: CODE_STRUCTURE_PROVENANCE,
+              confidence: 'high',
+              evidenceIds: [relativePath],
+              metadata: { relativePath: file.relativePath, exportCount },
+            }),
+          );
+          const module = mapFileToModule(relativePath, moduleRoots);
+          if (module !== null) {
+            addEdge(
+              createGraphEdge({
+                source: { kind: 'file', id: file.id },
+                target: { kind: 'module', id: module.id },
+                kind: 'FILE_BELONGS_TO_MODULE',
+                projectId: project.id,
+                observedAt: structure.observedAt,
+                provenance: CODE_STRUCTURE_PROVENANCE,
+                confidence: 'high',
+                evidenceIds: [relativePath],
+              }),
+            );
+          }
+        }
+        for (const value of structure.imports) {
+          // An unresolved import names no target, so it cannot be an edge.
+          // It is counted below rather than pointed at a guess.
+          if (value.toPath === undefined) continue;
+          const source = structuralFiles.get(value.fromPath);
+          const target = structuralFiles.get(value.toPath) ?? null;
+          if (source === undefined || target === null) continue;
+          addEdge(
+            createGraphEdge({
+              source: { kind: 'file', id: source },
+              target: { kind: 'file', id: target },
+              kind: 'FILE_IMPORTS_FILE',
+              projectId: project.id,
+              observedAt: structure.observedAt,
+              provenance: CODE_STRUCTURE_PROVENANCE,
+              confidence: value.confidence,
+              evidenceIds: [`${value.fromPath}:${String(value.line)}`],
+            }),
+          );
+        }
+        const moduleOf = (path: string): string | null =>
+          mapFileToModule(path, moduleRoots)?.id ?? null;
+        for (const pair of moduleDependencyPairs(structure.imports, moduleOf)) {
+          addEdge(
+            createGraphEdge({
+              source: { kind: 'module', id: pair.from },
+              target: { kind: 'module', id: pair.to },
+              kind: 'MODULE_DEPENDS_ON_MODULE',
+              projectId: project.id,
+              observedAt: structure.observedAt,
+              provenance: CODE_STRUCTURE_PROVENANCE,
+              confidence: pair.confidence,
+              evidenceIds: [pair.from, pair.to],
+            }),
+          );
+        }
       }
 
       const git = await options.repository.getCurrentGitObservation(project.id);

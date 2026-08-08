@@ -534,6 +534,14 @@ export const graphEdgeKindSchema = z.enum([
   'SESSION_CHANGED_FILE',
   'COMMIT_TOUCHES_FILE',
   'FILE_BELONGS_TO_MODULE',
+  // Structural, produced by the code-structure observer (ADR 0012) rather than
+  // derived from Runtime events. Provenance keeps the two distinguishable.
+  //
+  // There is deliberately no FILE_EXPORTS_SYMBOL: an edge needs two node
+  // endpoints and a symbol is not a node kind here. Export surface travels as
+  // bounded metadata on the file node instead.
+  'FILE_IMPORTS_FILE',
+  'MODULE_DEPENDS_ON_MODULE',
   'PROJECT_USES_PACKAGE',
   'PROJECT_USES_TECHNOLOGY',
   'CAPABILITY_REQUIRES_CAPABILITY',
