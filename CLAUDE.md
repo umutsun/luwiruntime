@@ -39,6 +39,9 @@ History is short and every commit is a large checkpoint:
 | `3a7dc9b` | Phase 5D read-only intelligence routes                         |
 | `dc1b270` | Repository-state documentation correction                      |
 | `32c3e7f` | Bounded graph summary, ADR 0013, and the `#/graph` route       |
+| `ea487d9` | Documentation cleanup after the graph-summary phase            |
+| `6f20aec` | ADR 0012 first increment: TypeScript code-structure layer      |
+| `c462293` | ADR 0014 projection-input fixes                                |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
@@ -120,8 +123,9 @@ Use `/verify` to run the §19 definition-of-done sequence in the correct order.
 Phases 5A through 5D are implemented on the Phase 1–4 foundation: native realtime Pulse, bounded
 Activity, read-only inspectors, project scope, and the sessions, agents, usage, context, and
 optimization routes. ADR 0013 then added `GET /api/v1/graph/summary` and enabled `#/graph`, so the
-navigation rail no longer carries a disabled destination. `README.md` "Current status" is accurate
-and maintained.
+navigation rail no longer carries a disabled destination. ADR 0012's first increment added the
+non-executing TypeScript code-structure layer to the operational graph, and ADR 0014 fixed its two
+projection-input defects. `README.md` "Current status" is accurate and maintained.
 
 Not implemented, and per §21 still explicitly out of scope without approval: dashboard mutations,
 lifecycle/release scoring, task/lease systems, semantic or vector knowledge graph, memory
