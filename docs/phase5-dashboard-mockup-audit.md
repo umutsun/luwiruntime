@@ -47,24 +47,24 @@ runtime compiler, wildcard `postMessage`, or generated design-canvas runtime.
 
 ## Data and capability classification
 
-| Visible feature                            | Class     | Reason                                                                         |
-| ------------------------------------------ | --------- | ------------------------------------------------------------------------------ |
-| Runtime/Redis status, uptime, latency      | SUPPORTED | `/health` and `/api/v1/runtime` expose validated fields.                       |
-| Projects and active-session counts         | SUPPORTED | Project/session collections and presence make this a safe join.                |
-| Agent definitions and project bindings     | SUPPORTED | Phase 3 read endpoints exist.                                                  |
-| Recent activity                            | SUPPORTED | Bounded normalized event list exists.                                          |
-| Usage source composition                   | SUPPORTED | Global usage summary preserves source distinctions.                            |
-| Context contribution states                | SUPPORTED | Bounded contribution list preserves assigned/effective/loaded/invoked/unknown. |
-| Git/package/technology summaries           | DERIVABLE | Project-scoped endpoints exist; not required in the first Pulse viewport.      |
-| Operational graph summary                  | PLANNED   | Graph queries exist but no safe global summary endpoint exists.                |
-| Optimization finding count                 | SUPPORTED | Bounded read-only finding collection exists.                                   |
-| WebSocket connectivity indicator           | SUPPORTED | Transport exists; Phase 5A observes connection only and applies no events.     |
-| Project lifecycle stage/release readiness  | PLANNED   | No lifecycle or release-scoring domain exists.                                 |
-| Task/path/file leases                      | PLANNED   | No implemented Phase 1–4 transition or public API exists.                      |
-| Unified project/session/commit/file search | PLANNED   | No unified search endpoint exists.                                             |
-| GitHub status                              | REJECTED  | GitHub integration is outside Phase 5A and current product boundary.           |
-| Dashboard ConfigPlan apply/graph rebuild   | REJECTED  | Phase 5A is read-only; mutation surfaces are forbidden.                        |
-| Mock waiting/blocked/event-rate totals     | REJECTED  | Values are static and not all are safely derivable from current endpoints.     |
+| Visible feature                            | Class     | Reason                                                                                            |
+| ------------------------------------------ | --------- | ------------------------------------------------------------------------------------------------- |
+| Runtime/Redis status, uptime, latency      | SUPPORTED | `/health` and `/api/v1/runtime` expose validated fields.                                          |
+| Projects and active-session counts         | SUPPORTED | Project/session collections and presence make this a safe join.                                   |
+| Agent definitions and project bindings     | SUPPORTED | Phase 3 read endpoints exist.                                                                     |
+| Recent activity                            | SUPPORTED | Bounded normalized event list exists.                                                             |
+| Usage source composition                   | SUPPORTED | Global usage summary preserves source distinctions.                                               |
+| Context contribution states                | SUPPORTED | Bounded contribution list preserves assigned/effective/loaded/invoked/unknown.                    |
+| Git/package/technology summaries           | DERIVABLE | Project-scoped endpoints exist; not required in the first Pulse viewport.                         |
+| Operational graph summary                  | PLANNED   | Was true at this audit date: only rooted graph queries existed. ADR 0013 later added the summary. |
+| Optimization finding count                 | SUPPORTED | Bounded read-only finding collection exists.                                                      |
+| WebSocket connectivity indicator           | SUPPORTED | Transport exists; Phase 5A observes connection only and applies no events.                        |
+| Project lifecycle stage/release readiness  | PLANNED   | No lifecycle or release-scoring domain exists.                                                    |
+| Task/path/file leases                      | PLANNED   | No implemented Phase 1–4 transition or public API exists.                                         |
+| Unified project/session/commit/file search | PLANNED   | No unified search endpoint exists.                                                                |
+| GitHub status                              | REJECTED  | GitHub integration is outside Phase 5A and current product boundary.                              |
+| Dashboard ConfigPlan apply/graph rebuild   | REJECTED  | Phase 5A is read-only; mutation surfaces are forbidden.                                           |
+| Mock waiting/blocked/event-rate totals     | REJECTED  | Values are static and not all are safely derivable from current endpoints.                        |
 
 ## Accessibility and layout corrections
 

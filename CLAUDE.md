@@ -37,6 +37,8 @@ History is short and every commit is a large checkpoint:
 | `7b50738` | Phases 2–5C: messaging, control plane, intelligence, dashboard |
 | `c7d03c4` | Claude Code configuration and ADR 0012                         |
 | `3a7dc9b` | Phase 5D read-only intelligence routes                         |
+| `dc1b270` | Repository-state documentation correction                      |
+| `32c3e7f` | Bounded graph summary, ADR 0013, and the `#/graph` route       |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
@@ -78,7 +80,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (21 functions) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (23 functions) is already loaded on the server.
 
 ## Tools and shells
 
@@ -115,8 +117,11 @@ Use `/verify` to run the §19 definition-of-done sequence in the correct order.
 
 ## Current implementation status
 
-Phase 5B is implemented (native realtime Pulse, bounded Activity, read-only inspectors) on the
-Phase 1–4 foundation. `README.md` "Current status" is accurate and maintained.
+Phases 5A through 5D are implemented on the Phase 1–4 foundation: native realtime Pulse, bounded
+Activity, read-only inspectors, project scope, and the sessions, agents, usage, context, and
+optimization routes. ADR 0013 then added `GET /api/v1/graph/summary` and enabled `#/graph`, so the
+navigation rail no longer carries a disabled destination. `README.md` "Current status" is accurate
+and maintained.
 
 Not implemented, and per §21 still explicitly out of scope without approval: dashboard mutations,
 lifecycle/release scoring, task/lease systems, semantic or vector knowledge graph, memory

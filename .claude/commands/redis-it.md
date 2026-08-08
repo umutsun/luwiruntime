@@ -31,7 +31,7 @@ The CLI is at `C:\Program Files\Memurai\memurai-cli.exe`; `redis-cli` is not on 
 3. Check the loaded Function libraries:
    `& 'C:\Program Files\Memurai\memurai-cli.exe' FUNCTION LIST`
 
-   Expect `luwi_v1` with 21 functions. Leftover `luwi_test_run_*` libraries from earlier runs may
+   Expect `luwi_v1` with 23 functions. Leftover `luwi_test_run_*` libraries from earlier runs may
    also be present — report them, but **do not** `FUNCTION FLUSH`; that would unload `luwi_v1` and
    break the running daemon. Delete a specific stale library by name if cleanup is wanted, and say
    which one you are deleting first.

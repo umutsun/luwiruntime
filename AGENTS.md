@@ -700,6 +700,8 @@ docs/decisions/0008-capability-scope-and-inheritance.md
 docs/decisions/0009-event-derived-operational-graph.md
 docs/decisions/0010-context-optimization-feedback-loop.md
 docs/decisions/0011-local-git-observation-and-attribution.md
+docs/decisions/0012-code-structure-observer.md
+docs/decisions/0013-bounded-global-graph-summary.md
 ```
 
 Each ADR contains context, decision, consequences, and status.

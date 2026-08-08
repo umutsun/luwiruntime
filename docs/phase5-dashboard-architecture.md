@@ -160,10 +160,13 @@ about. A selection change aborts the in-flight load and clears retained resource
 response can never render one project's evidence under another project's name. A realtime refresh
 is dropped by a generation guard if the selection moved on.
 
-`Graph` remains a disabled `Planned` label. The daemon exposes only rooted graph queries, so no
-honest global summary can be derived; inventing one would be a fabricated claim rather than a
-missing feature. Lifecycle, release readiness, tasks, leases, ownership, GitHub state, inferred
-scores, agent execution, configuration apply/rollback, and cloud surfaces remain absent.
+`Graph` was a disabled `Planned` label through Phase 5B, the scope of this document: the daemon
+exposed only rooted graph queries, so no honest global summary could be derived and inventing one
+would have been a fabricated claim rather than a missing feature. ADR 0013 later added
+`GET /api/v1/graph/summary` and the route was enabled; see
+`docs/phase5-dashboard-capability-matrix.md`. Lifecycle, release readiness, tasks, leases,
+ownership, GitHub state, inferred scores, agent execution, configuration apply/rollback, and cloud
+surfaces remain absent.
 
 Layout uses CSS grid with `minmax` rather than fixed widths. Panels do not scroll independently;
 wide tables scroll inside their own `.table-wrap`, so the page body never overflows horizontally.

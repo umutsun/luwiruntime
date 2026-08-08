@@ -10,7 +10,6 @@
       "Bash(pnpm clean:*)",
       "Bash(pnpm install --frozen-lockfile)",
       "Bash(pnpm --filter:*)",
-      "Bash(pnpm exec:*)",
       "Bash(pnpm -v)",
       "Bash(node -v)",
       "Bash(npm -v)",
