@@ -2,11 +2,11 @@
 /**
  * PreToolUse guard for shell tools in the LUWI Runtime repository.
  *
- * Why this exists: this repository has exactly one commit (Phase 1). Phases 2
- * through 5B — including all of apps/dashboard, apps/mcp-server,
- * packages/adapters, and ADRs 0006-0011 — are uncommitted working-tree state.
- * A single `git reset --hard`, `git clean -fd`, `git stash`, or `git checkout .`
- * destroys work that has no recovery path.
+ * Why this exists: AGENTS.md section 13 forbids committing unless the user
+ * explicitly asks, so between asks this repository always holds uncommitted
+ * work with no recovery point. History is also only a handful of very large
+ * checkpoint commits, so `git reset --hard` reaches back much further than the
+ * usual "undo my last change" expectation.
  *
  * It also guards the shared local Redis (Memurai) instance, which holds the
  * server-scoped `luwi_v1` Function library and ~1300 live `luwi:v1:*` keys.
@@ -47,13 +47,13 @@ const ANCHORED_RULES = [
     id: 'git-reset-hard',
     pattern: new RegExp(`^${ENV_PREFIX}git\\s+(?:-\\S+\\s+)*reset\\b.*--hard`, 'i'),
     reason:
-      'git reset --hard would discard 43 modified files and is unrecoverable here: only Phase 1 is committed.',
+      'git reset --hard discards every uncommitted change, and this history is a handful of very large checkpoints rather than small commits, so it reaches much further back than expected.',
   },
   {
     id: 'git-clean-force',
     pattern: new RegExp(`^${ENV_PREFIX}git\\s+(?:-\\S+\\s+)*clean\\b.*\\s-[a-z]*f`, 'i'),
     reason:
-      'git clean -f would delete 188 untracked files, including apps/dashboard, apps/mcp-server, packages/adapters, and ADRs 0006-0011.',
+      'git clean -f permanently deletes untracked files. New work here is untracked until the user explicitly asks for a commit.',
   },
   {
     id: 'git-push-force',
@@ -67,7 +67,7 @@ const ANCHORED_RULES = [
     id: 'git-stash',
     pattern: new RegExp(`^${ENV_PREFIX}git\\s+(?:-\\S+\\s+)*stash\\b(?!\\s+(list|show))`, 'i'),
     reason:
-      'git stash would move the entire uncommitted Phase 2-5B working tree out of view. `git stash list` and `git stash show` remain allowed.',
+      'git stash moves the whole uncommitted working tree out of view. `git stash list` and `git stash show` remain allowed for inspection.',
   },
   {
     id: 'git-discard-worktree',
@@ -76,7 +76,7 @@ const ANCHORED_RULES = [
       'i',
     ),
     reason:
-      'Discarding the whole working tree would destroy uncommitted Phase 2-5B work. Target a specific file instead.',
+      'Discarding the whole working tree destroys uncommitted work. Target a specific file instead.',
   },
   {
     id: 'recursive-delete-broad',
@@ -107,7 +107,7 @@ const UNANCHORED_RULES = [
     id: 'redis-flush',
     pattern: /\b(memurai-cli|redis-cli)(\.exe)?["']?\s[^|;&]*\bflush(all|db)\b/i,
     reason:
-      'FLUSHALL/FLUSHDB on the shared Memurai instance would erase ~1300 live luwi:v1:* keys. AGENTS.md section 15 forbids flushing unrelated keys.',
+      'FLUSHALL/FLUSHDB on the shared local Redis would erase live luwi:v1:* development state. AGENTS.md section 15 forbids flushing unrelated keys.',
   },
   {
     id: 'redis-function-flush',

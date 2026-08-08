@@ -29,22 +29,42 @@ Those rules are non-obvious and easy to violate silently.
 
 ## Repository state — read this before any git operation
 
-**There is exactly one commit (`31c4f54`, Phase 1 only). Phases 2 through 5B are entirely
-uncommitted** — 43 modified files and 188 untracked files, including all of `apps/dashboard/`,
-`apps/mcp-server/`, `packages/adapters/`, and ADRs 0006–0011. (`git status` collapses untracked
-directories, so it shows 112 entries; `--untracked-files=all` shows the real 188.)
+History is short and every commit is a large checkpoint:
 
-Consequences:
+| Commit    | Contents                                                       |
+| --------- | -------------------------------------------------------------- |
+| `31c4f54` | Phase 1 Redis-native projects and sessions                     |
+| `7b50738` | Phases 2–5C: messaging, control plane, intelligence, dashboard |
+| `c7d03c4` | Claude Code configuration and ADR 0012                         |
+| `3a7dc9b` | Phase 5D read-only intelligence routes                         |
 
-- `git reset --hard`, `git clean -fd`, and `git stash` would destroy months of unrecovered work.
-  A `PreToolUse` guard blocks the first two; do not work around it.
-- There is no meaningful diff baseline. Do not assume `git diff` shows only your changes.
-- Per §13, commit only when the user explicitly asks.
+Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
+schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
+modules, and the intermediate states never existed. Do not try to reconstruct them.
+
+Working rules:
+
+- Per §13, **commit only when the user explicitly asks**. Between asks, uncommitted work has no
+  recovery point, which is what the `PreToolUse` guard exists for.
+- `git reset --hard`, `git clean -f`, `git stash`, and `git checkout/restore .` are blocked by
+  `.claude/hooks/guard-bash.mjs`. Do not work around it; if a block is wrong, fix the rule and its
+  test.
+- `git stash list` and `git stash show` remain allowed for inspection.
 
 `.git` is owned by a different Windows SID (`CodexSandboxOffline`) than the current user. This is
 already handled via `git config --global --add safe.directory C:/xampp/htdocs/luwiruntime`. If git
 suddenly reports "dubious ownership" again, that config was lost — re-add it rather than using
 `takeown`.
+
+Two traps that have already cost time here:
+
+- **Writing a file from Python or a shell heredoc produces CRLF on this machine.** Prettier
+  silently repairs it for files it formats, but `AGENTS.md` is in `.prettierignore`, so a Python
+  rewrite of it leaves CRLF behind. Prefer the editing tools; if you must script an edit, normalise
+  line endings afterwards.
+- **`git status` can report a file modified when its content is identical**, right after a write,
+  because git distrusts same-second mtimes. Confirm with `git diff` or by comparing
+  `git rev-parse :<path>` against `git hash-object <path>` before believing it.
 
 ## This machine
 
