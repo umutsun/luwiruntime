@@ -106,6 +106,115 @@ describe('LUWI CLI', () => {
     );
   });
 
+  it('sends AgentDefinition mutations only through the daemon HTTP API', async () => {
+    let requestedUrl = '';
+    let requestedInit: unknown;
+    const agent = {
+      id: 'codex-main',
+      kind: 'codex',
+      displayName: 'Codex',
+      enabled: false,
+      adapterId: 'codex-native-v1',
+      nativeConfigRoots: ['C:/fixture/.codex'],
+      createdAt: '2026-07-29T12:00:00.000Z',
+      updatedAt: '2026-07-29T12:00:00.000Z',
+      metadata: {},
+    };
+
+    await runCli(['agent', 'disable', agent.id], {
+      fetch: async (url, init) => {
+        requestedUrl = url;
+        requestedInit = init;
+        return response(agent);
+      },
+      stdout: { write: () => undefined },
+    });
+
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/agents/codex-main');
+    expect(requestedInit).toMatchObject({
+      method: 'PATCH',
+      body: JSON.stringify({ enabled: false }),
+    });
+  });
+
+  it('builds bounded capability list filters', async () => {
+    let requestedUrl = '';
+    await runCli(
+      [
+        'capability',
+        'list',
+        '--kind',
+        'skill',
+        '--project',
+        'project-1',
+        '--agent',
+        'codex-main',
+        '--enabled',
+        'true',
+        '--limit',
+        '25',
+      ],
+      {
+        fetch: async (url) => {
+          requestedUrl = url;
+          return response({ capabilities: [], truncated: false });
+        },
+        stdout: { write: () => undefined },
+      },
+    );
+
+    expect(requestedUrl).toContain('/api/v1/capabilities?');
+    expect(requestedUrl).toContain('kind=skill');
+    expect(requestedUrl).toContain('projectId=project-1');
+    expect(requestedUrl).toContain('agentId=codex-main');
+    expect(requestedUrl).toContain('limit=25');
+  });
+
+  it('refuses native config apply when interactive confirmation is declined', async () => {
+    const fetch = vi.fn();
+    await expect(
+      runCli(['config', 'plan', 'apply', 'plan-1', '--approval-token', 'a'.repeat(43)], {
+        fetch,
+        confirm: async () => false,
+        stdout: { write: () => undefined },
+      }),
+    ).rejects.toMatchObject({ code: 'CLI_CONFIRMATION_REQUIRED' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('applies exactly one approved plan with --yes and preserves daemon safeguards', async () => {
+    let requestedInit: unknown;
+    const token = 'a'.repeat(43);
+    await runCli(['config', 'plan', 'apply', 'plan-1', '--approval-token', token, '--yes'], {
+      fetch: async (_url, init) => {
+        requestedInit = init;
+        return response({
+          id: 'operation-1',
+          planId: 'plan-1',
+          agentId: 'codex-main',
+          state: 'completed',
+          targetPaths: ['C:/fixture/.codex/config.toml'],
+          expectedHashes: { 'C:/fixture/.codex/config.toml': null },
+          committedHashes: {
+            'C:/fixture/.codex/config.toml':
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          },
+          startedAt: '2026-07-29T12:00:00.000Z',
+          updatedAt: '2026-07-29T12:00:00.000Z',
+        });
+      },
+      confirm: async () => {
+        throw new Error('interactive confirmation must not run with --yes');
+      },
+      stdout: { write: () => undefined },
+    });
+
+    expect(requestedInit).toMatchObject({
+      method: 'POST',
+      body: JSON.stringify({ approvalToken: token }),
+    });
+  });
+
   it('registers projects with a JSON POST and validates the response', async () => {
     let requestedUrl = '';
     let requestedInit: unknown;
@@ -270,5 +379,287 @@ describe('LUWI CLI', () => {
       .map((line) => JSON.parse(line));
     expect(lines[0]).toMatchObject({ section: 'snapshot', projects: [], sessions: [] });
     expect(lines.filter(({ section }) => section === 'live')).toHaveLength(1);
+  });
+
+  it('creates a message with an idempotency header and can await its projection', async () => {
+    const requests: Array<{
+      url: string;
+      init?: { headers?: Record<string, string>; body?: string };
+    }> = [];
+    let output = '';
+    const message = {
+      id: 'message-1',
+      correlationId: 'correlation-1',
+      projectId: 'project-1',
+      sourceSessionId: 'source',
+      sourceAgentId: 'claude-sim',
+      targetSessionId: 'target',
+      targetAgentId: 'gemini-sim',
+      selectionReason: 'selected target',
+      kind: 'question',
+      content: 'Status?',
+      evidenceRequirements: [],
+      state: 'queued',
+      createdAt: '2026-07-29T12:00:00.000Z',
+      updatedAt: '2026-07-29T12:00:00.000Z',
+      deadlineAt: '2026-07-29T12:02:00.000Z',
+    };
+    await runCli(
+      [
+        'message',
+        'ask',
+        '--source',
+        'source',
+        '--target-agent',
+        'gemini-sim',
+        '--kind',
+        'question',
+        '--content',
+        'Status?',
+        '--idempotency-key',
+        'retry-1',
+        '--wait-ms',
+        '25',
+      ],
+      {
+        fetch: async (url, init) => {
+          requests.push({ url, init });
+          return url.includes('/wait?')
+            ? response({ ...message, state: 'responded' })
+            : response({
+                message,
+                selectedTargetSessionId: 'target',
+                selectedTargetAgentId: 'gemini-sim',
+                selectionReason: 'selected target',
+                idempotent: false,
+              });
+        },
+        stdout: { write: (text) => (output += text) },
+      },
+    );
+
+    expect(requests[0]?.init?.headers).toMatchObject({
+      'content-type': 'application/json',
+      'idempotency-key': 'retry-1',
+    });
+    expect(requests[1]?.url).toContain('/api/v1/messages/correlation-1/wait?waitMs=25');
+    expect(JSON.parse(output)).toMatchObject({ state: 'responded' });
+  });
+
+  it('claims inbox work and submits validated responder transitions', async () => {
+    const requested: Array<{ url: string; body: unknown }> = [];
+    let output = '';
+    await runCli(
+      ['inbox', 'claim', '--session', 'target', '--bridge-instance', 'bridge-1', '--block-ms', '0'],
+      {
+        fetch: async (url, init) => {
+          requested.push({
+            url,
+            body: init?.body === undefined ? undefined : JSON.parse(init.body),
+          });
+          return response({ items: [] });
+        },
+        stdout: { write: (text) => (output += text) },
+      },
+    );
+    expect(requested[0]).toMatchObject({
+      url: 'http://127.0.0.1:4782/api/v1/sessions/target/inbox/claim',
+      body: { bridgeInstanceId: 'bridge-1', blockMs: 0 },
+    });
+    expect(JSON.parse(output)).toEqual({ items: [] });
+  });
+
+  it('runs an echo bridge without closing the underlying session', async () => {
+    const listeners = new Map<string, () => void>();
+    const requested: Array<{ url: string; body: unknown }> = [];
+    let claimCount = 0;
+    let output = '';
+    await runCli(
+      [
+        'session',
+        'bridge',
+        'simulate',
+        '--session',
+        'target',
+        '--bridge-instance',
+        'bridge-echo',
+        '--mode',
+        'echo',
+        '--block-ms',
+        '0',
+      ],
+      {
+        fetch: async (url, init) => {
+          requested.push({
+            url,
+            body: init?.body === undefined ? undefined : JSON.parse(init.body),
+          });
+          if (url.endsWith('/inbox/claim')) {
+            claimCount += 1;
+            if (claimCount === 1) {
+              return response({
+                items: [
+                  {
+                    streamId: '1-0',
+                    itemKind: 'request',
+                    messageId: 'message-1',
+                    correlationId: 'correlation-1',
+                    sourceSessionId: 'source',
+                    targetSessionId: 'target',
+                    createdAt: '2026-07-29T12:00:00.000Z',
+                    payload: {
+                      kind: 'question',
+                      content: 'Hello',
+                      evidenceRequirements: [],
+                      deadlineAt: '2026-07-29T12:02:00.000Z',
+                    },
+                  },
+                ],
+              });
+            }
+            listeners.get('SIGINT')?.();
+            return response({ items: [] });
+          }
+          return response({
+            id: 'message-1',
+            correlationId: 'correlation-1',
+            projectId: 'project-1',
+            sourceSessionId: 'source',
+            sourceAgentId: 'claude-sim',
+            targetSessionId: 'target',
+            targetAgentId: 'gemini-sim',
+            selectionReason: 'selected target',
+            kind: 'question',
+            content: 'Hello',
+            evidenceRequirements: [],
+            state: url.endsWith('/respond')
+              ? 'responded'
+              : url.endsWith('/processing')
+                ? 'processing'
+                : url.endsWith('/acknowledge')
+                  ? 'acknowledged'
+                  : 'delivered',
+            createdAt: '2026-07-29T12:00:00.000Z',
+            updatedAt: '2026-07-29T12:00:00.000Z',
+            deadlineAt: '2026-07-29T12:02:00.000Z',
+            ...(url.endsWith('/respond')
+              ? {
+                  response: JSON.parse(init?.body ?? '{}').response,
+                  respondedAt: '2026-07-29T12:00:01.000Z',
+                }
+              : {}),
+          });
+        },
+        stdout: { write: (text) => (output += text) },
+        signals: {
+          once: (signal, listener) => listeners.set(signal, listener),
+          off: (signal) => listeners.delete(signal),
+        },
+      },
+    );
+
+    expect(requested.some(({ url }) => url.endsWith('/acknowledge'))).toBe(true);
+    expect(requested.some(({ url }) => url.endsWith('/processing'))).toBe(true);
+    const responded = requested.find(({ url }) => url.endsWith('/respond'));
+    expect(responded?.body).toMatchObject({
+      responderSessionId: 'target',
+      response: {
+        status: 'answered',
+        answer: '[simulated echo] Hello',
+        evidence: [],
+      },
+    });
+    expect(requested.some(({ url }) => url.endsWith('/close'))).toBe(false);
+    expect(output).not.toContain('Hello');
+    expect(output).toContain('"redacted": true');
+  });
+
+  it('continues recovered processing work without repeating earlier transitions', async () => {
+    const listeners = new Map<string, () => void>();
+    const requested: Array<{ url: string; body: unknown }> = [];
+    let claimCount = 0;
+    await runCli(
+      [
+        'session',
+        'bridge',
+        'simulate',
+        '--session',
+        'target',
+        '--bridge-instance',
+        'bridge-recovered',
+        '--mode',
+        'echo',
+        '--block-ms',
+        '0',
+        '--min-idle-ms',
+        '0',
+      ],
+      {
+        fetch: async (url, init) => {
+          requested.push({
+            url,
+            body: init?.body === undefined ? undefined : JSON.parse(init.body),
+          });
+          if (url.endsWith('/inbox/claim')) {
+            claimCount += 1;
+            if (claimCount === 1) {
+              return response({
+                items: [
+                  {
+                    streamId: '1-0',
+                    itemKind: 'request',
+                    messageId: 'message-1',
+                    correlationId: 'correlation-1',
+                    sourceSessionId: 'source',
+                    targetSessionId: 'target',
+                    createdAt: '2026-07-29T12:00:00.000Z',
+                    payload: {
+                      kind: 'question',
+                      content: 'Resume',
+                      evidenceRequirements: [],
+                      deadlineAt: '2026-07-29T12:02:00.000Z',
+                    },
+                  },
+                ],
+              });
+            }
+            listeners.get('SIGINT')?.();
+            return response({ items: [] });
+          }
+          return response({
+            id: 'message-1',
+            correlationId: 'correlation-1',
+            projectId: 'project-1',
+            sourceSessionId: 'source',
+            sourceAgentId: 'claude-sim',
+            targetSessionId: 'target',
+            targetAgentId: 'gemini-sim',
+            selectionReason: 'selected target',
+            kind: 'question',
+            content: 'Resume',
+            evidenceRequirements: [],
+            state: url.endsWith('/respond') ? 'responded' : 'processing',
+            createdAt: '2026-07-29T12:00:00.000Z',
+            updatedAt: '2026-07-29T12:00:00.000Z',
+            deadlineAt: '2026-07-29T12:02:00.000Z',
+            ...(url.endsWith('/respond')
+              ? {
+                  response: JSON.parse(init?.body ?? '{}').response,
+                  respondedAt: '2026-07-29T12:00:01.000Z',
+                }
+              : {}),
+          });
+        },
+        stdout: { write: () => undefined },
+        signals: {
+          once: (signal, listener) => listeners.set(signal, listener),
+          off: (signal) => listeners.delete(signal),
+        },
+      },
+    );
+
+    expect(requested.some(({ url }) => url.endsWith('/acknowledge'))).toBe(false);
+    expect(requested.some(({ url }) => url.endsWith('/processing'))).toBe(false);
+    expect(requested.some(({ url }) => url.endsWith('/respond'))).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
+import { runtimeStateSchema } from './runtime-state.js';
 import { LUWI_PROTOCOL_VERSION, LUWI_RUNTIME_VERSION } from './version.js';
-import { runtimeStateSchema } from './runtime-api.js';
 
 export const redisConnectedSchema = z.object({
   connected: z.literal(true),

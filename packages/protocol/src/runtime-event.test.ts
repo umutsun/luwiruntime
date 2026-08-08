@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { createRuntimeEvent, parseRuntimeEvent, runtimeEventSchema } from './index.js';
+import {
+  createRuntimeEvent,
+  parseRuntimeEvent,
+  runtimeEventSchema,
+  runtimeEventTypeSchema,
+} from './index.js';
 
 describe('runtime event envelope', () => {
   it('creates a versioned event with centrally supplied identity and time', () => {
@@ -79,5 +84,57 @@ describe('runtime event envelope', () => {
         payload: {},
       }).type,
     ).toBe('session.completed');
+  });
+
+  it('defines every Phase 2 message lifecycle event', () => {
+    for (const type of [
+      'message.requested',
+      'message.delivered',
+      'message.acknowledged',
+      'message.processing',
+      'message.responded',
+      'message.rejected',
+      'message.failed',
+      'message.timed_out',
+    ]) {
+      expect(runtimeEventTypeSchema.parse(type)).toBe(type);
+    }
+  });
+
+  it('defines the bounded Phase 4 intelligence event taxonomy', () => {
+    for (const type of [
+      'usage.reported',
+      'usage.estimated',
+      'usage.rejected',
+      'context.contribution.observed',
+      'context.capability.loaded',
+      'context.capability.invoked',
+      'context.mcp.tool.called',
+      'git.observed',
+      'git.head.changed',
+      'git.commit.detected',
+      'git.worktree.detected',
+      'git.working-tree.changed',
+      'package.inventory.updated',
+      'technology.detected',
+      'attribution.recorded',
+      'attribution.updated',
+      'graph.node.projected',
+      'graph.edge.projected',
+      'graph.rebuild.started',
+      'graph.rebuild.completed',
+      'graph.rebuild.failed',
+      'optimization.analysis.completed',
+      'optimization.finding.detected',
+      'optimization.proposal.created',
+      'optimization.proposal.accepted',
+      'optimization.proposal.rejected',
+      'optimization.plan.created',
+      'optimization.applied',
+      'optimization.evaluation.started',
+      'optimization.evaluation.completed',
+    ]) {
+      expect(runtimeEventTypeSchema.parse(type)).toBe(type);
+    }
   });
 });

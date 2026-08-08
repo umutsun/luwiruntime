@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createWebSocketHub,
+  validateLocalHttpRequest,
   validateRealtimeUpgrade,
   type WebSocketPeer,
 } from './websocket-hub.js';
@@ -190,5 +191,60 @@ describe('WebSocket upgrade security', () => {
         remoteAddress: '192.168.1.4',
       }),
     ).toBe(false);
+  });
+});
+
+describe('HTTP loopback security', () => {
+  const allowedOrigins = new Set(['http://127.0.0.1:4782', 'http://localhost:4782']);
+  const expectedHosts = new Set(['127.0.0.1:4782', 'localhost:4782', '[::1]:4782']);
+
+  it('accepts loopback CLI requests without Origin and exact browser origins', () => {
+    expect(
+      validateLocalHttpRequest({
+        host: '127.0.0.1:4782',
+        remoteAddress: '127.0.0.1',
+        expectedHosts,
+        allowedOrigins,
+      }),
+    ).toBe(true);
+    expect(
+      validateLocalHttpRequest({
+        host: 'localhost:4782',
+        origin: 'http://localhost:4782',
+        remoteAddress: '::1',
+        expectedHosts,
+        allowedOrigins,
+      }),
+    ).toBe(true);
+  });
+
+  it('rejects hostile hosts, origins, null origins, and non-loopback clients', () => {
+    for (const input of [
+      {
+        host: 'luwi.attacker.test:4782',
+        origin: 'http://luwi.attacker.test:4782',
+        remoteAddress: '127.0.0.1',
+      },
+      {
+        host: '127.0.0.1:9999',
+        remoteAddress: '127.0.0.1',
+      },
+      {
+        host: '127.0.0.1:4782',
+        origin: 'http://evil.test',
+        remoteAddress: '127.0.0.1',
+      },
+      {
+        host: '127.0.0.1:4782',
+        origin: 'null',
+        remoteAddress: '127.0.0.1',
+      },
+      {
+        host: '127.0.0.1:4782',
+        remoteAddress: '192.0.2.10',
+      },
+    ]) {
+      expect(validateLocalHttpRequest({ ...input, expectedHosts, allowedOrigins })).toBe(false);
+    }
   });
 });

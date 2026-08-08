@@ -14,7 +14,7 @@ import {
 } from '@luwi/protocol';
 
 import type { RedisFunctionRegistry } from './function-registry.js';
-import type { RedisKeys } from './redis-keys.js';
+import { SESSION_INBOX_CONSUMER_GROUP, type RedisKeys } from './redis-keys.js';
 
 export interface RedisCommandClient {
   sendCommand(arguments_: readonly string[]): Promise<unknown>;
@@ -626,7 +626,7 @@ export function createRuntimeRepository(options: {
       const reply = await client.sendCommand([
         'FCALL',
         functions.functions.sessionRegister,
-        '8',
+        '9',
         keys.session(input.session.id),
         keys.project(input.session.projectId),
         keys.projectSessions(input.session.projectId),
@@ -635,10 +635,12 @@ export function createRuntimeRepository(options: {
         keys.heartbeatDeadlines,
         keys.globalEvents,
         keys.projectEvents(input.session.projectId),
+        keys.sessionInbox(input.session.id),
         JSON.stringify(input.session),
         input.workspaceId,
         input.eventId,
         String(input.presenceTtlMs),
+        SESSION_INBOX_CONSUMER_GROUP,
       ]);
       return parseRegisterSessionResult(decodeJsonReply(reply));
     },

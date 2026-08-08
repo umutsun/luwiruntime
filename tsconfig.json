@@ -5,6 +5,9 @@
       "path": "./packages/protocol"
     },
     {
+      "path": "./packages/adapters"
+    },
+    {
       "path": "./packages/runtime"
     },
     {
@@ -15,6 +18,9 @@
     },
     {
       "path": "./apps/cli"
+    },
+    {
+      "path": "./apps/mcp-server"
     }
   ]
 }

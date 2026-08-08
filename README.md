@@ -8,7 +8,8 @@ Claude Code, Gemini CLI, and Kimi; it does not replace or impersonate them.
 
 ## Current status
 
-Phase 1 — Projects and Sessions is implemented:
+Phase 5C — read-only project scope — is implemented on the Phase 5B realtime Pulse and the Phase 1–4
+runtime foundation:
 
 - strict TypeScript/ESM pnpm workspace with `protocol`, `runtime`, and `redis` packages;
 - Fastify daemon bound to `127.0.0.1` with an owned lifecycle and explicit readiness states;
@@ -20,11 +21,84 @@ Phase 1 — Projects and Sessions is implemented:
   poison-entry retries, and post-acceptance acknowledgement;
 - persistence-first, server-to-client WebSocket delivery with bounded per-client queues;
 - CLI project, session, simulation, event-list, and event-watch commands;
+- durable same-project request/reply with deterministic online-session routing;
+- message projections, correlation/idempotency indexes, deadlines, and per-session inbox
+  Streams;
+- pending-until-terminal inbox delivery with `XAUTOCLAIM` recovery;
+- delivered, acknowledged, processing, responded, rejected, failed, and timed-out states;
+- bounded HTTP waits, timeout race protection, and pending/lag-aware message retention;
+- CLI message/inbox commands plus manual, echo, and status-responder bridge simulations;
+- a thin bound-session stdio MCP server that uses only the daemon HTTP API;
+- filesystem-canonical AgentDefinitions, project-agent bindings, capability packages, and
+  profiles with Redis operational projections;
+- deterministic global/project inheritance, disable tombstones, dependency and
+  compatibility errors, and per-value provenance;
+- injected Codex, Claude Code, Gemini CLI, and Kimi adapters for passive detection,
+  inspection, context discovery, and support matrices;
+- bounded shell-free native version probes with a 2.5 second timeout, separate 64 KiB output
+  limits, sibling-safe failure handling, and a Windows-only `.cmd`/`.bat` path that invokes
+  only the canonical System32 command processor with fixed `/d /s /c` and literal
+  `--version` arguments; native utility selection never searches ambient `PATH`, and bounded
+  timeout/output cleanup verifies the exact owned process tree before reporting success;
+- tested Codex and Claude Code native render subsets; Gemini CLI and Kimi native writes
+  remain read-only;
+- redacted ConfigPlans, one-time approvals, explicit unmanaged-file adoption,
+  preconditions, bounded local snapshots, staged/fsynced atomic replacement,
+  process/filesystem target locks, drift, rollback, and reconciliation;
+- plan/artifact binding, snapshot-payload verification, pre-rollback snapshots,
+  canonical managed-target ownership, and uncertain Redis-transition recovery;
+- owned-startup validation and rebuild of Phase 3 Redis projections from canonical
+  manifests;
+- static context inventory with exact-hash duplicate groups and clearly labeled generic
+  character estimates across instructions and assigned capability artifacts;
+- HTTP/CLI management and eight project-bounded read-only Phase 3 MCP tools;
+- normalized exact, reported, adapter-extracted, estimated, and unavailable usage records
+  with idempotent ingestion and source-separated summaries;
+- static context estimates plus explicit session/adapter observations that keep assigned,
+  effective, loaded, invoked, and unknown states distinct;
+- bounded read-only local Git observation, credential-redacted remotes, exact trailer and
+  separately labeled correlated attribution;
+- non-executing Node, Python, Dart/Flutter, PHP, Rust, and Go package/technology inventory
+  with canonical-root containment, opened-handle `dev`/`ino` identity proof, and an
+  independently enforced 2 MiB chunked limit for every manifest read;
+- a provenance-bearing Redis operational graph with bounded traversal, failure diagnostics,
+  and atomic shadow-generation rebuild;
+- deterministic structural context findings and human-approved proposals that reuse Phase 3
+  ConfigPlan, approval, snapshot, apply, drift, rollback, and reconciliation;
+- non-causal post-change evaluation and project-scoped read-only Phase 4 MCP tools;
 - unit and opt-in Redis integration tests.
+- a loopback-served React/TypeScript Pulse shell with independently validated read-only
+  health, project, session, agent, activity, usage, context, and optimization snapshots;
+- explicit loading, empty, partial, degraded, Redis-unavailable, daemon-unavailable, and
+  WebSocket connection states;
+- validated WebSocket events with first-live and reconnect refresh, bounded reconnect,
+  512-stream-ID duplicate suppression, 200-row Activity retention, and 250 ms coalesced REST
+  invalidation;
+- live Activity follow/pause/resume, local bounded filters, and safe unknown-event display;
+- a polite 750 ms aggregate Activity announcement region that ignores history and duplicates;
+- read-only Project, Session, and Event inspectors whose selection stores only entity IDs and
+  resolves every render from current authoritative snapshots, with bounded related Activity,
+  project-coherent known-reference navigation, and bounded text-only payloads; the single
+  60-second duration clock exists only for a current nonterminal Session with a finite,
+  non-future `startedAt`;
+- non-destructive `refreshing` state while retained data is revalidated by first-live,
+  reconnect, realtime invalidation, or manual Retry; zero-safe-resource bootstrap is
+  unavailable, and completion resolves to current, stale, or unavailable.
+- a `#/projects` route with a project registry and on-demand project-scoped evidence: repository
+  observation, bound agents, package inventory, and technology inventory, each loaded
+  independently so one failure cannot erase its siblings;
+- an explicit not-observed state for a project with no recorded Git scan, kept distinct from an
+  unavailable read, so an unscanned project is never reported as a fault;
+- disclosed truncation on every bounded project collection and per-tier confidence rendered as
+  text rather than colour alone;
+- project-scoped realtime refresh that runs only for the project currently on screen, with a
+  generation guard that drops a response when the selection has moved on.
 
-The dashboard, MCP server, request/reply messaging, tasks, leases, agent adapters, metrics,
-lifecycle analysis, knowledge graph, GitHub integration, and authentication are not
-implemented.
+Dashboard mutations, lifecycle/release scoring, release readiness, a global operational-graph
+summary, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge
+graph, memory federation, cloud accounts, and authentication are not implemented. The operational
+graph exposes only rooted queries, so no global graph overview can be derived honestly and the
+`Graph` route remains a disabled label.
 
 ## Architecture and security
 
@@ -41,6 +115,16 @@ local API. The daemon:
 - does not log Redis URLs, secrets, complete prompts, or unbounded payloads;
 - acquires a TTL-backed single-daemon owner lease before bootstrap mutation.
 
+After `pnpm build`, the daemon serves Pulse at `http://127.0.0.1:4782/`. For frontend
+development, start the daemon with
+`LUWI_ALLOWED_ORIGINS=http://127.0.0.1:4782,http://localhost:4782,http://127.0.0.1:4783`, then
+run `pnpm dev:dashboard` in a second terminal. Vite binds to `127.0.0.1:4783`; `/api` proxies
+HTTP and WebSocket traffic to `127.0.0.1:4782`, while `/health` proxies HTTP only. The
+proxy normalizes only the upstream Host; the browser Origin is still validated exactly. The
+development origin is explicit and is not part of production defaults. See the [Phase 5 dashboard architecture](docs/phase5-dashboard-architecture.md),
+[realtime contract](docs/phase5-dashboard-realtime-contract.md), and
+[capability matrix](docs/phase5-dashboard-capability-matrix.md).
+
 Redis Streams are durable and recoverable. WebSocket delivery is best-effort realtime
 delivery: an `XACK` confirms validated relay processing and queue acceptance, not browser
 rendering or network receipt. Clients obtain current project/session snapshots after
@@ -48,7 +132,13 @@ connecting.
 
 See [the architecture overview](docs/architecture/overview.md), [ADR
 0004](docs/decisions/0004-redis-only-local-runtime.md), and [ADR
-0005](docs/decisions/0005-redis-native-operational-core.md).
+0005](docs/decisions/0005-redis-native-operational-core.md). Phase 3 configuration safety
+and inheritance are defined by [ADR 0007](docs/decisions/0007-filesystem-canonical-agent-config.md)
+and [ADR 0008](docs/decisions/0008-capability-scope-and-inheritance.md).
+Phase 4 graph, optimization, and local Git boundaries are defined by [ADR
+0009](docs/decisions/0009-event-derived-operational-graph.md), [ADR
+0010](docs/decisions/0010-context-optimization-feedback-loop.md), and [ADR
+0011](docs/decisions/0011-local-git-observation-and-attribution.md).
 
 ## Prerequisites
 
@@ -78,6 +168,9 @@ LOG_LEVEL=info
 WORKSPACE_ID=local
 ```
 
+`LUWI_HOME` and `LUWI_NATIVE_HOME` are optional. Normal operation uses `~/.luwi` and the OS
+home. Tests and the Phase 3 demo set both to temporary sandbox roots.
+
 Remote binding is intentionally unsupported in local mode.
 
 ## Start Redis
@@ -102,6 +195,17 @@ REDIS_URL=redis://127.0.0.1:6379
 Do not expose Redis on a non-loopback interface.
 
 ## Run on Windows PowerShell
+
+Windows native-probe cleanup uses validated canonical paths under the canonical Windows
+system directory for `cmd.exe`, `taskkill.exe`, and the fixed non-interactive process-snapshot
+PowerShell helper. It never falls back to a same-named program on `PATH`. A timed-out or
+output-limited probe has a five-second total cleanup budget: taskkill alone is not success;
+the runner must verify that the root and all known descendants are absent, or return
+`failure: cleanup`. The reusable early-root-close stress proof runs 25 iterations by default:
+
+```powershell
+pnpm test:windows-cleanup-stress
+```
 
 Terminal 1:
 
@@ -146,8 +250,36 @@ pnpm --filter @luwi/cli dev session heartbeat <sessionId>
 pnpm --filter @luwi/cli dev session status <sessionId> tool_running
 pnpm --filter @luwi/cli dev session close <sessionId>
 
+pnpm --filter @luwi/cli dev message ask --source <sourceSessionId> --target-agent gemini-sim --kind question --content "Project status?" --wait-ms 30000
+pnpm --filter @luwi/cli dev message list --project <projectId>
+pnpm --filter @luwi/cli dev message get <correlationId>
+pnpm --filter @luwi/cli dev message await <correlationId> --wait-ms 30000
+
+pnpm --filter @luwi/cli dev inbox claim --session <targetSessionId> --bridge-instance manual-1
+pnpm --filter @luwi/cli dev message acknowledge <correlationId> --session <targetSessionId>
+pnpm --filter @luwi/cli dev message processing <correlationId> --session <targetSessionId>
+pnpm --filter @luwi/cli dev message respond <correlationId> --session <targetSessionId> --answer "Simulated answer."
+
+pnpm --filter @luwi/cli dev session bridge simulate --session <targetSessionId> --bridge-instance gemini-bridge --mode status-responder
+
 pnpm --filter @luwi/cli dev events list --limit 100
 pnpm --filter @luwi/cli dev events watch
+
+pnpm --filter @luwi/cli dev agent detect
+pnpm --filter @luwi/cli dev agent list
+pnpm --filter @luwi/cli dev project agent effective <projectId> <agentId>
+pnpm --filter @luwi/cli dev capability list --project <projectId>
+pnpm --filter @luwi/cli dev profile list
+pnpm --filter @luwi/cli dev config inspect --body '{"agentId":"codex-main","projectId":"<projectId>"}'
+pnpm --filter @luwi/cli dev context footprint <projectId> codex-main
+
+pnpm --filter @luwi/cli dev usage summary --project <projectId>
+pnpm --filter @luwi/cli dev context analyze --project <projectId> --agent codex-main
+pnpm --filter @luwi/cli dev git scan --project <projectId>
+pnpm --filter @luwi/cli dev package scan --project <projectId>
+pnpm --filter @luwi/cli dev graph rebuild
+pnpm --filter @luwi/cli dev graph neighbors project <projectId> --direction out
+pnpm --filter @luwi/cli dev optimize analyze --project <projectId> --agent codex-main
 ```
 
 `agentId` is a validated opaque logical identifier. Session registration does not require or
@@ -155,6 +287,45 @@ create an AgentDefinition record.
 
 The complete two-session acceptance walkthrough is in [the Phase 1 demo
 guide](docs/guides/phase-1-demo.md).
+
+The Phase 2 request/reply and MCP walkthrough is in [the Phase 2 demo
+guide](docs/guides/phase-2-agent-communication-demo.md).
+
+The sandboxed Phase 3 walkthrough, including Phase 1/2 regressions and uncertain Redis
+completion recovery, is in [the Phase 3 demo
+guide](docs/guides/phase-3-agent-capability-demo.md). After `pnpm build`, run
+`pnpm demo:phase3` against an explicit local Redis test URL.
+
+The Phase 4 temporary-repository intelligence and optimization walkthrough is in [the Phase
+4 demo guide](docs/guides/phase-4-intelligence-demo.md). After `pnpm build`, run
+`pnpm demo:phase4`. It labels all telemetry as simulated, applies configuration only through
+an explicitly approved Phase 3 plan, and cleans its run-specific Redis/filesystem state.
+
+### MCP server
+
+The MCP server is a stdio process bound to one existing online LUWI session:
+
+```text
+LUWI_DAEMON_URL=http://127.0.0.1:4782
+LUWI_SESSION_ID=<registeredSourceSessionId>
+LUWI_MCP_REQUEST_TIMEOUT_MS=30000
+pnpm --filter @luwi/mcp-server dev
+pnpm --filter @luwi/mcp-server harness
+```
+
+It exposes project/session discovery, ask/await/get, durable inbox claim, responder tools,
+and project-bounded read-only AgentDefinition/capability/effective-config/context/drift,
+usage, Git, package, technology, graph, and optimization-inspection tools. A bounded
+optimization-analysis request is available, but proposal acceptance, plan approval/apply,
+rollback, graph rebuild, and Git mutation are not exposed. The server never connects to
+Redis, accepts a source/responder override for bound mutations, or starts for a missing,
+offline, or terminal bound session. It revalidates that binding before every tool
+operation. Build first, then pass a tool name and JSON object to `harness` for a concrete
+stdio test.
+
+Every tool advertises and validates an output schema. Successful results use MCP
+`structuredContent` plus a concise bounded text summary; project and session discovery
+results are capped at 100 entries and explicitly report truncation.
 
 ## HTTP and WebSocket API
 
@@ -176,6 +347,38 @@ GET  /api/v1/projects/:projectId/sessions
 
 GET  /api/v1/events?limit=100
 GET  /api/v1/realtime  (WebSocket upgrade)
+
+POST /api/v1/messages
+GET  /api/v1/messages
+GET  /api/v1/messages/:correlationId
+GET  /api/v1/messages/:correlationId/wait?waitMs=30000
+POST /api/v1/messages/:correlationId/acknowledge
+POST /api/v1/messages/:correlationId/processing
+POST /api/v1/messages/:correlationId/respond
+POST /api/v1/messages/:correlationId/reject
+POST /api/v1/messages/:correlationId/fail
+POST /api/v1/sessions/:sessionId/inbox/claim
+
+GET/POST/PATCH /api/v1/agents...
+GET/POST/PATCH/DELETE /api/v1/projects/:projectId/agents...
+GET/POST/PATCH /api/v1/capabilities...
+GET/POST/PATCH /api/v1/profiles...
+GET /api/v1/projects/:projectId/agents/:agentId/effective-config
+POST /api/v1/config/{inspect,import-plan,render-plan,reconcile}
+GET/POST /api/v1/config/{plans,snapshots,drift}...
+GET/POST /api/v1/context...
+
+POST /api/v1/usage
+GET  /api/v1/usage
+GET  /api/v1/usage/summary
+GET/POST /api/v1/context/contributions
+GET  /api/v1/context/summary
+POST /api/v1/context/analyze
+GET/POST /api/v1/projects/:projectId/git...
+GET/POST /api/v1/projects/:projectId/packages...
+GET  /api/v1/projects/:projectId/technologies
+GET/POST /api/v1/graph...
+GET/POST /api/v1/optimization...
 ```
 
 `POST /api/v1/projects` returns `409 PROJECT_ALREADY_REGISTERED` and a `Location` header
@@ -227,6 +430,12 @@ The global Stream is `luwi:v1:events:global`; each project has
 `luwi:v1:events:project:{projectId}`. Transition Functions do not trim Streams. A periodic
 retention service applies configurable approximate limits.
 
+Each session has `luwi:v1:inbox:session:{sessionId}` and group
+`luwi-session-inbox-v1`. Inbox entries remain pending until a terminal message transition;
+retention defers while the group has pending work or lag. Terminal projections are retained
+for seven days by default, idempotency indexes for one day, and inboxes are bounded to
+10,000 entries only when recovery metadata is safe.
+
 For standard Redis versions before 8.2, global trimming occurs only when the realtime group
 reports valid metadata, zero pending entries, zero lag, and a healthy relay. Otherwise LUWI
 defers trimming so recoverable entries are not destroyed. Project and dead-letter Streams
@@ -235,20 +444,55 @@ have independent bounds.
 AOF with `everysec` improves local durability but is not a backup and may lose roughly the
 most recent second during a host failure.
 
+Native-config snapshots are local filesystem artifacts rather than Redis values. Completed
+snapshots are bounded to 50 by default and can be configured with
+`LUWI_CONFIG_SNAPSHOT_RETENTION_COUNT`. Pruning considers only validated LUWI snapshot
+manifests; incomplete or foreign directories are left for manual review.
+
+Global and project imports use the same approved, snapshotted file engine as native renders.
+Global imports update AgentDefinition defaults; project imports update agent-specific
+project-manifest defaults. On owned startup, canonical AgentDefinitions, capabilities,
+profiles, capability bindings, and project-agent bindings are validated and used to rebuild
+missing or stale Redis projections before the runtime becomes ready.
+
+Phase 4 raw usage observations default to 30 days, superseded Git observations to 100 per
+project, and graph generations to the active/newest safe pair. Retention preserves
+source-separated usage aggregate totals, source-event deduplication, optimization
+baselines/evaluations, active graph metadata, and normalized Stream provenance. Supported
+global/project/agent/session aggregate summaries survive raw-record cleanup; arbitrary time,
+capability, or combined filters cover at most 1,000 retained raw records and return an
+explicit unsupported-filter error if that bounded summary would be incomplete. Raw lists
+report truncation. Responses expose the earliest retained usage observation rather than
+claiming unavailable history is complete.
+
+Package inventory canonicalizes the project root and each candidate manifest before opening
+it. After opening, LUWI canonicalizes and contains the candidate again, compares non-zero
+bigint `dev` and `ino` identity from the handle and final path, then reads the validated handle
+in 64 KiB chunks up to 2 MiB plus one detection byte. Symlinks and junctions that resolve
+outside the root, ABA identity changes, broken links, directory targets, unsupported identity,
+and files that start or grow oversized fail closed. In-root links to a stable regular file
+remain readable; scanners still never execute package managers or project code.
+
 ## Package boundaries
 
 - `@luwi/protocol`: validated versioned wire schemas and event envelopes.
-- `@luwi/runtime`: Redis-independent paths, status policy, errors, and readiness.
+- `@luwi/runtime`: Redis-independent paths, status/readiness, usage aggregation, Git
+  attribution, graph query policy, structural findings, and evaluation.
+- `@luwi/adapters`: passive native-agent adapters and deterministic file proposals.
 - `@luwi/redis`: Redis client boundary, keys, Functions, repositories, Streams, ownership,
   retention, and recovery primitives.
 - `@luwi/daemon`: lifecycle, security, HTTP/WebSocket transport, relay, and sweeper.
 - `@luwi/cli`: local HTTP/WebSocket client and simulations.
+- `@luwi/mcp-server`: official-SDK stdio adapter over loopback daemon HTTP.
 
-No separate packages exist for IRIS, sessions, lifecycle, metrics, memory, or knowledge
-graphs. Those boundaries remain deferred until real consumers prove them.
+No separate packages exist for IRIS, sessions, lifecycle, metrics, memory, Git
+intelligence, or graphs. Those features remain modules inside existing boundaries until real
+consumers prove a package split.
 
 ## Roadmap disclaimer
 
-Phase 2 may add asynchronous session request/reply with inbox delivery, acknowledgement,
-correlation, timeout, and evidence metadata. It must build on the tested daemon protocol and
-must not bypass daemon-owned Redis access.
+Phase 5B is limited to tested read-only Pulse, native realtime invalidation, bounded Activity,
+and supported inspectors. Lifecycle/release intelligence, leases, global search,
+ACP, GitHub, and mutation surfaces remain deferred. Future work must not bypass daemon-owned
+Redis access, execute discovered code, convert unknown evidence to non-use, or describe
+estimates/correlations as exact facts.

@@ -1,7 +1,15 @@
 import {
+  agentMessageResponseSchema,
+  evidenceTypeSchema,
   eventListResponseSchema,
   heartbeatResponseSchema,
+  inboxClaimResponseSchema,
   LUWI_RUNTIME_VERSION,
+  messageCollectionResponseSchema,
+  messageCreateResponseSchema,
+  messageKindSchema,
+  messageResponseSchema,
+  messageStateSchema,
   projectCollectionResponseSchema,
   projectResponseSchema,
   publicErrorResponseSchema,
@@ -10,10 +18,16 @@ import {
   sessionCollectionResponseSchema,
   sessionResponseSchema,
   sessionStatusTargetSchema,
+  type AgentMessage,
+  type InboxEnvelope,
   type RealtimeEventMessage,
 } from '@luwi/protocol';
 import { ApplicationError } from '@luwi/runtime';
 import { Command } from 'commander';
+import { createInterface } from 'node:readline/promises';
+
+import { registerControlPlaneCli } from './control-plane-cli.js';
+import { registerIntelligenceCli } from './intelligence-cli.js';
 
 export type FetchInitLike = {
   method?: string;
@@ -54,6 +68,7 @@ export type CliDependencies = {
   setInterval: (callback: () => void, intervalMs: number) => NodeJS.Timeout;
   clearInterval: (timer: NodeJS.Timeout) => void;
   wait: (milliseconds: number) => Promise<void>;
+  confirm: (prompt: string) => Promise<boolean>;
 };
 
 const defaultDependencies: CliDependencies = {
@@ -65,6 +80,14 @@ const defaultDependencies: CliDependencies = {
   setInterval,
   clearInterval,
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  confirm: async (prompt) => {
+    const terminal = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      return (await terminal.question(`${prompt} [y/N] `)).trim().toLowerCase() === 'y';
+    } finally {
+      terminal.close();
+    }
+  },
 };
 
 type Parser<Output> = { parse(value: unknown): Output };
@@ -113,6 +136,11 @@ function jsonBody(value: unknown): FetchInitLike {
   };
 }
 
+function jsonBodyWithHeaders(value: unknown, headers: Record<string, string>): FetchInitLike {
+  const init = jsonBody(value);
+  return { ...init, headers: { ...init.headers, ...headers } };
+}
+
 function printJson(dependencies: CliDependencies, value: unknown): void {
   dependencies.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
@@ -127,6 +155,25 @@ function parseJsonObject(value: string, option: string): Record<string, unknown>
   } catch {
     throw new ApplicationError('CLI_OPTION_INVALID', `${option} must be a JSON object.`, 400);
   }
+}
+
+function parseJsonArray(value: string, option: string): unknown[] {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) {
+      throw new Error('not an array');
+    }
+    return parsed;
+  } catch {
+    throw new ApplicationError('CLI_OPTION_INVALID', `${option} must be a JSON array.`, 400);
+  }
+}
+
+function parseEvidenceRequirements(value: string | undefined): string[] {
+  if (value === undefined || value.trim() === '') {
+    return [];
+  }
+  return value.split(',').map((item) => evidenceTypeSchema.parse(item.trim()));
 }
 
 async function runSimulation(
@@ -216,6 +263,266 @@ async function runSimulation(
     dependencies.signals.once('SIGINT', onSignal);
     dependencies.signals.once('SIGTERM', onSignal);
   });
+}
+
+type InboxRequest = Extract<InboxEnvelope, { itemKind: 'request' }>;
+
+function printableInboxItem(item: InboxEnvelope, includeContent: boolean): unknown {
+  if (includeContent) {
+    return item;
+  }
+  const identity = {
+    streamId: item.streamId,
+    itemKind: item.itemKind,
+    messageId: item.messageId,
+    correlationId: item.correlationId,
+    sourceSessionId: item.sourceSessionId,
+    targetSessionId: item.targetSessionId,
+    createdAt: item.createdAt,
+  };
+  if (item.itemKind === 'request') {
+    return {
+      ...identity,
+      payload: {
+        kind: item.payload.kind,
+        ...(item.payload.subject === undefined ? {} : { subject: item.payload.subject }),
+        contentBytes: Buffer.byteLength(item.payload.content, 'utf8'),
+        evidenceRequirements: item.payload.evidenceRequirements,
+        deadlineAt: item.payload.deadlineAt,
+        redacted: true,
+      },
+    };
+  }
+  return {
+    ...identity,
+    payload: {
+      state: item.payload.state,
+      hasResponse: item.payload.response !== undefined,
+      redacted: true,
+    },
+  };
+}
+
+async function transitionBridgeMessage(
+  dependencies: CliDependencies,
+  base: string,
+  action: 'acknowledge' | 'processing',
+  sessionId: string,
+  correlationId: string,
+): Promise<AgentMessage> {
+  return request(
+    dependencies,
+    base,
+    `/api/v1/messages/${encodeURIComponent(correlationId)}/${action}`,
+    messageResponseSchema,
+    jsonBody({ responderSessionId: sessionId }),
+  );
+}
+
+async function prepareBridgeMessage(
+  dependencies: CliDependencies,
+  options: {
+    url: string;
+    sessionId: string;
+  },
+  correlationId: string,
+): Promise<boolean> {
+  const current = await request(
+    dependencies,
+    options.url,
+    `/api/v1/messages/${encodeURIComponent(correlationId)}`,
+    messageResponseSchema,
+  );
+  let state = current.state;
+  if (state === 'delivered') {
+    state = (
+      await transitionBridgeMessage(
+        dependencies,
+        options.url,
+        'acknowledge',
+        options.sessionId,
+        correlationId,
+      )
+    ).state;
+  }
+  if (state === 'acknowledged') {
+    state = (
+      await transitionBridgeMessage(
+        dependencies,
+        options.url,
+        'processing',
+        options.sessionId,
+        correlationId,
+      )
+    ).state;
+  }
+  return state === 'processing';
+}
+
+async function automaticBridgeResponse(
+  dependencies: CliDependencies,
+  options: {
+    url: string;
+    sessionId: string;
+    mode: 'echo' | 'status-responder';
+  },
+  item: InboxRequest,
+): Promise<void> {
+  let answer: string;
+  let evidence: unknown[] = [];
+  if (options.mode === 'echo') {
+    answer = `[simulated echo] ${item.payload.content}`;
+  } else {
+    const message = await request(
+      dependencies,
+      options.url,
+      `/api/v1/messages/${encodeURIComponent(item.correlationId)}`,
+      messageResponseSchema,
+    );
+    const snapshot = await request(
+      dependencies,
+      options.url,
+      `/api/v1/projects/${encodeURIComponent(message.projectId)}/sessions`,
+      sessionCollectionResponseSchema,
+    );
+    const online = snapshot.sessions.filter(({ presence }) => presence === 'online').length;
+    answer = `[simulated status-responder] LUWI reports ${online} online session(s) in project ${message.projectId}.`;
+    evidence = [
+      {
+        type: 'session_state',
+        summary: 'Simulated status responder snapshot read from LUWI daemon APIs.',
+        observedAt: new Date().toISOString(),
+        metadata: {
+          simulated: true,
+          projectId: message.projectId,
+          sessionCount: snapshot.sessions.length,
+          onlineSessionCount: online,
+        },
+      },
+    ];
+  }
+  const response = agentMessageResponseSchema.parse({
+    status: 'answered',
+    answer,
+    evidence,
+    verifiedAt: new Date().toISOString(),
+  });
+  await request(
+    dependencies,
+    options.url,
+    `/api/v1/messages/${encodeURIComponent(item.correlationId)}/respond`,
+    messageResponseSchema,
+    jsonBody({ responderSessionId: options.sessionId, response }),
+  );
+}
+
+async function runBridgeSimulation(
+  dependencies: CliDependencies,
+  options: {
+    url: string;
+    sessionId: string;
+    bridgeInstanceId: string;
+    mode: 'manual' | 'echo' | 'status-responder';
+    limit: number;
+    blockMs: number;
+    minIdleMs: number;
+    heartbeatMs: number;
+    includeContent: boolean;
+  },
+): Promise<void> {
+  let stopped = false;
+  let heartbeatFailed = false;
+  const handled = new Set<string>();
+  const stop = (): void => {
+    stopped = true;
+  };
+  dependencies.signals.once('SIGINT', stop);
+  dependencies.signals.once('SIGTERM', stop);
+  const heartbeatTimer = dependencies.setInterval(() => {
+    void request(
+      dependencies,
+      options.url,
+      `/api/v1/sessions/${encodeURIComponent(options.sessionId)}/heartbeat`,
+      heartbeatResponseSchema,
+      jsonBody({}),
+    ).catch(() => {
+      heartbeatFailed = true;
+      stopped = true;
+      dependencies.stderr.write(
+        `${JSON.stringify({
+          error: {
+            code: 'BRIDGE_HEARTBEAT_FAILED',
+            message: 'The simulated bridge heartbeat failed.',
+          },
+        })}\n`,
+      );
+    });
+  }, options.heartbeatMs);
+  try {
+    while (!stopped) {
+      const claimed = await request(
+        dependencies,
+        options.url,
+        `/api/v1/sessions/${encodeURIComponent(options.sessionId)}/inbox/claim`,
+        inboxClaimResponseSchema,
+        jsonBody({
+          bridgeInstanceId: options.bridgeInstanceId,
+          limit: options.limit,
+          blockMs: options.blockMs,
+          minIdleMs: options.minIdleMs,
+        }),
+      );
+      for (const item of claimed.items) {
+        printJson(dependencies, {
+          simulation: true,
+          inboxItem: printableInboxItem(item, options.includeContent),
+        });
+        if (item.itemKind !== 'request' || handled.has(item.correlationId)) {
+          continue;
+        }
+        const processing = await prepareBridgeMessage(
+          dependencies,
+          {
+            url: options.url,
+            sessionId: options.sessionId,
+          },
+          item.correlationId,
+        );
+        if (!processing) {
+          handled.add(item.correlationId);
+          continue;
+        }
+        if (options.mode === 'manual') {
+          handled.add(item.correlationId);
+          continue;
+        }
+        await automaticBridgeResponse(
+          dependencies,
+          {
+            url: options.url,
+            sessionId: options.sessionId,
+            mode: options.mode,
+          },
+          item,
+        );
+        handled.add(item.correlationId);
+      }
+      if (claimed.items.length === 0 && options.blockMs === 0 && !stopped) {
+        await dependencies.wait(100);
+      }
+    }
+  } finally {
+    dependencies.clearInterval(heartbeatTimer);
+    dependencies.signals.off('SIGINT', stop);
+    dependencies.signals.off('SIGTERM', stop);
+  }
+  if (heartbeatFailed) {
+    throw new ApplicationError(
+      'BRIDGE_HEARTBEAT_FAILED',
+      'The simulated bridge heartbeat failed.',
+      503,
+    );
+  }
 }
 
 function compareStreamIds(left: RealtimeEventMessage, right: RealtimeEventMessage): number {
@@ -421,6 +728,9 @@ export function createCli(dependencies: CliDependencies): Command {
       );
     });
 
+  registerControlPlaneCli(program, projects, dependencies);
+  registerIntelligenceCli(program, dependencies);
+
   const sessions = program.command('session').description('Manage agent sessions');
   sessions
     .command('register')
@@ -574,6 +884,295 @@ export function createCli(dependencies: CliDependencies): Command {
           ...options,
           heartbeatMs: Number(options.heartbeatMs),
         }),
+    );
+  const sessionBridge = sessions
+    .command('bridge')
+    .description('Simulate a daemon-only Session Bridge');
+  sessionBridge
+    .command('simulate')
+    .requiredOption('--session <sessionId>', 'Existing online session ID')
+    .requiredOption('--bridge-instance <id>', 'Stable bridge process identity')
+    .option('--mode <mode>', 'manual, echo, or status-responder', 'manual')
+    .option('--limit <count>', 'Maximum inbox items per claim', '10')
+    .option('--block-ms <milliseconds>', 'Bounded claim block interval', '5000')
+    .option('--min-idle-ms <milliseconds>', 'Pending recovery minimum idle time', '15000')
+    .option('--heartbeat-ms <milliseconds>', 'Session heartbeat interval', '5000')
+    .option('--include-content', 'Print complete simulated inbox payloads')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        session: string;
+        bridgeInstance: string;
+        mode: string;
+        limit: string;
+        blockMs: string;
+        minIdleMs: string;
+        heartbeatMs: string;
+        includeContent?: boolean;
+        url: string;
+      }) => {
+        if (
+          options.mode !== 'manual' &&
+          options.mode !== 'echo' &&
+          options.mode !== 'status-responder'
+        ) {
+          throw new ApplicationError(
+            'CLI_OPTION_INVALID',
+            '--mode must be manual, echo, or status-responder.',
+            400,
+          );
+        }
+        const heartbeatMs = Number(options.heartbeatMs);
+        if (!Number.isSafeInteger(heartbeatMs) || heartbeatMs < 100) {
+          throw new ApplicationError(
+            'CLI_OPTION_INVALID',
+            '--heartbeat-ms must be an integer of at least 100.',
+            400,
+          );
+        }
+        await runBridgeSimulation(dependencies, {
+          url: options.url,
+          sessionId: options.session,
+          bridgeInstanceId: options.bridgeInstance,
+          mode: options.mode,
+          limit: Number(options.limit),
+          blockMs: Number(options.blockMs),
+          minIdleMs: Number(options.minIdleMs),
+          heartbeatMs,
+          includeContent: options.includeContent === true,
+        });
+      },
+    );
+
+  const messages = program.command('message').description('Exchange durable session messages');
+  messages
+    .command('ask')
+    .requiredOption('--source <sessionId>', 'Source session ID')
+    .option('--target-session <sessionId>', 'Direct target session ID')
+    .option('--target-agent <agentId>', 'Select an online session for this opaque agent ID')
+    .requiredOption('--kind <kind>', 'question, status_request, or instruction')
+    .option('--subject <subject>', 'Short subject')
+    .requiredOption('--content <content>', 'Question or instruction')
+    .option('--evidence <types>', 'Comma-separated evidence requirements')
+    .option('--timeout-ms <milliseconds>', 'Message deadline')
+    .option('--idempotency-key <key>', 'Retry idempotency key')
+    .option('--wait-ms <milliseconds>', 'Wait up to 30000 ms for terminal state', '0')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        source: string;
+        targetSession?: string;
+        targetAgent?: string;
+        kind: string;
+        subject?: string;
+        content: string;
+        evidence?: string;
+        timeoutMs?: string;
+        idempotencyKey?: string;
+        waitMs: string;
+        url: string;
+      }) => {
+        const result = await request(
+          dependencies,
+          options.url,
+          '/api/v1/messages',
+          messageCreateResponseSchema,
+          jsonBodyWithHeaders(
+            {
+              sourceSessionId: options.source,
+              ...(options.targetSession === undefined
+                ? {}
+                : { targetSessionId: options.targetSession }),
+              ...(options.targetAgent === undefined ? {} : { targetAgentId: options.targetAgent }),
+              kind: messageKindSchema.parse(options.kind),
+              ...(options.subject === undefined ? {} : { subject: options.subject }),
+              content: options.content,
+              evidenceRequirements: parseEvidenceRequirements(options.evidence),
+              ...(options.timeoutMs === undefined ? {} : { timeoutMs: Number(options.timeoutMs) }),
+            },
+            options.idempotencyKey === undefined
+              ? {}
+              : { 'idempotency-key': options.idempotencyKey },
+          ),
+        );
+        const waitMs = Number(options.waitMs);
+        if (waitMs > 0) {
+          printJson(
+            dependencies,
+            await request(
+              dependencies,
+              options.url,
+              `/api/v1/messages/${encodeURIComponent(result.message.correlationId)}/wait?waitMs=${encodeURIComponent(String(waitMs))}`,
+              messageResponseSchema,
+            ),
+          );
+          return;
+        }
+        printJson(dependencies, result);
+      },
+    );
+  messages
+    .command('list')
+    .option('--project <projectId>', 'Filter by project')
+    .option('--source <sessionId>', 'Filter by source session')
+    .option('--target <sessionId>', 'Filter by target session')
+    .option('--state <state>', 'Filter by message state')
+    .option('--limit <count>', 'Maximum result count', '100')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        project?: string;
+        source?: string;
+        target?: string;
+        state?: string;
+        limit: string;
+        url: string;
+      }) => {
+        const query = new URLSearchParams({
+          limit: options.limit,
+          ...(options.project === undefined ? {} : { projectId: options.project }),
+          ...(options.source === undefined ? {} : { sourceSessionId: options.source }),
+          ...(options.target === undefined ? {} : { targetSessionId: options.target }),
+          ...(options.state === undefined
+            ? {}
+            : { state: messageStateSchema.parse(options.state) }),
+        });
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            `/api/v1/messages?${query.toString()}`,
+            messageCollectionResponseSchema,
+          ),
+        );
+      },
+    );
+  messages
+    .command('get <correlationId>')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (correlationId: string, options: { url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/messages/${encodeURIComponent(correlationId)}`,
+          messageResponseSchema,
+        ),
+      );
+    });
+  messages
+    .command('await <correlationId>')
+    .option('--wait-ms <milliseconds>', 'Wait up to 30000 ms', '30000')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (correlationId: string, options: { waitMs: string; url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/messages/${encodeURIComponent(correlationId)}/wait?waitMs=${encodeURIComponent(options.waitMs)}`,
+          messageResponseSchema,
+        ),
+      );
+    });
+  for (const action of ['acknowledge', 'processing'] as const) {
+    messages
+      .command(`${action} <correlationId>`)
+      .requiredOption('--session <sessionId>', 'Responder session ID')
+      .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+      .action(async (correlationId: string, options: { session: string; url: string }) => {
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            `/api/v1/messages/${encodeURIComponent(correlationId)}/${action}`,
+            messageResponseSchema,
+            jsonBody({ responderSessionId: options.session }),
+          ),
+        );
+      });
+  }
+  for (const action of ['respond', 'reject', 'fail'] as const) {
+    messages
+      .command(`${action} <correlationId>`)
+      .requiredOption('--session <sessionId>', 'Responder session ID')
+      .requiredOption('--answer <text>', 'Response answer')
+      .option('--confidence <value>', 'Optional confidence from 0 to 1')
+      .option('--evidence <json>', 'Evidence JSON array', '[]')
+      .option('--verified-at <timestamp>', 'UTC verification timestamp')
+      .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+      .action(
+        async (
+          correlationId: string,
+          options: {
+            session: string;
+            answer: string;
+            confidence?: string;
+            evidence: string;
+            verifiedAt?: string;
+            url: string;
+          },
+        ) => {
+          const status =
+            action === 'respond' ? 'answered' : action === 'reject' ? 'rejected' : 'failed';
+          const response = agentMessageResponseSchema.parse({
+            status,
+            answer: options.answer,
+            ...(options.confidence === undefined ? {} : { confidence: Number(options.confidence) }),
+            evidence: parseJsonArray(options.evidence, '--evidence'),
+            verifiedAt: options.verifiedAt ?? new Date().toISOString(),
+          });
+          printJson(
+            dependencies,
+            await request(
+              dependencies,
+              options.url,
+              `/api/v1/messages/${encodeURIComponent(correlationId)}/${action}`,
+              messageResponseSchema,
+              jsonBody({ responderSessionId: options.session, response }),
+            ),
+          );
+        },
+      );
+  }
+
+  const inbox = program.command('inbox').description('Claim durable session inbox work');
+  inbox
+    .command('claim')
+    .requiredOption('--session <sessionId>', 'Session inbox owner')
+    .requiredOption('--bridge-instance <id>', 'Stable bridge process identity')
+    .option('--limit <count>', 'Maximum inbox items')
+    .option('--block-ms <milliseconds>', 'Bounded blocking read')
+    .option('--min-idle-ms <milliseconds>', 'Pending recovery minimum idle time')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        session: string;
+        bridgeInstance: string;
+        limit?: string;
+        blockMs?: string;
+        minIdleMs?: string;
+        url: string;
+      }) => {
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            `/api/v1/sessions/${encodeURIComponent(options.session)}/inbox/claim`,
+            inboxClaimResponseSchema,
+            jsonBody({
+              bridgeInstanceId: options.bridgeInstance,
+              ...(options.limit === undefined ? {} : { limit: Number(options.limit) }),
+              ...(options.blockMs === undefined ? {} : { blockMs: Number(options.blockMs) }),
+              ...(options.minIdleMs === undefined ? {} : { minIdleMs: Number(options.minIdleMs) }),
+            }),
+          ),
+        );
+      },
     );
 
   const events = program.command('events').description('Inspect Runtime events');

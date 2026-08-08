@@ -28,11 +28,13 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       redisUrl: testRedisUrl ?? '',
       logLevel: 'silent',
       workspaceId: 'local',
-      sessionPresenceTtlMs: 500,
+      sessionPresenceTtlMs: 5_000,
       presenceSweepIntervalMs: 50,
       heartbeatEventIntervalMs: 100,
       consumerClaimIdleMs: 0,
       relayBlockMs: 25,
+      messageTimeoutSweepIntervalMs: 25,
+      messageTimeoutBatchSize: 10,
       retentionIntervalMs: 60_000,
       drainTimeoutMs: 1_000,
       allowedOrigins: ['http://127.0.0.1:48782'],
@@ -75,7 +77,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       await cleanup.quit();
     });
 
-    it('boots in order, rejects a second owner, and serves the Phase 1 vertical slice', async () => {
+    it('boots in order, rejects a second owner, and serves projects, sessions, and messages', async () => {
       const firstConnections = connections();
       runtime = await startDaemon({
         config,
@@ -150,6 +152,149 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       expect(sessionResponse.statusCode).toBe(201);
       const session = sessionResponse.json<{ id: string }>();
       expect(session.id).toBeTruthy();
+      const targetResponse = await runtime.app.inject({
+        method: 'POST',
+        url: '/api/v1/sessions',
+        payload: {
+          projectId: project.id,
+          agentId: 'gemini-sim',
+          workingDirectory: process.cwd(),
+        },
+      });
+      expect(targetResponse.statusCode).toBe(201);
+      const target = targetResponse.json<{ id: string }>();
+
+      const requested = await runtime.app.inject({
+        method: 'POST',
+        url: '/api/v1/messages',
+        headers: { 'idempotency-key': 'runtime-integration-request' },
+        payload: {
+          sourceSessionId: session.id,
+          targetSessionId: target.id,
+          kind: 'status_request',
+          content: 'Report simulated status.',
+          evidenceRequirements: ['session_state'],
+          timeoutMs: 5_000,
+        },
+      });
+      expect(requested.statusCode).toBe(202);
+      const correlationId = requested.json<{ message: { correlationId: string } }>().message
+        .correlationId;
+      const claimed = await runtime.app.inject({
+        method: 'POST',
+        url: `/api/v1/sessions/${target.id}/inbox/claim`,
+        payload: {
+          bridgeInstanceId: 'integration-bridge',
+          limit: 10,
+          blockMs: 0,
+          minIdleMs: 0,
+        },
+      });
+      expect(claimed.statusCode).toBe(200);
+      expect(claimed.json<{ items: Array<{ correlationId: string }> }>().items).toEqual([
+        expect.objectContaining({ correlationId }),
+      ]);
+      for (const action of ['acknowledge', 'processing'] as const) {
+        expect(
+          (
+            await runtime.app.inject({
+              method: 'POST',
+              url: `/api/v1/messages/${correlationId}/${action}`,
+              payload: { responderSessionId: target.id },
+            })
+          ).statusCode,
+        ).toBe(200);
+      }
+      const responded = await runtime.app.inject({
+        method: 'POST',
+        url: `/api/v1/messages/${correlationId}/respond`,
+        payload: {
+          responderSessionId: target.id,
+          response: {
+            status: 'answered',
+            answer: 'Simulated integration status.',
+            evidence: [
+              {
+                type: 'session_state',
+                summary: 'Simulated daemon integration evidence.',
+                metadata: { simulated: true },
+              },
+            ],
+            verifiedAt: new Date().toISOString(),
+          },
+        },
+      });
+      expect(responded.statusCode).toBe(200);
+      expect(
+        (
+          await runtime.app.inject({
+            method: 'GET',
+            url: `/api/v1/messages/${correlationId}/wait?waitMs=100`,
+          })
+        ).json(),
+      ).toMatchObject({ state: 'responded', response: { status: 'answered' } });
+      const idempotentRetry = await runtime.app.inject({
+        method: 'POST',
+        url: '/api/v1/messages',
+        headers: { 'idempotency-key': 'runtime-integration-request' },
+        payload: {
+          sourceSessionId: session.id,
+          targetSessionId: target.id,
+          kind: 'status_request',
+          content: 'Report simulated status.',
+          evidenceRequirements: ['session_state'],
+          timeoutMs: 5_000,
+        },
+      });
+      expect(idempotentRetry.statusCode).toBe(200);
+      expect(idempotentRetry.json()).toMatchObject({
+        idempotent: true,
+        message: { correlationId, state: 'responded' },
+      });
+      const responseInbox = await runtime.app.inject({
+        method: 'POST',
+        url: `/api/v1/sessions/${session.id}/inbox/claim`,
+        payload: {
+          bridgeInstanceId: 'integration-source',
+          limit: 10,
+          blockMs: 0,
+          minIdleMs: 0,
+        },
+      });
+      expect(responseInbox.json()).toMatchObject({
+        items: [expect.objectContaining({ itemKind: 'response', correlationId })],
+      });
+
+      const timeoutRequest = await runtime.app.inject({
+        method: 'POST',
+        url: '/api/v1/messages',
+        payload: {
+          sourceSessionId: session.id,
+          targetSessionId: target.id,
+          kind: 'question',
+          content: 'No response expected.',
+          timeoutMs: 1,
+        },
+      });
+      expect(timeoutRequest.statusCode).toBe(202);
+      const timeoutCorrelation = timeoutRequest.json<{ message: { correlationId: string } }>()
+        .message.correlationId;
+      const timeoutDeadline = Date.now() + 1_000;
+      let timeoutState = 'queued';
+      while (timeoutState !== 'timed_out' && Date.now() < timeoutDeadline) {
+        await delay(10);
+        const timeoutProjection = await runtime.app.inject({
+          method: 'GET',
+          url: `/api/v1/messages/${timeoutCorrelation}`,
+        });
+        if (timeoutProjection.statusCode !== 200) {
+          throw new Error(
+            `Timeout projection failed: ${timeoutProjection.statusCode} ${timeoutProjection.body}`,
+          );
+        }
+        timeoutState = timeoutProjection.json<{ state: string }>().state;
+      }
+      expect(timeoutState).toBe('timed_out');
 
       const socket = await runtime.app.injectWS('/api/v1/realtime', {
         headers: {

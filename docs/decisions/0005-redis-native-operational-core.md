@@ -53,8 +53,10 @@ Hashes store project/session projections. Sets store membership and secondary in
 heartbeat sorted set stores expiration deadlines. Presence and daemon ownership use TTL
 keys. The agent session index does not represent an AgentDefinition.
 
-Session inbox/outbox Streams, task delivery, messages, leases, metrics, lifecycle, and graph
-projections remain deferred.
+At the time of this Phase 1 decision, session inbox/outbox Streams, task delivery, messages,
+leases, metrics, lifecycle, and graph projections were deferred. ADR 0006 subsequently
+implements session inbox request/reply; outboxes, tasks, leases, metrics, lifecycle, and
+graph features remain deferred.
 
 ### Event and projection model
 

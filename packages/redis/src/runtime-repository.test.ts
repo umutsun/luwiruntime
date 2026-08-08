@@ -143,10 +143,10 @@ describe('runtime repository session boundary', () => {
       status: 'created',
       session: { id: 'session-1', agentId: 'codex-sim' },
     });
-    expect(client.commands[0]?.slice(0, 11)).toEqual([
+    expect(client.commands[0]?.slice(0, 12)).toEqual([
       'FCALL',
       functions.functions.sessionRegister,
-      '8',
+      '9',
       keys.session('session-1'),
       keys.project('project-1'),
       keys.projectSessions('project-1'),
@@ -155,6 +155,7 @@ describe('runtime repository session boundary', () => {
       keys.heartbeatDeadlines,
       keys.globalEvents,
       keys.projectEvents('project-1'),
+      keys.sessionInbox('session-1'),
     ]);
   });
 

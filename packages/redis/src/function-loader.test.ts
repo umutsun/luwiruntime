@@ -61,7 +61,7 @@ class FakeAdminClient implements RedisAdminClient {
     }
     if (command[0] === 'FCALL') {
       return JSON.stringify({
-        version: 1,
+        version: 9,
         libraryName: command[1]?.includes('test') ? 'test' : 'luwi_v1',
       });
     }

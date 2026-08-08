@@ -1,15 +1,9 @@
 import { z } from 'zod';
 
 import { realtimeEventMessageSchema } from './realtime.js';
+import { runtimeStateSchema } from './runtime-state.js';
 
-export const runtimeStateSchema = z.enum([
-  'starting',
-  'ready',
-  'degraded',
-  'recovering',
-  'draining',
-  'stopped',
-]);
+export { runtimeStateSchema };
 
 export const eventListQuerySchema = z.strictObject({
   limit: z.coerce.number().int().min(1).max(1000).default(100),
@@ -29,7 +23,7 @@ export const publicErrorResponseSchema = z.strictObject({
   }),
 });
 
-export type RuntimeStateName = z.infer<typeof runtimeStateSchema>;
+export type { RuntimeStateName } from './runtime-state.js';
 export type EventListQuery = z.infer<typeof eventListQuerySchema>;
 export type EventListResponse = z.infer<typeof eventListResponseSchema>;
 export type PublicErrorResponse = z.infer<typeof publicErrorResponseSchema>;

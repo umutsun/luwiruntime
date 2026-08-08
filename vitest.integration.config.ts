@@ -8,6 +8,7 @@ const source = (relativePath: string): string =>
 export default defineConfig({
   resolve: {
     alias: {
+      '@luwi/adapters': source('./packages/adapters/src/index.ts'),
       '@luwi/protocol': source('./packages/protocol/src/index.ts'),
       '@luwi/redis': source('./packages/redis/src/index.ts'),
       '@luwi/runtime': source('./packages/runtime/src/index.ts'),

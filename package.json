@@ -9,15 +9,19 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -b",
+    "build": "pnpm --filter @luwi/dashboard build && tsc -b",
     "clean": "tsc -b --clean",
     "dev": "pnpm --filter @luwi/daemon dev",
+    "dev:dashboard": "pnpm --filter @luwi/dashboard dev",
+    "demo:phase3": "node examples/phase3-demo.mjs",
+    "demo:phase4": "node examples/phase4-demo.mjs",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "lint": "eslint .",
     "test": "vitest run --exclude \"**/*.integration.test.ts\"",
+    "test:windows-cleanup-stress": "tsx scripts/windows-command-cleanup-stress.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "pnpm --filter @luwi/dashboard typecheck && tsc -b --pretty false"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

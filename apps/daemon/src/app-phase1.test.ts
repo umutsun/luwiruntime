@@ -10,7 +10,7 @@ import type { SessionService } from './session-service.js';
 
 const config: DaemonConfig = {
   host: '127.0.0.1',
-  port: 4782,
+  port: 80,
   redisUrl: 'redis://127.0.0.1:6379',
   logLevel: 'info',
   workspaceId: 'local',

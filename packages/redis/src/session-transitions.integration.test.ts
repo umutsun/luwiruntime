@@ -104,6 +104,12 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       await expect(
         commandClient.sendCommand(['PTTL', keys.sessionPresence('session-1')]),
       ).resolves.toBeGreaterThan(0);
+      const groups = await commandClient.sendCommand([
+        'XINFO',
+        'GROUPS',
+        keys.sessionInbox('session-1'),
+      ]);
+      expect(JSON.stringify(groups)).toContain('luwi-session-inbox-v1');
     });
 
     it('persists allowed status changes and emits nothing for unchanged or terminal requests', async () => {

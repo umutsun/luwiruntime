@@ -1,3 +1,15 @@
+import {
+  INBOX_DEFAULT_BLOCK_MS,
+  INBOX_DEFAULT_CLAIM_LIMIT,
+  INBOX_DEFAULT_MIN_IDLE_MS,
+  INBOX_MAX_CLAIM_LIMIT,
+  MESSAGE_DEFAULT_TIMEOUT_MS,
+  MESSAGE_MAX_CONTENT_BYTES,
+  MESSAGE_MAX_EVIDENCE_ITEMS,
+  MESSAGE_MAX_RESPONSE_BYTES,
+  MESSAGE_MAX_SUBJECT_BYTES,
+  MESSAGE_MAX_TIMEOUT_MS,
+} from '@luwi/protocol';
 import { z } from 'zod';
 
 const environmentSchema = z.object({
@@ -26,10 +38,89 @@ const environmentSchema = z.object({
   LUWI_STREAM_MAXLEN_PROJECT: z.coerce.number().int().min(100).default(50_000),
   LUWI_STREAM_MAXLEN_DEAD_LETTER: z.coerce.number().int().min(10).default(10_000),
   LUWI_RETENTION_INTERVAL_MS: z.coerce.number().int().min(1_000).default(60_000),
+  LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS: z.coerce.number().int().min(50).default(1_000),
+  LUWI_MESSAGE_TIMEOUT_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  LUWI_MESSAGE_MAX_CONTENT_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MESSAGE_MAX_CONTENT_BYTES)
+    .default(MESSAGE_MAX_CONTENT_BYTES),
+  LUWI_MESSAGE_MAX_SUBJECT_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MESSAGE_MAX_SUBJECT_BYTES)
+    .default(MESSAGE_MAX_SUBJECT_BYTES),
+  LUWI_MESSAGE_MAX_RESPONSE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MESSAGE_MAX_RESPONSE_BYTES)
+    .default(MESSAGE_MAX_RESPONSE_BYTES),
+  LUWI_MESSAGE_MAX_EVIDENCE_ITEMS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(MESSAGE_MAX_EVIDENCE_ITEMS)
+    .default(MESSAGE_MAX_EVIDENCE_ITEMS),
+  LUWI_MESSAGE_DEFAULT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MESSAGE_MAX_TIMEOUT_MS)
+    .default(MESSAGE_DEFAULT_TIMEOUT_MS),
+  LUWI_MESSAGE_MAX_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(MESSAGE_MAX_TIMEOUT_MS)
+    .default(MESSAGE_MAX_TIMEOUT_MS),
+  LUWI_INBOX_CLAIM_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(INBOX_MAX_CLAIM_LIMIT)
+    .default(INBOX_DEFAULT_CLAIM_LIMIT),
+  LUWI_INBOX_BLOCK_MS: z.coerce.number().int().min(0).max(30_000).default(INBOX_DEFAULT_BLOCK_MS),
+  LUWI_INBOX_MIN_IDLE_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(MESSAGE_MAX_TIMEOUT_MS)
+    .default(INBOX_DEFAULT_MIN_IDLE_MS),
+  LUWI_INBOX_MAX_CLAIM_LIMIT: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(INBOX_MAX_CLAIM_LIMIT)
+    .default(INBOX_MAX_CLAIM_LIMIT),
+  LUWI_TERMINAL_MESSAGE_RETENTION_MS: z.coerce.number().int().min(60_000).default(604_800_000),
+  LUWI_MESSAGE_IDEMPOTENCY_RETENTION_MS: z.coerce.number().int().min(60_000).default(86_400_000),
+  LUWI_SESSION_INBOX_MAXLEN: z.coerce.number().int().min(100).default(10_000),
   LUWI_DRAIN_TIMEOUT_MS: z.coerce.number().int().min(100).default(5_000),
   LUWI_RECONNECT_INITIAL_MS: z.coerce.number().int().min(50).default(250),
   LUWI_RECONNECT_MAX_MS: z.coerce.number().int().min(250).default(5_000),
   LUWI_ALLOWED_ORIGINS: z.string().optional(),
+  LUWI_HOME: z.string().trim().min(1).optional(),
+  LUWI_NATIVE_HOME: z.string().trim().min(1).optional(),
+  LUWI_CONFIG_SNAPSHOT_RETENTION_COUNT: z.coerce.number().int().min(1).max(10_000).default(50),
+  LUWI_GIT_COMMAND_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(5_000),
+  LUWI_GIT_SCAN_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(300_000),
+  LUWI_USAGE_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  LUWI_GIT_OBSERVATION_RETENTION_COUNT: z.coerce.number().int().min(1).max(10_000).default(100),
+  LUWI_GRAPH_GENERATION_RETENTION_COUNT: z.coerce.number().int().min(2).max(100).default(2),
+  LUWI_OPTIMIZATION_MIN_BASELINE_SESSIONS: z.coerce.number().int().min(1).max(10_000).default(3),
+  LUWI_OPTIMIZATION_MIN_POST_SESSIONS: z.coerce.number().int().min(1).max(10_000).default(3),
+  LUWI_OPTIMIZATION_MIN_OBSERVATION_HOURS: z.coerce.number().nonnegative().max(8760).default(24),
+  LUWI_OPTIMIZATION_MAX_FINDINGS_PER_RUN: z.coerce.number().int().min(1).max(1000).default(100),
+  LUWI_OPTIMIZATION_MAX_PROPOSALS_PER_RUN: z.coerce.number().int().min(1).max(100).default(25),
+  LUWI_OPTIMIZATION_OVERSIZED_CONTEXT_TOKENS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100_000_000)
+    .default(8_000),
 });
 
 export type DaemonConfig = {
@@ -54,10 +145,39 @@ export type DaemonConfig = {
   projectStreamMaxLength?: number;
   deadLetterStreamMaxLength?: number;
   retentionIntervalMs?: number;
+  messageTimeoutSweepIntervalMs?: number;
+  messageTimeoutBatchSize?: number;
+  messageMaxContentBytes?: number;
+  messageMaxSubjectBytes?: number;
+  messageMaxResponseBytes?: number;
+  messageMaxEvidenceItems?: number;
+  messageDefaultTimeoutMs?: number;
+  messageMaxTimeoutMs?: number;
+  inboxClaimLimit?: number;
+  inboxBlockMs?: number;
+  inboxMinIdleMs?: number;
+  inboxMaxClaimLimit?: number;
+  terminalMessageRetentionMs?: number;
+  messageIdempotencyRetentionMs?: number;
+  sessionInboxMaxLength?: number;
   drainTimeoutMs?: number;
   reconnectInitialMs?: number;
   reconnectMaxMs?: number;
   allowedOrigins?: string[];
+  luwiHome?: string;
+  nativeHome?: string;
+  configSnapshotRetentionCount?: number;
+  gitCommandTimeoutMs?: number;
+  gitScanIntervalMs?: number;
+  usageRetentionDays?: number;
+  gitObservationRetentionCount?: number;
+  graphGenerationRetentionCount?: number;
+  optimizationMinimumBaselineSessions?: number;
+  optimizationMinimumPostSessions?: number;
+  optimizationMinimumObservationHours?: number;
+  optimizationMaximumFindings?: number;
+  optimizationMaximumProposals?: number;
+  optimizationOversizedContextTokens?: number;
 };
 
 export function loadDaemonConfig(
@@ -76,6 +196,12 @@ export function loadDaemonConfig(
   }
   if (parsed.LUWI_RECONNECT_INITIAL_MS > parsed.LUWI_RECONNECT_MAX_MS) {
     throw new Error('Redis reconnect initial delay must not exceed its maximum delay.');
+  }
+  if (parsed.LUWI_MESSAGE_DEFAULT_TIMEOUT_MS > parsed.LUWI_MESSAGE_MAX_TIMEOUT_MS) {
+    throw new Error('The default message timeout must not exceed its maximum.');
+  }
+  if (parsed.LUWI_INBOX_CLAIM_LIMIT > parsed.LUWI_INBOX_MAX_CLAIM_LIMIT) {
+    throw new Error('The default inbox claim limit must not exceed its maximum.');
   }
   for (const origin of allowedOrigins) {
     const url = new URL(origin);
@@ -116,9 +242,38 @@ export function loadDaemonConfig(
     projectStreamMaxLength: parsed.LUWI_STREAM_MAXLEN_PROJECT,
     deadLetterStreamMaxLength: parsed.LUWI_STREAM_MAXLEN_DEAD_LETTER,
     retentionIntervalMs: parsed.LUWI_RETENTION_INTERVAL_MS,
+    messageTimeoutSweepIntervalMs: parsed.LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS,
+    messageTimeoutBatchSize: parsed.LUWI_MESSAGE_TIMEOUT_BATCH_SIZE,
+    messageMaxContentBytes: parsed.LUWI_MESSAGE_MAX_CONTENT_BYTES,
+    messageMaxSubjectBytes: parsed.LUWI_MESSAGE_MAX_SUBJECT_BYTES,
+    messageMaxResponseBytes: parsed.LUWI_MESSAGE_MAX_RESPONSE_BYTES,
+    messageMaxEvidenceItems: parsed.LUWI_MESSAGE_MAX_EVIDENCE_ITEMS,
+    messageDefaultTimeoutMs: parsed.LUWI_MESSAGE_DEFAULT_TIMEOUT_MS,
+    messageMaxTimeoutMs: parsed.LUWI_MESSAGE_MAX_TIMEOUT_MS,
+    inboxClaimLimit: parsed.LUWI_INBOX_CLAIM_LIMIT,
+    inboxBlockMs: parsed.LUWI_INBOX_BLOCK_MS,
+    inboxMinIdleMs: parsed.LUWI_INBOX_MIN_IDLE_MS,
+    inboxMaxClaimLimit: parsed.LUWI_INBOX_MAX_CLAIM_LIMIT,
+    terminalMessageRetentionMs: parsed.LUWI_TERMINAL_MESSAGE_RETENTION_MS,
+    messageIdempotencyRetentionMs: parsed.LUWI_MESSAGE_IDEMPOTENCY_RETENTION_MS,
+    sessionInboxMaxLength: parsed.LUWI_SESSION_INBOX_MAXLEN,
     drainTimeoutMs: parsed.LUWI_DRAIN_TIMEOUT_MS,
     reconnectInitialMs: parsed.LUWI_RECONNECT_INITIAL_MS,
     reconnectMaxMs: parsed.LUWI_RECONNECT_MAX_MS,
     allowedOrigins: [...new Set(allowedOrigins)],
+    ...(parsed.LUWI_HOME === undefined ? {} : { luwiHome: parsed.LUWI_HOME }),
+    ...(parsed.LUWI_NATIVE_HOME === undefined ? {} : { nativeHome: parsed.LUWI_NATIVE_HOME }),
+    configSnapshotRetentionCount: parsed.LUWI_CONFIG_SNAPSHOT_RETENTION_COUNT,
+    gitCommandTimeoutMs: parsed.LUWI_GIT_COMMAND_TIMEOUT_MS,
+    gitScanIntervalMs: parsed.LUWI_GIT_SCAN_INTERVAL_MS,
+    usageRetentionDays: parsed.LUWI_USAGE_RETENTION_DAYS,
+    gitObservationRetentionCount: parsed.LUWI_GIT_OBSERVATION_RETENTION_COUNT,
+    graphGenerationRetentionCount: parsed.LUWI_GRAPH_GENERATION_RETENTION_COUNT,
+    optimizationMinimumBaselineSessions: parsed.LUWI_OPTIMIZATION_MIN_BASELINE_SESSIONS,
+    optimizationMinimumPostSessions: parsed.LUWI_OPTIMIZATION_MIN_POST_SESSIONS,
+    optimizationMinimumObservationHours: parsed.LUWI_OPTIMIZATION_MIN_OBSERVATION_HOURS,
+    optimizationMaximumFindings: parsed.LUWI_OPTIMIZATION_MAX_FINDINGS_PER_RUN,
+    optimizationMaximumProposals: parsed.LUWI_OPTIMIZATION_MAX_PROPOSALS_PER_RUN,
+    optimizationOversizedContextTokens: parsed.LUWI_OPTIMIZATION_OVERSIZED_CONTEXT_TOKENS,
   };
 }

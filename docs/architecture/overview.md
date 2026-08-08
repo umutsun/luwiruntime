@@ -18,17 +18,18 @@ and projection store—not a cache in front of another database.
 
 ### Control plane
 
-The control plane identifies filesystem/Git-backed projects and configuration. Phase 1
-persists a runtime project registration in Redis, while the project directory remains the
-source of its code. Duplicate canonical local paths are rejected atomically rather than
-merged.
+The control plane identifies filesystem/Git-backed projects and configuration. Phase 3
+persists human-readable AgentDefinitions, project-agent bindings, capabilities, profiles,
+plans, snapshots, and receipts in canonical local files while Redis holds validated
+operational projections. Duplicate project paths and control-plane IDs are rejected rather
+than merged.
 
 ### Coordination plane
 
 IRIS coordination currently covers registered sessions, opaque agent IDs, heartbeats,
-presence, status transitions, normalized project/runtime events, and realtime delivery.
-These are modules within `@luwi/runtime`, `@luwi/redis`, and the daemon; IRIS is not a
-separate package.
+presence, status transitions, durable same-project request/reply, normalized
+project/runtime events, and realtime delivery. These are modules within `@luwi/runtime`,
+`@luwi/redis`, and the daemon; IRIS is not a separate package.
 
 ### Execution plane
 
@@ -40,6 +41,7 @@ work. LUWI coordinates them and never becomes the coding-agent process.
 - `@luwi/protocol` owns strict Zod wire schemas, normalized Runtime events, HTTP responses,
   and WebSocket wrappers.
 - `@luwi/runtime` owns Redis-independent path canonicalization, status policy, readiness,
+  usage aggregation, Git attribution, graph query policy, structural findings, evaluation,
   in-flight mutation tracking, and typed errors.
 - `@luwi/redis` owns the official Redis client, key construction, stored representations,
   Redis Functions, repositories, ownership mechanics, Streams, retention, and dead-letter
@@ -49,9 +51,14 @@ work. LUWI coordinates them and never becomes the coding-agent process.
   credentials.
 - `@luwi/cli` is an HTTP/WebSocket client. Its simulations model a future Session Bridge
   without direct Redis access.
+- `@luwi/mcp-server` is a thin official-SDK stdio adapter bound to one LUWI session. It uses
+  loopback daemon HTTP only and has no Redis dependency.
+- `@luwi/adapters` passively detects and parses native configuration and proposes
+  deterministic files and declares optional telemetry support. Filesystem and command
+  collaborators are injected; it never writes.
 
-Metrics, lifecycle, memory, graph, session routing, and IRIS do not have speculative package
-boundaries.
+Metrics, lifecycle, memory, graph, Git intelligence, session routing, and IRIS do not have
+speculative package boundaries.
 
 ## Runtime lifecycle and ownership
 
@@ -112,7 +119,7 @@ Functions verify both Stream types and that neither has exhausted Redis's maximu
 Global and project Streams receive independent Redis-generated IDs. Once a Function begins
 mutation, its writes and the required event appends form one Redis atomic transition.
 
-The production library and functions are:
+The production library is compatibility version 9. Its functions are:
 
 ```text
 library: luwi_v1
@@ -123,10 +130,35 @@ luwi_session_heartbeat_v1
 luwi_session_status_v1
 luwi_session_close_v1
 luwi_session_disconnect_v1
+luwi_message_request_v1
+luwi_message_delivered_v1
+luwi_message_acknowledge_v1
+luwi_message_processing_v1
+luwi_message_respond_v1
+luwi_message_reject_v1
+luwi_message_fail_v1
+luwi_message_timeout_v1
+luwi_control_upsert_v1
+luwi_control_delete_v1
+luwi_control_plan_transition_v1
+luwi_control_plan_complete_v1
+luwi_usage_ingest_v1
+luwi_graph_rebuild_transition_v1
+luwi_intelligence_batch_transition_v1
+luwi_graph_projection_failure_v1
 luwi_function_version_v1
 ```
 
-## Phase 1 Redis taxonomy
+`luwi_intelligence_batch_transition_v1` preflights bounded intelligence projection/index
+operations and both event Streams, then applies the state changes and event append as one
+atomic transition. It is used for multi-record Git, package, attribution, graph-operation,
+and optimization-evaluation updates; product policy and filesystem/Git observation remain
+outside Lua.
+
+`luwi_graph_projection_failure_v1` atomically appends a bounded projection diagnostic and
+marks graph health degraded, so recovery cannot miss a recorded projection failure.
+
+## Redis taxonomy
 
 ```text
 luwi:v1:events:global
@@ -135,21 +167,67 @@ luwi:v1:events:dead-letter
 
 luwi:v1:project:{projectId}
 luwi:v1:session:{sessionId}
+luwi:v1:message:{messageId}
 
 luwi:v1:index:projects
 luwi:v1:index:project:path:{pathIdentityHash}
 luwi:v1:index:project:{projectId}:sessions
 luwi:v1:index:agent:{agentId}:sessions
+luwi:v1:index:messages
+luwi:v1:index:messages:terminal
+luwi:v1:index:message:correlation:{correlationId}
+luwi:v1:index:message:idempotency:{sourceSessionId}:{sha256}
+luwi:v1:index:project:{projectId}:messages
+luwi:v1:index:session:{sessionId}:messages:source
+luwi:v1:index:session:{sessionId}:messages:target
 
 luwi:v1:presence:session:{sessionId}
 luwi:v1:deadline:heartbeats
+luwi:v1:deadline:messages
+luwi:v1:inbox:session:{sessionId}
 luwi:v1:runtime:daemon-owner
+
+luwi:v1:agent-definition:{agentId}
+luwi:v1:project-agent-binding:{bindingId}
+luwi:v1:capability:{capabilityId}
+luwi:v1:capability-binding:{bindingId}
+luwi:v1:profile:{profileId}
+luwi:v1:config-plan:{planId}
+luwi:v1:config-operation:{operationId}
+luwi:v1:config-drift:{driftId}
+luwi:v1:context-source:{sourceId}
+luwi:v1:context-footprint:project:{projectId}:agent:{agentId}
+
+luwi:v1:index:capabilities
+luwi:v1:index:capability-bindings
+luwi:v1:index:project:{projectId}:capabilities
+luwi:v1:index:project:{projectId}:capability-bindings
+
+luwi:v1:usage:{usageId}
+luwi:v1:index:{project|agent|session}:{id}:usage
+luwi:v1:metrics:{scope}:source:{usageSource}
+luwi:v1:context-contribution:{contributionId}
+luwi:v1:index:{project|agent|session}:{id}:context-contributions
+luwi:v1:git:observation:{observationId}
+luwi:v1:git:project:{projectId}:current
+luwi:v1:git:commit:{projectId}:{commitSha}
+luwi:v1:attribution:{attributionId}
+luwi:v1:package:{projectId}:{ecosystem}:{packageId}
+luwi:v1:technology:{projectId}:{technologyId}
+luwi:v1:graph:generation:{generation}:node:{kind}:{id}
+luwi:v1:graph:generation:{generation}:edge:{edgeId}
+luwi:v1:graph:generation:{generation}:{out|in}:{kind}:{id}
+luwi:v1:graph:generation:active
+luwi:v1:graph:rebuild:{operationId}
+luwi:v1:optimization:{finding|proposal|evaluation}:{id}
 ```
 
 The agent session index is derived membership, not an AgentDefinition. Phase 1 never creates
-`luwi:v1:agent:{agentId}`.
+`luwi:v1:agent:{agentId}`. Project capability package IDs and project assignment IDs use
+separate sets; their entity types are never mixed in one index.
 
-Session inbox/outbox Streams and message projections are deferred to Phase 2.
+Session inboxes use `luwi-session-inbox-v1`; caller consumers are
+`bridge-{bridgeInstanceId}`. Session outboxes remain deferred.
 
 ## Projects and path identity
 
@@ -174,7 +252,7 @@ Heartbeats renew presence and the deadline sorted set on every call. Durable
 projection heartbeat timestamp is always renewed. The sweeper transitions expired sessions
 to `disconnected` through a race-aware Redis Function.
 
-Phase 1 events are:
+Implemented project/session/message events are:
 
 ```text
 project.registered
@@ -183,10 +261,51 @@ session.heartbeat
 session.status.changed
 session.completed
 session.disconnected
+message.requested
+message.delivered
+message.acknowledged
+message.processing
+message.responded
+message.rejected
+message.failed
+message.timed_out
 ```
 
 Every event uses the validated version 1 envelope and is written to the global and applicable
 project Stream.
+
+## Request/reply and inbox recovery
+
+Message creation validates the source, selects an online non-terminal target in the same
+project, and invokes one Redis Function. The Function atomically:
+
+1. revalidates both session projections and presence keys;
+2. creates the authoritative message hash and correlation/idempotency indexes;
+3. adds project/source/target lookup indexes and the deadline;
+4. appends the durable request to the target session inbox;
+5. appends the same normalized `message.requested` event ID to the global and project
+   Streams.
+
+Target selection by opaque `agentId` is deterministic: preferred session status, newest
+heartbeat, then lexical session ID. A direct cross-project target is rejected.
+
+Inbox claim runs `XAUTOCLAIM` before `XREADGROUP`, so recovered pending items are returned
+before new work. Redis reads are non-blocking on the shared command connection; the daemon
+implements bounded HTTP long polling with short readiness-aware polls so an idle bridge
+cannot stall heartbeats, mutations, or sweepers. A request remains pending through
+`delivered`, `acknowledged`, and
+`processing`; a terminal response/rejection/failure/timeout acknowledges the original
+target entry and appends a response notification to the source inbox. The message
+projection is authoritative, so duplicate delivery cannot create a second terminal result.
+
+The application clock only selects deadline candidates. The timeout Function compares the
+expected sorted-set score with Redis server time and the current non-terminal projection.
+A committed response makes the timeout unchanged; a committed timeout makes a later
+response fail with `MESSAGE_TERMINAL`.
+
+The global event relay remains the only WebSocket path. Message events are persisted first
+and then broadcast by the existing consumer-group relay. Realtime delivery is a wake-up
+hint; bridge recovery always comes from its durable session inbox.
 
 ## Relay, recovery, and WebSocket guarantees
 
@@ -237,11 +356,176 @@ zero pending, zero lag, and a healthy relay. Otherwise it is deferred. Project S
 the dead-letter Stream have independent bounds. Temporary growth is preferred to destroying
 recoverable pending work.
 
-## Future Session Bridge and MCP adapter
+Message retention removes terminal projections only after their configured age and after
+any idempotency index has expired. Per-session inbox `MAXLEN` trimming runs only with known
+zero pending and zero lag. Temporary growth is preferred to deleting recoverable delivery
+state.
 
-A future Session Bridge will accompany an external coding-agent process and use only the
-daemon protocol to register, heartbeat, update status, receive and acknowledge messages,
-respond, request leases, and close. Terminal injection remains out of scope.
+## Session Bridge simulator and MCP adapter
 
-A future MCP server may adapt the stable daemon protocol. It will not receive Redis
-credentials and is not required by Phase 1.
+The CLI's `manual`, `echo`, and `status-responder` modes simulate a Session Bridge using only
+daemon APIs. Status responder evidence is explicitly labeled simulated and describes only
+the LUWI project/session snapshot it actually read. The simulator never closes the
+underlying coding session unless a separate session-close command is issued.
+
+The implemented MCP server verifies `LUWI_SESSION_ID` at startup, rejects offline/terminal
+bindings, derives source and responder identity from that binding, and limits message reads
+to the bound project/session. It exposes stdio tools through the official SDK and never
+receives Redis credentials. Every tool advertises a protocol-owned output schema, validates
+daemon output, returns `structuredContent`, and emits only a concise bounded text summary.
+MCP discovery collections are capped and report truncation. Phase 3 adds project-bounded
+read-only tools for AgentDefinitions, capabilities, effective config, context footprint, and
+drift. Phase 4 adds project-scoped usage, context intelligence, Git, package, technology,
+graph, and optimization reads plus a bounded analysis request. It deliberately exposes no
+acceptance, graph rebuild, native-config approval/apply, rollback, or Git mutation tool.
+
+## Capability and native-config control
+
+AgentDefinitions do not replace opaque historical session IDs. Project bindings select
+profiles and project capability assignments without limiting concurrent sessions. Effective
+configuration uses fixed precedence from runtime defaults through global profiles and
+capabilities, project profiles and capabilities, project-agent overrides, then ephemeral
+preview overrides. Explicit disable is a tombstone. Missing dependencies, incompatible
+agent kinds, and version conflicts make the preview invalid and prevent rendering.
+
+The daemon, not adapters, owns all writes:
+
+```text
+inspect -> plan/redacted diff -> approve -> explicit apply
+        -> process/filesystem locks -> precondition -> snapshot
+        -> stage+fsync all temporary files -> journaled atomic renames
+        -> atomic Redis plan/operation/event completion
+```
+
+An existing unmanaged file requires explicit adoption in the plan request. Approval tokens
+are stored only as hashes and used once. Drift detection never overwrites files. Rollback is
+a new approved plan. A local receipt makes a post-commit Redis failure reconcilable during
+owned startup. A partial multi-file commit is left for hash-based reconciliation rather
+than silently rolled back; ambiguous receipts keep the runtime degraded. Generated stale
+filesystem locks are cleared only during owned startup, and validated snapshots are bounded
+by `LUWI_CONFIG_SNAPSHOT_RETENTION_COUNT`.
+
+The local plan artifact must match the approved plan's adapter, target set, hashes,
+management mode, import settings, and rollback snapshot. Snapshot payload hashes are
+verified before rollback touches a target, and rollback takes its own pre-rollback snapshot.
+Current managed-target ownership is a dedicated canonical record rather than an inference
+from historical receipts. A Redis Function result whose reply is lost is reconciled against
+the persisted plan/operation projections instead of being reported as a definite failure.
+
+Global imports write AgentDefinition defaults; project imports write agent-specific defaults
+to the project `.luwi/manifest.json`. Both go through the same plan, approval, snapshot,
+journal, and atomic replacement path. The global root manifest tracks known project roots.
+Owned startup validates canonical AgentDefinitions, capabilities, profiles, capability
+bindings, and project-agent bindings and rebuilds missing/stale Redis projections before
+readiness.
+
+Codex and Claude Code expose a tested writable subset. Gemini CLI and Kimi remain read-only
+where ownership/render semantics are not proven. Passive inspection never invokes a CLI;
+explicit installation detection invokes only `--version`.
+
+Context footprint is a static `ceil(UTF-8 bytes / 4)` estimate labeled
+`generic-character-estimate`. Inventory covers passive instruction sources and assigned
+skill, plugin, hook, MCP, policy, and instruction artifacts. Source IDs are stable for an
+agent/project/path identity while content changes update the hash. Exact duplicate groups
+use SHA-256 equality. This is not model telemetry, billing, semantic analysis, or automatic
+context optimization.
+
+## Phase 4 usage and context observations
+
+`POST /api/v1/usage` validates a registered project/agent/session relationship, preserves
+optional token fields, and deduplicates a supplied `sourceEventId` or `Idempotency-Key`.
+`luwi_usage_ingest_v1` atomically stores the normalized record, scope indexes,
+source-separated aggregate deltas, and the global/project Runtime event. Exact, reported,
+adapter-extracted, estimated, and unavailable observations are never silently combined.
+Unknown values stay absent rather than becoming zero.
+
+Static Phase 3 context remains a generic estimate. A trusted local bridge may post an
+explicit context contribution for its bound session. The daemon validates the source and
+relationship before recording loaded/invoked facts. Assigned, effective, loaded, invoked,
+and unknown are distinct. Observations never replace static estimates.
+
+Current adapters explicitly report telemetry support as unsupported unless a tested parser
+exists; unsupported fields are not inferred.
+
+## Read-only Git and package observation
+
+The Git observer uses `spawn("git", args, {shell:false})`, bounded output and timeouts,
+`GIT_OPTIONAL_LOCKS=0`, and the ADR 0011 allowlist. It does not fetch or mutate. Repository
+root, HEAD/branch, status, local refs, worktrees, recent commits/paths, LUWI trailers, and
+redacted configured remotes are projected into Redis.
+
+An explicit, internally consistent LUWI session/agent/project trailer set produces exact
+attribution. Contradictory trailers are rejected as unknown. A unique bounded
+branch/time/working-directory match produces correlated attribution. Ambiguous or absent
+evidence remains unknown; Git author metadata is hashed and never equated with an agent.
+
+Package scanning reads bounded manifests without executing a package manager. For Git
+repositories, exact project-relative `git ls-files -z --cached -- .` output limits
+language/file-pattern evidence
+to tracked paths. Non-Git projects use a clearly labeled filesystem fallback. Scan responses
+and events disclose the evidence scope and whether the file bound truncated the inventory.
+The scanner supports Node, Python, Dart/Flutter, PHP, Rust, and Go. Technology signals are
+structural and include manifest, package, or file-pattern evidence.
+
+Scans run after project registration, session start/close, configuration apply, explicit
+requests, and a conservative configurable interval. An unchanged repository-state hash
+skips a duplicate Git projection.
+
+## Operational graph and rebuild
+
+The Phase 4 graph is an operational Redis projection, not a semantic knowledge graph.
+Deterministic nodes and edges contain identifiers, bounded metadata, confidence,
+observation time, provenance, and evidence IDs. Source code, complete diffs, prompts,
+responses, credentials, and memory content are forbidden.
+
+Named queries use bounded `SSCAN` over requested node adjacency and enforce result plus
+examined-edge budgets for neighbors, paths, and subgraphs; they do not load a capped
+whole-graph snapshot. Incremental projection atomically replaces changed active-generation
+membership, including removal of obsolete nodes and edges, and appends one summary event. A
+failure atomically records bounded diagnostics and marks graph health degraded without
+changing the source event.
+
+Rebuild writes a shadow generation from validated retained Runtime events plus canonical
+manifests, current project/session projections, and retained Git/package observations. The
+operation records the retained Stream watermark and processed-event count. It validates
+stored counts and every edge endpoint before activation; the active graph remains intact on
+failure. `luwi_graph_rebuild_transition_v1` verifies the owned rebuild lock and atomically
+records completion, swaps the generation pointer, releases the lock, and persists the
+summary event. Because Streams are bounded, rebuild reconstructs the retained operational
+horizon rather than claiming unlimited historical completeness.
+
+## Structural optimization loop
+
+Optimization is deterministic and human-approved:
+
+```text
+observe -> measure -> recommend -> accept (no apply)
+        -> Phase 3 ConfigPlan -> approve -> snapshot/apply
+        -> post-change observe -> evaluate
+```
+
+Rules detect only evidence-backed structure such as oversized always-loaded sources, exact
+hash duplicates, explicit cross-project non-use observations for a global capability, and a
+broad declared MCP surface with few explicit calls. Unknown is not unused.
+
+Only supported deterministic loading-mode changes create a ConfigPlan. Phase 4 has no
+filesystem writer and never generates instruction prose. A proposal captures an immutable
+pre-change baseline; a successful Phase 3 apply records its apply timestamp. Evaluation
+counts only explicit post-apply session/adapter observations and usage evidence, compares
+configuration hashes and evidence windows, returns verified/inconclusive/failed, and always
+sets `causalClaim: false`.
+
+## Phase 4 retention
+
+The intelligence retention pass removes old raw usage JSON while keeping source-separated
+aggregate totals, deduplication tombstones, and retained Stream provenance. Aggregate
+summaries remain available for their supported global/project/agent/session scope; filters
+that require individual observations, such as arbitrary capability or time-window
+combinations, use at most 1,000 retained raw records and fail explicitly when that bounded
+query is incomplete. Raw listing uses bounded `SSCAN` and reports truncation. It bounds
+superseded Git observations,
+completed rebuild diagnostics, rejected proposals, and stale graph generations while
+preserving current Git state, active/newest graph generations, accepted proposals,
+baselines, and evaluations. Graph cleanup removes index membership incrementally so bounded
+passes make progress. Usage responses report the earliest retained raw observation when
+history is partial.

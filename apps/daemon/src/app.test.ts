@@ -7,7 +7,7 @@ import type { DaemonConfig } from './config.js';
 
 const config: DaemonConfig = {
   host: '127.0.0.1',
-  port: 4782,
+  port: 80,
   redisUrl: 'redis://127.0.0.1:6379',
   logLevel: 'info',
   workspaceId: 'workspace-1',
@@ -71,6 +71,57 @@ describe('LUWI daemon HTTP API', () => {
       },
       timestamp: '2026-07-28T08:00:02.500Z',
     });
+  });
+
+  it('rejects DNS-rebinding Hosts and hostile browser Origins for reads and mutations', async () => {
+    const redis = new FakeRedisGateway();
+    app = buildDaemon({
+      config,
+      redis,
+      logger: false,
+      runtimeInstanceId: 'runtime-1',
+      runtimeState: () => 'ready',
+    });
+    app.post('/test/mutation', async () => ({ ok: true }));
+
+    for (const request of [
+      {
+        method: 'GET' as const,
+        url: '/api/v1/runtime',
+        headers: {
+          host: 'luwi.attacker.test:80',
+          origin: 'http://luwi.attacker.test:80',
+        },
+      },
+      {
+        method: 'POST' as const,
+        url: '/test/mutation',
+        headers: {
+          host: '127.0.0.1:80',
+          origin: 'http://evil.test',
+        },
+      },
+    ]) {
+      const response = await app.inject(request);
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        error: {
+          code: 'REQUEST_ORIGIN_REJECTED',
+          message: 'The local request origin was rejected.',
+        },
+      });
+    }
+
+    expect(
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/v1/runtime',
+          headers: { host: 'localhost:80' },
+          remoteAddress: '127.0.0.1',
+        })
+      ).statusCode,
+    ).toBe(200);
   });
 
   it('reports unavailable Redis with HTTP 503 and no connection details', async () => {
@@ -144,7 +195,7 @@ describe('LUWI daemon HTTP API', () => {
       startedAt: '2026-07-28T08:00:00.000Z',
       uptimeMs: 2500,
       host: '127.0.0.1',
-      port: 4782,
+      port: 80,
       redis: {
         connected: true,
         status: 'connected',

@@ -65,7 +65,8 @@ adapter, after a demonstrated requirement and a separate accepted ADR.
 
 ### Derived views
 
-Normalized Runtime events are the durable source for:
+Normalized Runtime events plus canonical filesystem/Git observations are the rebuild inputs
+for:
 
 - metrics;
 - project activity;
@@ -74,8 +75,9 @@ Normalized Runtime events are the durable source for:
 - knowledge-graph relations;
 - audit and operational history.
 
-Every derived view must be rebuildable from retained normalized events. Do not create a
-dedicated analytics, graph, relational, embedded, or search database.
+Every derived view must be rebuildable from retained normalized events and the applicable
+canonical files/Git facts. Do not create a dedicated analytics, graph, relational, embedded,
+or search database.
 
 ## 3. Product planes
 
@@ -148,38 +150,62 @@ Keep package boundaries minimal:
 luwi-runtime/
 ├─ apps/
 │  ├─ daemon/
-│  └─ cli/
+│  ├─ cli/
+│  ├─ mcp-server/
+│  └─ dashboard/
 ├─ packages/
+│  ├─ adapters/
 │  ├─ protocol/
 │  ├─ runtime/
 │  └─ redis/
 ├─ docs/
 │  ├─ architecture/
-│  └─ decisions/
+│  ├─ decisions/
+│  ├─ design/
+│  ├─ guides/
+│  ├─ legacy/
+│  ├─ remediations/
+│  └─ superpowers/
+├─ .claude/
 ├─ AGENTS.md
+├─ CLAUDE.md
 ├─ README.md
 ├─ compose.yaml
 ├─ package.json
 ├─ pnpm-workspace.yaml
 ├─ tsconfig.base.json
 ├─ eslint.config.js
+├─ .gitattributes
 └─ .gitignore
 ```
 
 Package responsibilities:
 
 - `@luwi/protocol`: versioned Zod schemas and wire types.
-- `@luwi/runtime`: Redis-independent errors, lifecycle, projects, sessions, messages, tasks,
-  leases, projections, and IRIS state transitions.
+- `@luwi/runtime`: Redis-independent errors, lifecycle, projects, sessions, messages,
+  intelligence normalization, attribution, graph query policy, optimization analysis, and
+  IRIS state transitions.
 - `@luwi/redis`: official Redis client integration and all Redis-specific representations.
 - `@luwi/daemon`: composition root and sole Redis-accessing process.
 - `@luwi/cli`: versioned daemon HTTP client.
+- `@luwi/mcp-server`: thin stdio MCP adapter over the daemon HTTP API; never a Redis client.
+- `@luwi/adapters`: injected native-agent detection, passive inspection, capability
+  matrices, and deterministic render proposals; never direct file writes.
+- `@luwi/dashboard`: the read-only React/TypeScript Pulse shell, served by the daemon from
+  its build output; consumes only the versioned daemon HTTP and WebSocket API and the
+  `@luwi/protocol` browser export. Never a Redis client.
 
 Do not create separate packages for metrics, knowledge graph, lifecycle, memory, IRIS,
 session routing, tasks, or leases until at least two real consumers prove a boundary.
 
-Do not add a dashboard before the daemon, CLI, persistence, presence, and realtime protocol
-have tests. Do not add Turborepo until pnpm workspace scripts are insufficient.
+The dashboard precondition — daemon, CLI, persistence, presence, and realtime protocol under
+test — was met before Phase 5A, and `apps/dashboard` now exists. Do not add Turborepo until
+pnpm workspace scripts are insufficient.
+
+`@luwi/daemon` is the only package permitted to depend on `@luwi/redis`, and `@luwi/redis` is
+the only package permitted to import the `redis` client. This is enforced mechanically by a
+`no-restricted-imports` rule in `eslint.config.js`, so a violation fails `pnpm lint` rather
+than waiting for review.
 
 ## 6. Technology choices
 
@@ -198,6 +224,8 @@ Use:
 - ESLint flat configuration;
 - Prettier;
 - Commander or an equally small maintained CLI library;
+- the official maintained Model Context Protocol TypeScript SDK, isolated in
+  `@luwi/mcp-server`;
 - standard Redis 7 features only.
 
 Before adding a production dependency:
@@ -213,18 +241,20 @@ validated when read.
 
 ### Streams
 
-Phase 1 uses these Redis Streams for durable ordered records:
+The implemented runtime uses these Redis Streams for durable ordered records and delivery:
 
 ```text
 luwi:v1:events:global
 luwi:v1:events:project:{projectId}
 luwi:v1:events:dead-letter
+luwi:v1:inbox:session:{sessionId}
 ```
 
 Streams are the source of truth for events, delivery, and audit history. Pub/Sub is never a
 source of truth.
 
-Session inbox/outbox and task-delivery Streams remain deferred.
+Session inboxes use consumer group `luwi-session-inbox-v1` and caller identities
+`bridge-{bridgeInstanceId}`. Session outboxes and task-delivery Streams remain deferred.
 
 ### Consumer groups and recovery
 
@@ -246,11 +276,12 @@ must keep the runtime degraded until the entry is safely dead-lettered and ackno
 
 ### Hashes
 
-Phase 1 uses hashes for current entity state:
+The runtime uses hashes for current entity state:
 
 ```text
 luwi:v1:project:{projectId}
 luwi:v1:session:{sessionId}
+luwi:v1:message:{messageId}
 ```
 
 Do not expose these Redis representations from `@luwi/runtime` or `@luwi/protocol`.
@@ -258,20 +289,29 @@ Do not create an AgentDefinition hash implicitly from an opaque session `agentId
 
 ### Sets
 
-Phase 1 uses sets for relationships and secondary indexes:
+Sets and sorted sets provide relationships and secondary indexes. Message correlation and
+idempotency use deterministic string indexes.
 
 ```text
 luwi:v1:index:projects
 luwi:v1:index:project:{projectId}:sessions
 luwi:v1:index:agent:{agentId}:sessions
+luwi:v1:index:message:correlation:{correlationId}
+luwi:v1:index:message:idempotency:{sourceSessionId}:{sha256}
 ```
 
 ### Sorted sets
 
-Phase 1 uses a sorted set for heartbeat deadlines:
+Sorted sets cover heartbeat/message deadlines and message lookup/retention:
 
 ```text
 luwi:v1:deadline:heartbeats
+luwi:v1:deadline:messages
+luwi:v1:index:messages
+luwi:v1:index:messages:terminal
+luwi:v1:index:project:{projectId}:messages
+luwi:v1:index:session:{sessionId}:messages:source
+luwi:v1:index:session:{sessionId}:messages:target
 ```
 
 Future tasks, leases, activity, lifecycle progress, and rankings may use additional sorted
@@ -310,7 +350,8 @@ corrupted or exhausted Stream positions must not produce partial projection/even
 
 ### Pub/Sub
 
-Phase 1 does not use Pub/Sub. A future phase may use it only after durable persistence for:
+The implemented runtime does not use Pub/Sub. A future phase may use it only after durable
+persistence for:
 
 - disposable realtime fan-out;
 - connected UI invalidation;
@@ -345,6 +386,19 @@ LUWI_STREAM_MAXLEN_PROJECT=50000
 LUWI_STREAM_MAXLEN_DEAD_LETTER=10000
 LUWI_RETENTION_INTERVAL_MS=60000
 LUWI_CONSUMER_CLAIM_IDLE_MS=30000
+LUWI_MESSAGE_MAX_CONTENT_BYTES=32768
+LUWI_MESSAGE_MAX_SUBJECT_BYTES=512
+LUWI_MESSAGE_MAX_RESPONSE_BYTES=65536
+LUWI_MESSAGE_MAX_EVIDENCE_ITEMS=32
+LUWI_MESSAGE_DEFAULT_TIMEOUT_MS=120000
+LUWI_MESSAGE_MAX_TIMEOUT_MS=86400000
+LUWI_INBOX_CLAIM_LIMIT=10
+LUWI_INBOX_BLOCK_MS=5000
+LUWI_INBOX_MIN_IDLE_MS=15000
+LUWI_INBOX_MAX_CLAIM_LIMIT=100
+LUWI_TERMINAL_MESSAGE_RETENTION_MS=604800000
+LUWI_MESSAGE_IDEMPOTENCY_RETENTION_MS=86400000
+LUWI_SESSION_INBOX_MAXLEN=10000
 ```
 
 On standard Redis versions before 8.2, trim the global Stream only when group metadata is
@@ -387,7 +441,12 @@ session.heartbeat
 session.status.changed
 session.disconnected
 message.requested
+message.delivered
+message.acknowledged
+message.processing
 message.responded
+message.rejected
+message.failed
 message.timed_out
 ```
 
@@ -420,11 +479,13 @@ type AgentDefinition = {
   kind: "codex" | "claude-code" | "gemini-cli" | "kimi" | "other";
   displayName: string;
   executable?: string;
-  scope: "global" | "project";
-  projectId?: string;
+  detectedVersion?: string;
   enabled: boolean;
+  adapterId: string;
+  nativeConfigRoots: string[];
   createdAt: string;
   updatedAt: string;
+  metadata: Record<string, unknown>;
 };
 ```
 
@@ -480,10 +541,26 @@ GET  /api/v1/projects/:projectId/sessions
 
 GET  /api/v1/events?limit=100
 GET  /api/v1/realtime  (WebSocket upgrade)
+
+POST /api/v1/messages
+GET  /api/v1/messages
+GET  /api/v1/messages/:correlationId
+GET  /api/v1/messages/:correlationId/wait
+POST /api/v1/messages/:correlationId/acknowledge
+POST /api/v1/messages/:correlationId/processing
+POST /api/v1/messages/:correlationId/respond
+POST /api/v1/messages/:correlationId/reject
+POST /api/v1/messages/:correlationId/fail
+POST /api/v1/sessions/:sessionId/inbox/claim
 ```
 
-These routes are implemented in Phase 1. Message request/reply routes remain deferred to
-Phase 2 and must not be documented as available yet.
+These project, session, event, realtime, message, and inbox routes are implemented. They are
+the Phase 1 and Phase 2 subset only. Phases 3 through 5B added agent, capability, profile,
+config, context, usage, git, package, technology, graph, and optimization routes under the
+same `/api/v1` prefix, plus `GET /` and `GET /assets/:asset` for the built dashboard.
+
+`apps/daemon/src/app.ts` is the canonical route list. Read it rather than this section when
+you need the current surface; keep this section as the protocol contract, not an inventory.
 
 The WebSocket server broadcasts normalized events only after Redis persistence succeeds.
 Browser and WebSocket origins require an explicit loopback allowlist.
@@ -504,14 +581,23 @@ Cross-session communication is asynchronous:
 - deadlines create explicit `message.timed_out` events;
 - evidence and freshness are separate from model-generated confidence.
 
-## 12. Session Bridge direction
+## 12. Session Bridge and MCP boundary
 
-A future Session Bridge communicates only with the daemon through versioned local HTTP or
-WebSocket protocols. It may register, heartbeat, update status, consume and acknowledge
-inbox messages, respond, publish tool/file events, request leases, and close cleanly.
+The CLI includes HTTP-only `manual`, `echo`, and `status-responder` bridge simulations. They
+claim durable inbox work, acknowledge/process it, and optionally return explicitly simulated
+responses. They never receive Redis credentials and do not inject terminal prompts.
 
-Do not implement terminal injection in the initial milestones. Do not give a bridge Redis
-credentials.
+`@luwi/mcp-server` is a thin stdio adapter bound to one registered online session. It
+validates daemon responses, derives source/responder identity from `LUWI_SESSION_ID`, and
+operates only through loopback HTTP. Phase 3 control-plane and Phase 4 intelligence tools
+are read-only and project-bounded. A bounded optimization-analysis request is allowed;
+acceptance, graph rebuild, native config approval/apply, rollback, and Git mutation are
+never exposed through MCP.
+
+`@luwi/adapters` passively detects and inspects Codex, Claude Code, Gemini CLI, and Kimi.
+Adapters accept injected filesystem/home/project/executable/runner collaborators, execute
+only a detected CLI's `--version` during explicit installation detection, never write
+files, and never execute discovered skills, hooks, plugins, scripts, or MCP servers.
 
 ## 13. Git and safety
 
@@ -541,7 +627,7 @@ credentials.
 
 Every state transition requires tests.
 
-Phase 1 coverage includes:
+Phase 1 through Phase 4 coverage includes:
 
 1. event-envelope validation;
 2. project registration and duplicate behavior;
@@ -558,6 +644,29 @@ Phase 1 coverage includes:
 13. non-loopback bind and invalid origin rejection;
 14. single-daemon ownership and owned recovery;
 15. bounded WebSocket client queues.
+16. complete message transition and timeout race rules;
+17. same-project deterministic routing and idempotency conflicts;
+18. inbox pending recovery, pending-until-terminal acknowledgement, and safe terminal skip;
+19. message/inbox retention that defers while pending or lagged;
+20. daemon message routes, bounded waits, draining, and Redis-loss behavior;
+21. CLI message/bridge behavior and bound-session MCP tools.
+22. AgentDefinition, binding, capability, profile, provenance, and tombstone rules.
+23. adapter inspection/render fixtures without passive execution or direct writes.
+24. unmanaged-file refusal, target-root checks, snapshots, atomic replacement, locks,
+    drift, rollback, and reconciliation.
+25. control-plane Redis projections, indexes, Functions, events, HTTP/CLI routes, and
+    project-bounded read-only MCP tools.
+26. usage source/confidence validation, idempotency, source-separated aggregates, and
+    absent-value preservation.
+27. assigned/effective/loaded/invoked context distinctions and unknown-safe finding rules.
+28. read-only Git allowlisting, timeout/output bounds, credential redaction, exact and
+    correlated attribution.
+29. non-executing Node, Python, Dart, PHP, Rust, and Go package/technology inventory.
+30. graph identity, provenance, bounded traversal, shadow-generation swap, failure
+    diagnostics, and retention.
+31. proposal state, acceptance-without-apply, Phase 3 ConfigPlan handoff, post-change
+    evaluation, and `causalClaim: false`.
+32. Phase 4 HTTP/CLI and project-scoped read-only MCP tools.
 
 Use unit tests for `@luwi/runtime` transitions and integration tests for Redis behavior.
 
@@ -575,7 +684,7 @@ Redis integration tests:
 installation, commands, health checks, CLI use, architecture, security, and roadmap limits.
 
 `docs/architecture/overview.md` explains the planes, package boundaries, Redis-native data
-flow, Session Bridge direction, future MCP adapter, recovery, retention, and local security.
+flow, Session Bridge/MCP boundaries, recovery, retention, and local security.
 
 ADRs record binding choices:
 
@@ -585,6 +694,12 @@ docs/decisions/0002-redis-streams.md
 docs/decisions/0003-daemon-owned-redis-access.md
 docs/decisions/0004-redis-only-local-runtime.md
 docs/decisions/0005-redis-native-operational-core.md
+docs/decisions/0006-session-inbox-request-reply.md
+docs/decisions/0007-filesystem-canonical-agent-config.md
+docs/decisions/0008-capability-scope-and-inheritance.md
+docs/decisions/0009-event-derived-operational-graph.md
+docs/decisions/0010-context-optimization-feedback-loop.md
+docs/decisions/0011-local-git-observation-and-attribution.md
 ```
 
 Each ADR contains context, decision, consequences, and status.
@@ -609,7 +724,14 @@ Application commands:
 ```text
 pnpm --filter @luwi/daemon dev
 pnpm --filter @luwi/cli dev -- runtime
+pnpm --filter @luwi/mcp-server dev
 ```
+
+`pnpm` is required. Node 22 and newer no longer bundle Corepack, so install it explicitly with
+`npm i -g pnpm@11.9.0` to match the `packageManager` field. `pnpm typecheck` and `pnpm build`
+each have a separate `apps/dashboard` leg because the root `tsconfig.json` `references` array
+deliberately omits the dashboard; `tsc -b` alone does not cover it. `pnpm test` already
+includes the dashboard's tests.
 
 Start standard Redis with AOF:
 
@@ -622,6 +744,10 @@ Docker is optional. An external standard Redis server is accepted through:
 ```text
 REDIS_URL=redis://127.0.0.1:6379
 ```
+
+Any server that provides standard Redis 7 semantics is acceptable, including a Windows service
+such as Memurai. Verify Redis Functions support with `FUNCTION LIST` before relying on it, since
+the atomic transition path requires them.
 
 Default daemon values:
 
@@ -679,9 +805,9 @@ WebSocket queues, safe origin/Host checks, Redis-loss recovery, and draining shu
 Do not add dashboard, MCP server, agent adapters, metrics packages, knowledge-graph packages,
 or another datastore.
 
-### Phase 2 — Request/reply
+### Phase 2 — Request/reply and thin MCP
 
-Add:
+Phase 2 contains:
 
 - message request;
 - target inbox;
@@ -690,9 +816,70 @@ Add:
 - timeout;
 - evidence metadata;
 - pending-entry recovery;
-- CLI request/reply demonstration.
+- CLI request/reply and bridge simulation;
+- thin bound-session stdio MCP adapter.
 
-Do not begin Phase 2 before Phase 1 is tested and documented.
+Do not add dashboard, native coding-agent adapters, prompt injection, task/lease systems,
+metrics/lifecycle packages, knowledge graphs, GitHub integration, or another datastore as
+part of Phase 2.
+
+### Phase 3 — Agent and capability control
+
+Phase 3 contains:
+
+- explicit AgentDefinition registry and project-agent bindings without rewriting opaque
+  historical session IDs;
+- global/project capability packages and named profiles;
+- deterministic inheritance, disable tombstones, dependencies, compatibility, and
+  provenance;
+- passive Codex, Claude Code, Gemini CLI, and Kimi adapters;
+- filesystem-canonical LUWI manifests;
+- native inspection, import/render plans, explicit adoption, one-time approval, snapshots,
+  atomic apply, rollback, drift, and Redis reconciliation;
+- exact plan-artifact binding, snapshot-payload validation, pre-rollback snapshots, and
+  canonical managed-target ownership;
+- canonical-manifest validation and Redis projection rebuild before readiness;
+- stable static context inventory across instructions and assigned capability artifacts,
+  with clearly labeled generic character estimates;
+- validated HTTP/CLI surfaces and project-bounded read-only MCP tools.
+
+Do not add a dashboard, authentication, cloud sync, arbitrary package execution, hook/plugin
+execution, MCP supervision, tasks, leases, exact model token telemetry, Smart Context
+Optimization, knowledge graphs, GitHub integration, or another datastore as part of Phase
+3.
+
+### Phase 4 — Usage, Git, operational graph, and context optimization
+
+Phase 4 contains:
+
+- normalized exact, reported, adapter-extracted, estimated, and unavailable usage with
+  source-separated summaries and idempotent ingestion;
+- static context estimates plus explicit session/adapter loaded and invoked observations;
+- bounded read-only local Git observation and exact/correlated/unknown attribution;
+- non-executing package and technology inventory for Node, Python, Dart/Flutter, PHP, Rust,
+  and Go;
+- a standard-Redis operational graph with provenance, bounded named queries, incremental
+  projection, and shadow-generation rebuild;
+- structural findings and deterministic proposals;
+- explicit acceptance followed by the existing Phase 3 ConfigPlan approval/snapshot/apply
+  path;
+- post-change evaluation that reports observations without causal model-quality claims;
+- validated HTTP/CLI and project-bounded read-only MCP intelligence surfaces.
+
+Unknown evidence is never converted to unused. The Git observer never mutates a repository
+or contacts a remote; authorization uses exact read-only argument templates, not top-level
+Git verbs. Project-owned graph identities include project scope. Shadow generations validate
+counts and edge endpoints before activation. Incremental graph refresh atomically removes
+obsolete membership, and adjacency traversal has examined-edge budgets. Package scans use
+Git-tracked paths when available and disclose filesystem fallback/truncation. Optimization
+proposals retain an immutable baseline and post-change evaluation uses only explicit evidence
+recorded after the Phase 3 apply timestamp. Scanners never execute package managers, scripts,
+hooks, plugins, or MCP definitions. No Phase 4 path writes instruction prose directly.
+
+Do not add the Pulse dashboard, lifecycle/release scoring, GitHub integration, cloud sync,
+semantic/vector knowledge graph, memory federation, autonomous task/lease orchestration,
+prompt injection, automatic optimization apply, another datastore, or Redis Pub/Sub as part
+of Phase 4.
 
 ## 19. Definition of done
 
@@ -723,8 +910,21 @@ cannot run, report the exact command, error, likely cause, and next safe action.
 
 ## 21. Immediate objective
 
-Keep the implemented Phase 1 projects/sessions foundation verified and documented.
+Keep the implemented Phase 1 projects/sessions, Phase 2 request/reply/MCP, Phase 3
+agent/capability control, Phase 4 operational intelligence/optimization foundation, and
+Phase 5B native realtime Pulse verified and documented.
 
-Do not begin Phase 2, dashboard, MCP, knowledge-graph UI, GitHub integration, or coding-agent
-adapter implementation until Phase 1 acceptance remains green and the next scope is
-explicitly approved.
+Phase 5A, Phase 5B, and Phase 5C were subsequently approved and shipped. The read-only Pulse
+dashboard, bounded Activity, read-only inspectors, and read-only project scope in
+`apps/dashboard` are implemented. Those approvals covered the read-only dashboard only.
+
+Phase 5C added the `#/projects` route and on-demand project-scoped reads for repository
+observation, bound agents, packages, and technologies. It called no mutation endpoint, added no
+dependency, and added no datastore. The operational graph remains a disabled label because the
+daemon exposes only rooted graph queries and no global summary can be proven.
+
+**Every other prohibition below still stands.** Do not begin dashboard mutations,
+lifecycle/release scoring, task/lease systems, a semantic or vector knowledge graph, memory
+federation, GitHub integration, prompt injection, automatic optimization apply, cloud accounts,
+authentication, or remote control-plane work until that specific scope is explicitly approved.
+Shipping one phase does not authorize the rest.

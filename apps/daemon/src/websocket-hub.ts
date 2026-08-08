@@ -157,6 +157,25 @@ function isLoopback(address: string | undefined): boolean {
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
+export type LocalHttpRequestInput = {
+  host: string | undefined;
+  origin?: string;
+  remoteAddress: string | undefined;
+  expectedHosts: ReadonlySet<string>;
+  allowedOrigins: ReadonlySet<string>;
+};
+
+export function validateLocalHttpRequest(input: LocalHttpRequestInput): boolean {
+  const host = input.host?.trim().toLowerCase();
+  if (!isLoopback(input.remoteAddress) || host === undefined || !input.expectedHosts.has(host)) {
+    return false;
+  }
+  if (input.origin === 'null') {
+    return false;
+  }
+  return input.origin === undefined || input.allowedOrigins.has(input.origin);
+}
+
 export function validateRealtimeUpgrade(input: RealtimeUpgradeInput): boolean {
   if (input.host === undefined || !input.expectedHosts.has(input.host)) {
     return false;

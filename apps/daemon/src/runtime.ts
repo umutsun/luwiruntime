@@ -1,17 +1,25 @@
 import { randomUUID } from 'node:crypto';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import type { RuntimeStateName } from '@luwi/protocol';
 import {
   buildFunctionLibrary,
+  claimSessionInbox,
   createDaemonOwnershipLease,
   createFunctionRegistry,
   createManagedRedisConnection,
+  createMessageRepository,
+  createControlPlaneRepository,
+  createIntelligenceRepository,
   createRedisKeys,
   createRuntimeRepository,
   ensureRealtimeStreamGroup,
   readLatestRuntimeEvents,
   REALTIME_CONSUMER_GROUP,
+  RedisRepositoryError,
+  runMessageRetention,
   runStreamRetention,
   verifyOrLoadFunctionLibrary,
   type ManagedRedisConnection,
@@ -20,7 +28,11 @@ import {
   type RedisHealth,
   type RedisKeys,
 } from '@luwi/redis';
-import { createPresenceSweeper, createRuntimeReadiness } from '@luwi/runtime';
+import {
+  createMessageTimeoutSweeper,
+  createPresenceSweeper,
+  createRuntimeReadiness,
+} from '@luwi/runtime';
 
 import { buildDaemon, type BuildDaemonOptions, type DaemonApp } from './app.js';
 import {
@@ -29,6 +41,13 @@ import {
   waitForCompletion,
 } from './background-work.js';
 import type { DaemonConfig } from './config.js';
+import { createCanonicalStore } from './canonical-store.js';
+import { createConfigControlService } from './config-control-service.js';
+import { clearStaleConfigFileLocks } from './config-file-engine.js';
+import { createControlPlaneService } from './control-plane-service.js';
+import { createMessageService } from './message-service.js';
+import { createIntelligenceService, type IntelligenceService } from './intelligence-service.js';
+import { createGitObserver } from './git-observer.js';
 import { createProjectService } from './project-service.js';
 import { createRealtimeRelay } from './realtime-relay.js';
 import { createSessionService } from './session-service.js';
@@ -79,9 +98,35 @@ const defaults = {
   projectStreamMaxLength: 50_000,
   deadLetterStreamMaxLength: 10_000,
   retentionIntervalMs: 60_000,
+  messageTimeoutSweepIntervalMs: 1_000,
+  messageTimeoutBatchSize: 100,
+  messageMaxContentBytes: 32_768,
+  messageMaxSubjectBytes: 512,
+  messageMaxResponseBytes: 65_536,
+  messageMaxEvidenceItems: 32,
+  messageDefaultTimeoutMs: 120_000,
+  messageMaxTimeoutMs: 86_400_000,
+  inboxClaimLimit: 10,
+  inboxBlockMs: 5_000,
+  inboxMinIdleMs: 15_000,
+  inboxMaxClaimLimit: 100,
+  terminalMessageRetentionMs: 604_800_000,
+  messageIdempotencyRetentionMs: 86_400_000,
+  sessionInboxMaxLength: 10_000,
   drainTimeoutMs: 5_000,
   reconnectInitialMs: 250,
   reconnectMaxMs: 5_000,
+  gitCommandTimeoutMs: 5_000,
+  gitScanIntervalMs: 300_000,
+  usageRetentionDays: 30,
+  gitObservationRetentionCount: 100,
+  graphGenerationRetentionCount: 2,
+  optimizationMinimumBaselineSessions: 3,
+  optimizationMinimumPostSessions: 3,
+  optimizationMinimumObservationHours: 24,
+  optimizationMaximumFindings: 100,
+  optimizationMaximumProposals: 25,
+  optimizationOversizedContextTokens: 8_000,
 };
 
 function setting(config: DaemonConfig, key: keyof typeof defaults): number {
@@ -220,12 +265,20 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   });
   let app: DaemonApp | undefined;
   let sweepTimer: NodeJS.Timeout | undefined;
+  let messageTimeoutTimer: NodeJS.Timeout | undefined;
   let retentionTimer: NodeJS.Timeout | undefined;
+  let gitScanTimer: NodeJS.Timeout | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let recoveryPromise: Promise<void> | undefined;
   let sweeping = false;
+  let sweepingMessageTimeouts = false;
   let retaining = false;
   const backgroundWork = createBackgroundWorkTracker();
+  const projectRefreshes = new Set<string>();
+  let refreshProject = (projectId: string, reason: string): void => {
+    void projectId;
+    void reason;
+  };
 
   const hub = createWebSocketHub({
     maxQueueSize: setting(config, 'websocketQueueLimit'),
@@ -237,16 +290,178 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     keys,
     functions: registry,
   });
+  const messageRepository = createMessageRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const controlPlaneRepository = createControlPlaneRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const intelligenceRepository = createIntelligenceRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const canonicalStore = createCanonicalStore({
+    globalRoot:
+      config.luwiHome ??
+      (process.env['NODE_ENV'] === 'test'
+        ? join(tmpdir(), 'luwi-runtime-tests', runtimeInstanceId)
+        : join(homedir(), '.luwi')),
+  });
   const projectService = createProjectService({
     repository,
     workspaceId: config.workspaceId,
+    onRegistered: (project) => refreshProject(project.id, 'project-registered'),
   });
   const sessionService = createSessionService({
     repository,
     workspaceId: config.workspaceId,
     presenceTtlMs: setting(config, 'sessionPresenceTtlMs'),
     heartbeatEventIntervalMs: setting(config, 'heartbeatEventIntervalMs'),
+    onRegistered: (session) => refreshProject(session.projectId, 'session-started'),
+    onClosed: (session) => refreshProject(session.projectId, 'session-closed'),
   });
+  const messageService = createMessageService({
+    repository: messageRepository,
+    sessions: sessionService,
+    workspaceId: config.workspaceId,
+    runtimeState: () => readiness.state,
+    idempotencyRetentionMs: setting(config, 'messageIdempotencyRetentionMs'),
+    maxContentBytes: setting(config, 'messageMaxContentBytes'),
+    maxSubjectBytes: setting(config, 'messageMaxSubjectBytes'),
+    maxResponseBytes: setting(config, 'messageMaxResponseBytes'),
+    maxEvidenceItems: setting(config, 'messageMaxEvidenceItems'),
+    maxTimeoutMs: setting(config, 'messageMaxTimeoutMs'),
+    claimInbox: (sessionId, request) =>
+      claimSessionInbox({
+        client: connections.command,
+        keys,
+        sessionId,
+        bridgeInstanceId: request.bridgeInstanceId,
+        limit: request.limit,
+        minIdleMs: request.minIdleMs,
+        getMessage: (messageId) => messageRepository.getMessageById(messageId),
+        markDelivered: async (correlationId) => {
+          await messageRepository.transitionMessage('delivered', {
+            correlationId,
+            responderSessionId: sessionId,
+            workspaceId: config.workspaceId,
+            eventId: randomUUID(),
+          });
+        },
+        onInvalidEntry: ({ streamId, reason }) => {
+          process.stderr.write(
+            `${JSON.stringify({
+              level: 'warn',
+              code: 'INBOX_ENTRY_INVALID',
+              sessionId,
+              streamId,
+              reason,
+            })}\n`,
+          );
+        },
+      }),
+  });
+  const controlPlaneService = createControlPlaneService({
+    repository: controlPlaneRepository,
+    canonicalStore,
+    projects: projectService,
+    workspaceId: config.workspaceId,
+    ...(config.nativeHome === undefined ? {} : { homeDirectory: config.nativeHome }),
+  });
+  const intelligenceServiceReference: { current?: IntelligenceService } = {};
+  const configControlService = createConfigControlService({
+    repository: controlPlaneRepository,
+    canonicalStore,
+    controlPlane: controlPlaneService,
+    projects: projectService,
+    workspaceId: config.workspaceId,
+    ...(config.nativeHome === undefined ? {} : { homeDirectory: config.nativeHome }),
+    ...(config.configSnapshotRetentionCount === undefined
+      ? {}
+      : { snapshotRetentionCount: config.configSnapshotRetentionCount }),
+    onReconciliationRequired: () => requestRecovery(),
+    onApplied: async (_receipt, plan) => {
+      if (plan.projectId !== undefined) refreshProject(plan.projectId, 'config-applied');
+      const service = intelligenceServiceReference.current;
+      if (service === undefined) {
+        throw new Error('Intelligence service is not initialized.');
+      }
+      await service.recordConfigPlanApplied(plan.id);
+    },
+  });
+  const intelligenceService = createIntelligenceService({
+    repository: intelligenceRepository,
+    projects: projectService,
+    sessions: sessionService,
+    controlPlane: controlPlaneService,
+    configControl: configControlService,
+    workspaceId: config.workspaceId,
+    gitObserver: createGitObserver({
+      timeoutMs: setting(config, 'gitCommandTimeoutMs'),
+    }),
+    optimizationMinimumBaselineSessions: setting(config, 'optimizationMinimumBaselineSessions'),
+    optimizationMinimumPostSessions: setting(config, 'optimizationMinimumPostSessions'),
+    optimizationMinimumObservationHours: setting(config, 'optimizationMinimumObservationHours'),
+    optimizationMaximumFindings: setting(config, 'optimizationMaximumFindings'),
+    optimizationMaximumProposals: setting(config, 'optimizationMaximumProposals'),
+    oversizedContextTokens: setting(config, 'optimizationOversizedContextTokens'),
+    readRebuildEvents: () =>
+      readLatestRuntimeEvents({
+        client: connections.command,
+        stream: keys.globalEvents,
+        deadLetterStream: keys.deadLetterEvents,
+        deadLetterMaxLength: setting(config, 'deadLetterStreamMaxLength'),
+        limit: setting(config, 'globalStreamMaxLength'),
+      }),
+  });
+  intelligenceServiceReference.current = intelligenceService;
+  const ensureIntelligenceHealthy = async (): Promise<void> => {
+    if ((await intelligenceRepository.getGraphProjectionHealth()) === 'healthy') return;
+    await intelligenceService.rebuildGraph();
+    if ((await intelligenceRepository.getGraphProjectionHealth()) !== 'healthy') {
+      throw new RedisRepositoryError(
+        'GRAPH_PROJECTION_DEGRADED',
+        'The operational graph could not be reconciled.',
+      );
+    }
+  };
+  refreshProject = (projectId, reason) => {
+    if (projectRefreshes.has(projectId) || readiness.state !== 'ready') return;
+    projectRefreshes.add(projectId);
+    const scheduled = backgroundWork.run(
+      async () => {
+        try {
+          await intelligenceService.scanGit(projectId);
+        } catch (error) {
+          app?.log.debug({ err: error, projectId, reason }, 'Git observation skipped');
+        }
+        try {
+          await intelligenceService.scanPackages(projectId);
+        } catch (error) {
+          app?.log.debug({ err: error, projectId, reason }, 'Package observation skipped');
+        } finally {
+          projectRefreshes.delete(projectId);
+        }
+      },
+      (error) => {
+        projectRefreshes.delete(projectId);
+        app?.log.error({ err: error, projectId, reason }, 'Repository refresh failed');
+      },
+    );
+    if (!scheduled) projectRefreshes.delete(projectId);
+  };
+  const reconcileCanonicalControlPlane = async (): Promise<void> => {
+    for (const project of await projectService.list()) {
+      await canonicalStore.trackProject(project);
+    }
+    await controlPlaneService.reconcileCanonicalState();
+    await configControlService.reconcile();
+  };
 
   const transitionDegraded = (): void => {
     if (readiness.state === 'ready' || readiness.state === 'recovering') {
@@ -297,6 +512,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       },
     },
   });
+  const messageTimeoutSweeper = createMessageTimeoutSweeper({
+    now: Date.now,
+    batchSize: setting(config, 'messageTimeoutBatchSize'),
+    repository: {
+      findDueMessageDeadlines: (nowMs, limit) =>
+        messageRepository.findDueMessageDeadlines(nowMs, limit),
+      timeoutMessage: ({ messageId, deadlineMs }) =>
+        messageService.timeoutMessage(messageId, deadlineMs),
+    },
+  });
 
   const runRecovery = async (): Promise<void> => {
     transitionDegraded();
@@ -320,6 +545,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
           REALTIME_CONSUMER_GROUP,
         );
         await relay.recoverPending();
+        await reconcileCanonicalControlPlane();
+        await ensureIntelligenceHealthy();
         relay.start();
         readiness.transitionTo('ready');
         return;
@@ -357,11 +584,18 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       const deadline = Date.now() + drainTimeoutMs;
       backgroundWork.stop();
       sweeper.stop();
+      messageTimeoutSweeper.stop();
       if (sweepTimer !== undefined) {
         clearInterval(sweepTimer);
       }
+      if (messageTimeoutTimer !== undefined) {
+        clearInterval(messageTimeoutTimer);
+      }
       if (retentionTimer !== undefined) {
         clearInterval(retentionTimer);
+      }
+      if (gitScanTimer !== undefined) {
+        clearInterval(gitScanTimer);
       }
       const inFlightDrained = await readiness.waitForInFlight(Math.max(0, deadline - Date.now()));
       const backgroundDrained = await backgroundWork.waitForIdle(
@@ -418,6 +652,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     await verifyOrLoadFunctionLibrary(connections.admin, library, ownership);
     await ensureRealtimeStreamGroup(connections.admin, keys.globalEvents, REALTIME_CONSUMER_GROUP);
     await connect(connections.relay);
+    await clearStaleConfigFileLocks(canonicalStore.globalRoot);
+    await reconcileCanonicalControlPlane();
+    await ensureIntelligenceHealthy();
 
     app = buildDaemon({
       config,
@@ -430,6 +667,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       services: {
         projects: projectService,
         sessions: sessionService,
+        messages: messageService,
+        controlPlane: controlPlaneService,
+        configControl: configControlService,
+        intelligence: intelligenceService,
         listEvents: (limit) =>
           readLatestRuntimeEvents({
             client: connections.command,
@@ -480,6 +721,30 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     );
     sweepTimer.unref?.();
 
+    messageTimeoutTimer = setInterval(
+      () => {
+        if (sweepingMessageTimeouts || readiness.state !== 'ready') {
+          return;
+        }
+        sweepingMessageTimeouts = true;
+        const scheduled = backgroundWork.run(
+          async () => {
+            try {
+              await messageTimeoutSweeper.sweepOnce();
+            } finally {
+              sweepingMessageTimeouts = false;
+            }
+          },
+          (error) => app?.log.error({ err: error }, 'Message timeout sweep failed'),
+        );
+        if (!scheduled) {
+          sweepingMessageTimeouts = false;
+        }
+      },
+      setting(config, 'messageTimeoutSweepIntervalMs'),
+    );
+    messageTimeoutTimer.unref?.();
+
     retentionTimer = setInterval(
       () => {
         if (retaining || readiness.state !== 'ready') {
@@ -501,11 +766,27 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
                 deadLetterMaxLength: setting(config, 'deadLetterStreamMaxLength'),
                 relayHealthy: relay.healthy,
               });
+              const sessions = await repository.listSessions();
+              await runMessageRetention({
+                client: connections.admin,
+                keys,
+                nowMs: Date.now(),
+                terminalProjectionRetentionMs: setting(config, 'terminalMessageRetentionMs'),
+                maxInboxLength: setting(config, 'sessionInboxMaxLength'),
+                batchSize: setting(config, 'messageTimeoutBatchSize'),
+                sessionIds: sessions.map(({ id }) => id),
+              });
+              await intelligenceRepository.runRetention({
+                now: new Date(),
+                usageRetentionDays: setting(config, 'usageRetentionDays'),
+                gitObservationRetentionCount: setting(config, 'gitObservationRetentionCount'),
+                graphGenerationRetentionCount: setting(config, 'graphGenerationRetentionCount'),
+              });
             } finally {
               retaining = false;
             }
           },
-          (error) => app?.log.error({ err: error }, 'Stream retention failed'),
+          (error) => app?.log.error({ err: error }, 'Runtime retention failed'),
         );
         if (!scheduled) {
           retaining = false;
@@ -515,16 +796,42 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     );
     retentionTimer.unref?.();
 
+    gitScanTimer = setInterval(
+      () => {
+        if (readiness.state !== 'ready') return;
+        const scheduled = backgroundWork.run(
+          async () => {
+            for (const project of await projectService.list()) {
+              refreshProject(project.id, 'periodic');
+            }
+          },
+          (error) => app?.log.error({ err: error }, 'Periodic repository scan failed'),
+        );
+        if (!scheduled) {
+          app?.log.debug('Periodic repository scan skipped during drain');
+        }
+      },
+      setting(config, 'gitScanIntervalMs'),
+    );
+    gitScanTimer.unref?.();
+
     readiness.transitionTo('ready');
     await app.listen({ host: config.host, port: config.port });
   } catch (error) {
     backgroundWork.stop();
     sweeper.stop();
+    messageTimeoutSweeper.stop();
     if (sweepTimer !== undefined) {
       clearInterval(sweepTimer);
     }
+    if (messageTimeoutTimer !== undefined) {
+      clearInterval(messageTimeoutTimer);
+    }
     if (retentionTimer !== undefined) {
       clearInterval(retentionTimer);
+    }
+    if (gitScanTimer !== undefined) {
+      clearInterval(gitScanTimer);
     }
     await backgroundWork.waitForIdle(setting(config, 'drainTimeoutMs'));
     await relay.stop().catch(() => undefined);

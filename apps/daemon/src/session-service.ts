@@ -27,6 +27,8 @@ export type SessionServiceOptions = {
   heartbeatEventIntervalMs?: number;
   createId?: () => string;
   canonicalizeWorkingDirectory?: (input: string) => Promise<CanonicalPath>;
+  onRegistered?: (session: SessionView) => void;
+  onClosed?: (session: SessionView) => void;
 };
 
 function sessionNotFound(): ApplicationError {
@@ -77,7 +79,9 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
       if (result.status === 'not_found') {
         throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
       }
-      return requireSession(options.repository, sessionId);
+      const session = await requireSession(options.repository, sessionId);
+      options.onRegistered?.(session);
+      return session;
     },
 
     get: (sessionId) => options.repository.getSession(sessionId),
@@ -152,7 +156,9 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
       if (result.status === 'not_found') {
         throw sessionNotFound();
       }
-      return requireSession(options.repository, sessionId);
+      const closed = await requireSession(options.repository, sessionId);
+      options.onClosed?.(closed);
+      return closed;
     },
   };
 }

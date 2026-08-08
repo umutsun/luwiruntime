@@ -25,6 +25,7 @@ export type ProjectServiceOptions = {
   createId?: () => string;
   canonicalizePath?: (input: string) => Promise<CanonicalPath>;
   detectGitMetadata?: (canonicalPath: string) => Promise<GitMetadata>;
+  onRegistered?: (project: Project) => void;
 };
 
 async function gitValue(canonicalPath: string, arguments_: string[]): Promise<string | undefined> {
@@ -80,6 +81,7 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
       });
 
       if (result.status === 'created') {
+        options.onRegistered?.(result.project);
         return result.project;
       }
       if (result.reason === 'duplicate') {
