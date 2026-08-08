@@ -703,6 +703,7 @@ docs/decisions/0011-local-git-observation-and-attribution.md
 docs/decisions/0012-code-structure-observer.md
 docs/decisions/0013-bounded-global-graph-summary.md
 docs/decisions/0014-complete-graph-projection-inputs.md
+docs/decisions/0015-internal-validation-failures-are-server-errors.md
 ```
 
 Each ADR contains context, decision, consequences, and status.

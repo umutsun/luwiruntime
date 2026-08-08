@@ -201,9 +201,9 @@ describe('Phase 4 HTTP routes', () => {
   });
 
   it('refuses to serve a summary that claims a generation without totals', async () => {
-    // Violates the ADR 0013 refinement. What matters is that the contradiction
-    // never reaches the client; the status is 400 because the daemon's single
-    // error handler maps every ZodError that way, response validation included.
+    // Violates the ADR 0013 refinement. The contradiction never reaches the client,
+    // and per ADR 0015 the server's own output failing validation is a server error,
+    // not a request error.
     const graphSummary = vi.fn(async () => ({
       observed: true,
       retainedGenerationCount: 0,
@@ -216,9 +216,9 @@ describe('Phase 4 HTTP routes', () => {
 
     const response = await app!.inject({ method: 'GET', url: '/api/v1/graph/summary' });
 
-    expect(response.statusCode).toBe(400);
+    expect(response.statusCode).toBe(500);
     expect(response.json()).not.toHaveProperty('observed');
-    expect(response.json().error.code).toBe('REQUEST_VALIDATION_FAILED');
+    expect(response.json().error.code).toBe('INTERNAL_ERROR');
   });
 
   it('maps bounded graph and optimization routes without direct apply', async () => {

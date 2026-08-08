@@ -116,7 +116,7 @@ import {
 } from '@luwi/runtime';
 import websocketPlugin from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
-import { z, ZodError } from 'zod';
+import { z } from 'zod';
 
 import type { DaemonConfig } from './config.js';
 import { defaultDashboardDistRoot, readDashboardAsset } from './dashboard-assets.js';
@@ -173,6 +173,20 @@ function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, 'utf8');
 }
 
+// The only source of REQUEST_VALIDATION_FAILED (ADR 0015): a ZodError anywhere else
+// is an internal invariant violation and must surface as a server error.
+function parseRequestInput<Value>(schema: z.ZodType<Value>, value: unknown): Value {
+  const result = schema.safeParse(value);
+  if (result.success) return result.data;
+  const error = new ApplicationError(
+    'REQUEST_VALIDATION_FAILED',
+    'The request did not match the protocol.',
+    400,
+  );
+  error.cause = result.error;
+  throw error;
+}
+
 export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
   const now = options.now ?? (() => new Date());
   const runtimeState = createRuntimeState({
@@ -213,14 +227,6 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       },
       'Request failed',
     );
-    if (error instanceof ZodError) {
-      return reply.code(400).send({
-        error: {
-          code: 'REQUEST_VALIDATION_FAILED',
-          message: 'The request did not match the protocol.',
-        },
-      });
-    }
     if (error instanceof RedisRepositoryError && error.code === 'REDIS_UNAVAILABLE') {
       options.onRedisUnavailable?.(error);
       return reply.code(503).send({
@@ -319,7 +325,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
 
   app.get('/', async (_request, reply) => sendDashboardAsset('/', reply));
   app.get('/assets/:asset', async (request, reply) => {
-    const { asset } = z.strictObject({ asset: z.string() }).parse(request.params);
+    const { asset } = parseRequestInput(z.strictObject({ asset: z.string() }), request.params);
     return sendDashboardAsset(`/assets/${asset}`, reply);
   });
 
@@ -385,7 +391,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       }),
     );
     app.post('/api/v1/projects', async (request, reply) => {
-      const body = projectRegistrationRequestSchema.parse(request.body);
+      const body = parseRequestInput(projectRegistrationRequestSchema, request.body);
       const project = await withMutation(() => services.projects.register(body));
       return reply
         .code(201)
@@ -393,7 +399,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         .send(projectResponseSchema.parse(project));
     });
     app.get('/api/v1/projects/:projectId', async (request) => {
-      const { projectId } = projectParamsSchema.parse(request.params);
+      const { projectId } = parseRequestInput(projectParamsSchema, request.params);
       const project = await withCurrentRead(() => services.projects.get(projectId));
       if (project === null) {
         throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
@@ -407,7 +413,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       }),
     );
     app.post('/api/v1/sessions', async (request, reply) => {
-      const body = sessionRegistrationRequestSchema.parse(request.body);
+      const body = parseRequestInput(sessionRegistrationRequestSchema, request.body);
       const session = await withMutation(() => services.sessions.register(body));
       return reply
         .code(201)
@@ -415,7 +421,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         .send(sessionResponseSchema.parse(session));
     });
     app.get('/api/v1/sessions/:sessionId', async (request) => {
-      const { sessionId } = sessionParamsSchema.parse(request.params);
+      const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
       const session = await withCurrentRead(() => services.sessions.get(sessionId));
       if (session === null) {
         throw new ApplicationError('SESSION_NOT_FOUND', 'The session was not found.', 404);
@@ -423,25 +429,25 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       return sessionResponseSchema.parse(session);
     });
     app.post('/api/v1/sessions/:sessionId/heartbeat', async (request) => {
-      const { sessionId } = sessionParamsSchema.parse(request.params);
-      const body = heartbeatRequestSchema.parse(request.body ?? {});
+      const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
+      const body = parseRequestInput(heartbeatRequestSchema, request.body ?? {});
       return withMutation(() => services.sessions.heartbeat(sessionId, body));
     });
     app.post('/api/v1/sessions/:sessionId/status', async (request) => {
-      const { sessionId } = sessionParamsSchema.parse(request.params);
-      const body = sessionStatusRequestSchema.parse(request.body);
+      const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
+      const body = parseRequestInput(sessionStatusRequestSchema, request.body);
       return sessionResponseSchema.parse(
         await withMutation(() => services.sessions.updateStatus(sessionId, body.status)),
       );
     });
     app.post('/api/v1/sessions/:sessionId/close', async (request) => {
-      const { sessionId } = sessionParamsSchema.parse(request.params);
+      const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
       return sessionResponseSchema.parse(
         await withMutation(() => services.sessions.close(sessionId)),
       );
     });
     app.get('/api/v1/projects/:projectId/sessions', async (request) => {
-      const { projectId } = projectParamsSchema.parse(request.params);
+      const { projectId } = parseRequestInput(projectParamsSchema, request.params);
       if ((await withCurrentRead(() => services.projects.get(projectId))) === null) {
         throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
       }
@@ -450,7 +456,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       });
     });
     app.get('/api/v1/events', async (request) => {
-      const { limit } = eventListQuerySchema.parse(request.query);
+      const { limit } = parseRequestInput(eventListQuerySchema, request.query);
       return eventListResponseSchema.parse({
         events: await withCurrentRead(() => services.listEvents(limit)),
       });
@@ -501,11 +507,11 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       });
 
       app.post('/api/v1/usage', async (request, reply) => {
-        const body = usageIngestRequestSchema.parse(request.body);
+        const body = parseRequestInput(usageIngestRequestSchema, request.body);
         const idempotencyKey =
           request.headers['idempotency-key'] === undefined
             ? undefined
-            : usageIdempotencyKeySchema.parse(request.headers['idempotency-key']);
+            : parseRequestInput(usageIdempotencyKeySchema, request.headers['idempotency-key']);
         const record = await withMutation(() =>
           intelligence.ingestUsage({
             ...body,
@@ -520,7 +526,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           .send(usageRecordSchema.parse(record));
       });
       app.get('/api/v1/usage', async (request) => {
-        const query = usageListQuerySchema.parse(request.query);
+        const query = parseRequestInput(usageListQuerySchema, request.query);
         const usage = await withCurrentRead(() =>
           intelligence.listUsage({ ...query, limit: query.limit + 1 }),
         );
@@ -533,14 +539,14 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       });
       app.get('/api/v1/usage/summary', async (request) => {
-        const query = usageListQuerySchema.parse(request.query);
+        const query = parseRequestInput(usageListQuerySchema, request.query);
         return usageSummarySchema.parse(
           await withCurrentRead(() => intelligence.summarizeUsage(query)),
         );
       });
 
       app.get('/api/v1/context/contributions', async (request) => {
-        const query = contextContributionQuerySchema.parse(request.query);
+        const query = parseRequestInput(contextContributionQuerySchema, request.query);
         const contributions = await withCurrentRead(() =>
           intelligence.listContextContributions({
             ...(query.projectId === undefined ? {} : { projectId: query.projectId }),
@@ -555,45 +561,48 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       });
       app.post('/api/v1/context/contributions', async (request, reply) => {
-        const body = contextContributionObservationRequestSchema.parse(request.body);
+        const body = parseRequestInput(contextContributionObservationRequestSchema, request.body);
         const contribution = await withMutation(() =>
           intelligence.observeContextContribution(body),
         );
         return reply.code(201).send(contextContributionSchema.parse(contribution));
       });
       app.get('/api/v1/context/summary', async (request) => {
-        const query = contextQuerySchema.parse(request.query);
+        const query = parseRequestInput(contextQuerySchema, request.query);
         return contextSummarySchema.parse(
           await withCurrentRead(() => intelligence.contextSummary(query.projectId, query.agentId)),
         );
       });
       app.post('/api/v1/context/analyze', async (request) => {
-        const body = contextQuerySchema.parse(request.body);
+        const body = parseRequestInput(contextQuerySchema, request.body);
         return withMutation(() => intelligence.analyzeContext(body.projectId, body.agentId));
       });
       app.get(
         '/api/v1/projects/:projectId/agents/:agentId/context-intelligence',
         async (request) => {
-          const { projectId, agentId } = controlPlaneProjectAgentParamsSchema.parse(request.params);
+          const { projectId, agentId } = parseRequestInput(
+            controlPlaneProjectAgentParamsSchema,
+            request.params,
+          );
           return withCurrentRead(() => intelligence.getContextIntelligence(projectId, agentId));
         },
       );
 
       app.post('/api/v1/projects/:projectId/git/scan', async (request) => {
-        const { projectId } = projectParamsSchema.parse(request.params);
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
         return gitObservationSchema.parse(
           await withMutation(() => intelligence.scanGit(projectId)),
         );
       });
       app.get('/api/v1/projects/:projectId/git', async (request) => {
-        const { projectId } = projectParamsSchema.parse(request.params);
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
         return gitObservationSchema.parse(
           await withCurrentRead(() => intelligence.getGit(projectId)),
         );
       });
       app.get('/api/v1/projects/:projectId/git/commits', async (request) => {
-        const { projectId } = projectParamsSchema.parse(request.params);
-        const { limit } = boundedProjectQuerySchema.parse(request.query);
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const { limit } = parseRequestInput(boundedProjectQuerySchema, request.query);
         const commits = await withCurrentRead(() =>
           intelligence.listGitCommits(projectId, limit + 1),
         );
@@ -603,14 +612,14 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         };
       });
       app.get('/api/v1/projects/:projectId/git/worktrees', async (request) => {
-        const { projectId } = projectParamsSchema.parse(request.params);
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
         return {
           worktrees: await withCurrentRead(() => intelligence.listGitWorktrees(projectId)),
         };
       });
       app.get('/api/v1/projects/:projectId/git/attributions', async (request) => {
-        const { projectId } = projectParamsSchema.parse(request.params);
-        const { limit } = boundedProjectQuerySchema.parse(request.query);
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const { limit } = parseRequestInput(boundedProjectQuerySchema, request.query);
         const attributions = await withCurrentRead(() =>
           intelligence.listAttributions(projectId, limit + 1),
         );
@@ -621,12 +630,12 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       });
 
       app.post('/api/v1/projects/:projectId/packages/scan', async (request) => {
-        const { projectId } = projectParamsSchema.parse(request.params);
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
         return withMutation(() => intelligence.scanPackages(projectId));
       });
       app.get('/api/v1/projects/:projectId/packages', async (request) => {
-        const { projectId } = projectParamsSchema.parse(request.params);
-        const { limit } = boundedProjectQuerySchema.parse(request.query);
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const { limit } = parseRequestInput(boundedProjectQuerySchema, request.query);
         const packages = await withCurrentRead(() =>
           intelligence.listPackages(projectId, limit + 1),
         );
@@ -636,8 +645,8 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       });
       app.get('/api/v1/projects/:projectId/technologies', async (request) => {
-        const { projectId } = projectParamsSchema.parse(request.params);
-        const { limit } = boundedProjectQuerySchema.parse(request.query);
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const { limit } = parseRequestInput(boundedProjectQuerySchema, request.query);
         const technologies = await withCurrentRead(() =>
           intelligence.listTechnologies(projectId, limit + 1),
         );
@@ -655,28 +664,28 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         return graphSummarySchema.parse(await withCurrentRead(() => intelligence.graphSummary()));
       });
       app.get('/api/v1/graph/path', async (request) => {
-        const query = graphPathHttpQuerySchema.parse(request.query);
+        const query = parseRequestInput(graphPathHttpQuerySchema, request.query);
         const { fromKind, fromId, ...pathQuery } = query;
         return graphPathResponseSchema.parse(
           await withCurrentRead(() => intelligence.graphPath(fromKind, fromId, pathQuery)),
         );
       });
       app.get('/api/v1/graph/subgraph', async (request) => {
-        const query = graphSubgraphQuerySchema.parse(request.query);
+        const query = parseRequestInput(graphSubgraphQuerySchema, request.query);
         return graphSubgraphResponseSchema.parse(
           await withCurrentRead(() => intelligence.graphSubgraph(query)),
         );
       });
       app.get('/api/v1/graph/nodes/:nodeKind/:nodeId', async (request) => {
-        const { nodeKind, nodeId } = graphNodeParamsSchema.parse(request.params);
+        const { nodeKind, nodeId } = parseRequestInput(graphNodeParamsSchema, request.params);
         return graphNodeSchema.parse(
           await withCurrentRead(() => intelligence.getGraphNode(nodeKind, nodeId)),
         );
       });
       for (const direction of ['out', 'in'] as const) {
         app.get(`/api/v1/graph/nodes/:nodeKind/:nodeId/${direction}`, async (request) => {
-          const { nodeKind, nodeId } = graphNodeParamsSchema.parse(request.params);
-          const query = graphNeighborsQuerySchema.parse(request.query);
+          const { nodeKind, nodeId } = parseRequestInput(graphNodeParamsSchema, request.params);
+          const query = parseRequestInput(graphNeighborsQuerySchema, request.query);
           return graphNeighborsResponseSchema.parse(
             await withCurrentRead(() =>
               intelligence.graphNeighbors(nodeKind, nodeId, direction, query),
@@ -692,20 +701,20 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           .send(graphRebuildOperationSchema.parse(operation));
       });
       app.get('/api/v1/graph/rebuild/:operationId', async (request) => {
-        const { operationId } = rebuildParamsSchema.parse(request.params);
+        const { operationId } = parseRequestInput(rebuildParamsSchema, request.params);
         return graphRebuildOperationSchema.parse(
           await withCurrentRead(() => intelligence.getGraphRebuild(operationId)),
         );
       });
 
       app.post('/api/v1/optimization/analyze', async (request) => {
-        const body = optimizationAnalysisRequestSchema.parse(request.body);
+        const body = parseRequestInput(optimizationAnalysisRequestSchema, request.body);
         return optimizationAnalysisResponseSchema.parse(
           await withMutation(() => intelligence.analyzeOptimization(body)),
         );
       });
       app.get('/api/v1/optimization/findings', async (request) => {
-        const query = optimizationListQuerySchema.parse(request.query);
+        const query = parseRequestInput(optimizationListQuerySchema, request.query);
         const findings = await withCurrentRead(() =>
           intelligence.listFindings(query.projectId, query.limit + 1),
         );
@@ -715,7 +724,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       });
       app.get('/api/v1/optimization/proposals', async (request) => {
-        const query = optimizationListQuerySchema.parse(request.query);
+        const query = parseRequestInput(optimizationListQuerySchema, request.query);
         const proposals = await withCurrentRead(() =>
           intelligence.listProposals(query.projectId, query.limit + 1),
         );
@@ -725,21 +734,21 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       });
       app.get('/api/v1/optimization/proposals/:proposalId', async (request) => {
-        const { proposalId } = optimizationParamsSchema.parse(request.params);
+        const { proposalId } = parseRequestInput(optimizationParamsSchema, request.params);
         return optimizationProposalSchema.parse(
           await withCurrentRead(() => intelligence.getProposal(proposalId)),
         );
       });
       app.post('/api/v1/optimization/proposals/:proposalId/accept', async (request) => {
-        const { proposalId } = optimizationParamsSchema.parse(request.params);
-        optimizationAcceptRequestSchema.parse(request.body);
+        const { proposalId } = parseRequestInput(optimizationParamsSchema, request.params);
+        parseRequestInput(optimizationAcceptRequestSchema, request.body);
         return optimizationProposalSchema.parse(
           await withMutation(() => intelligence.acceptProposal(proposalId)),
         );
       });
       app.post('/api/v1/optimization/proposals/:proposalId/reject', async (request) => {
-        const { proposalId } = optimizationParamsSchema.parse(request.params);
-        optimizationRejectRequestSchema.parse(request.body ?? {});
+        const { proposalId } = parseRequestInput(optimizationParamsSchema, request.params);
+        parseRequestInput(optimizationRejectRequestSchema, request.body ?? {});
         return optimizationProposalSchema.parse(
           await withMutation(() => intelligence.rejectProposal(proposalId)),
         );
@@ -747,8 +756,11 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       app.post(
         '/api/v1/optimization/proposals/:proposalId/create-config-plan',
         async (request, reply) => {
-          const { proposalId } = optimizationParamsSchema.parse(request.params);
-          const { actionIndex } = optimizationCreatePlanRequestSchema.parse(request.body ?? {});
+          const { proposalId } = parseRequestInput(optimizationParamsSchema, request.params);
+          const { actionIndex } = parseRequestInput(
+            optimizationCreatePlanRequestSchema,
+            request.body ?? {},
+          );
           const result = await withMutation(() =>
             intelligence.createConfigPlan(proposalId, actionIndex),
           );
@@ -759,8 +771,8 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         },
       );
       app.post('/api/v1/optimization/proposals/:proposalId/evaluate', async (request) => {
-        const { proposalId } = optimizationParamsSchema.parse(request.params);
-        const body = optimizationEvaluateRequestSchema.parse(request.body ?? {});
+        const { proposalId } = parseRequestInput(optimizationParamsSchema, request.params);
+        const body = parseRequestInput(optimizationEvaluateRequestSchema, request.body ?? {});
         return optimizationEvaluationSchema.parse(
           await withMutation(() =>
             intelligence.evaluateProposal(proposalId, {
@@ -775,7 +787,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         );
       });
       app.get('/api/v1/optimization/evaluations/:evaluationId', async (request) => {
-        const { evaluationId } = evaluationParamsSchema.parse(request.params);
+        const { evaluationId } = parseRequestInput(evaluationParamsSchema, request.params);
         return optimizationEvaluationSchema.parse(
           await withCurrentRead(() => intelligence.getEvaluation(evaluationId)),
         );
@@ -830,41 +842,41 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           .send(messageCreateResponseSchema.parse(result));
       });
       app.get('/api/v1/messages', async (request) => {
-        const query = messageListQuerySchema.parse(request.query);
+        const query = parseRequestInput(messageListQuerySchema, request.query);
         return messageCollectionResponseSchema.parse(
           await withCurrentRead(() => messages.list(query)),
         );
       });
       app.get('/api/v1/messages/:correlationId', async (request) => {
-        const { correlationId } = messageParamsSchema.parse(request.params);
+        const { correlationId } = parseRequestInput(messageParamsSchema, request.params);
         return messageResponseSchema.parse(
           await withCurrentRead(() => messages.get(correlationId)),
         );
       });
       app.get('/api/v1/messages/:correlationId/wait', async (request) => {
-        const { correlationId } = messageParamsSchema.parse(request.params);
-        const { waitMs } = messageWaitQuerySchema.parse(request.query);
+        const { correlationId } = parseRequestInput(messageParamsSchema, request.params);
+        const { waitMs } = parseRequestInput(messageWaitQuerySchema, request.query);
         return messageResponseSchema.parse(
           await withCurrentRead(() => messages.wait(correlationId, waitMs)),
         );
       });
       app.post('/api/v1/messages/:correlationId/acknowledge', async (request) => {
-        const { correlationId } = messageParamsSchema.parse(request.params);
-        const body = messageTransitionRequestSchema.parse(request.body);
+        const { correlationId } = parseRequestInput(messageParamsSchema, request.params);
+        const body = parseRequestInput(messageTransitionRequestSchema, request.body);
         return messageResponseSchema.parse(
           await withMutation(() => messages.acknowledge(correlationId, body)),
         );
       });
       app.post('/api/v1/messages/:correlationId/processing', async (request) => {
-        const { correlationId } = messageParamsSchema.parse(request.params);
-        const body = messageTransitionRequestSchema.parse(request.body);
+        const { correlationId } = parseRequestInput(messageParamsSchema, request.params);
+        const body = parseRequestInput(messageTransitionRequestSchema, request.body);
         return messageResponseSchema.parse(
           await withMutation(() => messages.processing(correlationId, body)),
         );
       });
       for (const action of ['respond', 'reject', 'fail'] as const) {
         app.post(`/api/v1/messages/:correlationId/${action}`, async (request) => {
-          const { correlationId } = messageParamsSchema.parse(request.params);
+          const { correlationId } = parseRequestInput(messageParamsSchema, request.params);
           const rawBody = isRecord(request.body) ? request.body : {};
           const rawResponseJson =
             rawBody.response === undefined ? undefined : JSON.stringify(rawBody.response);
@@ -878,7 +890,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
               413,
             );
           }
-          const body = messageRespondRequestSchema.parse(request.body);
+          const body = parseRequestInput(messageRespondRequestSchema, request.body);
           if (body.response.evidence.length > (options.config.messageMaxEvidenceItems ?? 32)) {
             throw new ApplicationError(
               'MESSAGE_RESPONSE_TOO_LARGE',
@@ -905,7 +917,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       }
       app.post('/api/v1/sessions/:sessionId/inbox/claim', async (request) => {
-        const { sessionId } = sessionParamsSchema.parse(request.params);
+        const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
         const rawBody = isRecord(request.body) ? request.body : {};
         const body = inboxClaimRequestSchema.parse({
           ...rawBody,
@@ -935,7 +947,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         }),
       );
       app.post('/api/v1/agents', async (request, reply) => {
-        const body = agentDefinitionCreateRequestSchema.parse(request.body);
+        const body = parseRequestInput(agentDefinitionCreateRequestSchema, request.body);
         const agent = await withMutation(() => control.createAgent(body));
         return reply
           .code(201)
@@ -943,32 +955,32 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           .send(agentDefinitionSchema.parse(agent));
       });
       app.post('/api/v1/agents/detect', async (request) => {
-        const body = agentDetectionRequestSchema.parse(request.body ?? {});
+        const body = parseRequestInput(agentDetectionRequestSchema, request.body ?? {});
         return agentDetectionResponseSchema.parse({
           installations: await withCurrentRead(() => control.detectAgents(body.projectId)),
         });
       });
       app.get('/api/v1/agents/:agentId', async (request) => {
-        const { agentId } = controlPlaneAgentParamsSchema.parse(request.params);
+        const { agentId } = parseRequestInput(controlPlaneAgentParamsSchema, request.params);
         return agentDefinitionSchema.parse(await withCurrentRead(() => control.getAgent(agentId)));
       });
       app.patch('/api/v1/agents/:agentId', async (request) => {
-        const { agentId } = controlPlaneAgentParamsSchema.parse(request.params);
-        const body = agentDefinitionPatchRequestSchema.parse(request.body);
+        const { agentId } = parseRequestInput(controlPlaneAgentParamsSchema, request.params);
+        const body = parseRequestInput(agentDefinitionPatchRequestSchema, request.body);
         return agentDefinitionSchema.parse(
           await withMutation(() => control.updateAgent(agentId, body)),
         );
       });
 
       app.get('/api/v1/projects/:projectId/agents', async (request) => {
-        const { projectId } = controlPlaneProjectParamsSchema.parse(request.params);
+        const { projectId } = parseRequestInput(controlPlaneProjectParamsSchema, request.params);
         return projectAgentBindingCollectionSchema.parse({
           bindings: await withCurrentRead(() => control.listProjectAgentBindings(projectId)),
         });
       });
       app.post('/api/v1/projects/:projectId/agents', async (request, reply) => {
-        const { projectId } = controlPlaneProjectParamsSchema.parse(request.params);
-        const body = projectAgentBindingCreateRequestSchema.parse(request.body);
+        const { projectId } = parseRequestInput(controlPlaneProjectParamsSchema, request.params);
+        const body = parseRequestInput(projectAgentBindingCreateRequestSchema, request.body);
         const binding = await withMutation(() => control.bindProjectAgent(projectId, body));
         return reply
           .code(201)
@@ -976,7 +988,8 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           .send(projectAgentBindingSchema.parse(binding));
       });
       app.get('/api/v1/projects/:projectId/agents/:bindingId', async (request) => {
-        const { projectId, bindingId } = controlPlaneProjectBindingParamsSchema.parse(
+        const { projectId, bindingId } = parseRequestInput(
+          controlPlaneProjectBindingParamsSchema,
           request.params,
         );
         return projectAgentBindingSchema.parse(
@@ -984,16 +997,18 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         );
       });
       app.patch('/api/v1/projects/:projectId/agents/:bindingId', async (request) => {
-        const { projectId, bindingId } = controlPlaneProjectBindingParamsSchema.parse(
+        const { projectId, bindingId } = parseRequestInput(
+          controlPlaneProjectBindingParamsSchema,
           request.params,
         );
-        const body = projectAgentBindingPatchRequestSchema.parse(request.body);
+        const body = parseRequestInput(projectAgentBindingPatchRequestSchema, request.body);
         return projectAgentBindingSchema.parse(
           await withMutation(() => control.updateProjectAgentBinding(projectId, bindingId, body)),
         );
       });
       app.delete('/api/v1/projects/:projectId/agents/:bindingId', async (request) => {
-        const { projectId, bindingId } = controlPlaneProjectBindingParamsSchema.parse(
+        const { projectId, bindingId } = parseRequestInput(
+          controlPlaneProjectBindingParamsSchema,
           request.params,
         );
         return projectAgentBindingSchema.parse(
@@ -1002,21 +1017,21 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       });
 
       app.get('/api/v1/capabilities', async (request) => {
-        const query = capabilityListQuerySchema.parse(request.query);
+        const query = parseRequestInput(capabilityListQuerySchema, request.query);
         return capabilityCollectionSchema.parse({
           capabilities: await withCurrentRead(() => control.listCapabilities(query)),
           truncated: false,
         });
       });
       app.post('/api/v1/capabilities/scan', async (request) => {
-        controlPlaneEmptyRequestSchema.parse(request.body ?? {});
+        parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
         return capabilityCollectionSchema.parse({
           capabilities: await withCurrentRead(() => control.listCapabilities()),
           truncated: false,
         });
       });
       app.post('/api/v1/capabilities', async (request, reply) => {
-        const body = capabilityPackageCreateRequestSchema.parse(request.body);
+        const body = parseRequestInput(capabilityPackageCreateRequestSchema, request.body);
         const capability = await withMutation(() => control.createCapability(body));
         return reply
           .code(201)
@@ -1024,28 +1039,40 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           .send(capabilityPackageSchema.parse(capability));
       });
       app.get('/api/v1/capabilities/:capabilityId', async (request) => {
-        const { capabilityId } = controlPlaneCapabilityParamsSchema.parse(request.params);
+        const { capabilityId } = parseRequestInput(
+          controlPlaneCapabilityParamsSchema,
+          request.params,
+        );
         return capabilityPackageSchema.parse(
           await withCurrentRead(() => control.getCapability(capabilityId)),
         );
       });
       app.patch('/api/v1/capabilities/:capabilityId', async (request) => {
-        const { capabilityId } = controlPlaneCapabilityParamsSchema.parse(request.params);
-        const body = capabilityPackagePatchRequestSchema.parse(request.body);
+        const { capabilityId } = parseRequestInput(
+          controlPlaneCapabilityParamsSchema,
+          request.params,
+        );
+        const body = parseRequestInput(capabilityPackagePatchRequestSchema, request.body);
         return capabilityPackageSchema.parse(
           await withMutation(() => control.updateCapability(capabilityId, body)),
         );
       });
       app.post('/api/v1/capabilities/:capabilityId/assign', async (request) => {
-        const { capabilityId } = controlPlaneCapabilityParamsSchema.parse(request.params);
-        const body = capabilityAssignmentRequestSchema.parse(request.body);
+        const { capabilityId } = parseRequestInput(
+          controlPlaneCapabilityParamsSchema,
+          request.params,
+        );
+        const body = parseRequestInput(capabilityAssignmentRequestSchema, request.body);
         return capabilityBindingSchema.parse(
           await withMutation(() => control.assignCapability(capabilityId, body)),
         );
       });
       app.post('/api/v1/capabilities/:capabilityId/unassign', async (request) => {
-        const { capabilityId } = controlPlaneCapabilityParamsSchema.parse(request.params);
-        const body = capabilityAssignmentRequestSchema.parse(request.body);
+        const { capabilityId } = parseRequestInput(
+          controlPlaneCapabilityParamsSchema,
+          request.params,
+        );
+        const body = parseRequestInput(capabilityAssignmentRequestSchema, request.body);
         return capabilityBindingSchema.parse(
           await withMutation(() => control.unassignCapability(capabilityId, body)),
         );
@@ -1057,7 +1084,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         }),
       );
       app.post('/api/v1/profiles', async (request, reply) => {
-        const body = capabilityProfileCreateRequestSchema.parse(request.body);
+        const body = parseRequestInput(capabilityProfileCreateRequestSchema, request.body);
         const profile = await withMutation(() => control.createProfile(body));
         return reply
           .code(201)
@@ -1065,28 +1092,31 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           .send(capabilityProfileSchema.parse(profile));
       });
       app.get('/api/v1/profiles/:profileId', async (request) => {
-        const { profileId } = controlPlaneProfileParamsSchema.parse(request.params);
+        const { profileId } = parseRequestInput(controlPlaneProfileParamsSchema, request.params);
         return capabilityProfileSchema.parse(
           await withCurrentRead(() => control.getProfile(profileId)),
         );
       });
       app.patch('/api/v1/profiles/:profileId', async (request) => {
-        const { profileId } = controlPlaneProfileParamsSchema.parse(request.params);
-        const body = capabilityProfilePatchRequestSchema.parse(request.body);
+        const { profileId } = parseRequestInput(controlPlaneProfileParamsSchema, request.params);
+        const body = parseRequestInput(capabilityProfilePatchRequestSchema, request.body);
         return capabilityProfileSchema.parse(
           await withMutation(() => control.updateProfile(profileId, body)),
         );
       });
 
       app.get('/api/v1/projects/:projectId/agents/:agentId/effective-config', async (request) => {
-        const { projectId, agentId } = controlPlaneProjectAgentParamsSchema.parse(request.params);
+        const { projectId, agentId } = parseRequestInput(
+          controlPlaneProjectAgentParamsSchema,
+          request.params,
+        );
         return effectiveAgentConfigurationSchema.parse(
           await withCurrentRead(() => control.getEffectiveConfiguration(projectId, agentId)),
         );
       });
 
       app.get('/api/v1/context/sources', async (request) => {
-        const query = contextSourceListQuerySchema.parse(request.query);
+        const query = parseRequestInput(contextSourceListQuerySchema, request.query);
         const sources = await withCurrentRead(() => control.listContextSources());
         return contextSourceCollectionSchema.parse({
           sources: sources
@@ -1100,7 +1130,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       });
       app.post('/api/v1/context/scan', async (request) => {
-        const body = nativeConfigInspectRequestSchema.parse(request.body);
+        const body = parseRequestInput(nativeConfigInspectRequestSchema, request.body);
         const result = await withMutation(() => control.scanContext(body.agentId, body.projectId));
         return contextSourceCollectionSchema.parse({
           sources: result.sources,
@@ -1108,7 +1138,10 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       });
       app.get('/api/v1/projects/:projectId/agents/:agentId/context-footprint', async (request) => {
-        const { projectId, agentId } = controlPlaneProjectAgentParamsSchema.parse(request.params);
+        const { projectId, agentId } = parseRequestInput(
+          controlPlaneProjectAgentParamsSchema,
+          request.params,
+        );
         return contextFootprintSchema.parse(
           await withCurrentRead(() => control.getContextFootprint(projectId, agentId)),
         );
@@ -1119,13 +1152,13 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       const configControl = services.configControl;
 
       app.post('/api/v1/config/inspect', async (request) => {
-        const body = nativeConfigInspectRequestSchema.parse(request.body);
+        const body = parseRequestInput(nativeConfigInspectRequestSchema, request.body);
         return nativeConfigInspectionSchema.parse(
           await withMutation(() => configControl.inspect(body.agentId, body.projectId)),
         );
       });
       app.post('/api/v1/config/import-plan', async (request, reply) => {
-        const body = configPlanCreateRequestSchema.parse(request.body);
+        const body = parseRequestInput(configPlanCreateRequestSchema, request.body);
         const plan = await withMutation(() => configControl.createImportPlan(body));
         return reply
           .code(201)
@@ -1133,7 +1166,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           .send(configPlanSchema.parse(plan));
       });
       app.post('/api/v1/config/render-plan', async (request, reply) => {
-        const body = configPlanCreateRequestSchema.parse(request.body);
+        const body = parseRequestInput(configPlanCreateRequestSchema, request.body);
         const plan = await withMutation(() => configControl.createRenderPlan(body));
         return reply
           .code(201)
@@ -1146,19 +1179,19 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         }),
       );
       app.get('/api/v1/config/plans/:planId', async (request) => {
-        const { planId } = controlPlanePlanParamsSchema.parse(request.params);
+        const { planId } = parseRequestInput(controlPlanePlanParamsSchema, request.params);
         return configPlanSchema.parse(await withCurrentRead(() => configControl.getPlan(planId)));
       });
       app.post('/api/v1/config/plans/:planId/approve', async (request) => {
-        const { planId } = controlPlanePlanParamsSchema.parse(request.params);
-        controlPlaneEmptyRequestSchema.parse(request.body ?? {});
+        const { planId } = parseRequestInput(controlPlanePlanParamsSchema, request.params);
+        parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
         return configPlanApprovalResponseSchema.parse(
           await withMutation(() => configControl.approvePlan(planId)),
         );
       });
       app.post('/api/v1/config/plans/:planId/apply', async (request) => {
-        const { planId } = controlPlanePlanParamsSchema.parse(request.params);
-        const body = configPlanApplyRequestSchema.parse(request.body);
+        const { planId } = parseRequestInput(controlPlanePlanParamsSchema, request.params);
+        const body = parseRequestInput(configPlanApplyRequestSchema, request.body);
         return configOperationReceiptSchema.parse(
           await withMutation(() => configControl.applyPlan(planId, body.approvalToken)),
         );
@@ -1169,14 +1202,14 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         }),
       );
       app.get('/api/v1/config/snapshots/:snapshotId', async (request) => {
-        const { snapshotId } = controlPlaneSnapshotParamsSchema.parse(request.params);
+        const { snapshotId } = parseRequestInput(controlPlaneSnapshotParamsSchema, request.params);
         return configSnapshotSchema.parse(
           await withCurrentRead(() => configControl.getSnapshot(snapshotId)),
         );
       });
       app.post('/api/v1/config/snapshots/:snapshotId/rollback-plan', async (request, reply) => {
-        const { snapshotId } = controlPlaneSnapshotParamsSchema.parse(request.params);
-        controlPlaneEmptyRequestSchema.parse(request.body ?? {});
+        const { snapshotId } = parseRequestInput(controlPlaneSnapshotParamsSchema, request.params);
+        parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
         const plan = await withMutation(() => configControl.createRollbackPlan(snapshotId));
         return reply
           .code(201)
@@ -1189,13 +1222,13 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         }),
       );
       app.post('/api/v1/config/drift/scan', async (request) => {
-        controlPlaneEmptyRequestSchema.parse(request.body ?? {});
+        parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
         return configDriftCollectionSchema.parse({
           drifts: await withMutation(() => configControl.scanDrift()),
         });
       });
       app.post('/api/v1/config/reconcile', async (request) => {
-        controlPlaneEmptyRequestSchema.parse(request.body ?? {});
+        parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
         return configReconcileResponseSchema.parse({
           operations: await withMutation(() => configControl.reconcile()),
         });
