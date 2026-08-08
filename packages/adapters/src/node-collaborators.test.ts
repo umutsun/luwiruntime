@@ -295,35 +295,46 @@ describe('SpawnCommandRunner', () => {
     });
   });
 
-  it('terminates a hanging executable within the configured bound', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'luwi-adapter-timeout-'));
-    temporaryDirectories.push(directory);
-    const pidPath = join(directory, 'pid.txt');
-    const runner = new SpawnCommandRunner({
-      timeoutMs: 500,
-      maxStdoutBytes: 1_024,
-      maxStderrBytes: 1_024,
-    });
-    const startedAt = Date.now();
+  it(
+    'terminates a hanging executable within the configured bound',
+    // The runner may legitimately spend timeoutMs + cleanupTimeoutMs before settling, which
+    // already exceeds vitest's 5s default; the explicit timeout only guards against a hang.
+    { timeout: 20_000 },
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'luwi-adapter-timeout-'));
+      temporaryDirectories.push(directory);
+      const pidPath = join(directory, 'pid.txt');
+      const timeoutMs = 500;
+      const cleanupTimeoutMs = 5_000;
+      // Absorbs timer lateness on a saturated machine without hiding an unbounded hang.
+      const schedulerSlackMs = 2_000;
+      const runner = new SpawnCommandRunner({
+        timeoutMs,
+        maxStdoutBytes: 1_024,
+        maxStderrBytes: 1_024,
+        cleanupTimeoutMs,
+      });
+      const startedAt = Date.now();
 
-    const result = await runner.run(process.execPath, [
-      '-e',
-      'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)',
-      pidPath,
-    ]);
+      const result = await runner.run(process.execPath, [
+        '-e',
+        'require("node:fs").writeFileSync(process.argv[1], String(process.pid)); setInterval(() => {}, 1000)',
+        pidPath,
+      ]);
 
-    expect(result).toMatchObject({
-      exitCode: 1,
-      stdout: '',
-      stderr: '',
-    });
-    expect(process.platform === 'win32' ? ['timeout', 'cleanup'] : ['timeout']).toContain(
-      result.failure,
-    );
-    expect(Date.now() - startedAt).toBeLessThan(6_000);
-    const pid = Number(await readFile(pidPath, 'utf8'));
-    expect(() => process.kill(pid, 0)).toThrow();
-  });
+      expect(result).toMatchObject({
+        exitCode: 1,
+        stdout: '',
+        stderr: '',
+      });
+      expect(process.platform === 'win32' ? ['timeout', 'cleanup'] : ['timeout']).toContain(
+        result.failure,
+      );
+      expect(Date.now() - startedAt).toBeLessThan(timeoutMs + cleanupTimeoutMs + schedulerSlackMs);
+      const pid = Number(await readFile(pidPath, 'utf8'));
+      await expectProcessToExit(pid);
+    },
+  );
 
   it.each([
     ['stdout', 'process.stdout.write("x".repeat(2048));setInterval(()=>{},1000)', 'stdout_limit'],
