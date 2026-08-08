@@ -300,6 +300,22 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         truncated: false,
       });
 
+      // ADR 0013 counts through SCARD/ZCARD. Only a real server proves the
+      // reply type parses; the unit test's scripted client cannot.
+      //
+      // One retained generation, not two: the generations index is written by
+      // node and edge projection, so `generation-active` never enters it —
+      // only the pointer was set. The count is generations holding content.
+      await expect(repository.getGraphSummary()).resolves.toEqual({
+        generation: 'generation-shadow',
+        projectionHealth: 'healthy',
+        nodes: [
+          { kind: 'project', count: 1 },
+          { kind: 'agent', count: 1 },
+        ],
+        edges: [{ kind: 'PROJECT_BOUND_AGENT', count: 1 }],
+      });
+
       await repository.replaceGraphSnapshot(
         'generation-shadow',
         [node],
@@ -313,6 +329,29 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       await expect(
         repository.getGraphNeighbors('project', 'project-1', 'out', { limit: 100 }),
       ).resolves.toMatchObject({ nodes: [], edges: [], truncated: false });
+
+      // Incremental replacement removes obsolete membership, so the counts
+      // follow it down rather than accumulating until the next rebuild.
+      await expect(repository.getGraphSummary()).resolves.toMatchObject({
+        generation: 'generation-shadow',
+        nodes: [{ kind: 'project', count: 1 }],
+        edges: [],
+      });
+    });
+
+    it('reports a namespace with no active generation as unbuilt rather than empty', async () => {
+      const unbuilt = createIntelligenceRepository({
+        client: commandClient,
+        keys: createRedisKeys(`${namespace}:unbuilt`),
+        functions: registry,
+      });
+
+      await expect(unbuilt.getGraphSummary()).resolves.toEqual({
+        generation: null,
+        projectionHealth: 'healthy',
+        nodes: [],
+        edges: [],
+      });
     });
 
     it('atomically records graph projection diagnostics and degraded health', async () => {

@@ -9,6 +9,7 @@ import { InspectorPanel, type InspectorSelection } from './inspectors/inspector-
 import { ProjectsView } from './projects/projects-view.js';
 import { AgentsView } from './routes/agents-view.js';
 import { ContextView } from './routes/context-view.js';
+import { GraphView } from './routes/graph-view.js';
 import { OptimizationView } from './routes/optimization-view.js';
 import { SessionsView } from './routes/sessions-view.js';
 import { UsageView } from './routes/usage-view.js';
@@ -25,12 +26,12 @@ import { parseRoute, routeHref, type DashboardRouteName } from './routing.js';
 export type WebSocketState = RealtimeConnectionState;
 
 /**
- * Routes with no sufficient read contract yet. `Graph` stays here because the
- * daemon exposes only rooted graph queries — `/api/v1/graph/nodes/:kind/:id`,
- * `/graph/path`, `/graph/subgraph` — and no global summary, so no honest
- * overview can be derived. See `docs/phase5-dashboard-capability-matrix.md`.
+ * Routes with no sufficient read contract yet. `Graph` left this list once
+ * `/api/v1/graph/summary` gave it a bounded global answer (ADR 0013); until
+ * then only rooted queries existed and no honest overview could be derived.
+ * See `docs/phase5-dashboard-capability-matrix.md`.
  */
-const planned = ['Graph'];
+const planned: string[] = [];
 
 /** Routes reachable from the rail, in navigation order. */
 const scopeRoutes = [
@@ -43,6 +44,7 @@ const intelligenceRoutes = [
   { name: 'usage', label: 'Usage' },
   { name: 'context', label: 'Context' },
   { name: 'optimization', label: 'Optimization' },
+  { name: 'graph', label: 'Graph' },
 ] as const;
 
 const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string }> = {
@@ -54,6 +56,7 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   usage: { eyebrow: 'Observation sources', heading: 'Usage' },
   context: { eyebrow: 'Context evidence', heading: 'Context' },
   optimization: { eyebrow: 'Structural findings', heading: 'Optimization' },
+  graph: { eyebrow: 'Operational graph', heading: 'Graph' },
 };
 
 function connectionLabel(state: WebSocketState): string {
@@ -175,13 +178,17 @@ export function DashboardApp({
               {entry.label}
             </a>
           ))}
-          <p className="nav-group">Prepared routes</p>
-          {planned.map((label) => (
-            <span className="nav-item nav-item--disabled" aria-disabled="true" key={label}>
-              {label}
-              <small>Planned</small>
-            </span>
-          ))}
+          {planned.length === 0 ? null : (
+            <>
+              <p className="nav-group">Prepared routes</p>
+              {planned.map((label) => (
+                <span className="nav-item nav-item--disabled" aria-disabled="true" key={label}>
+                  {label}
+                  <small>Planned</small>
+                </span>
+              ))}
+            </>
+          )}
         </nav>
         <div className="runtime-footer">
           <StatusChip tone={snapshot.health.state === 'ready' ? 'success' : 'danger'}>
@@ -271,6 +278,8 @@ export function DashboardApp({
                   : undefined
               }
             />
+          ) : route.name === 'graph' ? (
+            <GraphView summary={intelligenceResources.graph} />
           ) : route.name === 'projects' ? (
             <ProjectsView
               snapshot={snapshot}

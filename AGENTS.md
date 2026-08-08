@@ -859,7 +859,8 @@ Phase 4 contains:
 - non-executing package and technology inventory for Node, Python, Dart/Flutter, PHP, Rust,
   and Go;
 - a standard-Redis operational graph with provenance, bounded named queries, incremental
-  projection, and shadow-generation rebuild;
+  projection, shadow-generation rebuild, and a bounded global summary answered from index
+  cardinality rather than traversal (ADR 0013);
 - structural findings and deterministic proposals;
 - explicit acceptance followed by the existing Phase 3 ConfigPlan approval/snapshot/apply
   path;
@@ -924,9 +925,17 @@ observation, bound agents, packages, and technologies. Phase 5D added five furth
 routes, two of which load a bounded collection only while their route is open. Neither phase
 called a mutation endpoint, added a dependency, or added a datastore.
 
-The operational graph remains a disabled label. The daemon exposes only rooted graph queries, so
-no global count, generation, or health figure can be proven; rendering one would be a fabricated
-claim. A global graph summary requires its own ADR before it is built.
+The operational graph is no longer a disabled label. ADR 0013 added `GET /api/v1/graph/summary`,
+a read-only Phase 4 surface extension that answers the global question from index cardinality on
+the active generation rather than from traversal. It reports the active generation, projection
+health, and exact per-kind node and edge counts, and it withholds totals entirely when the graph
+has never been built rather than reporting zero. The `#/graph` dashboard route renders that
+contract and calls no mutation endpoint.
+
+Rebuild history, historical generations, generation counts, and per-project graph counts are
+still unanswered. The generations index is written only by the incremental node/edge put path,
+so it does not describe generations created by snapshot replacement; per-project counts have no
+index at all. Both need projection changes and their own decision.
 
 **Every other prohibition below still stands.** Do not begin dashboard mutations,
 lifecycle/release scoring, task/lease systems, a semantic or vector knowledge graph, memory

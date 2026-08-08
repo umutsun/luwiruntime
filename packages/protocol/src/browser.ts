@@ -6,6 +6,7 @@ export {
 export {
   contextContributionCollectionSchema,
   gitObservationSchema,
+  graphSummarySchema,
   optimizationFindingCollectionSchema,
   optimizationProposalCollectionSchema,
   packageCollectionSchema,

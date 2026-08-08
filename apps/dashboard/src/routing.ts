@@ -23,6 +23,7 @@ export const SIMPLE_ROUTES = [
   'usage',
   'context',
   'optimization',
+  'graph',
 ] as const;
 
 type SimpleRouteName = (typeof SIMPLE_ROUTES)[number];

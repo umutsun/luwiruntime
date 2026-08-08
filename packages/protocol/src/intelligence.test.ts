@@ -9,6 +9,7 @@ import {
   graphNeighborsQuerySchema,
   graphNodeSchema,
   graphPathQuerySchema,
+  graphSummarySchema,
   optimizationEvaluationSchema,
   optimizationProposalSchema,
   packageScanResponseSchema,
@@ -300,6 +301,82 @@ describe('Phase 4 intelligence protocol', () => {
     expect(graphPathQuerySchema.parse({ toKind: 'session', toId: 's1' }).maxDepth).toBe(3);
     expect(() =>
       graphPathQuerySchema.parse({ toKind: 'session', toId: 's1', maxDepth: 7 }),
+    ).toThrow();
+  });
+
+  it('keeps an unbuilt graph summary free of counts', () => {
+    const unobserved = graphSummarySchema.parse({
+      observed: false,
+      projectionHealth: 'healthy',
+      nodeCountsByKind: [],
+      edgeCountsByKind: [],
+      observedAt: timestamp,
+    });
+
+    // An absent generation is unknown, not zero. ADR 0013.
+    expect(unobserved.nodeCount).toBeUndefined();
+    expect(unobserved.edgeCount).toBeUndefined();
+    expect(unobserved.generation).toBeUndefined();
+
+    // A count without an observed generation is the fabricated claim the
+    // schema exists to make unrepresentable.
+    expect(() =>
+      graphSummarySchema.parse({
+        observed: false,
+        projectionHealth: 'healthy',
+        nodeCount: 0,
+        edgeCount: 0,
+        nodeCountsByKind: [],
+        edgeCountsByKind: [],
+        observedAt: timestamp,
+      }),
+    ).toThrow();
+
+    // The inverse is equally wrong: an observed generation must carry totals.
+    expect(() =>
+      graphSummarySchema.parse({
+        observed: true,
+        generation: 'generation-1',
+        projectionHealth: 'healthy',
+        nodeCountsByKind: [],
+        edgeCountsByKind: [],
+        observedAt: timestamp,
+      }),
+    ).toThrow();
+  });
+
+  it('reports observed graph counts per kind within the schema bound', () => {
+    const summary = graphSummarySchema.parse({
+      observed: true,
+      generation: 'generation-1',
+      projectionHealth: 'degraded',
+      nodeCount: 3,
+      edgeCount: 1,
+      nodeCountsByKind: [
+        { kind: 'project', count: 2 },
+        { kind: 'session', count: 1 },
+      ],
+      edgeCountsByKind: [{ kind: 'PROJECT_BOUND_AGENT', count: 1 }],
+      observedAt: timestamp,
+    });
+
+    expect(summary.nodeCount).toBe(3);
+    expect(summary.projectionHealth).toBe('degraded');
+    expect(summary.nodeCountsByKind).toHaveLength(2);
+
+    // Counts come from set cardinality, so the per-kind list can never be
+    // longer than the kind enumeration itself.
+    expect(() =>
+      graphSummarySchema.parse({
+        observed: true,
+        generation: 'generation-1',
+        projectionHealth: 'healthy',
+        nodeCount: 0,
+        edgeCount: 0,
+        nodeCountsByKind: Array.from({ length: 30 }, () => ({ kind: 'project', count: 1 })),
+        edgeCountsByKind: [],
+        observedAt: timestamp,
+      }),
     ).toThrow();
   });
 

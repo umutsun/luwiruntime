@@ -179,6 +179,68 @@ function dependencies() {
 }
 
 describe('daemon intelligence service', () => {
+  it('sums per-kind graph cardinality into observed totals', async () => {
+    const values = dependencies();
+    const repository = values.repository as unknown as {
+      getGraphSummary: ReturnType<typeof vi.fn>;
+    };
+    repository.getGraphSummary = vi.fn(async () => ({
+      generation: 'generation-1',
+      projectionHealth: 'degraded' as const,
+      nodes: [
+        { kind: 'project' as const, count: 2 },
+        { kind: 'session' as const, count: 5 },
+      ],
+      edges: [{ kind: 'PROJECT_BOUND_AGENT' as const, count: 4 }],
+    }));
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      now: () => new Date(timestamp),
+    });
+
+    const summary = await service.graphSummary();
+
+    expect(summary).toEqual({
+      observed: true,
+      generation: 'generation-1',
+      projectionHealth: 'degraded',
+      nodeCount: 7,
+      edgeCount: 4,
+      nodeCountsByKind: [
+        { kind: 'project', count: 2 },
+        { kind: 'session', count: 5 },
+      ],
+      edgeCountsByKind: [{ kind: 'PROJECT_BOUND_AGENT', count: 4 }],
+      observedAt: timestamp,
+    });
+  });
+
+  it('reports an unbuilt graph without inventing totals', async () => {
+    const values = dependencies();
+    const repository = values.repository as unknown as {
+      getGraphSummary: ReturnType<typeof vi.fn>;
+    };
+    repository.getGraphSummary = vi.fn(async () => ({
+      generation: null,
+      projectionHealth: 'healthy' as const,
+      nodes: [],
+      edges: [],
+    }));
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      now: () => new Date(timestamp),
+    });
+
+    const summary = await service.graphSummary();
+
+    expect(summary.observed).toBe(false);
+    expect(summary).not.toHaveProperty('nodeCount');
+    expect(summary).not.toHaveProperty('edgeCount');
+    expect(summary).not.toHaveProperty('generation');
+  });
+
   it('validates usage against the bound project/session and preserves unavailable fields', async () => {
     const values = dependencies();
     const service = createIntelligenceService({

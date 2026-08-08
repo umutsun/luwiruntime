@@ -26,6 +26,7 @@ import {
   type GraphRebuildOperation,
   type GraphSubgraphQuery,
   type GraphSubgraphResponse,
+  type GraphSummary,
   type OptimizationAnalysisRequest,
   type OptimizationEvaluation,
   type OptimizationFinding,
@@ -142,6 +143,7 @@ export interface IntelligenceService {
   ): Promise<GraphNeighborsResponse>;
   graphPath(kind: GraphNodeKind, id: string, query: GraphPathQuery): Promise<GraphPathResponse>;
   graphSubgraph(query: GraphSubgraphQuery): Promise<GraphSubgraphResponse>;
+  graphSummary(): Promise<GraphSummary>;
   rebuildGraph(): Promise<GraphRebuildOperation>;
   getGraphRebuild(operationId: string): Promise<GraphRebuildOperation>;
   analyzeOptimization(input: OptimizationAnalysisRequest): Promise<{
@@ -1423,6 +1425,29 @@ export function createIntelligenceService(
         nodes: result.nodes,
         edges: result.edges,
         truncated: result.truncated,
+      };
+    },
+    async graphSummary() {
+      const projection = await options.repository.getGraphSummary();
+      const total = (counts: ReadonlyArray<{ count: number }>): number =>
+        counts.reduce((sum, { count }) => sum + count, 0);
+      // ADR 0013: an absent generation yields no totals at all. Summing the
+      // empty lists here would publish a zero that was never observed.
+      const observed =
+        projection.generation === null
+          ? {}
+          : {
+              generation: projection.generation,
+              nodeCount: total(projection.nodes),
+              edgeCount: total(projection.edges),
+            };
+      return {
+        observed: projection.generation !== null,
+        ...observed,
+        projectionHealth: projection.projectionHealth,
+        nodeCountsByKind: projection.nodes,
+        edgeCountsByKind: projection.edges,
+        observedAt: now().toISOString(),
       };
     },
     async graphPath(kind, id, query) {

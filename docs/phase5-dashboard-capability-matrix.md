@@ -6,20 +6,20 @@ Frontend status meanings: **SUPPORTED** is safe for Phase 5B, **DERIVABLE** requ
 bounded join, **PLANNED** lacks a sufficient read contract, and **REJECTED** is outside the
 approved boundary.
 
-| Module                        | REST read                                                                                 | Response evidence                                                                                                           | Realtime evidence                                                                         | Scope and Phase 5A behavior                                                                                             | Status    |
-| ----------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------- |
-| Runtime health                | `GET /health`, `GET /api/v1/runtime`                                                      | `packages/protocol/src/runtime-http.ts:33-62`; routes `apps/daemon/src/app.ts:325-376`                                      | runtime lifecycle events trigger a full coalesced refresh                                 | Global. Non-2xx health body remains displayable as degraded; transport failure is unavailable.                          | SUPPORTED |
-| Projects                      | `GET /api/v1/projects`                                                                    | `packages/protocol/src/project.ts:14-28`; route `apps/daemon/src/app.ts:381`                                                | `project.registered`, `project.updated` in `packages/protocol/src/runtime-event.ts:10-11` | Global collection. Empty means no registered projects.                                                                  | SUPPORTED |
-| Agent definitions/bindings    | `GET /api/v1/agents`; `GET /api/v1/projects/:projectId/agents`                            | `packages/protocol/src/control-plane.ts:50-81`; routes `apps/daemon/src/app.ts:924,955`                                     | agent/binding event types start at `packages/protocol/src/runtime-event.ts:26`            | Agent definitions global; bindings project-scoped. A failed binding request is partial, not zero.                       | DERIVABLE |
-| Sessions                      | `GET /api/v1/sessions`                                                                    | `packages/protocol/src/session.ts:65-86`; route `apps/daemon/src/app.ts:403`                                                | session events `packages/protocol/src/runtime-event.ts:12-16`                             | Global collection includes explicit online/offline presence. Active means online and non-terminal.                      | SUPPORTED |
-| Activity/events               | `GET /api/v1/events?limit=20`                                                             | `packages/protocol/src/runtime-api.ts:14-21`; route `apps/daemon/src/app.ts:451`                                            | `/api/v1/realtime` emits validated normalized events                                      | REST seeds a live view bounded to 200 rows; stream IDs are retained for 512-entry duplicate suppression.                | SUPPORTED |
-| Usage summary                 | `GET /api/v1/usage/summary`                                                               | `packages/protocol/src/intelligence.ts:239-261`; route `apps/daemon/src/app.ts:534`                                         | usage event types are in the Phase 4 event enum                                           | Global or filtered. Source rows stay separate; missing token totals are unavailable, not zero.                          | SUPPORTED |
-| Context summary/contributions | `GET /api/v1/context/contributions?limit=1000`; pair-scoped `GET /api/v1/context/summary` | `packages/protocol/src/intelligence.ts:279-351`; route `apps/daemon/src/app.ts:541`                                         | context observation event types exist                                                     | Global contribution list is safe for the overview. Pair summary requires project+agent. Boolean `unknown` is preserved. | SUPPORTED |
-| Git observations              | `GET /api/v1/projects/:projectId/git` and bounded commit/worktree reads                   | `packages/protocol/src/intelligence.ts:353-404`; route `apps/daemon/src/app.ts:587`                                         | Git observation events exist                                                              | Project-scoped. Missing observation is unavailable; no scan mutation from dashboard.                                    | DERIVABLE |
-| Packages                      | `GET /api/v1/projects/:projectId/packages?limit=N`                                        | `packages/protocol/src/intelligence.ts:406-434`; route `apps/daemon/src/app.ts:626`                                         | package observation events exist                                                          | Project-scoped; preserve truncation. No scan mutation.                                                                  | DERIVABLE |
-| Technologies                  | `GET /api/v1/projects/:projectId/technologies?limit=N`                                    | `packages/protocol/src/intelligence.ts:436-464`; route `apps/daemon/src/app.ts:637`                                         | technology observation events exist                                                       | Project-scoped; confidence is displayed explicitly.                                                                     | DERIVABLE |
-| Operational graph summary     | no global summary read                                                                    | Named node/path/subgraph schemas begin `packages/protocol/src/intelligence.ts:490`; routes `apps/daemon/src/app.ts:649,656` | graph events exist                                                                        | Existing queries require roots/parameters and cannot prove global counts. Empty development route only.                 | PLANNED   |
-| Optimization findings         | `GET /api/v1/optimization/findings?limit=N`                                               | `packages/protocol/src/intelligence.ts:666-690`; route `apps/daemon/src/app.ts:699`                                         | optimization events invalidate the bounded finding read                                   | Global or project-scoped bounded list. Pulse reads counts only; no accept/reject/evaluate.                              | SUPPORTED |
+| Module                        | REST read                                                                                 | Response evidence                                                                                       | Realtime evidence                                                                         | Scope and Phase 5A behavior                                                                                             | Status    |
+| ----------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | --------- |
+| Runtime health                | `GET /health`, `GET /api/v1/runtime`                                                      | `packages/protocol/src/runtime-http.ts:33-62`; routes `apps/daemon/src/app.ts:325-376`                  | runtime lifecycle events trigger a full coalesced refresh                                 | Global. Non-2xx health body remains displayable as degraded; transport failure is unavailable.                          | SUPPORTED |
+| Projects                      | `GET /api/v1/projects`                                                                    | `packages/protocol/src/project.ts:14-28`; route `apps/daemon/src/app.ts:381`                            | `project.registered`, `project.updated` in `packages/protocol/src/runtime-event.ts:10-11` | Global collection. Empty means no registered projects.                                                                  | SUPPORTED |
+| Agent definitions/bindings    | `GET /api/v1/agents`; `GET /api/v1/projects/:projectId/agents`                            | `packages/protocol/src/control-plane.ts:50-81`; routes `apps/daemon/src/app.ts:924,955`                 | agent/binding event types start at `packages/protocol/src/runtime-event.ts:26`            | Agent definitions global; bindings project-scoped. A failed binding request is partial, not zero.                       | DERIVABLE |
+| Sessions                      | `GET /api/v1/sessions`                                                                    | `packages/protocol/src/session.ts:65-86`; route `apps/daemon/src/app.ts:403`                            | session events `packages/protocol/src/runtime-event.ts:12-16`                             | Global collection includes explicit online/offline presence. Active means online and non-terminal.                      | SUPPORTED |
+| Activity/events               | `GET /api/v1/events?limit=20`                                                             | `packages/protocol/src/runtime-api.ts:14-21`; route `apps/daemon/src/app.ts:451`                        | `/api/v1/realtime` emits validated normalized events                                      | REST seeds a live view bounded to 200 rows; stream IDs are retained for 512-entry duplicate suppression.                | SUPPORTED |
+| Usage summary                 | `GET /api/v1/usage/summary`                                                               | `packages/protocol/src/intelligence.ts:239-261`; route `apps/daemon/src/app.ts:534`                     | usage event types are in the Phase 4 event enum                                           | Global or filtered. Source rows stay separate; missing token totals are unavailable, not zero.                          | SUPPORTED |
+| Context summary/contributions | `GET /api/v1/context/contributions?limit=1000`; pair-scoped `GET /api/v1/context/summary` | `packages/protocol/src/intelligence.ts:279-351`; route `apps/daemon/src/app.ts:541`                     | context observation event types exist                                                     | Global contribution list is safe for the overview. Pair summary requires project+agent. Boolean `unknown` is preserved. | SUPPORTED |
+| Git observations              | `GET /api/v1/projects/:projectId/git` and bounded commit/worktree reads                   | `packages/protocol/src/intelligence.ts:353-404`; route `apps/daemon/src/app.ts:587`                     | Git observation events exist                                                              | Project-scoped. Missing observation is unavailable; no scan mutation from dashboard.                                    | DERIVABLE |
+| Packages                      | `GET /api/v1/projects/:projectId/packages?limit=N`                                        | `packages/protocol/src/intelligence.ts:406-434`; route `apps/daemon/src/app.ts:626`                     | package observation events exist                                                          | Project-scoped; preserve truncation. No scan mutation.                                                                  | DERIVABLE |
+| Technologies                  | `GET /api/v1/projects/:projectId/technologies?limit=N`                                    | `packages/protocol/src/intelligence.ts:436-464`; route `apps/daemon/src/app.ts:637`                     | technology observation events exist                                                       | Project-scoped; confidence is displayed explicitly.                                                                     | DERIVABLE |
+| Operational graph summary     | `GET /api/v1/graph/summary`                                                               | `graphSummarySchema` at `packages/protocol/src/intelligence.ts:672`; route `apps/daemon/src/app.ts:654` | `graph.*` events invalidate the summary                                                   | Global. Exact per-kind cardinality on the active generation; an unbuilt graph withholds totals instead of showing zero. | SUPPORTED |
+| Optimization findings         | `GET /api/v1/optimization/findings?limit=N`                                               | `packages/protocol/src/intelligence.ts:666-690`; route `apps/daemon/src/app.ts:699`                     | optimization events invalidate the bounded finding read                                   | Global or project-scoped bounded list. Pulse reads counts only; no accept/reject/evaluate.                              | SUPPORTED |
 
 ## Pulse request set
 
@@ -54,9 +54,11 @@ status because the "bounded join" they required now exists.
 | Packages                   | DERIVABLE | SUPPORTED | `GET /api/v1/projects/:projectId/packages?limit=100`; `truncated` is disclosed.                |
 | Technologies               | DERIVABLE | SUPPORTED | `GET /api/v1/projects/:projectId/technologies?limit=100`; confidence renders as text per tier. |
 
-Unchanged and still `PLANNED`: the operational graph summary. `/api/v1/graph/nodes/:nodeKind/:nodeId`,
-`/api/v1/graph/path`, and `/api/v1/graph/subgraph` all require a root node and parameters, so no
-global count or health figure can be proven. `Graph` remains a disabled navigation label.
+Unchanged and still `PLANNED` at the time of Phase 5C: the operational graph summary.
+`/api/v1/graph/nodes/:nodeKind/:nodeId`, `/api/v1/graph/path`, and `/api/v1/graph/subgraph` all
+require a root node and parameters, so no global count or health figure could be proven, and
+`Graph` remained a disabled navigation label. ADR 0013 later added the summary read that changed
+this; see the graph section below.
 
 ### Project scope request set
 
@@ -109,10 +111,37 @@ discarded at render time; two added a bounded read.
 
 The two new collections load only while their route is open, so the overview never pays for them.
 
-`Graph` is now the only disabled label. `/api/v1/graph/nodes/:nodeKind/:nodeId`,
+## Operational graph route
+
+`Graph` was the last disabled label. `/api/v1/graph/nodes/:nodeKind/:nodeId`,
 `/api/v1/graph/path`, and `/api/v1/graph/subgraph` all require a root node, so no global count,
-generation, or health figure can be proven. Rendering one would be a fabricated claim rather than
-a missing feature.
+generation, or health figure could be proven, and rendering one would have been a fabricated
+claim rather than a missing feature.
+
+ADR 0013 added `GET /api/v1/graph/summary`, which answers the global question from index
+cardinality on the active generation — 55 constant-time Redis commands, no traversal and no
+scan — so `#/graph` now renders proven facts and the rail has no disabled destination left.
+
+The response reports no generation count. The generations index is written only by the
+incremental node/edge put path, so on a live runtime it is empty while the active generation
+holds hundreds of nodes, and a `0` beside those totals would contradict them.
+
+| `#/graph` panel | Source                            | Loads on demand |
+| --------------- | --------------------------------- | --------------- |
+| Projection      | `GET /api/v1/graph/summary`       | yes             |
+| Nodes by kind   | same response, `nodeCountsByKind` | yes             |
+| Edges by kind   | same response, `edgeCountsByKind` | yes             |
+
+Three states stay distinct on this route, which is the whole reason it waited for a contract:
+
+- the read failed → `Unavailable`;
+- the graph has never been built → `Never built`, and both totals render as `Not observed`
+  rather than `0`;
+- a generation exists and holds nothing → a real `0`, because that is an observed answer.
+
+Counts are exact rather than bounded, so this is the one route that carries no truncation note.
+It says so explicitly, because every neighbouring route does carry one and silence would read as
+an omission.
 
 ### Honesty rules encoded in these routes
 

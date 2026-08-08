@@ -645,6 +645,53 @@ export const graphRebuildOperationSchema = z.strictObject({
   completedAt: timestampSchema.optional(),
 });
 
+export const graphProjectionHealthSchema = z.enum(['healthy', 'degraded']);
+
+export const graphNodeKindCountSchema = z.strictObject({
+  kind: graphNodeKindSchema,
+  count: z.number().int().nonnegative(),
+});
+export const graphEdgeKindCountSchema = z.strictObject({
+  kind: graphEdgeKindSchema,
+  count: z.number().int().nonnegative(),
+});
+
+/**
+ * The bounded global answer defined by ADR 0013.
+ *
+ * Every count is set cardinality on the active generation, so nothing here is
+ * truncated and no truncation flag is offered. The per-kind lists carry only
+ * kinds with at least one member; a kind absent from a list while `observed`
+ * is true is an observed zero.
+ *
+ * `observed` is false when no active generation pointer exists, which means the
+ * graph has never been built. The refinement below makes the alternative
+ * unrepresentable: a summary may not carry counts it did not observe, and may
+ * not claim an observed generation while withholding its totals.
+ */
+export const graphSummarySchema = z
+  .strictObject({
+    observed: z.boolean(),
+    generation: identifierSchema.optional(),
+    projectionHealth: graphProjectionHealthSchema,
+    nodeCount: z.number().int().nonnegative().optional(),
+    edgeCount: z.number().int().nonnegative().optional(),
+    nodeCountsByKind: z.array(graphNodeKindCountSchema).max(graphNodeKindSchema.options.length),
+    edgeCountsByKind: z.array(graphEdgeKindCountSchema).max(graphEdgeKindSchema.options.length),
+    observedAt: timestampSchema,
+  })
+  .refine(
+    (value) => {
+      const hasGeneration = value.generation !== undefined;
+      const hasTotals = value.nodeCount !== undefined && value.edgeCount !== undefined;
+      return value.observed ? hasGeneration && hasTotals : !hasGeneration && !hasTotals;
+    },
+    {
+      message:
+        'An observed graph summary carries a generation and both totals; an unobserved one carries neither.',
+    },
+  );
+
 export const optimizationFindingKindSchema = z.enum([
   'oversized-always-loaded-source',
   'exact-duplicate-content',
@@ -881,6 +928,10 @@ export type GraphNeighborsQuery = z.infer<typeof graphNeighborsQuerySchema>;
 export type GraphPathQuery = z.infer<typeof graphPathQuerySchema>;
 export type GraphSubgraphQuery = z.infer<typeof graphSubgraphQuerySchema>;
 export type GraphRebuildOperation = z.infer<typeof graphRebuildOperationSchema>;
+export type GraphProjectionHealth = z.infer<typeof graphProjectionHealthSchema>;
+export type GraphNodeKindCount = z.infer<typeof graphNodeKindCountSchema>;
+export type GraphEdgeKindCount = z.infer<typeof graphEdgeKindCountSchema>;
+export type GraphSummary = z.infer<typeof graphSummarySchema>;
 export type GraphNeighborsResponse = z.infer<typeof graphNeighborsResponseSchema>;
 export type GraphPathResponse = z.infer<typeof graphPathResponseSchema>;
 export type GraphSubgraphResponse = z.infer<typeof graphSubgraphResponseSchema>;

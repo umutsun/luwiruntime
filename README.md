@@ -100,11 +100,13 @@ realtime Pulse and the Phase 1–4 runtime foundation:
 - agent kinds rendered verbatim, with no vendor label map or per-vendor branch anywhere in the
   dashboard.
 
+The operational graph now has a bounded global read. `GET /api/v1/graph/summary` reports the
+active generation, projection health, and exact per-kind node and edge cardinality, and the
+`#/graph` route renders it. A graph that has never been built reports no totals rather than zero.
+
 Dashboard mutations, optimization accept/reject/evaluate, lifecycle/release scoring, release
-readiness, a global operational-graph summary, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge
-graph, memory federation, cloud accounts, and authentication are not implemented. The operational
-graph exposes only rooted queries, so no global graph overview can be derived honestly and the
-`Graph` route remains a disabled label.
+readiness, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge
+graph, memory federation, cloud accounts, and authentication are not implemented.
 
 ## Architecture and security
 
@@ -144,7 +146,9 @@ and [ADR 0008](docs/decisions/0008-capability-scope-and-inheritance.md).
 Phase 4 graph, optimization, and local Git boundaries are defined by [ADR
 0009](docs/decisions/0009-event-derived-operational-graph.md), [ADR
 0010](docs/decisions/0010-context-optimization-feedback-loop.md), and [ADR
-0011](docs/decisions/0011-local-git-observation-and-attribution.md).
+0011](docs/decisions/0011-local-git-observation-and-attribution.md). The bounded global graph
+summary, and the alternatives rejected for it, are recorded in [ADR
+0013](docs/decisions/0013-bounded-global-graph-summary.md).
 
 ## Prerequisites
 

@@ -1,5 +1,6 @@
 import {
   contextSourceCollectionSchema,
+  graphSummarySchema,
   optimizationProposalCollectionSchema,
 } from '@luwi/protocol/browser';
 
@@ -47,11 +48,33 @@ export type OptimizationProposal = {
   updatedAt: string;
 };
 
+export type KindCount = { kind: string; count: number };
+
+/**
+ * The bounded global graph answer from ADR 0013.
+ *
+ * `generation`, `nodeCount`, and `edgeCount` are absent together when the graph
+ * has never been built. They are optional rather than zero-defaulted so the
+ * view cannot render an unobserved graph as an empty one. Kinds are carried
+ * verbatim; the dashboard owns no label map for them.
+ */
+export type GraphSummary = {
+  observed: boolean;
+  generation?: string;
+  projectionHealth: 'healthy' | 'degraded';
+  nodeCount?: number;
+  edgeCount?: number;
+  nodeCountsByKind: KindCount[];
+  edgeCountsByKind: KindCount[];
+  observedAt: string;
+};
+
 export type Bounded<T> = { items: T[]; truncated: boolean };
 
 export type IntelligenceResources = {
   sources: ResourceState<Bounded<ContextSource>>;
   proposals: ResourceState<Bounded<OptimizationProposal>>;
+  graph: ResourceState<GraphSummary>;
 };
 
 export type IntelligenceResourceKey = keyof IntelligenceResources;
@@ -59,6 +82,7 @@ export type IntelligenceResourceKey = keyof IntelligenceResources;
 export const intelligenceResourceKeys: readonly IntelligenceResourceKey[] = [
   'sources',
   'proposals',
+  'graph',
 ];
 
 type Entry = readonly [IntelligenceResourceKey, IntelligenceResources[IntelligenceResourceKey]];
@@ -74,6 +98,9 @@ export function intelligenceResourcesForEvent(eventType: string): IntelligenceRe
   if (eventType.startsWith('runtime.')) return [...intelligenceResourceKeys];
   if (eventType.startsWith('context.source.')) return ['sources'];
   if (eventType.startsWith('optimization.proposal.')) return ['proposals'];
+  // Both projection and rebuild events change generation membership, which is
+  // exactly what the summary counts.
+  if (eventType.startsWith('graph.')) return ['graph'];
   return [];
 }
 
@@ -149,6 +176,33 @@ export async function loadIntelligenceScope(
               })),
             ] as Entry,
         ),
+    );
+  }
+
+  if (requested.has('graph')) {
+    requests.push(
+      client.get('/api/v1/graph/summary', graphSummarySchema, get).then(
+        (result) =>
+          [
+            'graph',
+            collected(result, (summary) => ({
+              observed: summary.observed,
+              ...(summary.generation === undefined ? {} : { generation: summary.generation }),
+              projectionHealth: summary.projectionHealth,
+              ...(summary.nodeCount === undefined ? {} : { nodeCount: summary.nodeCount }),
+              ...(summary.edgeCount === undefined ? {} : { edgeCount: summary.edgeCount }),
+              nodeCountsByKind: summary.nodeCountsByKind.map(({ kind, count }) => ({
+                kind,
+                count,
+              })),
+              edgeCountsByKind: summary.edgeCountsByKind.map(({ kind, count }) => ({
+                kind,
+                count,
+              })),
+              observedAt: summary.observedAt,
+            })),
+          ] as Entry,
+      ),
     );
   }
 

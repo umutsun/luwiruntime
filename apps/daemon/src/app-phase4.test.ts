@@ -168,6 +168,57 @@ describe('Phase 4 HTTP routes', () => {
     );
   });
 
+  it('serves the global graph summary without touching a rebuild', async () => {
+    const graphSummary = vi.fn(async () => ({
+      observed: true,
+      generation: 'generation-1',
+      projectionHealth: 'healthy' as const,
+      nodeCount: 7,
+      edgeCount: 4,
+      nodeCountsByKind: [
+        { kind: 'project' as const, count: 2 },
+        { kind: 'session' as const, count: 5 },
+      ],
+      edgeCountsByKind: [{ kind: 'PROJECT_BOUND_AGENT' as const, count: 4 }],
+      observedAt: timestamp,
+    }));
+    const rebuildGraph = vi.fn();
+    createApp({ graphSummary, rebuildGraph } as unknown as IntelligenceService);
+
+    const response = await app!.inject({ method: 'GET', url: '/api/v1/graph/summary' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      observed: true,
+      generation: 'generation-1',
+      nodeCount: 7,
+      edgeCount: 4,
+    });
+    expect(graphSummary).toHaveBeenCalledTimes(1);
+    // A read surface never provokes a projection. AGENTS.md section 12.
+    expect(rebuildGraph).not.toHaveBeenCalled();
+  });
+
+  it('refuses to serve a summary that claims a generation without totals', async () => {
+    // Violates the ADR 0013 refinement. What matters is that the contradiction
+    // never reaches the client; the status is 400 because the daemon's single
+    // error handler maps every ZodError that way, response validation included.
+    const graphSummary = vi.fn(async () => ({
+      observed: true,
+      projectionHealth: 'healthy' as const,
+      nodeCountsByKind: [],
+      edgeCountsByKind: [],
+      observedAt: timestamp,
+    }));
+    createApp({ graphSummary } as unknown as IntelligenceService);
+
+    const response = await app!.inject({ method: 'GET', url: '/api/v1/graph/summary' });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).not.toHaveProperty('observed');
+    expect(response.json().error.code).toBe('REQUEST_VALIDATION_FAILED');
+  });
+
   it('maps bounded graph and optimization routes without direct apply', async () => {
     const graphPath = vi.fn(async () => ({ found: false, nodes: [], edges: [] }));
     const acceptProposal = vi.fn(async () => ({

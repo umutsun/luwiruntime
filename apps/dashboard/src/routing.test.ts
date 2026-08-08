@@ -69,6 +69,7 @@ describe('routeHref', () => {
     [{ name: 'usage' }, '#/usage'],
     [{ name: 'context' }, '#/context'],
     [{ name: 'optimization' }, '#/optimization'],
+    [{ name: 'graph' }, '#/graph'],
     [{ name: 'projects' }, '#/projects'],
     [{ name: 'projects', projectId: 'proj-1' }, '#/projects/proj-1'],
   ];

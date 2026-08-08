@@ -52,13 +52,14 @@ function selectedProjectOf(hash: string): string | undefined {
 }
 
 /**
- * The context and optimization routes are the only consumers of the two extra
- * collections, so they load when one of those routes is open and never
- * otherwise.
+ * Only these routes consume the extra global reads, so they load while one of
+ * them is open and never otherwise. The graph summary is 56 Redis commands per
+ * request (ADR 0013) and nothing caches it, which is exactly why the overview
+ * must not pay for it.
  */
 function needsIntelligenceOf(hash: string): boolean {
   const route = parseRoute(hash);
-  return route.name === 'context' || route.name === 'optimization';
+  return route.name === 'context' || route.name === 'optimization' || route.name === 'graph';
 }
 
 function resourcesOf(input: PulseInput): PulseResources {

@@ -86,6 +86,7 @@ import {
   graphRebuildOperationSchema,
   graphSubgraphQuerySchema,
   graphSubgraphResponseSchema,
+  graphSummarySchema,
   optimizationAcceptRequestSchema,
   optimizationAnalysisRequestSchema,
   optimizationAnalysisResponseSchema,
@@ -646,6 +647,13 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         });
       });
 
+      /**
+       * The bounded global answer from ADR 0013. Set cardinality on the active
+       * generation only: no traversal, no scan, and no rebuild.
+       */
+      app.get('/api/v1/graph/summary', async () => {
+        return graphSummarySchema.parse(await withCurrentRead(() => intelligence.graphSummary()));
+      });
       app.get('/api/v1/graph/path', async (request) => {
         const query = graphPathHttpQuerySchema.parse(request.query);
         const { fromKind, fromId, ...pathQuery } = query;

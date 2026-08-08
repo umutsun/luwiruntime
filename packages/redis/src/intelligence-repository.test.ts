@@ -27,6 +27,23 @@ class RecordingClient implements RedisCommandClient {
   }
 }
 
+/**
+ * Answers by command rather than by call order, so a read that issues one
+ * command per schema kind stays readable and does not depend on the order the
+ * implementation happens to iterate.
+ */
+class ScriptedClient implements RedisCommandClient {
+  commands: string[][] = [];
+
+  constructor(private readonly reply: (command: string[]) => unknown) {}
+
+  async sendCommand(arguments_: readonly string[]): Promise<unknown> {
+    const command = [...arguments_];
+    this.commands.push(command);
+    return this.reply(command);
+  }
+}
+
 const timestamp = '2026-07-30T00:00:00.000Z';
 const usage: UsageRecord = {
   id: 'usage-1',
@@ -279,6 +296,96 @@ describe('Redis intelligence repository', () => {
       ]),
     );
   });
+
+  it('summarizes the active graph generation from index cardinality alone', async () => {
+    const keys = createRedisKeys('luwi:test:graph-summary:v1');
+    const cardinalities = new Map<string, number>([
+      [keys.graphNodesByKind('generation-1', 'project'), 2],
+      [keys.graphNodesByKind('generation-1', 'session'), 3],
+      [keys.graphEdgesByKind('generation-1', 'PROJECT_BOUND_AGENT'), 4],
+    ]);
+    const client = new ScriptedClient((command) => {
+      const [name, key] = command;
+      if (name === 'GET' && key === keys.graphActiveGeneration) return 'generation-1';
+      if (name === 'GET' && key === keys.graphProjectionHealth) return 'degraded';
+      if (name === 'SCARD') return cardinalities.get(key!) ?? 0;
+      throw new Error(`unexpected command ${command.join(' ')}`);
+    });
+    const repository = createIntelligenceRepository({
+      client,
+      keys,
+      functions: createFunctionRegistry(),
+    });
+
+    const summary = await repository.getGraphSummary();
+
+    expect(summary.generation).toBe('generation-1');
+    expect(summary.projectionHealth).toBe('degraded');
+    // Only kinds with members are carried; the rest are an observed zero.
+    expect(summary.nodes).toEqual([
+      { kind: 'project', count: 2 },
+      { kind: 'session', count: 3 },
+    ]);
+    expect(summary.edges).toEqual([{ kind: 'PROJECT_BOUND_AGENT', count: 4 }]);
+
+    // ADR 0013: cardinality only. Any scan or hydration here would make an
+    // overview the most expensive read in the daemon.
+    const issued = client.commands.map(([name]) => name);
+    expect(issued).not.toContain('SSCAN');
+    expect(issued).not.toContain('SMEMBERS');
+    expect(issued.filter((name) => name === 'SCARD')).toHaveLength(53);
+    // GET generation + GET health + 53 per-kind SCARD. No ZCARD: the
+    // generations index is not maintained by every write path, so counting
+    // it would publish a number that contradicts the totals. ADR 0013.
+    expect(client.commands).toHaveLength(55);
+    expect(issued).not.toContain('ZCARD');
+  });
+
+  it('reports a graph that was never built as unobserved rather than empty', async () => {
+    const keys = createRedisKeys('luwi:test:graph-unbuilt:v1');
+    const client = new ScriptedClient((command) => {
+      const [name, key] = command;
+      if (name === 'GET' && key === keys.graphActiveGeneration) return null;
+      if (name === 'GET' && key === keys.graphProjectionHealth) return null;
+      throw new Error(`unexpected command ${command.join(' ')}`);
+    });
+    const repository = createIntelligenceRepository({
+      client,
+      keys,
+      functions: createFunctionRegistry(),
+    });
+
+    const summary = await repository.getGraphSummary();
+
+    expect(summary.generation).toBeNull();
+    expect(summary.nodes).toEqual([]);
+    expect(summary.edges).toEqual([]);
+    // Absent failure state is healthy, which is the existing Phase 4 contract.
+    expect(summary.projectionHealth).toBe('healthy');
+    // No generation means nothing to count, so no per-kind read is issued.
+    expect(client.commands.map(([name]) => name)).not.toContain('SCARD');
+  });
+
+  it.each([['not-a-number'], [''], [-1], [1.5], [null]])(
+    'rejects the cardinality reply %p rather than reporting it as zero',
+    async (reply) => {
+      const keys = createRedisKeys('luwi:test:graph-invalid:v1');
+      const client = new ScriptedClient((command) => {
+        const [name, key] = command;
+        if (name === 'GET' && key === keys.graphActiveGeneration) return 'generation-1';
+        if (name === 'GET' && key === keys.graphProjectionHealth) return null;
+        if (name === 'SCARD') return reply;
+        throw new Error(`unexpected command ${command.join(' ')}`);
+      });
+      const repository = createIntelligenceRepository({
+        client,
+        keys,
+        functions: createFunctionRegistry(),
+      });
+
+      await expect(repository.getGraphSummary()).rejects.toThrow(/invalid/i);
+    },
+  );
 
   it('records graph projection failure and degraded health through one Function', async () => {
     const client = new RecordingClient();

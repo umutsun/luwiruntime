@@ -61,8 +61,7 @@ describe('LUWI Pulse shell', () => {
 
     expect(screen.getByText('LUWI Runtime')).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Pulse' }).getAttribute('aria-current')).toBe('page');
-    expect(screen.queryByRole('link', { name: 'Graph' })).toBeNull();
-    expect(screen.getByText('Graph').closest('[aria-disabled="true"]')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Graph' })).toBeTruthy();
     expect(screen.queryByText('Welcome back')).toBeNull();
   });
 
@@ -169,7 +168,6 @@ describe('LUWI Pulse shell', () => {
     );
     expect(screen.getByRole('heading', { name: 'Activity', level: 2 })).toBeTruthy();
     expect(screen.getByText('Realtime reconnecting')).toBeTruthy();
-    expect(screen.getByText('Graph').closest('[aria-disabled="true"]')).toBeTruthy();
   });
 
   it('opens a read-only project inspector from supported snapshot data', () => {
@@ -434,11 +432,12 @@ describe('Projects route', () => {
     expect(within(nav).getByText('Projects').closest('[aria-disabled="true"]')).toBeNull();
   });
 
-  it('keeps Graph disabled because no global graph summary contract exists', () => {
+  it('enables Graph now that the bounded summary contract exists', () => {
     render(<DashboardApp snapshot={withProjects()} websocketState="live" onRetry={vi.fn()} />);
 
-    expect(screen.queryByRole('link', { name: 'Graph' })).toBeNull();
-    expect(screen.getByText('Graph').closest('[aria-disabled="true"]')).toBeTruthy();
+    const nav = screen.getByRole('navigation', { name: /primary/i });
+    expect(within(nav).getByRole('link', { name: 'Graph' }).getAttribute('href')).toBe('#/graph');
+    expect(within(nav).getByText('Graph').closest('[aria-disabled="true"]')).toBeNull();
   });
 
   it('renders the project registry when the route is active', () => {
@@ -511,6 +510,7 @@ describe('Phase 5D routes', () => {
     ['#/usage', 'Usage'],
     ['#/context', 'Context'],
     ['#/optimization', 'Optimization'],
+    ['#/graph', 'Graph'],
   ] as const;
 
   it.each(routes)('activates %s with its own heading', (hash, heading) => {
@@ -524,15 +524,14 @@ describe('Phase 5D routes', () => {
     );
   });
 
-  it('leaves Graph as the only disabled destination', () => {
+  it('leaves no disabled destination in the rail', () => {
     render(<DashboardApp snapshot={snapshot()} websocketState="live" onRetry={vi.fn()} />);
 
     const nav = screen.getByRole('navigation', { name: /primary/i });
     const disabled = within(nav)
       .getAllByText(/.+/)
-      .filter((node) => node.closest('[aria-disabled="true"]') !== null)
-      .map((node) => node.textContent);
-    expect(disabled.some((text) => text?.includes('Graph'))).toBe(true);
+      .filter((node) => node.closest('[aria-disabled="true"]') !== null);
+    expect(disabled).toHaveLength(0);
     for (const [, heading] of routes) {
       expect(within(nav).getByRole('link', { name: heading })).toBeTruthy();
     }

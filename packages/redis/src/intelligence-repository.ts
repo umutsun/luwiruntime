@@ -24,9 +24,12 @@ import {
   type GitCommit,
   type GitObservation,
   type GraphEdge,
+  type GraphEdgeKindCount,
   type GraphNeighborsQuery,
   type GraphNode,
   type GraphNodeKind,
+  type GraphNodeKindCount,
+  type GraphProjectionHealth,
   type GraphRebuildOperation,
   type OptimizationEvaluation,
   type OptimizationFinding,
@@ -65,6 +68,21 @@ export type GraphProjectionFailure = {
   code: string;
   occurredAt: string;
   evidenceId?: string;
+};
+
+/**
+ * The raw counting answer behind ADR 0013.
+ *
+ * `generation` is null when the graph has never been built. The per-kind lists
+ * then stay empty, and it is the caller's job to keep that distinct from a
+ * generation that exists and holds nothing. No total is computed here: summing
+ * an empty list would produce the zero this projection must not assert.
+ */
+export type GraphSummaryProjection = {
+  generation: string | null;
+  projectionHealth: GraphProjectionHealth;
+  nodes: GraphNodeKindCount[];
+  edges: GraphEdgeKindCount[];
 };
 
 type IntelligenceBatchOperation =
@@ -161,6 +179,7 @@ export interface IntelligenceRepository {
   ): Promise<void>;
   recordGraphProjectionFailure(failure: GraphProjectionFailure): Promise<void>;
   getGraphProjectionHealth(): Promise<'healthy' | 'degraded'>;
+  getGraphSummary(): Promise<GraphSummaryProjection>;
   beginGraphRebuild(operation: GraphRebuildOperation, event: RuntimeEvent): Promise<void>;
   updateGraphRebuild(operation: GraphRebuildOperation): Promise<void>;
   activateGraphGeneration(operation: GraphRebuildOperation, event: RuntimeEvent): Promise<void>;
@@ -189,6 +208,25 @@ function text(value: unknown): string | null {
   if (typeof value === 'string') return value;
   if (Buffer.isBuffer(value)) return value.toString('utf8');
   throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis returned an invalid value.');
+}
+
+/**
+ * A set or sorted-set cardinality reply.
+ *
+ * Redis data is untrusted on read (sections 7 and 14). Coercing an unexpected
+ * reply would turn it into `0`, which this surface must never assert, so an
+ * unparseable cardinality is a failure rather than an empty answer.
+ */
+function cardinality(value: unknown): number {
+  const raw = typeof value === 'number' ? value : text(value);
+  // `Number('')` is 0, so an empty reply would become the zero this must not
+  // assert. Anything that is not digits is rejected outright.
+  const numeric =
+    typeof raw === 'number' ? raw : raw !== null && /^\d+$/.test(raw.trim()) ? Number(raw) : NaN;
+  if (!Number.isSafeInteger(numeric) || numeric < 0) {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis returned an invalid cardinality.');
+  }
+  return numeric;
 }
 
 function decode(value: unknown): unknown {
@@ -1244,6 +1282,38 @@ export function createIntelligenceRepository(
       return (await client.sendCommand(['GET', keys.graphProjectionHealth])) === 'degraded'
         ? 'degraded'
         : 'healthy';
+    },
+    async getGraphSummary() {
+      const generation = text(await client.sendCommand(['GET', keys.graphActiveGeneration]));
+      const projectionHealth = await this.getGraphProjectionHealth();
+
+      // The generations index is deliberately not counted. It is written only
+      // by `putGraphNode` and `putGraphEdge`, so a graph maintained through
+      // `replaceGraphSnapshot` leaves it empty while holding a fully populated
+      // active generation. Publishing that as a generation count reads as a
+      // contradiction next to the node totals. ADR 0013 records the removal.
+
+      // Without an active generation there is nothing to count, and issuing the
+      // per-kind reads anyway would return zeros that mean "unknown".
+      if (generation === null) {
+        return { generation: null, projectionHealth, nodes: [], edges: [] };
+      }
+
+      const nodes: GraphNodeKindCount[] = [];
+      for (const kind of graphNodeKindSchema.options) {
+        const count = cardinality(
+          await client.sendCommand(['SCARD', keys.graphNodesByKind(generation, kind)]),
+        );
+        if (count > 0) nodes.push({ kind, count });
+      }
+      const edges: GraphEdgeKindCount[] = [];
+      for (const kind of graphEdgeKindSchema.options) {
+        const count = cardinality(
+          await client.sendCommand(['SCARD', keys.graphEdgesByKind(generation, kind)]),
+        );
+        if (count > 0) edges.push({ kind, count });
+      }
+      return { generation, projectionHealth, nodes, edges };
     },
     async beginGraphRebuild(operation, event) {
       const lock = await client.sendCommand([
