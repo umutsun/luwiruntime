@@ -119,6 +119,21 @@ export function Unavailable({ label = 'Unavailable' }: { label?: string }) {
   return <span className="unavailable">{label}</span>;
 }
 
+/**
+ * A count that knows whether it was observed.
+ *
+ * The zero this avoids is the most convincing lie the dashboard can tell: it
+ * looks like a measurement. Every count derived from a resource that can fail
+ * goes through here.
+ */
+export function Count({
+  value,
+}: {
+  value: { state: 'ready' | 'empty'; value: number } | { state: 'unavailable' };
+}) {
+  return value.state === 'unavailable' ? <Unavailable /> : <>{value.value}</>;
+}
+
 export function TableWrap({ caption, children }: { caption?: string; children: ReactNode }) {
   return (
     <div className="table-wrap">

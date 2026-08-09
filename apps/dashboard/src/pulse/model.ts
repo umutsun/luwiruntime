@@ -80,7 +80,15 @@ export type PulseInput = PulseResources & {
   snapshotAt: string;
 };
 
-type CountValue = { state: 'ready' | 'empty'; value: number } | { state: 'unavailable' };
+/**
+ * A count that knows whether it was actually observed.
+ *
+ * A failed read must never surface as `0`. Every count derived from a resource
+ * that can fail carries this instead of a bare number, so the view is forced to
+ * decide what to render rather than silently printing a zero the runtime never
+ * measured.
+ */
+export type CountValue = { state: 'ready' | 'empty'; value: number } | { state: 'unavailable' };
 
 const usageOrder = [
   'agent-exact',
@@ -155,12 +163,21 @@ export function buildPulseSnapshot(input: PulseInput) {
           value: activeSessions.length,
         };
 
+  const perAgentSessionCount = (agentId: string): CountValue => {
+    if (input.sessions.state === 'unavailable') return { state: 'unavailable' };
+    const value = sessions.filter((session) => session.agentId === agentId).length;
+    return { state: value === 0 ? 'empty' : 'ready', value };
+  };
+  const perProjectActiveSessions = (projectId: string): CountValue => {
+    if (input.sessions.state === 'unavailable') return { state: 'unavailable' };
+    const value = activeSessions.filter((session) => session.projectId === projectId).length;
+    return { state: value === 0 ? 'empty' : 'ready', value };
+  };
   const projects =
     input.projects.state === 'ready'
       ? input.projects.data.map((project) => ({
           ...project,
-          activeSessions: activeSessions.filter((session) => session.projectId === project.id)
-            .length,
+          activeSessions: perProjectActiveSessions(project.id),
         }))
       : [];
 
@@ -200,7 +217,13 @@ export function buildPulseSnapshot(input: PulseInput) {
     projectCount: countOf(input.projects),
     activeSessionCount,
     agentCount: countOf(input.agents),
-    agents: input.agents.state === 'ready' ? input.agents.data : [],
+    agents:
+      input.agents.state === 'ready'
+        ? input.agents.data.map((agent) => ({
+            ...agent,
+            sessionCount: perAgentSessionCount(agent.id),
+          }))
+        : [],
     agentsState: input.agents.state,
     sessions,
     activeSessions,

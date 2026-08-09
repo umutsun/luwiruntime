@@ -1,7 +1,9 @@
 import { IdBadge } from '../components/id-badge.js';
-import { ResourcePanel, TableWrap, Unavailable } from '../components/panel.js';
+import { Count, ResourcePanel, TableWrap, Unavailable } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
-import type { PulseAgent, PulseSnapshot } from '../pulse/model.js';
+import type { PulseSnapshot } from '../pulse/model.js';
+
+type AgentRow = PulseSnapshot['agents'][number];
 
 /**
  * Agent definitions.
@@ -16,14 +18,9 @@ export function AgentsView({ snapshot }: { snapshot: PulseSnapshot }) {
       ? ({ state: 'ready', data: snapshot.agents } as const)
       : ({ state: 'unavailable' } as const);
 
-  const sessionsByAgent = new Map<string, number>();
-  for (const session of snapshot.sessions) {
-    sessionsByAgent.set(session.agentId, (sessionsByAgent.get(session.agentId) ?? 0) + 1);
-  }
-
   return (
     <div className="route-stack">
-      <ResourcePanel<PulseAgent[]>
+      <ResourcePanel<AgentRow[]>
         title="Agent definitions"
         meta={snapshot.agentsState === 'ready' ? `${snapshot.agents.length} registered` : undefined}
         resource={resource}
@@ -59,7 +56,9 @@ export function AgentsView({ snapshot }: { snapshot: PulseSnapshot }) {
                       {row.enabled ? 'Enabled' : 'Disabled'}
                     </StatusChip>
                   </td>
-                  <td>{sessionsByAgent.get(row.id) ?? 0}</td>
+                  <td>
+                    <Count value={row.sessionCount} />
+                  </td>
                 </tr>
               ))}
             </tbody>

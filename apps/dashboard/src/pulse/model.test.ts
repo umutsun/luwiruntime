@@ -72,7 +72,7 @@ describe('Pulse snapshot mapping', () => {
 
     expect(snapshot.activeSessions).toHaveLength(1);
     expect(snapshot.activeSessions[0]).toMatchObject({ projectName: 'LUWI' });
-    expect(snapshot.projects[0]).toMatchObject({ activeSessions: 1 });
+    expect(snapshot.projects[0]?.activeSessions).toEqual({ state: 'ready', value: 1 });
   });
 
   it('preserves all usage evidence sources as separate rows', () => {
@@ -126,5 +126,87 @@ describe('Pulse snapshot mapping', () => {
 
   it('tolerates a future session status in presentation code', () => {
     expect(labelSessionStatus('handoff_pending')).toBe('Unknown');
+  });
+
+  it('carries per-project session availability rather than collapsing it to zero', () => {
+    // A failed sessions read used to leave `activeSessions: 0` on every
+    // project, so one screen could show "0 active" directly beneath a panel
+    // saying "Session data unavailable".
+    const unavailable = buildPulseSnapshot({
+      ...baseInput(),
+      projects: {
+        state: 'ready',
+        data: [{ id: 'p1', name: 'LUWI', localPath: 'C:/work/luwi' }],
+      },
+      sessions: { state: 'unavailable' },
+    });
+
+    expect(unavailable.projects[0]?.activeSessions).toEqual({ state: 'unavailable' });
+  });
+
+  it('reports a real zero when the sessions read succeeded and found none', () => {
+    const empty = buildPulseSnapshot({
+      ...baseInput(),
+      projects: {
+        state: 'ready',
+        data: [{ id: 'p1', name: 'LUWI', localPath: 'C:/work/luwi' }],
+      },
+      sessions: { state: 'ready', data: [] },
+    });
+
+    expect(empty.projects[0]?.activeSessions).toEqual({ state: 'empty', value: 0 });
+  });
+
+  it('counts sessions per agent only when the read succeeded', () => {
+    const ready = buildPulseSnapshot({
+      ...baseInput(),
+      agents: {
+        state: 'ready',
+        data: [
+          {
+            id: 'a1',
+            kind: 'other',
+            displayName: 'Agent',
+            adapterId: 'x',
+            enabled: true,
+            updatedAt: '2026-08-05T08:00:00.000Z',
+          },
+        ],
+      },
+      sessions: {
+        state: 'ready',
+        data: [
+          {
+            id: 's1',
+            agentId: 'a1',
+            projectId: 'p1',
+            status: 'thinking',
+            presence: 'online',
+            startedAt: '2026-08-05T08:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T08:00:00.000Z',
+          },
+        ],
+      },
+    });
+    const unavailable = buildPulseSnapshot({
+      ...baseInput(),
+      agents: {
+        state: 'ready',
+        data: [
+          {
+            id: 'a1',
+            kind: 'other',
+            displayName: 'Agent',
+            adapterId: 'x',
+            enabled: true,
+            updatedAt: '2026-08-05T08:00:00.000Z',
+          },
+        ],
+      },
+      sessions: { state: 'unavailable' },
+    });
+
+    expect(ready.agents[0]?.sessionCount).toEqual({ state: 'ready', value: 1 });
+    expect(unavailable.agents[0]?.sessionCount).toEqual({ state: 'unavailable' });
   });
 });

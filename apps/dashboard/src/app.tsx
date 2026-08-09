@@ -112,7 +112,11 @@ function scopeSummary(route: DashboardRouteName, snapshot: PulseSnapshot): strin
       ? pluralize(snapshot.sessions.length, 'session')
       : 'Sessions unavailable';
   }
-  if (route === 'activity') return pluralize(snapshot.activity.length, 'retained event');
+  if (route === 'activity') {
+    return snapshot.activityState === 'ready'
+      ? pluralize(snapshot.activity.length, 'retained event')
+      : 'Activity unavailable';
+  }
   return `${count(snapshot.projectCount, 'project', 'Projects')} · ${count(
     snapshot.activeSessionCount,
     'active session',
@@ -333,6 +337,7 @@ export function DashboardApp({
           {route.name === 'activity' ? (
             <ActivityView
               state={displayedActivity}
+              available={snapshot.activityState === 'ready'}
               onStateChange={onActivityStateChange ?? (() => undefined)}
               onOpenEvent={(event, opener) =>
                 openInspector({ kind: 'event', streamId: event.streamId }, opener)

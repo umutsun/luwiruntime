@@ -15,7 +15,12 @@ afterEach(() => {
 
 describe('read-only inspectors', () => {
   const relatedActivityLimit = 20;
-  const project = { id: 'p1', name: 'LUWI', localPath: 'C:/luwi', activeSessions: 0 };
+  const project = {
+    id: 'p1',
+    name: 'LUWI',
+    localPath: 'C:/luwi',
+    activeSessions: { state: 'empty' as const, value: 0 },
+  };
   const session = (overrides: Record<string, unknown> = {}) => ({
     id: 's1',
     agentId: 'agent-1',
@@ -344,7 +349,14 @@ describe('read-only inspectors', () => {
         <InspectorPanel
           selection={selection}
           activity={[event(1, { projectId: 'p1', sessionId: 's1' })]}
-          projects={[{ id: 'p1', name: 'LUWI', localPath: 'C:/luwi', activeSessions: 1 }]}
+          projects={[
+            {
+              id: 'p1',
+              name: 'LUWI',
+              localPath: 'C:/luwi',
+              activeSessions: { state: 'ready' as const, value: 1 },
+            },
+          ]}
           sessions={[
             {
               id: 's1',
@@ -378,8 +390,18 @@ describe('read-only inspectors', () => {
         }}
         activity={[event(1, { projectId: 'p1', sessionId: 's2' })]}
         projects={[
-          { id: 'p1', name: 'Project One', localPath: 'C:/p1', activeSessions: 0 },
-          { id: 'p2', name: 'Project Two', localPath: 'C:/p2', activeSessions: 1 },
+          {
+            id: 'p1',
+            name: 'Project One',
+            localPath: 'C:/p1',
+            activeSessions: { state: 'empty' as const, value: 0 },
+          },
+          {
+            id: 'p2',
+            name: 'Project Two',
+            localPath: 'C:/p2',
+            activeSessions: { state: 'ready' as const, value: 1 },
+          },
         ]}
         sessions={[
           {
@@ -427,7 +449,14 @@ describe('read-only inspectors', () => {
       <InspectorPanel
         selection={selection}
         activity={[event(1, { projectId: 'p1', sessionId: 's2' })]}
-        projects={[{ id: 'p1', name: 'Project One', localPath: 'C:/p1', activeSessions: 1 }]}
+        projects={[
+          {
+            id: 'p1',
+            name: 'Project One',
+            localPath: 'C:/p1',
+            activeSessions: { state: 'ready' as const, value: 1 },
+          },
+        ]}
         sessions={[coherentSession]}
         onClose={vi.fn()}
       />,
@@ -438,7 +467,14 @@ describe('read-only inspectors', () => {
       <InspectorPanel
         selection={selection}
         activity={[event(1, { projectId: 'p1', sessionId: 's2' })]}
-        projects={[{ id: 'p1', name: 'Project One', localPath: 'C:/p1', activeSessions: 0 }]}
+        projects={[
+          {
+            id: 'p1',
+            name: 'Project One',
+            localPath: 'C:/p1',
+            activeSessions: { state: 'empty' as const, value: 0 },
+          },
+        ]}
         sessions={[{ ...coherentSession, projectId: 'p2', projectName: 'Project Two' }]}
         onClose={vi.fn()}
       />,
@@ -536,5 +572,90 @@ describe('read-only inspectors', () => {
     );
 
     expect(screen.getByText('No related activity in the retained window')).toBeTruthy();
+  });
+  it('does not steal focus back on an unrelated re-render', () => {
+    // `onClose` is an inline arrow in the parent, so it changes identity every
+    // render. Keying the focus effect on it re-fired the focus call on every
+    // accepted realtime event, yanking focus out from under anyone who had
+    // moved it inside the open dialog.
+    const view = render(
+      <InspectorPanel
+        selection={{ kind: 'project', projectId: 'p1' }}
+        projects={[project]}
+        activity={[]}
+        onClose={() => undefined}
+      />,
+    );
+
+    const inside = screen.getByRole('heading', { name: /related activity/i });
+    inside.setAttribute('tabindex', '-1');
+    inside.focus();
+    expect(document.activeElement).toBe(inside);
+
+    view.rerender(
+      <InspectorPanel
+        selection={{ kind: 'project', projectId: 'p1' }}
+        projects={[project]}
+        activity={[]}
+        onClose={() => undefined}
+      />,
+    );
+
+    expect(document.activeElement).toBe(inside);
+  });
+
+  it('moves focus to the panel when the selection changes', () => {
+    const view = render(
+      <InspectorPanel
+        selection={{ kind: 'project', projectId: 'p1' }}
+        projects={[project]}
+        activity={[]}
+        onClose={vi.fn()}
+      />,
+    );
+    const close = screen.getByRole('button', { name: /close inspector/i });
+    expect(document.activeElement).toBe(close);
+
+    (document.activeElement as HTMLElement).blur();
+    view.rerender(
+      <InspectorPanel
+        selection={{ kind: 'session', sessionId: 's1' }}
+        projects={[project]}
+        sessions={[session()]}
+        activity={[]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: /close inspector/i }));
+  });
+
+  it('keeps Tab inside the dialog, because it declares aria-modal', () => {
+    // An event that references both a project and a session renders two
+    // navigation buttons besides Close, so the wrap is a real move rather than
+    // a single element focusing itself.
+    render(
+      <InspectorPanel
+        selection={{ kind: 'event', streamId: '1-0' }}
+        projects={[project]}
+        sessions={[session()]}
+        activity={[event(1, { projectId: 'p1', sessionId: 's1' })]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const dialog = screen.getByRole('dialog');
+    const focusable = [...dialog.querySelectorAll<HTMLElement>('button')];
+    expect(focusable.length).toBeGreaterThan(1);
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+
+    last.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+
+    first.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
   });
 });

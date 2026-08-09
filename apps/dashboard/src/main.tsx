@@ -24,8 +24,16 @@ import {
   freshnessForResources,
   type PulseFreshness,
 } from './api/refresh-state.js';
+import {
+  affectsSelectedProject,
+  buildPulseSnapshot,
+  needsIntelligenceOf,
+  resourcesOf,
+  seedActivity,
+  selectedProjectOf,
+} from './bootstrap.js';
 import { DashboardErrorBoundary } from './error-boundary.js';
-import { buildPulseSnapshot, type PulseInput, type PulseResources } from './pulse/model.js';
+import type { PulseInput } from './pulse/model.js';
 import {
   acceptActivityEvent,
   createActivityState,
@@ -38,7 +46,6 @@ import {
 } from './realtime/invalidation.js';
 import { routeRealtimeEvent } from './realtime/event-pipeline.js';
 import { createRealtimeController, toRealtimeUrl } from './realtime/observer.js';
-import { parseRoute } from './routing.js';
 import './styles/tokens.css';
 import './styles/shell.css';
 import './styles/pulse.css';
@@ -56,44 +63,6 @@ const fetchSubgraph = (
   bounds: SubgraphBounds,
   options?: { signal?: AbortSignal },
 ) => loadSubgraph(client, root, bounds, options);
-
-function selectedProjectOf(hash: string): string | undefined {
-  const route = parseRoute(hash);
-  return route.name === 'projects' ? route.projectId : undefined;
-}
-
-/**
- * Only these routes consume the extra global reads, so they load while one of
- * them is open and never otherwise. The graph summary is 56 Redis commands per
- * request (ADR 0013) and nothing caches it, which is exactly why the overview
- * must not pay for it.
- */
-function needsIntelligenceOf(hash: string): boolean {
-  const route = parseRoute(hash);
-  return route.name === 'context' || route.name === 'optimization' || route.name === 'graph';
-}
-
-function resourcesOf(input: PulseInput): PulseResources {
-  return {
-    health: input.health,
-    projects: input.projects,
-    sessions: input.sessions,
-    agents: input.agents,
-    usage: input.usage,
-    context: input.context,
-    activity: input.activity,
-    findings: input.findings,
-  };
-}
-
-function seedActivity(input: PulseInput): ActivityState {
-  return input.activity.state === 'ready'
-    ? input.activity.data.reduce(
-        (state, event) => acceptActivityEvent(state, event).state,
-        createActivityState(),
-      )
-    : createActivityState();
-}
 
 function DashboardRoute() {
   const [input, setInput] = useState<PulseInput>();
@@ -269,11 +238,7 @@ function DashboardRoute() {
         // Project panels refresh only for the project on screen. An event for
         // another project changes nothing that is rendered, so it costs no
         // request.
-        const selected = selectedProjectRef.current;
-        if (
-          selected !== undefined &&
-          (event.projectId === undefined || event.projectId === selected)
-        ) {
+        if (affectsSelectedProject(selectedProjectRef.current, event.projectId)) {
           refreshProjectScope(projectResourcesForEvent(event.type));
         }
         refreshIntelligenceScope(intelligenceResourcesForEvent(event.type));

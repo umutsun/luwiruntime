@@ -11,10 +11,17 @@ import { isImplementedEventType, type DashboardEvent } from '../realtime/schema.
 
 export function ActivityView({
   state,
+  available = true,
   onStateChange,
   onOpenEvent,
 }: {
   state: ActivityState;
+  /**
+   * Whether the activity read succeeded. Without this the view cannot tell a
+   * failed read from a filter that matched nothing, and it blamed the filters
+   * for both — Pulse already made the same distinction correctly.
+   */
+  available?: boolean;
   onStateChange: (state: ActivityState) => void;
   onOpenEvent: (event: DashboardEvent, opener: HTMLElement) => void;
 }) {
@@ -159,7 +166,9 @@ export function ActivityView({
         tabIndex={0}
         onScroll={(event) => pauseIfScrolledAway(event.currentTarget)}
       >
-        {events.length === 0 ? (
+        {!available ? (
+          <p className="empty-state">Activity snapshot unavailable</p>
+        ) : events.length === 0 ? (
           <p className="empty-state">No activity matches these filters</p>
         ) : (
           <ol className="activity-feed">

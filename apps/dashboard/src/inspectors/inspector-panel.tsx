@@ -1,10 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
+} from 'react';
 
-import type { PulseProject, PulseSession } from '../pulse/model.js';
+import { Count } from '../components/panel.js';
+import type { CountValue, PulseProject, PulseSession } from '../pulse/model.js';
 import { compareStreamIds } from '../realtime/activity-store.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 
-export type ProjectInspection = PulseProject & { activeSessions: number };
+export type ProjectInspection = PulseProject & { activeSessions: CountValue };
 export type SessionInspection = PulseSession & { projectName: string; statusLabel: string };
 
 export type InspectorSelection =
@@ -153,8 +162,27 @@ export function InspectorPanel({
     onClose();
     queueMicrotask(() => target?.focus());
   }, [onClose]);
+  /*
+   * Two effects, because they answer to different things.
+   *
+   * Focus belongs to the *subject*: it moves when the inspector opens on
+   * something new, and never otherwise. It used to be keyed on `close`, which
+   * is derived from an inline `onClose` the parent recreates every render — so
+   * every accepted realtime event yanked focus back to the Close button, out
+   * from under anyone who had moved it inside the dialog.
+   */
+  const selectionKey =
+    selection.kind === 'project'
+      ? selection.projectId
+      : selection.kind === 'session'
+        ? selection.sessionId
+        : selection.streamId;
   useEffect(() => {
     closeButton.current?.focus();
+  }, [selection.kind, selectionKey]);
+
+  /* The Escape listener answers to `close`, and only to that. */
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
@@ -163,6 +191,34 @@ export function InspectorPanel({
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [close]);
+
+  /*
+   * `aria-modal` removes everything outside this dialog from the assistive
+   * tree, so Tab must not leave it either. The dialog is a sibling rendered
+   * after `</main>`, and without this a screen-reader user who tabbed past
+   * Close landed on background controls their reader could no longer describe.
+   */
+  const containTab = (event: ReactKeyboardEvent<HTMLElement>): void => {
+    if (event.key !== 'Tab') return;
+    const focusable = [
+      ...event.currentTarget.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    ];
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (first === undefined || last === undefined) return;
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || !event.currentTarget.contains(active))) {
+      event.preventDefault();
+      last.focus();
+      return;
+    }
+    if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
   useEffect(() => {
     if (previousClockTarget.current !== activeSessionKey) {
       previousClockTarget.current = activeSessionKey;
@@ -206,6 +262,7 @@ export function InspectorPanel({
         role="dialog"
         aria-modal="true"
         aria-labelledby="inspector-title"
+        onKeyDown={containTab}
       >
         <header>
           <div>
@@ -227,7 +284,7 @@ export function InspectorPanel({
                     ['Name', selectedProject.name],
                     ['Project ID', selectedProject.id],
                     ['Local path', selectedProject.localPath],
-                    ['Active sessions', selectedProject.activeSessions],
+                    ['Active sessions', <Count value={selectedProject.activeSessions} />],
                   ]}
                 />
                 <RelatedActivity events={projectEvents} />

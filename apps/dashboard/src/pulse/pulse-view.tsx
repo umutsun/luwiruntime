@@ -1,16 +1,9 @@
 import type { PulseSnapshot } from './model.js';
 import { abbreviatePath } from '../components/format.js';
+import { Count, Unavailable } from '../components/panel.js';
 import { StatusChip, type StatusTone } from '../components/status-chip.js';
 import type { WebSocketState } from '../app.js';
 import type { DashboardEvent } from '../realtime/schema.js';
-
-function Count({ value }: { value: PulseSnapshot['projectCount'] }) {
-  return value.state === 'unavailable' ? (
-    <span className="unavailable">Unavailable</span>
-  ) : (
-    value.value
-  );
-}
 
 function toneForStatus(status: string): StatusTone {
   if (status === 'thinking' || status === 'tool_running') return 'success';
@@ -184,7 +177,9 @@ export function PulseView({
                     <strong>{project.name}</strong>
                     <small title={project.localPath}>{abbreviatePath(project.localPath)}</small>
                   </div>
-                  <span>{project.activeSessions} active</span>
+                  <span>
+                    <Count value={project.activeSessions} /> active
+                  </span>
                   <button
                     className="inspect-button"
                     type="button"
@@ -217,7 +212,17 @@ export function PulseView({
               {snapshot.usage.map((row) => (
                 <li key={row.source} data-source={row.source}>
                   <span>{row.label}</span>
-                  <strong>{row.totalTokens?.toLocaleString() ?? 'Unavailable'}</strong>
+                  {/* "Not reported", matching the Usage route: a source that
+                      reported no token value is not the same fact as the
+                      `unavailable` source label sitting beside it, and one word
+                      for both meanings made the row read as a contradiction. */}
+                  <strong>
+                    {row.totalTokens === undefined ? (
+                      <Unavailable label="Not reported" />
+                    ) : (
+                      row.totalTokens.toLocaleString()
+                    )}
+                  </strong>
                   <small>{row.records} records</small>
                 </li>
               ))}

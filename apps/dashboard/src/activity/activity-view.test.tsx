@@ -150,4 +150,25 @@ describe('Activity view', () => {
     view.unmount();
     expect(vi.getTimerCount()).toBe(0);
   });
+  it('separates an unavailable activity read from a filter that matched nothing', () => {
+    // A failed read used to flatten to an empty array and render the filter
+    // message, which blames the filters for a fault they did not cause.
+    const { unmount } = render(
+      <ActivityView
+        state={createActivityState()}
+        available={false}
+        onStateChange={vi.fn()}
+        onOpenEvent={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/activity snapshot unavailable/i)).toBeTruthy();
+    expect(screen.queryByText(/matches these filters/i)).toBeNull();
+    unmount();
+
+    render(
+      <ActivityView state={createActivityState()} onStateChange={vi.fn()} onOpenEvent={vi.fn()} />,
+    );
+    expect(screen.getByText(/matches these filters/i)).toBeTruthy();
+    expect(screen.queryByText(/unavailable/i)).toBeNull();
+  });
 });

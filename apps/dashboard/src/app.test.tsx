@@ -660,4 +660,28 @@ describe('command bar scope line', () => {
 
     expect(screen.getByLabelText('Current scope').textContent).toContain('Projects unavailable');
   });
+
+  it('never reports an unavailable activity read as zero retained events', () => {
+    window.location.hash = '#/activity';
+    const value = input();
+    value.activity = { state: 'unavailable' };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    const scope = screen.getByLabelText('Current scope').textContent ?? '';
+    expect(scope).toContain('Activity unavailable');
+    expect(scope).not.toContain('0 retained');
+  });
+
+  it('passes the activity availability down so the route can tell the states apart', () => {
+    window.location.hash = '#/activity';
+    const value = input();
+    value.activity = { state: 'unavailable' };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    expect(screen.getByText(/activity snapshot unavailable/i)).toBeTruthy();
+  });
 });

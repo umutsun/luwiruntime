@@ -7,7 +7,7 @@ import type {
   ProjectTechnology,
 } from '../api/project-scope.js';
 import { abbreviatePath, abbreviateSha } from '../components/format.js';
-import { ConfidenceChip, Panel, ResourcePanel } from '../components/panel.js';
+import { ConfidenceChip, Count, Panel, ResourcePanel } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
 import type { PulseSnapshot } from '../pulse/model.js';
 
@@ -142,7 +142,9 @@ export function ProjectsView({
                       </button>
                       <small title={project.localPath}>{abbreviatePath(project.localPath)}</small>
                     </td>
-                    <td>{project.activeSessions}</td>
+                    <td>
+                      <Count value={project.activeSessions} />
+                    </td>
                   </tr>
                 ))}
               </tbody>
