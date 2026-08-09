@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { ActivityView } from './activity/activity-view.js';
+import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
 import type { IntelligenceResources } from './api/intelligence-scope.js';
 import type { ProjectScopeResources } from './api/project-scope.js';
 import type { PulseFreshness } from './api/refresh-state.js';
+import type { ResourceState } from './components/panel.js';
 import { StatusChip } from './components/status-chip.js';
 import { InspectorPanel, type InspectorSelection } from './inspectors/inspector-panel.js';
+import type { GraphSeed } from './routes/graph-explorer-view.js';
 import { ProjectsView } from './projects/projects-view.js';
 import { AgentsView } from './routes/agents-view.js';
 import { ContextView } from './routes/context-view.js';
@@ -64,6 +67,34 @@ function pluralize(count: number, noun: string): string {
 }
 
 /**
+ * Roots the Graph explorer can start from (ADR 0016).
+ *
+ * Graph nodes are keyed by `entityId`, which for these kinds is the same
+ * identifier the snapshot already carries — so no derivation and no extra
+ * request is needed. Modules, files, and commits have synthetic entity ids and
+ * are reached by traversing from a project rather than seeded directly.
+ */
+function graphSeedsOf(snapshot: PulseSnapshot): GraphSeed[] {
+  return [
+    ...snapshot.projects.map((project) => ({
+      kind: 'project',
+      id: project.id,
+      label: project.name,
+    })),
+    ...snapshot.agents.map((agent) => ({
+      kind: 'agent',
+      id: agent.id,
+      label: agent.displayName,
+    })),
+    ...snapshot.sessions.map((session) => ({
+      kind: 'session',
+      id: session.id,
+      label: `${session.agentId} · ${session.projectName}`,
+    })),
+  ];
+}
+
+/**
  * What the current route is showing, in the runtime's own counts.
  *
  * This replaced a placeholder that advertised a unified search the daemon has
@@ -107,6 +138,7 @@ export function DashboardApp({
   projectResources = {},
   projectScopeLoading = false,
   intelligenceResources = {},
+  loadSubgraph,
   onRetry,
   onActivityStateChange,
 }: {
@@ -119,6 +151,11 @@ export function DashboardApp({
   projectResources?: Partial<ProjectScopeResources>;
   projectScopeLoading?: boolean;
   intelligenceResources?: Partial<IntelligenceResources>;
+  loadSubgraph?: (
+    root: GraphRoot,
+    bounds: SubgraphBounds,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<Subgraph>>;
   onRetry: () => void;
   onActivityStateChange?: (state: ActivityState) => void;
 }) {
@@ -133,6 +170,7 @@ export function DashboardApp({
     [snapshot.activity],
   );
   const displayedActivity = activityState ?? fallbackActivity;
+  const graphSeeds = useMemo(() => graphSeedsOf(snapshot), [snapshot]);
 
   useEffect(() => {
     const updateRoute = () => setRoute(parseRoute(window.location.hash));
@@ -310,7 +348,11 @@ export function DashboardApp({
               }
             />
           ) : route.name === 'graph' ? (
-            <GraphView summary={intelligenceResources.graph} />
+            <GraphView
+              summary={intelligenceResources.graph}
+              seeds={graphSeeds}
+              {...(loadSubgraph === undefined ? {} : { loadSubgraph })}
+            />
           ) : route.name === 'projects' ? (
             <ProjectsView
               snapshot={snapshot}

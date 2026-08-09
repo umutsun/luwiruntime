@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
+import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
 import {
   intelligenceResourceKeys,
   intelligenceResourcesForEvent,
@@ -45,6 +46,16 @@ import './styles/activity.css';
 import './styles/projects.css';
 
 const client = createDaemonClient();
+
+/**
+ * Bound once so the Graph explorer's load effect has a stable dependency; a new
+ * function identity per render would re-fetch the subgraph on every render.
+ */
+const fetchSubgraph = (
+  root: GraphRoot,
+  bounds: SubgraphBounds,
+  options?: { signal?: AbortSignal },
+) => loadSubgraph(client, root, bounds, options);
 
 function selectedProjectOf(hash: string): string | undefined {
   const route = parseRoute(hash);
@@ -300,6 +311,7 @@ function DashboardRoute() {
       projectResources={projectResources}
       projectScopeLoading={projectScopeLoading}
       intelligenceResources={intelligenceResources}
+      loadSubgraph={fetchSubgraph}
       onRetry={retry}
       onActivityStateChange={(next) => {
         activityRef.current = next;

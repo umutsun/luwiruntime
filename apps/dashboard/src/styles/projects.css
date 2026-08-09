@@ -268,3 +268,92 @@
     var(--magnitude-track) var(--magnitude, 0%) 100%
   );
 }
+
+/* Graph explorer (ADR 0016). The diagram is a second presentation of the node
+   and edge tables; interaction and identity both survive without it. */
+.graph-canvas {
+  margin-top: var(--space-3);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+}
+.graph-canvas svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.graph-node {
+  cursor: pointer;
+}
+.graph-node__label {
+  fill: var(--text-muted);
+  font: 11px var(--font-mono);
+  pointer-events: none;
+}
+.graph-node[data-selected='true'] .graph-node__label,
+.graph-node[data-root='true'] .graph-node__label {
+  fill: var(--text);
+}
+
+.graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.graph-legend ul {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.graph-legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.graph-legend li small {
+  color: var(--text-dim);
+}
+.legend-mark {
+  flex: 0 0 auto;
+  vertical-align: -2px;
+}
+td .legend-mark {
+  margin-right: var(--space-2);
+}
+/* Certainty and origin are line styles here and words in the edge table; the
+   swatch alone never carries either meaning. */
+.legend-line {
+  width: 22px;
+  height: 0;
+  flex: 0 0 auto;
+  border-top: 2px solid var(--graph-operational);
+}
+.legend-line[data-confidence='medium'] {
+  border-top-style: dashed;
+}
+.legend-line[data-confidence='low'],
+.legend-line[data-confidence='unknown'] {
+  border-top-style: dotted;
+}
+.legend-line[data-confidence='unknown'] {
+  opacity: 0.5;
+}
+.legend-line[data-origin='structural'] {
+  border-top-color: var(--graph-structural);
+}
+
+.graph-root-tag {
+  color: var(--text-dim);
+  font: 11px var(--font-mono);
+}
+tr[data-selected='true'] {
+  background: var(--selection-soft);
+}

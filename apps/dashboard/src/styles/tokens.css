@@ -27,6 +27,19 @@
   --command-bar-bg: rgba(8, 8, 13, 0.94);
   --magnitude-track: rgba(255, 255, 255, 0.07);
   --magnitude-fill: #818cf8;
+  /*
+   * Graph node families (ADR 0016). Five, not one per kind: seven hues in one
+   * lightness band measurably fail all-pairs colour-vision separation. These
+   * steps were computed in OKLCH and validated against this surface — dark and
+   * light were each selected, never flipped. Shape is the second encoding.
+   */
+  --graph-scope: #e52751;
+  --graph-structure: #b38c15;
+  --graph-actor: #0a7d51;
+  --graph-history: #179fd4;
+  --graph-other: #9243da;
+  --graph-structural: #b38c15;
+  --graph-operational: #8792a8;
   --success: #35d07f;
   --warning: #f5b942;
   --danger: #f06473;
@@ -96,6 +109,13 @@
   --command-bar-bg: rgba(247, 248, 251, 0.94);
   --magnitude-track: rgba(15, 23, 42, 0.08);
   --magnitude-fill: #4f46e5;
+  --graph-scope: #cc086c;
+  --graph-structure: #c68206;
+  --graph-actor: #017214;
+  --graph-history: #0196b0;
+  --graph-other: #6d2ff1;
+  --graph-structural: #c68206;
+  --graph-operational: #6b7488;
   --success: #0f9d58;
   --warning: #b46b04;
   --danger: #c8384a;

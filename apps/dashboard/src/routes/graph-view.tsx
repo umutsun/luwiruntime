@@ -1,8 +1,10 @@
 import type { CSSProperties } from 'react';
 
+import type { GraphRoot, Subgraph, SubgraphBounds } from '../api/graph-explorer.js';
 import type { GraphSummary, KindCount } from '../api/intelligence-scope.js';
 import { ResourcePanel, TableWrap, Unavailable, type ResourceState } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
+import { GraphExplorerView, type GraphSeed } from './graph-explorer-view.js';
 
 /**
  * The operational graph, read-only and bounded by ADR 0013.
@@ -18,13 +20,29 @@ import { StatusChip } from '../components/status-chip.js';
  * test enforces it by rejecting the endpoint's path anywhere in the sources —
  * including inside a comment, which is why it is not written out here.
  */
-export function GraphView({ summary }: { summary: ResourceState<GraphSummary> | undefined }) {
+export function GraphView({
+  summary,
+  seeds = [],
+  loadSubgraph,
+}: {
+  summary: ResourceState<GraphSummary> | undefined;
+  /** Roots the Pulse snapshot already holds; see ADR 0016. */
+  seeds?: readonly GraphSeed[];
+  loadSubgraph?: (
+    root: GraphRoot,
+    bounds: SubgraphBounds,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<Subgraph>>;
+}) {
   const perKind = (data: GraphSummary, counts: KindCount[]): ResourceState<KindCount[]> =>
     data.observed ? { state: 'ready', data: counts } : { state: 'not-observed' };
   const generation = summary?.state === 'ready' ? summary.data.generation : undefined;
 
   return (
     <div className="route-stack">
+      {loadSubgraph === undefined ? null : (
+        <GraphExplorerView seeds={seeds} loadSubgraph={loadSubgraph} />
+      )}
       <ResourcePanel<GraphSummary>
         title="Projection"
         resource={summary}
