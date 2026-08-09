@@ -46,6 +46,7 @@ History is short and every commit is a large checkpoint:
 | `716369b` | Explicit test budgets for the two load-sensitive tests         |
 | `77c6e0a` | ADR 0015: internal validation failures are server errors       |
 | `1feb515` | Read-only dashboard UX pass and the light theme                |
+| `7ffd35a` | ADR 0016: rooted, bounded graph exploration                    |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
