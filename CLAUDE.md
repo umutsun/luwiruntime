@@ -123,7 +123,7 @@ Two traps worth stating explicitly:
 - **`tsc -b` alone does not cover `apps/dashboard`.** The root `tsconfig.json` `references` array
   omits it deliberately. That is why `typecheck` and `build` each have a separate dashboard leg.
 - **`pnpm test` already covers dashboard tests.** `vitest.config.ts` `include` contains
-  `apps/**/*.test.tsx`, and `apps/dashboard/src` holds 14 test files. There is no separate
+  `apps/**/*.test.tsx`, and `apps/dashboard/src` holds 30 test files. There is no separate
   dashboard test leg to run.
 
 Use `/verify` to run the §19 definition-of-done sequence in the correct order.
