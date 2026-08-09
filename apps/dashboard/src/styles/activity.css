@@ -138,7 +138,7 @@
   gap: 16px;
   padding: 16px;
   border-bottom: 1px solid var(--border);
-  background: rgba(12, 13, 20, 0.96);
+  background: var(--bg-raised);
 }
 .inspector h2,
 .inspector h3 {
@@ -185,7 +185,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  background: #08090e;
+  background: var(--surface-1);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font: 12px/1.55 var(--font-mono);

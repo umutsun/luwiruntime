@@ -7,6 +7,12 @@
  * fetch would be its only outbound request. The families are named first in
  * each stack so a locally installed copy is used, and the stack falls back to
  * system faces otherwise.
+ *
+ * Every token below that carries a colour MUST also be redefined in both light
+ * blocks. A token defined only here keeps its dark value on a light surface —
+ * that is how the inspector became unreadable in light mode. `tokens.test.ts`
+ * asserts the two light blocks stay identical to each other and cover every
+ * colour token, because the duplication cannot be removed in plain CSS.
  */
 :root {
   color-scheme: dark light;
@@ -23,6 +29,8 @@
   --text-dim: #737c8f;
   --selection: #6366f1;
   --selection-soft: rgba(99, 102, 241, 0.15);
+  /* Carries white text (the skip link); #6366f1 would land at 4.47:1. */
+  --selection-strong: #4f46e5;
   --sidebar-bg: #0a0a10;
   --command-bar-bg: rgba(8, 8, 13, 0.94);
   --magnitude-track: rgba(255, 255, 255, 0.07);
@@ -40,6 +48,7 @@
   --graph-other: #9243da;
   --graph-structural: #b38c15;
   --graph-operational: #8792a8;
+  --evidence-adapter: #a78bfa;
   --success: #35d07f;
   --warning: #f5b942;
   --danger: #f06473;
@@ -65,6 +74,10 @@
  * The light theme the design system ships. It follows the operating system,
  * and `[data-theme]` on the root element overrides that in either direction —
  * the dark block is written so an explicit `light` choice wins over a dark OS.
+ *
+ * The two light blocks are byte-identical on purpose. Plain CSS cannot share
+ * one declaration list between a media query and an attribute selector, so the
+ * duplication is guarded by a test instead of by a mechanism.
  */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme='dark']) {
@@ -79,16 +92,27 @@
     --text-secondary: #2c3444;
     --text-muted: #586073;
     --text-dim: #6b7488;
+    --selection: #4f46e5;
     --selection-soft: rgba(99, 102, 241, 0.12);
+    --selection-strong: #4338ca;
     --sidebar-bg: #ffffff;
     --command-bar-bg: rgba(247, 248, 251, 0.94);
     --magnitude-track: rgba(15, 23, 42, 0.08);
     --magnitude-fill: #4f46e5;
+    --graph-scope: #cc086c;
+    --graph-structure: #c68206;
+    --graph-actor: #017214;
+    --graph-history: #0196b0;
+    --graph-other: #6d2ff1;
+    --graph-structural: #c68206;
+    --graph-operational: #6b7488;
+    --evidence-adapter: #6d28d9;
     --success: #0f9d58;
     --warning: #b46b04;
     --danger: #c8384a;
     --unknown: #5c6479;
     --info: #1273b8;
+    --focus: 0 0 0 3px rgba(67, 56, 202, 0.85);
   }
 }
 
@@ -104,7 +128,9 @@
   --text-secondary: #2c3444;
   --text-muted: #586073;
   --text-dim: #6b7488;
+  --selection: #4f46e5;
   --selection-soft: rgba(99, 102, 241, 0.12);
+  --selection-strong: #4338ca;
   --sidebar-bg: #ffffff;
   --command-bar-bg: rgba(247, 248, 251, 0.94);
   --magnitude-track: rgba(15, 23, 42, 0.08);
@@ -116,9 +142,11 @@
   --graph-other: #6d2ff1;
   --graph-structural: #c68206;
   --graph-operational: #6b7488;
+  --evidence-adapter: #6d28d9;
   --success: #0f9d58;
   --warning: #b46b04;
   --danger: #c8384a;
   --unknown: #5c6479;
   --info: #1273b8;
+  --focus: 0 0 0 3px rgba(67, 56, 202, 0.85);
 }

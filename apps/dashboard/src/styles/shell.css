@@ -43,8 +43,10 @@ button:focus-visible {
   top: -48px;
   z-index: var(--z-skip);
   padding: 8px 12px;
-  color: var(--text);
-  background: var(--selection);
+  /* White on --selection-strong clears 4.5:1 in both themes; --text on
+     --selection did not, in either. */
+  color: #fff;
+  background: var(--selection-strong);
   border-radius: var(--radius-sm);
 }
 .skip-link:focus {

@@ -103,15 +103,22 @@ export function nodeColor(kind: string): string {
   return familyColors[nodeFamily(kind)];
 }
 
-/** Certainty is stroke style; it is also always stated in text elsewhere. */
-export function edgeStroke(confidence: GraphConfidence): {
-  dasharray: string | undefined;
-  opacity: number;
-} {
-  if (confidence === 'high') return { dasharray: undefined, opacity: 0.9 };
-  if (confidence === 'medium') return { dasharray: '6 4', opacity: 0.8 };
-  if (confidence === 'low') return { dasharray: '2 4', opacity: 0.7 };
-  return { dasharray: '2 4', opacity: 0.45 };
+/**
+ * Certainty is stroke style, and only stroke style; it is also always stated in
+ * text in the edge table.
+ *
+ * Opacity used to carry it too, down to 0.45 for `unknown`. That was a
+ * redundant third channel bought at the cost of contrast: measured against the
+ * light surface, the amber structural hue fell to 2.34:1 at 0.75 and the
+ * operational grey to 1.82:1 at 0.45, both under the 3:1 floor for a
+ * non-text mark. Every edge now draws at full opacity, and the dasharray
+ * carries the distinction on its own.
+ */
+export function edgeStroke(confidence: GraphConfidence): { dasharray: string | undefined } {
+  if (confidence === 'high') return { dasharray: undefined };
+  if (confidence === 'medium') return { dasharray: '6 4' };
+  if (confidence === 'low') return { dasharray: '2 5' };
+  return { dasharray: '1 4' };
 }
 
 function NodeMark({ kind, x, y }: { kind: string; x: number; y: number }) {
@@ -194,7 +201,6 @@ export function GraphDiagram({
                 y2={link.target.y}
                 stroke={edge.structural ? 'var(--graph-structural)' : 'var(--graph-operational)'}
                 strokeWidth={2}
-                strokeOpacity={stroke.opacity}
                 {...(stroke.dasharray === undefined ? {} : { strokeDasharray: stroke.dasharray })}
               />
             );

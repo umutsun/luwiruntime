@@ -189,7 +189,7 @@ td small {
   color: var(--info);
 }
 .evidence-list [data-source='adapter-extracted'] span {
-  color: #a78bfa;
+  color: var(--evidence-adapter);
 }
 .evidence-list [data-source='luwi-estimated'] span {
   color: var(--warning);
