@@ -79,3 +79,43 @@ describe('theme tokens', () => {
     expect(media.get('--focus')).not.toBe(root.get('--focus'));
   });
 });
+
+/**
+ * Guards the other half of the same bug. A hardcoded colour outside this file
+ * cannot follow the theme, so it keeps whichever mode it was written in — which
+ * is how the inspector header ended up near-black on near-black.
+ *
+ * Translucent values are exempt: an overlay or a scrim composites over whatever
+ * themed ground is beneath it and therefore does follow the theme. Anything
+ * opaque must come from a token, including a brand colour, which is what
+ * `--brand-mark-*` exists for.
+ */
+const STYLESHEETS = ['shell.css', 'activity.css', 'pulse.css', 'projects.css'] as const;
+
+const colourProperty = /^\s*(background|background-color|color|border-top-color)\s*:\s*([^;]+);/gmu;
+
+function isTranslucent(value: string): boolean {
+  return [...value.matchAll(/rgba?\(([^)]*)\)/gu)].every((match) => {
+    const parts = (match[1] ?? '').split(/[,/]/u).map((part) => part.trim());
+    const alpha = parts.length >= 4 ? Number(parts[3]) : 1;
+    return Number.isFinite(alpha) && alpha < 1;
+  });
+}
+
+describe('colour literals outside tokens.css', () => {
+  it.each(STYLESHEETS)('%s uses tokens for every opaque colour', (file) => {
+    const sheet = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    const offenders: string[] = [];
+
+    for (const [, property, rawValue] of sheet.matchAll(colourProperty)) {
+      const value = (rawValue ?? '').trim();
+      if (!/#[0-9a-f]{3,8}\b|rgba?\(/iu.test(value)) continue;
+      // A hex literal is always opaque enough to freeze a theme; an rgba() is
+      // only a problem when it is fully opaque.
+      if (!/#[0-9a-f]{3,8}\b/iu.test(value) && isTranslucent(value)) continue;
+      offenders.push(`${property!}: ${value}`);
+    }
+
+    expect(offenders, 'move these into tokens.css and reference them').toEqual([]);
+  });
+});

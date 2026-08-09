@@ -100,6 +100,16 @@ describe('ContextView', () => {
     expect(screen.getByText(/no context sources detected/i)).toBeTruthy();
   });
 
+  it('reports a read still in flight as loading rather than as a fault', () => {
+    // The first paint of this route has no intelligence resources yet. Calling
+    // that "Unavailable" asserted a failure that had not happened.
+    render(<ContextView snapshot={buildPulseSnapshot(baseInput())} sources={undefined} loading />);
+
+    const panel = screen.getByRole('region', { name: /context sources/i });
+    expect(within(panel).getByText(/loading/i)).toBeTruthy();
+    expect(within(panel).queryByText('Unavailable')).toBeNull();
+  });
+
   it('discloses truncation of the bounded source list', () => {
     render(
       <ContextView
@@ -216,5 +226,22 @@ describe('OptimizationView', () => {
     expect(
       within(screen.getByRole('region', { name: /findings/i })).getByText('Unavailable'),
     ).toBeTruthy();
+  });
+
+  it('discloses truncation of the bounded proposal list', () => {
+    render(
+      <OptimizationView
+        snapshot={buildPulseSnapshot(baseInput())}
+        proposals={{ ...proposals, truncated: true }}
+      />,
+    );
+
+    expect(screen.getByText(/more proposals exist/i)).toBeTruthy();
+  });
+
+  it('does not claim truncation when the list is complete', () => {
+    render(<OptimizationView snapshot={buildPulseSnapshot(baseInput())} proposals={proposals} />);
+
+    expect(screen.queryByText(/more proposals exist/i)).toBeNull();
   });
 });

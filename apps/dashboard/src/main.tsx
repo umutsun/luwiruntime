@@ -127,6 +127,7 @@ function DashboardRoute() {
   const [intelligenceResources, setIntelligenceResources] = useState<
     Partial<IntelligenceResources>
   >({});
+  const [intelligenceLoading, setIntelligenceLoading] = useState(false);
   const needsIntelligenceRef = useRef(needsIntelligence);
   needsIntelligenceRef.current = needsIntelligence;
 
@@ -142,11 +143,13 @@ function DashboardRoute() {
   useEffect(() => {
     if (!needsIntelligence) return undefined;
     const controller = new AbortController();
+    setIntelligenceLoading(true);
     void loadIntelligenceScope(client, intelligenceResourceKeys, {
       signal: controller.signal,
     }).then((next) => {
       if (controller.signal.aborted) return;
       setIntelligenceResources(next);
+      setIntelligenceLoading(false);
     });
     return () => controller.abort();
   }, [needsIntelligence, requestNumber]);
@@ -311,6 +314,7 @@ function DashboardRoute() {
       projectResources={projectResources}
       projectScopeLoading={projectScopeLoading}
       intelligenceResources={intelligenceResources}
+      intelligenceLoading={intelligenceLoading}
       loadSubgraph={fetchSubgraph}
       onRetry={retry}
       onActivityStateChange={(next) => {

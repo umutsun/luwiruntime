@@ -290,15 +290,15 @@ export function PulseView({
               <dt>Realtime</dt>
               <dd>{websocketState}</dd>
             </div>
-            <div>
-              <dt>Function library</dt>
-              <dd>Unavailable</dd>
-            </div>
-            <div>
-              <dt>Projection health</dt>
-              <dd>Unavailable</dd>
-            </div>
           </dl>
+          {/*
+           * "Function library" and "Projection health" used to sit here as two
+           * literal `Unavailable` rows with no props behind them. They asserted
+           * a fault the runtime never reported: no daemon route exposes Redis
+           * function-library state at all, and projection health is read on the
+           * Graph route, where ADR 0013's 56-command cost is paid on purpose.
+           * A row that can only ever say one thing is not evidence.
+           */}
         </section>
       </div>
 

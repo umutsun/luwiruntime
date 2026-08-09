@@ -49,6 +49,12 @@
   --graph-structural: #b38c15;
   --graph-operational: #8792a8;
   --evidence-adapter: #a78bfa;
+  /* The identity tile is a brand mark, not a themed surface: it keeps the
+     same gradient and the same white glyph in both themes, which is why the
+     light blocks repeat these values rather than inverting them. */
+  --brand-mark-from: #0b66dc;
+  --brand-mark-to: #4f46e5;
+  --brand-mark-text: #ffffff;
   --success: #35d07f;
   --warning: #f5b942;
   --danger: #f06473;
@@ -107,6 +113,9 @@
     --graph-structural: #c68206;
     --graph-operational: #6b7488;
     --evidence-adapter: #6d28d9;
+    --brand-mark-from: #0b66dc;
+    --brand-mark-to: #4f46e5;
+    --brand-mark-text: #ffffff;
     --success: #0f9d58;
     --warning: #b46b04;
     --danger: #c8384a;
@@ -143,6 +152,9 @@
   --graph-structural: #c68206;
   --graph-operational: #6b7488;
   --evidence-adapter: #6d28d9;
+  --brand-mark-from: #0b66dc;
+  --brand-mark-to: #4f46e5;
+  --brand-mark-text: #ffffff;
   --success: #0f9d58;
   --warning: #b46b04;
   --danger: #c8384a;

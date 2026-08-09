@@ -24,9 +24,12 @@ const counts = [
 export function ContextView({
   snapshot,
   sources,
+  loading = false,
 }: {
   snapshot: PulseSnapshot;
   sources: Bounded<ContextSource> | undefined;
+  /** The intelligence scope has not returned yet; see `ResourcePanel`. */
+  loading?: boolean;
 }) {
   return (
     <div className="route-stack">
@@ -58,6 +61,7 @@ export function ContextView({
       <ResourcePanel<Bounded<ContextSource>>
         title="Context sources"
         resource={sources === undefined ? undefined : { state: 'ready', data: sources }}
+        loading={loading}
         emptyMessage="No context sources detected"
         isEmpty={(value) => value.items.length === 0}
       >

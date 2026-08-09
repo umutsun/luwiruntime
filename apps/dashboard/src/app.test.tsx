@@ -49,6 +49,61 @@ const input = (): PulseInput => ({
   findings: { state: 'ready', data: [] },
 });
 
+describe('skip link', () => {
+  it('moves focus to the main region without changing the route', () => {
+    window.location.hash = '#/sessions';
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: /skip to/i }));
+
+    // The bypass mechanism must not be the one control that resets the
+    // user's context: '#main-content' is not a route, and parseRoute would
+    // fall through to Pulse.
+    expect(window.location.hash).toBe('#/sessions');
+    expect(document.activeElement).toBe(document.querySelector('#main-content'));
+  });
+
+  it('leaves the main region focusable only programmatically', () => {
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(document.querySelector('#main-content')?.getAttribute('tabindex')).toBe('-1');
+  });
+});
+
+describe('Runtime health panel', () => {
+  it('reports only what it actually read', () => {
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+
+    // Both rows used to render a literal "Unavailable" with no data source
+    // behind them. Function-library state is exposed by no daemon route at
+    // all, and projection health is read on the Graph route, where ADR 0013's
+    // 56-command cost is paid deliberately — so asserting a fault here was
+    // claiming evidence the runtime never produced.
+    expect(screen.queryByText('Function library')).toBeNull();
+    expect(screen.queryByText('Projection health')).toBeNull();
+    expect(screen.getByText('Uptime')).toBeTruthy();
+    expect(screen.getByText('Realtime')).toBeTruthy();
+  });
+});
+
 describe('LUWI Pulse shell', () => {
   it('renders identity, the supported route, and disabled planned destinations', () => {
     render(

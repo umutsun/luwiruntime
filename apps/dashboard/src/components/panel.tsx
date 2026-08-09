@@ -70,6 +70,7 @@ export function ResourcePanel<T>({
   resource,
   notObservedMessage,
   emptyMessage,
+  loading = false,
   isEmpty,
   children,
 }: {
@@ -78,9 +79,24 @@ export function ResourcePanel<T>({
   resource: ResourceState<T> | undefined;
   notObservedMessage?: string;
   emptyMessage: string;
+  /**
+   * A read that has not returned yet. Without this, an absent resource is
+   * indistinguishable from a failed one, so every panel on a route's first
+   * paint claimed a fault that had not happened.
+   */
+  loading?: boolean;
   isEmpty: (data: T) => boolean;
   children: (data: T) => ReactNode;
 }) {
+  if (resource === undefined && loading) {
+    return (
+      <Panel title={title} {...(meta === undefined ? {} : { meta })}>
+        <p className="empty-state" aria-busy="true">
+          Loading
+        </p>
+      </Panel>
+    );
+  }
   const state = resource ?? { state: 'unavailable' as const };
 
   return (

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ActivityView } from './activity/activity-view.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
@@ -138,6 +138,7 @@ export function DashboardApp({
   projectResources = {},
   projectScopeLoading = false,
   intelligenceResources = {},
+  intelligenceLoading = false,
   loadSubgraph,
   onRetry,
   onActivityStateChange,
@@ -151,6 +152,8 @@ export function DashboardApp({
   projectResources?: Partial<ProjectScopeResources>;
   projectScopeLoading?: boolean;
   intelligenceResources?: Partial<IntelligenceResources>;
+  /** The on-demand intelligence reads have not returned yet. */
+  intelligenceLoading?: boolean;
   loadSubgraph?: (
     root: GraphRoot,
     bounds: SubgraphBounds,
@@ -161,6 +164,7 @@ export function DashboardApp({
 }) {
   const [route, setRoute] = useState(() => parseRoute(window.location.hash));
   const [selection, setSelection] = useState<InspectorSelection>();
+  const mainRegion = useRef<HTMLElement>(null);
   const fallbackActivity = useMemo(
     () =>
       snapshot.activity.reduce(
@@ -194,7 +198,21 @@ export function DashboardApp({
 
   return (
     <div className="app-shell">
-      <a className="skip-link" href="#main-content">
+      {/*
+       * The href keeps the link meaningful without JavaScript, but the click is
+       * handled here: `#main-content` is not a route, so letting it reach the
+       * hash would send `parseRoute` to its Pulse fallback and clear the
+       * project selection. The one control whose purpose is to help keyboard
+       * users would be the one that resets their context.
+       */}
+      <a
+        className="skip-link"
+        href="#main-content"
+        onClick={(event) => {
+          event.preventDefault();
+          mainRegion.current?.focus();
+        }}
+      >
         Skip to {titles.heading}
       </a>
       <aside className="sidebar">
@@ -266,7 +284,9 @@ export function DashboardApp({
         </div>
       </aside>
 
-      <main id="main-content" className="workspace">
+      {/* `tabIndex={-1}` makes the region focusable by the skip link without
+          adding a tab stop of its own. */}
+      <main id="main-content" className="workspace" ref={mainRegion} tabIndex={-1}>
         <header className="command-bar">
           <div>
             <p className="eyebrow">{titles.eyebrow}</p>
@@ -332,6 +352,7 @@ export function DashboardApp({
           ) : route.name === 'context' ? (
             <ContextView
               snapshot={snapshot}
+              loading={intelligenceLoading}
               sources={
                 intelligenceResources.sources?.state === 'ready'
                   ? intelligenceResources.sources.data
@@ -341,6 +362,7 @@ export function DashboardApp({
           ) : route.name === 'optimization' ? (
             <OptimizationView
               snapshot={snapshot}
+              loading={intelligenceLoading}
               proposals={
                 intelligenceResources.proposals?.state === 'ready'
                   ? intelligenceResources.proposals.data
@@ -350,6 +372,7 @@ export function DashboardApp({
           ) : route.name === 'graph' ? (
             <GraphView
               summary={intelligenceResources.graph}
+              loading={intelligenceLoading}
               seeds={graphSeeds}
               {...(loadSubgraph === undefined ? {} : { loadSubgraph })}
             />

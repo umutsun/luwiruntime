@@ -21,9 +21,12 @@ const findingStateTones: Record<PulseFinding['state'], StatusTone> = {
 export function OptimizationView({
   snapshot,
   proposals,
+  loading = false,
 }: {
   snapshot: PulseSnapshot;
   proposals: Bounded<OptimizationProposal> | undefined;
+  /** The intelligence scope has not returned yet; see `ResourcePanel`. */
+  loading?: boolean;
 }) {
   const findingResource =
     snapshot.findingsState === 'ready'
@@ -79,6 +82,7 @@ export function OptimizationView({
       <ResourcePanel<Bounded<OptimizationProposal>>
         title="Proposals"
         resource={proposals === undefined ? undefined : { state: 'ready', data: proposals }}
+        loading={loading}
         emptyMessage="No proposals recorded"
         isEmpty={(value) => value.items.length === 0}
       >
@@ -123,6 +127,9 @@ export function OptimizationView({
               Read-only. Accepting or rejecting a proposal leads to a configuration apply, which is
               never exposed on a read surface.
             </p>
+            {value.truncated ? (
+              <p className="bounded-note">Bounded list, and more proposals exist than are shown.</p>
+            ) : null}
           </>
         )}
       </ResourcePanel>

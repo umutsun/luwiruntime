@@ -23,11 +23,14 @@ import { GraphExplorerView, type GraphSeed } from './graph-explorer-view.js';
 export function GraphView({
   summary,
   seeds = [],
+  loading = false,
   loadSubgraph,
 }: {
   summary: ResourceState<GraphSummary> | undefined;
   /** Roots the Pulse snapshot already holds; see ADR 0016. */
   seeds?: readonly GraphSeed[];
+  /** The intelligence scope has not returned yet; see `ResourcePanel`. */
+  loading?: boolean;
   loadSubgraph?: (
     root: GraphRoot,
     bounds: SubgraphBounds,
@@ -46,6 +49,7 @@ export function GraphView({
       <ResourcePanel<GraphSummary>
         title="Projection"
         resource={summary}
+        loading={loading}
         emptyMessage="No projection state recorded"
         isEmpty={() => false}
       >
@@ -114,6 +118,7 @@ export function GraphView({
             ? perKind(summary.data, summary.data.nodeCountsByKind)
             : summary
         }
+        loading={loading}
         notObservedMessage="The graph has not been built"
         emptyMessage="No nodes in the active generation"
         isEmpty={(rows) => rows.length === 0}
@@ -130,6 +135,7 @@ export function GraphView({
             ? perKind(summary.data, summary.data.edgeCountsByKind)
             : summary
         }
+        loading={loading}
         notObservedMessage="The graph has not been built"
         emptyMessage="No edges in the active generation"
         isEmpty={(rows) => rows.length === 0}
