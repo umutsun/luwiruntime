@@ -3,14 +3,15 @@
 > Audit of 2026-08-09, produced by a six-dimension parallel sweep whose findings
 > were then adversarially re-verified against the source. 63 findings survived.
 >
-> Fixed the same day, in `757b267`: **item 1** in full, and the drift-guard half
-> of **item 8** (`apps/dashboard/src/styles/tokens.test.ts` bans token drift
-> between the two light blocks; the broader ban on colour literals outside
-> `tokens.css` is still unwritten). The skip link's contrast was corrected there
-> too, but **item 2** — the skip link destroying the route — is untouched.
+> **Closed:** item 1 and the drift-guard half of item 8 in `757b267`; items 2,
+> 4, 5, 6 and the remaining half of item 8 in `f06f718`, which also added the
+> direct `ResourcePanel` tests this report asks for under test coverage.
 >
-> **Items 2 through 7, 9 and 10 stand open.** Item 10 is new scope and needs
-> approval under AGENTS.md section 21 before any part of it is built.
+> **Open:** item 3 (unavailable rendered as an observed fact — the three
+> `activeSessions` sites and the Activity availability channel), item 7
+> (inspector focus and the `aria-modal` promise), item 9 (`main.tsx` seams), and
+> item 10. Item 10 is new scope and needs approval under AGENTS.md section 21
+> before any part of it is built.
 
 ## Verdict
 
