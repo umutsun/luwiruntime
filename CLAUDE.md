@@ -47,6 +47,9 @@ History is short and every commit is a large checkpoint:
 | `77c6e0a` | ADR 0015: internal validation failures are server errors       |
 | `1feb515` | Read-only dashboard UX pass and the light theme                |
 | `7ffd35a` | ADR 0016: rooted, bounded graph exploration                    |
+| `915d004` | Graph node labels and selective labelling                      |
+| `757b267` | Light-theme readability and the token drift guard              |
+| `cdd7084` | The 2026-08-09 dashboard UI audit                              |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
