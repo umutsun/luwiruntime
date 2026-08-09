@@ -23,6 +23,16 @@ const HEIGHT = 520;
 const NODE_RADIUS = 15;
 
 /**
+ * Above this many nodes, only the root and the selected node are labelled.
+ *
+ * Labelling every node is the failure this bound exists to prevent: at 61 nodes
+ * the ring of labels overlapped into an unreadable band, and the labels that
+ * mattered were lost among the ones that did not. Identity is not lost — every
+ * node is listed by name in the table below, which is where identity belongs.
+ */
+const LABEL_ALL_BELOW = 26;
+
+/**
  * Color carries the node's *family*, not its exact kind, and shape separates
  * kinds inside a family.
  *
@@ -160,13 +170,14 @@ export function GraphDiagram({
   );
   const edgeById = useMemo(() => new Map(edges.map((edge) => [edge.id, edge])), [edges]);
   const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
+  const labelAll = nodes.length < LABEL_ALL_BELOW;
 
   return (
     <div className="graph-canvas">
       <svg
         viewBox={`0 0 ${String(WIDTH)} ${String(HEIGHT)}`}
         role="img"
-        aria-label={`Bounded subgraph: ${String(nodes.length)} nodes, ${String(edges.length)} edges. The same data is listed in the tables below.`}
+        aria-label={`Bounded subgraph: ${String(nodes.length)} nodes, ${String(edges.length)} edges.${labelAll ? '' : ' Only the root and the selected node are labelled at this size.'} The same data is listed in the tables below.`}
         preserveAspectRatio="xMidYMid meet"
       >
         <g>
@@ -214,14 +225,16 @@ export function GraphDiagram({
                   />
                 ) : null}
                 <NodeMark kind={node.kind} x={positioned.x} y={positioned.y} />
-                <text
-                  x={positioned.x}
-                  y={positioned.y + NODE_RADIUS + 14}
-                  textAnchor="middle"
-                  className="graph-node__label"
-                >
-                  {node.label.length > 22 ? `${node.label.slice(0, 21)}…` : node.label}
-                </text>
+                {labelAll || isRoot || isSelected ? (
+                  <text
+                    x={positioned.x}
+                    y={positioned.y + NODE_RADIUS + 14}
+                    textAnchor="middle"
+                    className="graph-node__label"
+                  >
+                    {node.label.length > 24 ? `…${node.label.slice(-23)}` : node.label}
+                  </text>
+                ) : null}
               </g>
             );
           })}

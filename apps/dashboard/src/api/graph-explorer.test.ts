@@ -235,6 +235,56 @@ describe('loadSubgraph', () => {
     expect(result.data.nodes).toHaveLength(2);
   });
 
+  it('labels each kind from the metadata key that kind actually records', async () => {
+    // Measured against db0: packages carry packageName, files relativePath,
+    // modules path, commits commitSha, technologies and projects name. Only the
+    // first three were previously missed, and files are most of the graph.
+    const base = {
+      id: 'n',
+      observedAt: '2026-08-08T00:00:00.000Z',
+      provenance: 'p',
+      confidence: 'high' as const,
+      evidenceIds: ['e'],
+    };
+    const { client } = clientReturning({
+      state: 'ready',
+      data: {
+        truncated: false,
+        edges: [],
+        nodes: [
+          { ...base, kind: 'package', entityId: 'pkg-abc', metadata: { packageName: 'react-dom' } },
+          {
+            ...base,
+            kind: 'file',
+            entityId: 'file-abc',
+            metadata: { relativePath: 'apps/dashboard/src/app.tsx' },
+          },
+          { ...base, kind: 'module', entityId: 'module-abc', metadata: { path: 'apps/cli' } },
+          {
+            ...base,
+            kind: 'commit',
+            entityId: 'scoped-abc',
+            metadata: { commitSha: 'ea487d981e1dc2dec528f6c12c30004ddb2c5b21' },
+          },
+          { ...base, kind: 'agent', entityId: 'codex', metadata: {} },
+        ],
+      },
+      httpStatus: 200,
+      receivedAt: '2026-08-08T00:00:00.000Z',
+    });
+
+    const result = await loadSubgraph(client, root, {});
+
+    if (result.state !== 'ready') throw new Error('expected ready');
+    expect(result.data.nodes.map((node) => node.label)).toEqual([
+      'react-dom',
+      'apps/dashboard/src/app.tsx',
+      'apps/cli',
+      'ea487d981e1d',
+      'codex',
+    ]);
+  });
+
   it('prefers a node name from metadata and falls back to the entity id', async () => {
     const { client } = clientReturning({
       state: 'ready',

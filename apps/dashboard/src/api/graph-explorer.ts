@@ -1,5 +1,6 @@
 import { graphNeighborsResponseSchema, graphSubgraphResponseSchema } from '@luwi/protocol/browser';
 
+import { abbreviateSha } from '../components/format.js';
 import type { ResourceState } from '../components/panel.js';
 import type { DaemonClient } from './client.js';
 
@@ -64,12 +65,22 @@ function isStructural(provenance: string): boolean {
   return provenance.startsWith(CODE_STRUCTURE_PROVENANCE_PREFIX);
 }
 
-/** A readable name when the projection recorded one; never an invented one. */
+/**
+ * A readable name when the projection recorded one; never an invented one.
+ *
+ * The keys differ per node kind and were read off the live projection: projects
+ * and technologies record `name`, packages `packageName`, files `relativePath`,
+ * modules `path`, commits `commitSha`. Missing `packageName` and `relativePath`
+ * meant most of the graph — 345 of 433 nodes are files — rendered as an opaque
+ * hash. A commit is shown abbreviated, as everywhere else in this dashboard.
+ */
 function labelOf(metadata: Record<string, unknown>, entityId: string): string {
-  for (const key of ['name', 'displayName', 'path', 'title']) {
+  for (const key of ['name', 'displayName', 'packageName', 'relativePath', 'path', 'title']) {
     const value = metadata[key];
     if (typeof value === 'string' && value.length > 0) return value;
   }
+  const sha = metadata['commitSha'];
+  if (typeof sha === 'string' && sha.length > 0) return abbreviateSha(sha);
   return entityId;
 }
 
