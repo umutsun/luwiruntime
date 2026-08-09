@@ -50,6 +50,7 @@ History is short and every commit is a large checkpoint:
 | `915d004` | Graph node labels and selective labelling                      |
 | `757b267` | Light-theme readability and the token drift guard              |
 | `cdd7084` | The 2026-08-09 dashboard UI audit                              |
+| `f06f718` | The audit's small findings: skip link, truncation, loading     |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
