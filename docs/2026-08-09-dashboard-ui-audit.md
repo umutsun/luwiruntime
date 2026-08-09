@@ -4,14 +4,14 @@
 > were then adversarially re-verified against the source. 63 findings survived.
 >
 > **Closed:** item 1 and the drift-guard half of item 8 in `757b267`; items 2,
-> 4, 5, 6 and the remaining half of item 8 in `f06f718`, which also added the
-> direct `ResourcePanel` tests this report asks for under test coverage.
+> 4, 5, 6 and the remaining half of item 8 in `f06f718`; items 3, 7 and 9 in
+> `b476a73`. Between them those commits also added the `ResourcePanel`,
+> `error-boundary` and composition-root tests this report asks for under test
+> coverage.
 >
-> **Open:** item 3 (unavailable rendered as an observed fact — the three
-> `activeSessions` sites and the Activity availability channel), item 7
-> (inspector focus and the `aria-modal` promise), item 9 (`main.tsx` seams), and
-> item 10. Item 10 is new scope and needs approval under AGENTS.md section 21
-> before any part of it is built.
+> **Open:** item 10 only, plus the smaller depth items in sections 5 and 6 that
+> were never given a priority number. Item 10 is new scope and needs approval
+> under AGENTS.md section 21 before any part of it is built.
 
 ## Verdict
 
