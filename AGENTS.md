@@ -955,6 +955,19 @@ alongside the event-derived edges, distinguished by provenance. `typescript` is 
 dependency of `apps/daemon`; ADR 0012 states the cost. Function-level nodes, call graphs, and
 multi-language extraction remain out of scope.
 
+ADR 0017 approved the first read from the 2026-08-09 UI audit's item 10 and only that one. The
+dashboard now consumes `GET /api/v1/projects/:projectId/git/attributions` as a fifth project-scoped
+read, and renders the branch, tag, and worktree evidence the Git observation was already delivering
+and the dashboard was discarding at its boundary. No daemon route, dependency, datastore, or write
+path was added.
+
+The other four item-10 domains — inter-agent messaging, the capability and profile catalogue,
+effective agent configuration and its conflicts, config drift with its plans and snapshots — remain
+**unapproved**, as do the pair-scoped context reads. They defer on a measured condition rather than
+on preference: each holds zero records on this runtime, so a view over it could not be verified by
+looking at it. ADR 0017 states the condition under which each becomes buildable. Building any of
+them still requires explicit approval under this section.
+
 **Every other prohibition below still stands.** Do not begin dashboard mutations,
 lifecycle/release scoring, task/lease systems, a semantic or vector knowledge graph, memory
 federation, GitHub integration, prompt injection, automatic optimization apply, cloud accounts,

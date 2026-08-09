@@ -3,7 +3,7 @@
 import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ResourcePanel } from './panel.js';
+import { AttributionConfidenceChip, ResourcePanel } from './panel.js';
 
 afterEach(cleanup);
 
@@ -79,5 +79,38 @@ describe('ResourcePanel', () => {
     render(panel({ resource: undefined, loading: true }));
 
     expect(screen.getByText(/loading/i).getAttribute('aria-busy')).toBe('true');
+  });
+});
+
+describe('AttributionConfidenceChip', () => {
+  /**
+   * Attribution grades its own way — `exact | correlated | estimated | unknown`
+   * — so it cannot borrow `ConfidenceChip`, whose type is the intelligence
+   * scale. It must still obey the same rule: the grade is always readable as
+   * text, never carried by colour alone.
+   */
+  it('names every attribution grade as text', () => {
+    const grades = [
+      ['exact', 'Exact'],
+      ['correlated', 'Correlated'],
+      ['estimated', 'Estimated'],
+      ['unknown', 'Unknown'],
+    ] as const;
+
+    for (const [value, label] of grades) {
+      const { unmount } = render(<AttributionConfidenceChip confidence={value} />);
+      expect(screen.getByText(label)).toBeTruthy();
+      unmount();
+    }
+  });
+
+  it('separates a graded attribution from an ungraded one by tone as well', () => {
+    const { unmount } = render(<AttributionConfidenceChip confidence="exact" />);
+    const exact = screen.getByText('Exact').className;
+    unmount();
+
+    render(<AttributionConfidenceChip confidence="unknown" />);
+
+    expect(screen.getByText('Unknown').className).not.toBe(exact);
   });
 });

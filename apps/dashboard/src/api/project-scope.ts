@@ -1,4 +1,5 @@
 import {
+  attributionCollectionSchema,
   gitObservationSchema,
   packageCollectionSchema,
   projectAgentBindingCollectionSchema,
@@ -41,6 +42,14 @@ export type ProjectCommit = {
   merge: boolean;
 };
 
+export type ProjectWorktree = {
+  path: string;
+  headSha: string;
+  branch?: string;
+  detached?: boolean;
+  locked?: boolean;
+};
+
 export type ProjectGit = {
   repositoryRoot: string;
   branch?: string;
@@ -53,10 +62,35 @@ export type ProjectGit = {
   untrackedCount: number;
   ahead?: number;
   behind?: number;
-  worktreeCount: number;
-  branchCount: number;
-  tagCount: number;
+  /**
+   * Carried whole rather than as counts.
+   *
+   * The observation already delivers these arrays and the schema bounds each at
+   * 1000, so reducing them to `.length` at this boundary discarded every name
+   * the daemon had observed in exchange for nothing.
+   */
+  branches: string[];
+  tags: string[];
+  worktrees: ProjectWorktree[];
   recentCommits: ProjectCommit[];
+  observedAt: string;
+};
+
+/**
+ * One commit the runtime tried to tie to a session.
+ *
+ * `sessionId` and `agentId` are absent together when no correlation was found.
+ * They stay optional rather than being defaulted, because an unattributed
+ * commit is an observation — the runtime looked and could not tell — and
+ * `reasons` is where it says why.
+ */
+export type ProjectAttribution = {
+  id: string;
+  commitSha: string;
+  sessionId?: string;
+  agentId?: string;
+  confidence: 'exact' | 'correlated' | 'estimated' | 'unknown';
+  reasons: string[];
   observedAt: string;
 };
 
@@ -92,6 +126,7 @@ export type Bounded<T> = { items: T[]; truncated: boolean };
 
 export type ProjectScopeResources = {
   git: ProjectResourceState<ProjectGit>;
+  attributions: ProjectResourceState<Bounded<ProjectAttribution>>;
   packages: ProjectResourceState<Bounded<ProjectPackage>>;
   technologies: ProjectResourceState<Bounded<ProjectTechnology>>;
   bindings: ProjectResourceState<ProjectBinding[]>;
@@ -101,6 +136,7 @@ export type ProjectScopeResourceKey = keyof ProjectScopeResources;
 
 export const projectScopeResourceKeys: readonly ProjectScopeResourceKey[] = [
   'git',
+  'attributions',
   'packages',
   'technologies',
   'bindings',
@@ -123,10 +159,16 @@ type ScopeEntry = readonly [
  * `project.registered` and `project.updated` return nothing: they change the
  * global project list, which the Pulse coordinator already refreshes, and they
  * carry no evidence any project panel renders.
+ *
+ * `git.` deliberately does not also refresh attributions. A git scan emits one
+ * `attribution.recorded` per record it writes, so the precise prefix already
+ * covers everything a scan produces and mapping both would refresh the same
+ * panel twice for a single cause.
  */
 export function projectResourcesForEvent(eventType: string): ProjectScopeResourceKey[] {
   if (eventType.startsWith('runtime.')) return [...projectScopeResourceKeys];
   if (eventType.startsWith('git.')) return ['git'];
+  if (eventType.startsWith('attribution.')) return ['attributions'];
   if (eventType.startsWith('package.')) return ['packages'];
   if (eventType.startsWith('technology.')) return ['technologies'];
   if (eventType.startsWith('project.agent.')) return ['bindings'];
@@ -193,9 +235,17 @@ export async function loadProjectScope(
               untrackedCount: observation.untrackedCount,
               ...(observation.ahead === undefined ? {} : { ahead: observation.ahead }),
               ...(observation.behind === undefined ? {} : { behind: observation.behind }),
-              worktreeCount: observation.worktrees.length,
-              branchCount: observation.branches.length,
-              tagCount: observation.tags.length,
+              branches: [...observation.branches],
+              tags: [...observation.tags],
+              worktrees: observation.worktrees.map((worktree) => ({
+                path: worktree.path,
+                headSha: worktree.headSha,
+                ...(worktree.branch === undefined ? {} : { branch: worktree.branch }),
+                // An absent flag is not a false one: git reports these only when
+                // they hold, and defaulting would assert a state never observed.
+                ...(worktree.detached === undefined ? {} : { detached: worktree.detached }),
+                ...(worktree.locked === undefined ? {} : { locked: worktree.locked }),
+              })),
               recentCommits: observation.recentCommits.map((commit) => ({
                 sha: commit.sha,
                 committedAt: commit.committedAt,
@@ -209,6 +259,34 @@ export async function loadProjectScope(
               })),
               observedAt: observation.observedAt,
             })),
+          ),
+        );
+        break;
+      case 'attributions':
+        requests.push(
+          entry(
+            key,
+            client.get(
+              `${base}/git/attributions?limit=${COLLECTION_LIMIT}`,
+              attributionCollectionSchema,
+              get,
+            ),
+            (result) =>
+              // `collected`, not `observed`: this endpoint answers with an empty
+              // collection when nothing has been recorded, so it has no 404 and
+              // therefore no not-observed answer to distinguish.
+              collected(result, ({ attributions, truncated }) => ({
+                truncated,
+                items: attributions.map((record) => ({
+                  id: record.id,
+                  commitSha: record.commitSha,
+                  ...(record.sessionId === undefined ? {} : { sessionId: record.sessionId }),
+                  ...(record.agentId === undefined ? {} : { agentId: record.agentId }),
+                  confidence: record.confidence,
+                  reasons: [...record.reasons],
+                  observedAt: record.observedAt,
+                })),
+              })),
           ),
         );
         break;

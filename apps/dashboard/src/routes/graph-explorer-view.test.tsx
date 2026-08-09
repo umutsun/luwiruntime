@@ -69,6 +69,35 @@ describe('GraphExplorerView', () => {
     expect(screen.getByText(/no project, session, or agent/i)).toBeTruthy();
   });
 
+  it('adopts a root when seeds arrive after mount', async () => {
+    // Reproduces the reload-on-#/graph path: the explorer mounts while the
+    // Pulse snapshot is still empty, so the first render has no seed to take.
+    // Seeding the root only once left it undefined forever, and the view sat
+    // on its busy state with no way out but the Root select.
+    const load = loaderFor(subgraph);
+    const { rerender } = render(<GraphExplorerView seeds={[]} loadSubgraph={load} />);
+    expect(load).not.toHaveBeenCalled();
+
+    rerender(<GraphExplorerView seeds={seeds} loadSubgraph={load} />);
+
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    expect(load.mock.calls[0]?.[0]).toMatchObject({ kind: 'project', id: 'p1' });
+    expect(screen.queryByText(/reading the bounded subgraph/i)).toBeNull();
+  });
+
+  it('does not reload when a new seed array carries the same first root', async () => {
+    // `graphSeedsOf` rebuilds the array on every snapshot refresh. Re-syncing
+    // unconditionally would turn each refresh into another subgraph request.
+    const load = loaderFor(subgraph);
+    const { rerender } = render(<GraphExplorerView seeds={seeds} loadSubgraph={load} />);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+
+    rerender(<GraphExplorerView seeds={seeds.map((seed) => ({ ...seed }))} loadSubgraph={load} />);
+
+    await waitFor(() => expect(screen.getByRole('img', { name: /bounded/i })).toBeTruthy());
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
   it('loads the first seed as the root and renders its nodes and edges', async () => {
     const load = loaderFor(subgraph);
     render(<GraphExplorerView seeds={seeds} loadSubgraph={load} />);
@@ -82,6 +111,32 @@ describe('GraphExplorerView', () => {
     expect(within(nodeTable).getByText('packages/redis')).toBeTruthy();
     const edgeTable = screen.getByRole('region', { name: /edges in view/i });
     expect(within(edgeTable).getByText('PROJECT_HAS_MODULE')).toBeTruthy();
+  });
+
+  it('re-roots from the Root select and reloads at the chosen seed', async () => {
+    // The select packs kind and id into one option value separated by U+0000,
+    // which cannot occur in an identifier. This is the only test that round-
+    // trips that encoding, so a change to the separator fails here rather than
+    // silently making every re-root a no-op.
+    const load = loaderFor(subgraph);
+    render(<GraphExplorerView seeds={seeds} loadSubgraph={load} />);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText('Root'), { target: { value: 'session\u0000s1' } });
+
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    expect(load.mock.calls[1]?.[0]).toMatchObject({ kind: 'session', id: 's1' });
+  });
+
+  it('ignores a Root value that names no seed', async () => {
+    const load = loaderFor(subgraph);
+    render(<GraphExplorerView seeds={seeds} loadSubgraph={load} />);
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText('Root'), { target: { value: 'project\u0000ghost' } });
+
+    await waitFor(() => expect(screen.getByRole('img', { name: /bounded/i })).toBeTruthy());
+    expect(load).toHaveBeenCalledTimes(1);
   });
 
   it('re-roots on a node from the table and reloads at the new root', async () => {

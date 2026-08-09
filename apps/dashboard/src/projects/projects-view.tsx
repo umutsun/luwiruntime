@@ -1,15 +1,115 @@
 import type {
   Bounded,
+  ProjectAttribution,
   ProjectBinding,
   ProjectGit,
   ProjectPackage,
   ProjectScopeResources,
   ProjectTechnology,
+  ProjectWorktree,
 } from '../api/project-scope.js';
 import { abbreviatePath, abbreviateSha } from '../components/format.js';
-import { ConfidenceChip, Count, Panel, ResourcePanel } from '../components/panel.js';
+import {
+  AttributionConfidenceChip,
+  ConfidenceChip,
+  Count,
+  Panel,
+  ResourcePanel,
+} from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
 import type { PulseSnapshot } from '../pulse/model.js';
+
+/**
+ * How many branch or tag names one panel shows.
+ *
+ * This is a display bound, not a read bound. The observation delivers both
+ * arrays complete, so the sentence below says "showing the first N of M"
+ * rather than borrowing `TruncationNote`, which asserts the different and
+ * stronger fact that records exist which were never read.
+ */
+const NAME_LIST_LIMIT = 25;
+
+/**
+ * Names one observed collection and carries its size.
+ *
+ * The label is not decoration. Branches and tags render as identical rows of
+ * pills, so two unlabelled lists next to each other are indistinguishable —
+ * which is exactly how they first shipped and what looking at the page caught.
+ * The count lives here rather than in a separate summary grid so the number and
+ * the thing it counts cannot drift apart on screen.
+ */
+function GroupLabel({ label, count }: { label: string; count: number }) {
+  return (
+    <p className="group-label">
+      <span>{label}</span>
+      <span className="group-label__count">{count}</span>
+    </p>
+  );
+}
+
+function NameList({ names, label, noun }: { names: string[]; label: string; noun: string }) {
+  return (
+    <>
+      <GroupLabel label={label} count={names.length} />
+      {names.length === 0 ? (
+        // An observed empty collection is an answer, so it is stated rather
+        // than omitted — an absent section would read as "not measured".
+        <p className="empty-state">No {noun} recorded</p>
+      ) : (
+        <ul className="name-list">
+          {names.slice(0, NAME_LIST_LIMIT).map((name) => (
+            <li key={name}>{name}</li>
+          ))}
+        </ul>
+      )}
+      {names.length > NAME_LIST_LIMIT ? (
+        <p className="bounded-note">
+          Showing the first {NAME_LIST_LIMIT} of {names.length} {noun}. The observation carries them
+          all; only this list is shortened.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+function WorktreeTable({ worktrees }: { worktrees: ProjectWorktree[] }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <caption className="visually-hidden">Worktrees in this repository</caption>
+        <thead>
+          <tr>
+            <th scope="col">Path</th>
+            <th scope="col">HEAD</th>
+            <th scope="col">Branch</th>
+            <th scope="col">State</th>
+          </tr>
+        </thead>
+        <tbody>
+          {worktrees.map((worktree) => (
+            <tr key={worktree.path}>
+              <td>
+                <small title={worktree.path}>{abbreviatePath(worktree.path)}</small>
+              </td>
+              <td>
+                <code title={worktree.headSha}>{abbreviateSha(worktree.headSha)}</code>
+              </td>
+              <td>{worktree.branch ?? <span className="unavailable">None</span>}</td>
+              <td>
+                {/* An absent flag is not a reported state, so nothing is drawn
+                    for it — an attached, unlocked worktree shows no chip. */}
+                {worktree.detached === true ? (
+                  <StatusChip tone="warning">Detached</StatusChip>
+                ) : null}
+                {worktree.locked === true ? <StatusChip tone="info">Locked</StatusChip> : null}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function RepositoryBody({ git }: { git: ProjectGit }) {
   return (
@@ -48,6 +148,15 @@ function RepositoryBody({ git }: { git: ProjectGit }) {
         <span>{git.unstagedCount} unstaged</span>
         <span>{git.untrackedCount} untracked</span>
       </p>
+      <NameList names={git.branches} label="Branches" noun="branches" />
+      <NameList names={git.tags} label="Tags" noun="tags" />
+      <GroupLabel label="Worktrees" count={git.worktrees.length} />
+      {git.worktrees.length === 0 ? (
+        <p className="empty-state">No worktrees recorded</p>
+      ) : (
+        <WorktreeTable worktrees={git.worktrees} />
+      )}
+      <GroupLabel label="Recent commits" count={git.recentCommits.length} />
       {git.recentCommits.length === 0 ? (
         <p className="empty-state">No retained commits</p>
       ) : (
@@ -169,6 +278,69 @@ export function ProjectsView({
             isEmpty={() => false}
           >
             {(git) => <RepositoryBody git={git} />}
+          </ResourcePanel>
+
+          <ResourcePanel<Bounded<ProjectAttribution>>
+            title="Commit attribution"
+            resource={resources.attributions}
+            emptyMessage="No commit attribution recorded"
+            isEmpty={(value) => value.items.length === 0}
+          >
+            {(value) => (
+              <>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th scope="col">Commit</th>
+                        <th scope="col">Attributed to</th>
+                        <th scope="col">Confidence</th>
+                        <th scope="col">Reasons</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {value.items.map((record) => (
+                        <tr key={record.id}>
+                          <td>
+                            <code title={record.commitSha}>{abbreviateSha(record.commitSha)}</code>
+                          </td>
+                          <td>
+                            {record.agentId === undefined && record.sessionId === undefined ? (
+                              <span className="unavailable">Unattributed</span>
+                            ) : (
+                              <>
+                                {record.agentId ?? (
+                                  <span className="unavailable">Unknown agent</span>
+                                )}
+                                {record.sessionId === undefined ? null : (
+                                  <small title={record.sessionId}>{record.sessionId}</small>
+                                )}
+                              </>
+                            )}
+                          </td>
+                          <td>
+                            <AttributionConfidenceChip confidence={record.confidence} />
+                          </td>
+                          <td>
+                            {record.reasons.length === 0 ? (
+                              <span className="unavailable">No reason recorded</span>
+                            ) : (
+                              <small>{record.reasons.join(', ')}</small>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="bounded-note">
+                  Attribution is observed, not asserted. A commit the runtime could not tie to a
+                  session stays unattributed rather than being assigned a guess, and the reason
+                  column says why it could not.
+                </p>
+                <TruncationNote truncated={value.truncated} noun="attributions" />
+              </>
+            )}
           </ResourcePanel>
 
           <ResourcePanel<ProjectBinding[]>

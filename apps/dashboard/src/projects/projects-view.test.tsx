@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProjectScopeResources } from '../api/project-scope.js';
+import type { ProjectGit, ProjectScopeResources } from '../api/project-scope.js';
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
 import { ProjectsView } from './projects-view.js';
 
@@ -56,36 +56,38 @@ function snapshotOf(overrides: Partial<PulseInput> = {}) {
   return buildPulseSnapshot(input);
 }
 
-const readyScope: Partial<ProjectScopeResources> = {
-  git: {
-    state: 'ready',
-    data: {
-      repositoryRoot: LONG_PATH,
-      branch: 'master',
-      headSha: 'b'.repeat(40),
-      defaultBranch: 'main',
-      clean: false,
-      stagedCount: 2,
-      unstagedCount: 3,
-      untrackedCount: 4,
-      ahead: 1,
-      behind: 0,
-      worktreeCount: 1,
-      branchCount: 2,
-      tagCount: 1,
-      recentCommits: [
-        {
-          sha: 'c'.repeat(40),
-          committedAt: '2026-08-08T00:00:00.000Z',
-          subject: 'first commit',
-          authorIdentity: 'dev',
-          changedPathCount: 3,
-          merge: false,
-        },
-      ],
-      observedAt: '2026-08-08T00:00:00.000Z',
+const gitData: ProjectGit = {
+  repositoryRoot: LONG_PATH,
+  branch: 'master',
+  headSha: 'b'.repeat(40),
+  defaultBranch: 'main',
+  clean: false,
+  stagedCount: 2,
+  unstagedCount: 3,
+  untrackedCount: 4,
+  ahead: 1,
+  behind: 0,
+  branches: ['master', 'main'],
+  tags: ['v1'],
+  worktrees: [
+    { path: 'C:/work/demo', headSha: 'd'.repeat(40), branch: 'master' },
+    { path: 'C:/work/demo-wt', headSha: 'e'.repeat(40), detached: true, locked: true },
+  ],
+  recentCommits: [
+    {
+      sha: 'c'.repeat(40),
+      committedAt: '2026-08-08T00:00:00.000Z',
+      subject: 'first commit',
+      authorIdentity: 'dev',
+      changedPathCount: 3,
+      merge: false,
     },
-  },
+  ],
+  observedAt: '2026-08-08T00:00:00.000Z',
+};
+
+const readyScope: Partial<ProjectScopeResources> = {
+  git: { state: 'ready', data: gitData },
   packages: {
     state: 'ready',
     data: {
@@ -123,6 +125,30 @@ const readyScope: Partial<ProjectScopeResources> = {
           category: 'database',
           confidence: 'unknown',
           evidenceCount: 1,
+        },
+      ],
+    },
+  },
+  attributions: {
+    state: 'ready',
+    data: {
+      truncated: true,
+      items: [
+        {
+          id: 'attr-1',
+          commitSha: 'c'.repeat(40),
+          sessionId: 'sess-1',
+          agentId: 'agent-1',
+          confidence: 'correlated',
+          reasons: ['session-window-overlap'],
+          observedAt: '2026-08-08T00:00:00.000Z',
+        },
+        {
+          id: 'attr-2',
+          commitSha: 'f'.repeat(40),
+          confidence: 'unknown',
+          reasons: ['insufficient-session-correlation'],
+          observedAt: '2026-08-08T00:00:00.000Z',
         },
       ],
     },
@@ -229,7 +255,9 @@ describe('ProjectsView detail', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
     const panel = screen.getByRole('region', { name: /repository/i });
-    expect(within(panel).getByText('master')).toBeTruthy();
+    // Scoped to the summary: `master` now also appears in the branch list and
+    // in the worktree table, which are separate assertions below.
+    expect(within(panel).getByText('master', { selector: 'dd' })).toBeTruthy();
     expect(within(panel).getByTitle('b'.repeat(40))).toBeTruthy();
     expect(within(panel).getByText(/2 staged/i)).toBeTruthy();
     expect(within(panel).getByText(/3 unstaged/i)).toBeTruthy();
@@ -256,6 +284,124 @@ describe('ProjectsView detail', () => {
     const panel = screen.getByRole('region', { name: /repository/i });
     expect(within(panel).getByText(/unavailable/i)).toBeTruthy();
     expect(within(panel).queryByText(/not observed/i)).toBeNull();
+  });
+
+  it('labels each observed collection so two adjacent lists cannot be confused', () => {
+    // Rendered unlabelled, the branch and tag lists are two identical rows of
+    // pills and a reader cannot tell which is which. The count travels with the
+    // label rather than sitting in a separate summary grid.
+    renderView({ selectedProjectId: 'proj-1', resources: readyScope });
+
+    const panel = screen.getByRole('region', { name: /repository/i });
+    for (const [label, count] of [
+      ['Branches', '2'],
+      ['Tags', '1'],
+      ['Worktrees', '2'],
+    ] as const) {
+      const group = within(panel).getByText(label).closest('.group-label');
+      expect(group, `${label} has no labelled group`).toBeTruthy();
+      expect(within(group as HTMLElement).getByText(count)).toBeTruthy();
+    }
+    expect(within(panel).getByText('master', { selector: 'li' })).toBeTruthy();
+    expect(within(panel).getByText('v1', { selector: 'li' })).toBeTruthy();
+  });
+
+  it('renders an observed empty collection as empty rather than hiding it', () => {
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: {
+        ...readyScope,
+        git: { state: 'ready', data: { ...gitData, tags: [], worktrees: [] } },
+      },
+    });
+
+    const panel = screen.getByRole('region', { name: /repository/i });
+    const tags = within(panel).getByText('Tags').closest('.group-label');
+    expect(within(tags as HTMLElement).getByText('0')).toBeTruthy();
+    expect(within(panel).getByText(/no tags recorded/i)).toBeTruthy();
+    expect(within(panel).getByText(/no worktrees recorded/i)).toBeTruthy();
+  });
+
+  it('names each worktree with its head and its detached and locked state', () => {
+    renderView({ selectedProjectId: 'proj-1', resources: readyScope });
+
+    const panel = screen.getByRole('region', { name: /repository/i });
+    const worktrees = within(panel).getByRole('table', { name: /worktrees/i });
+    expect(within(worktrees).getByTitle('C:/work/demo-wt')).toBeTruthy();
+    expect(within(worktrees).getByTitle('e'.repeat(40))).toBeTruthy();
+    expect(within(worktrees).getByText('Detached')).toBeTruthy();
+    expect(within(worktrees).getByText('Locked')).toBeTruthy();
+  });
+
+  it('bounds a long branch list and says so as a display bound, not a read bound', () => {
+    const branches = Array.from({ length: 40 }, (_, index) => `feature/${String(index)}`);
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: {
+        ...readyScope,
+        git: { state: 'ready', data: { ...gitData, branches } },
+      },
+    });
+
+    const panel = screen.getByRole('region', { name: /repository/i });
+    expect(within(panel).getByText('feature/24', { selector: 'li' })).toBeTruthy();
+    expect(within(panel).queryByText('feature/25', { selector: 'li' })).toBeNull();
+    expect(within(panel).getByText(/showing the first 25 of 40 branches/i)).toBeTruthy();
+  });
+
+  it('does not claim a display bound when every branch is shown', () => {
+    renderView({ selectedProjectId: 'proj-1', resources: readyScope });
+
+    const panel = screen.getByRole('region', { name: /repository/i });
+    expect(within(panel).queryByText(/showing the first/i)).toBeNull();
+  });
+
+  it('renders commit attribution with the agent and session it was tied to', () => {
+    renderView({ selectedProjectId: 'proj-1', resources: readyScope });
+
+    const panel = screen.getByRole('region', { name: /commit attribution/i });
+    expect(within(panel).getByTitle('c'.repeat(40))).toBeTruthy();
+    expect(within(panel).getByText(/agent-1/)).toBeTruthy();
+    expect(within(panel).getByText('Correlated')).toBeTruthy();
+    expect(within(panel).getByText('session-window-overlap')).toBeTruthy();
+  });
+
+  it('says a commit is unattributed rather than leaving the cell blank', () => {
+    renderView({ selectedProjectId: 'proj-1', resources: readyScope });
+
+    const panel = screen.getByRole('region', { name: /commit attribution/i });
+    expect(within(panel).getByText('Unattributed')).toBeTruthy();
+    expect(within(panel).getByText('Unknown')).toBeTruthy();
+    expect(within(panel).getByText('insufficient-session-correlation')).toBeTruthy();
+  });
+
+  it('discloses that a bounded attribution list is truncated', () => {
+    renderView({ selectedProjectId: 'proj-1', resources: readyScope });
+
+    const panel = screen.getByRole('region', { name: /commit attribution/i });
+    expect(within(panel).getByText(/more attributions exist/i)).toBeTruthy();
+  });
+
+  it('separates no attribution recorded from an unavailable attribution read', () => {
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: {
+        ...readyScope,
+        attributions: { state: 'ready', data: { items: [], truncated: false } },
+      },
+    });
+    const empty = screen.getByRole('region', { name: /commit attribution/i });
+    expect(within(empty).getByText(/no commit attribution recorded/i)).toBeTruthy();
+    expect(within(empty).queryByText('Unavailable')).toBeNull();
+
+    cleanup();
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: { ...readyScope, attributions: { state: 'unavailable' } },
+    });
+    const failed = screen.getByRole('region', { name: /commit attribution/i });
+    expect(within(failed).getByText('Unavailable')).toBeTruthy();
+    expect(within(failed).queryByText(/no commit attribution recorded/i)).toBeNull();
   });
 
   it('discloses that a bounded package list is truncated', () => {

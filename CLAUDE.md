@@ -135,12 +135,21 @@ Activity, read-only inspectors, project scope, and the sessions, agents, usage, 
 optimization routes. ADR 0013 then added `GET /api/v1/graph/summary` and enabled `#/graph`, so the
 navigation rail no longer carries a disabled destination. ADR 0012's first increment added the
 non-executing TypeScript code-structure layer to the operational graph, and ADR 0014 fixed its two
-projection-input defects. `README.md` "Current status" is accurate and maintained.
+projection-input defects. ADR 0017 added commit attribution as a fifth project-scoped read and
+rendered the branch, tag, and worktree evidence the Git observation was already delivering.
+`README.md` "Current status" is accurate and maintained.
 
 Not implemented, and per §21 still explicitly out of scope without approval: dashboard mutations,
 lifecycle/release scoring, task/lease systems, semantic or vector knowledge graph, memory
 federation, GitHub integration, prompt injection, cloud accounts, authentication, remote
 control-plane work.
+
+Also unbuilt, and deferred rather than rejected: inter-agent messaging, the capability and profile
+catalogue, effective agent configuration, config drift, and the pair-scoped context reads. Each
+holds **zero records** on this machine's Redis, which is why ADR 0017 built attribution — 17 real
+records — instead. Before proposing any of them, check whether its namespace has data; a view that
+cannot be looked at cannot be verified, and that is how two real defects survived three sessions of
+green tests.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.

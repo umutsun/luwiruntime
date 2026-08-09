@@ -4,6 +4,7 @@ export {
   projectAgentBindingCollectionSchema,
 } from './control-plane.js';
 export {
+  attributionCollectionSchema,
   contextContributionCollectionSchema,
   gitObservationSchema,
   graphNeighborsResponseSchema,

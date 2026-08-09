@@ -34,6 +34,39 @@ export function ConfidenceChip({ confidence }: { confidence: Confidence }) {
   return <StatusChip tone={confidenceTones[confidence]}>{confidenceLabels[confidence]}</StatusChip>;
 }
 
+/**
+ * Attribution grades on its own scale.
+ *
+ * `attributionConfidenceSchema` is `exact | correlated | estimated | unknown`,
+ * which is not the intelligence scale above, so the two cannot share a
+ * component without one of them being mislabelled. The rule they do share is
+ * the one that matters: the grade is text first, and the tone only reinforces
+ * it.
+ */
+export const attributionConfidenceLabels = {
+  exact: 'Exact',
+  correlated: 'Correlated',
+  estimated: 'Estimated',
+  unknown: 'Unknown',
+} as const;
+
+export type AttributionConfidence = keyof typeof attributionConfidenceLabels;
+
+export const attributionConfidenceTones: Record<AttributionConfidence, StatusTone> = {
+  exact: 'success',
+  correlated: 'info',
+  estimated: 'warning',
+  unknown: 'unknown',
+};
+
+export function AttributionConfidenceChip({ confidence }: { confidence: AttributionConfidence }) {
+  return (
+    <StatusChip tone={attributionConfidenceTones[confidence]}>
+      {attributionConfidenceLabels[confidence]}
+    </StatusChip>
+  );
+}
+
 function panelId(title: string): string {
   return `panel-${title.toLowerCase().replaceAll(' ', '-')}`;
 }

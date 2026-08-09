@@ -106,6 +106,56 @@
   font-size: 12px;
 }
 
+/* Names the block that follows it. Without these, the branch and tag lists are
+   two identical rows of pills with nothing to tell them apart. */
+.group-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: var(--space-4) 0 0;
+  color: var(--text-dim);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.group-label__count {
+  padding: 0 var(--space-1);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}
+
+.group-label + .name-list,
+.group-label + .empty-state,
+.group-label + .table-wrap {
+  margin-top: var(--space-2);
+}
+
+/* Branch and tag names. A wrapping row of pills rather than a table: these are
+   single values with no columns to align. */
+.name-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.name-list li {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .bounded-note {
   margin: var(--space-2) 0 0;
   padding: var(--space-2) var(--space-3);

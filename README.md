@@ -85,8 +85,15 @@ realtime Pulse and the Phase 1–4 runtime foundation:
   reconnect, realtime invalidation, or manual Retry; zero-safe-resource bootstrap is
   unavailable, and completion resolves to current, stale, or unavailable.
 - a `#/projects` route with a project registry and on-demand project-scoped evidence: repository
-  observation, bound agents, package inventory, and technology inventory, each loaded
-  independently so one failure cannot erase its siblings;
+  observation, commit attribution, bound agents, package inventory, and technology inventory, each
+  loaded independently so one failure cannot erase its siblings;
+- repository evidence rendered at the depth the observation carries — branches, tags, worktrees, and
+  recent commits as labelled groups that each carry their own count, every worktree with its head
+  and its detached or locked state, and branch and tag names in display-bounded lists that say how
+  many were shown of how many exist;
+- commit attribution reported as observed rather than asserted: a commit the runtime could not tie
+  to a session is shown as unattributed with the reason it could not, never as a guess, and its
+  grade is always readable as text;
 - an explicit not-observed state for a project with no recorded Git scan, kept distinct from an
   unavailable read, so an unscanned project is never reported as a fault;
 - disclosed truncation on every bounded project collection and per-tier confidence rendered as
@@ -109,6 +116,13 @@ own TypeScript with the compiler API — it parses and never executes — and pr
 file-to-file imports and the module dependencies aggregated from them into the same generation as
 the event-derived relationships, kept apart by provenance. An import it cannot resolve is recorded
 as unresolved rather than pointed at the nearest plausible file.
+
+Five read-only daemon domains still have no dashboard consumer: inter-agent messaging, the
+capability and profile catalogue, effective agent configuration and its conflicts, config drift
+with its plans and snapshots, and the pair-scoped context reads. Their events reach the Activity
+feed, so a user sees that something happened without seeing what. ADR 0017 defers them on a
+measured condition — each holds zero records on the runtime that serves this dashboard — and states
+what would make each buildable.
 
 Dashboard mutations, optimization accept/reject/evaluate, lifecycle/release scoring, release
 readiness, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge

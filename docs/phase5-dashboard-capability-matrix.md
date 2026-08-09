@@ -62,9 +62,10 @@ this; see the graph section below.
 
 ### Project scope request set
 
-Selecting a project issues four independent bounded reads. Selecting none issues zero. Each result
-carries its own `ready`, `not-observed`, or `unavailable` state so one failure cannot erase its
-siblings, matching the Pulse snapshot rule.
+Selecting a project issued four independent bounded reads at Phase 5C and issues five since
+ADR 0017 added commit attribution. Selecting none issues zero. Each result carries its own `ready`,
+`not-observed`, or `unavailable` state so one failure cannot erase its siblings, matching the Pulse
+snapshot rule.
 
 Project sessions are filtered from the global session snapshot rather than fetched from
 `GET /api/v1/projects/:projectId/sessions`, because that data is already present and validated.
@@ -141,6 +142,46 @@ Three states stay distinct on this route, which is the whole reason it waited fo
 Counts are exact rather than bounded, so this is the one route that carries no truncation note.
 It says so explicitly, because every neighbouring route does carry one and silence would read as
 an omission.
+
+## Git attribution and observation depth
+
+Date: 2026-08-10
+
+ADR 0017 added the first read from the audit's item 10 and rendered the Git evidence the project
+scope was already fetching and discarding.
+
+| Module             | REST read                                                    | Response evidence                                                                                                | Realtime evidence                             | Scope and behavior                                                                                                         | Status    |
+| ------------------ | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Commit attribution | `GET /api/v1/projects/:projectId/git/attributions?limit=100` | `attributionCollectionSchema` at `packages/protocol/src/intelligence.ts:485`; route `apps/daemon/src/app.ts:620` | `attribution.recorded`, `attribution.updated` | Project-scoped bounded list. An empty collection is the empty answer; there is no 404 and therefore no not-observed state. | SUPPORTED |
+
+`git.` deliberately does not also invalidate this panel. A git scan emits one `attribution.recorded`
+per record it writes, so the precise prefix covers everything a scan produces and mapping both would
+refresh one panel twice for one cause.
+
+The Git observation row above changed in substance without changing status. `branches`, `tags`, and
+`worktrees` were reduced to `.length` at the dashboard boundary and those three counts were rendered
+nowhere, so the loss was total. They are now carried whole and rendered as labelled groups, each
+headed by its noun and its count: branches and tags as pill lists, worktrees as a table with their
+head, branch, and detached or locked state. The label is load-bearing rather than decorative —
+unlabelled, branches and tags are two identical rows of pills that a reader cannot tell apart,
+which is what the first rendering did. This costs no request — the arrays were always in the
+response body — and it is why
+`GET /api/v1/projects/:projectId/git/worktrees` remains redundant rather than becoming a sixth read.
+
+### Display bound versus read bound
+
+The branch and tag lists show the first 25 names and say `Showing the first 25 of N`. This is a
+distinct claim from the `truncated` note every neighbouring collection carries: `truncated` means
+records exist that were not read, while these arrays arrive complete and only the list is
+shortened. Wording them the same way would have made a complete answer look partial.
+
+### Deferred, with the condition that would change it
+
+ADR 0017 defers the other four item-10 domains — messaging, the capability and profile catalogue,
+effective agent configuration, config drift — and the pair-scoped context reads that line 17 of this
+document counts as in scope. The reason is uniform and checkable: each holds zero records on the
+runtime that serves this dashboard, so a view over it could not be verified by looking at it. The
+condition for building each is stated in ADR 0017 rather than left to judgement.
 
 ### Honesty rules encoded in these routes
 

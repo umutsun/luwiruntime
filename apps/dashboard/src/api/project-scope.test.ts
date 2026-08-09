@@ -27,7 +27,10 @@ const gitFixture = {
   behind: 0,
   branches: ['master', 'main'],
   tags: ['v1'],
-  worktrees: [{ path: 'C:/work/demo', headSha: COMMIT, branch: 'master' }],
+  worktrees: [
+    { path: 'C:/work/demo', headSha: COMMIT, branch: 'master' },
+    { path: 'C:/work/demo-wt', headSha: COMMIT, detached: true, locked: true },
+  ],
   recentCommits: [
     {
       sha: COMMIT,
@@ -87,6 +90,32 @@ const technologiesFixture = {
   truncated: false,
 };
 
+const attributionsFixture = {
+  attributions: [
+    {
+      id: 'attr-1',
+      projectId: 'proj-1',
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      commitSha: COMMIT,
+      confidence: 'correlated',
+      observedAt: '2026-08-08T00:00:00.000Z',
+      evidenceIds: ['git-1', COMMIT],
+      reasons: ['session-window-overlap'],
+    },
+    {
+      id: 'attr-2',
+      projectId: 'proj-1',
+      commitSha: 'c'.repeat(40),
+      confidence: 'unknown',
+      observedAt: '2026-08-08T00:00:00.000Z',
+      evidenceIds: ['git-1'],
+      reasons: ['insufficient-session-correlation'],
+    },
+  ],
+  truncated: true,
+};
+
 const bindingsFixture = {
   bindings: [
     {
@@ -135,7 +164,10 @@ function stubClient(replies: Record<string, Reply>) {
   return { client, paths };
 }
 
+/** Ordered longest-prefix first: the stub matches on `startsWith`, and
+ * `/git/attributions` would otherwise be swallowed by `/git`. */
 const allReady: Record<string, Reply> = {
+  '/api/v1/projects/proj-1/git/attributions': { body: attributionsFixture },
   '/api/v1/projects/proj-1/git': { body: gitFixture },
   '/api/v1/projects/proj-1/packages': { body: packagesFixture },
   '/api/v1/projects/proj-1/technologies': { body: technologiesFixture },
@@ -158,6 +190,96 @@ describe('loadProjectScope', () => {
     });
     expect(result.technologies?.state).toBe('ready');
     expect(result.bindings?.state).toBe('ready');
+  });
+
+  it('carries branches, tags and worktrees rather than reducing them to counts', async () => {
+    const { client } = stubClient(allReady);
+
+    const result = await loadProjectScope(client, 'proj-1', ['git']);
+
+    expect(result.git).toMatchObject({
+      state: 'ready',
+      data: {
+        branches: ['master', 'main'],
+        tags: ['v1'],
+        worktrees: [
+          { path: 'C:/work/demo', headSha: COMMIT, branch: 'master' },
+          { path: 'C:/work/demo-wt', headSha: COMMIT, detached: true, locked: true },
+        ],
+      },
+    });
+  });
+
+  it('omits absent worktree flags rather than asserting false', async () => {
+    const { client } = stubClient(allReady);
+
+    const result = await loadProjectScope(client, 'proj-1', ['git']);
+    const attached = result.git?.state === 'ready' ? result.git.data.worktrees[0] : undefined;
+
+    expect(attached).toBeDefined();
+    expect('detached' in (attached ?? {})).toBe(false);
+    expect('locked' in (attached ?? {})).toBe(false);
+  });
+
+  it('maps commit attribution including its ungraded, unattributed rows', async () => {
+    const { client } = stubClient(allReady);
+
+    const result = await loadProjectScope(client, 'proj-1', ['attributions']);
+
+    expect(result.attributions).toEqual({
+      state: 'ready',
+      data: {
+        truncated: true,
+        items: [
+          {
+            id: 'attr-1',
+            commitSha: COMMIT,
+            sessionId: 'sess-1',
+            agentId: 'agent-1',
+            confidence: 'correlated',
+            reasons: ['session-window-overlap'],
+            observedAt: '2026-08-08T00:00:00.000Z',
+          },
+          {
+            id: 'attr-2',
+            commitSha: 'c'.repeat(40),
+            confidence: 'unknown',
+            reasons: ['insufficient-session-correlation'],
+            observedAt: '2026-08-08T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+  });
+
+  it('treats an empty attribution collection as the empty answer, never as not-observed', async () => {
+    const { client } = stubClient({
+      '/api/v1/projects/proj-1/git/attributions': {
+        body: { attributions: [], truncated: false },
+      },
+    });
+
+    const result = await loadProjectScope(client, 'proj-1', ['attributions']);
+
+    expect(result.attributions).toEqual({ state: 'ready', data: { items: [], truncated: false } });
+  });
+
+  it('never reads attribution as not-observed, even on a 404', async () => {
+    const { client } = stubClient({
+      '/api/v1/projects/proj-1/git/attributions': { fail: 'http', status: 404 },
+    });
+
+    const result = await loadProjectScope(client, 'proj-1', ['attributions']);
+
+    expect(result.attributions).toEqual({ state: 'unavailable' });
+  });
+
+  it('bounds the attribution read', async () => {
+    const { client, paths } = stubClient(allReady);
+
+    await loadProjectScope(client, 'proj-1', ['attributions']);
+
+    expect(paths).toEqual(['/api/v1/projects/proj-1/git/attributions?limit=100']);
   });
 
   it('preserves the truncation flag rather than hiding a bounded list', async () => {
@@ -291,6 +413,18 @@ describe('projectResourcesForEvent', () => {
   it('maps inventory and detection events to their own panels', () => {
     expect(projectResourcesForEvent('package.inventory.updated')).toEqual(['packages']);
     expect(projectResourcesForEvent('technology.detected')).toEqual(['technologies']);
+  });
+
+  it('maps attribution events to the attribution panel alone', () => {
+    for (const type of ['attribution.recorded', 'attribution.updated']) {
+      expect(projectResourcesForEvent(type)).toEqual(['attributions']);
+    }
+  });
+
+  it('does not refresh attribution from a Git event as well', () => {
+    // A scan emits `attribution.recorded` per record, so mapping `git.` here
+    // too would refresh the same panel twice for one cause.
+    expect(projectResourcesForEvent('git.observed')).not.toContain('attributions');
   });
 
   it('maps every binding transition to the bound-agent panel', () => {
