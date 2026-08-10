@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { createConfigMutations } from './api/config-mutations.js';
 import { DashboardApp } from './app.js';
 import { buildPulseSnapshot, type PulseInput } from './pulse/model.js';
 
@@ -580,6 +581,38 @@ describe('Phase 5D routes', () => {
     expect(within(nav).getByRole('link', { name: heading }).getAttribute('aria-current')).toBe(
       'page',
     );
+  });
+
+  /**
+   * The capability is threaded as a prop rather than imported by the view, so
+   * a shell constructed without one is a genuinely read-only config route.
+   * `main.tsx` is the only caller that supplies it.
+   */
+  it('carries no mutation capability into the config route unless given one', () => {
+    window.location.hash = '#/config';
+    const { unmount } = render(
+      <DashboardApp
+        snapshot={snapshot()}
+        websocketState="live"
+        onRetry={vi.fn()}
+        configResources={{ drifts: { state: 'ready', data: [] } }}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Rescan drift' })).toBeNull();
+    unmount();
+
+    render(
+      <DashboardApp
+        snapshot={snapshot()}
+        websocketState="live"
+        onRetry={vi.fn()}
+        configResources={{ drifts: { state: 'ready', data: [] } }}
+        configMutations={createConfigMutations(vi.fn() as unknown as typeof fetch)}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Rescan drift' })).toBeTruthy();
   });
 
   it('leaves no disabled destination in the rail', () => {

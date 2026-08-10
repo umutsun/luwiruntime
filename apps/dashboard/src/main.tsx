@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
+import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
 import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
 import {
   intelligenceResourceKeys,
@@ -92,6 +93,12 @@ import './styles/activity.css';
 import './styles/projects.css';
 
 const client = createDaemonClient();
+/**
+ * Deliberately a second object rather than a method on `client`: the read
+ * client is passed to every scope loader, and none of them may be able to
+ * write. `product-independence.test.ts` enforces that separation.
+ */
+const configMutations: ConfigMutations = createConfigMutations();
 
 /**
  * Bound once so the Graph explorer's load effect has a stable dependency; a new
@@ -340,6 +347,16 @@ function DashboardRoute() {
     });
   }, []);
 
+  /**
+   * Realtime already invalidates this chain — `configResourcesForEvent` maps
+   * `config.applied`, `config.rolled_back` and the drift events — but that path
+   * is silent while the socket is disconnected, and a write whose result never
+   * appears is worse here than a redundant read.
+   */
+  const onConfigMutated = useCallback(() => {
+    refreshConfigScope(configResourceKeys);
+  }, [refreshConfigScope]);
+
   const refreshProjectScope = useCallback((keys: readonly ProjectScopeResourceKey[]) => {
     const projectId = selectedProjectRef.current;
     if (projectId === undefined || keys.length === 0) return;
@@ -489,6 +506,8 @@ function DashboardRoute() {
       capabilityCatalogLoading={capabilityCatalogLoading}
       configResources={configResources}
       configLoading={configLoading}
+      configMutations={configMutations}
+      onConfigMutated={onConfigMutated}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
       leaseResources={leaseResources}

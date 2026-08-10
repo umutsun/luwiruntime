@@ -16,6 +16,7 @@ import { GraphView } from './routes/graph-view.js';
 import type { AgentPairResources } from './api/agent-pair-scope.js';
 import type { CapabilityCatalogResources } from './api/capability-catalog.js';
 import { CapabilitiesView } from './routes/capabilities-view.js';
+import type { ConfigMutations } from './api/config-mutations.js';
 import type { ConfigResources } from './api/config-scope.js';
 import type { LeaseResources } from './api/lease-scope.js';
 import { ConfigView } from './routes/config-view.js';
@@ -162,6 +163,8 @@ export function DashboardApp({
   capabilityCatalogLoading = false,
   configResources = {},
   configLoading = false,
+  configMutations,
+  onConfigMutated,
   agentPairResources = {},
   agentPairLoading = false,
   leaseResources = {},
@@ -190,6 +193,12 @@ export function DashboardApp({
   configResources?: Partial<ConfigResources>;
   /** The on-demand config chain reads have not returned yet. */
   configLoading?: boolean;
+  /**
+   * Absent by default, so a shell rendered without it — which is what most of
+   * this file's tests do — carries no mutation capability at all.
+   */
+  configMutations?: ConfigMutations | undefined;
+  onConfigMutated?: (() => void) | undefined;
   agentPairResources?: Partial<AgentPairResources>;
   /** The pair-scoped reads have not returned yet. */
   agentPairLoading?: boolean;
@@ -399,7 +408,10 @@ export function DashboardApp({
               drifts={configResources.drifts}
               plans={configResources.plans}
               snapshots={configResources.snapshots}
+              agents={configResources.agents}
               loading={configLoading}
+              {...(configMutations === undefined ? {} : { mutations: configMutations })}
+              {...(onConfigMutated === undefined ? {} : { onMutated: onConfigMutated })}
             />
           ) : route.name === 'agents' ? (
             <AgentsView snapshot={snapshot} />
