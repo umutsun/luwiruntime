@@ -1002,8 +1002,30 @@ Redis alone is not enough: per ADR 0007 the filesystem is canonical for agent de
 capability packages and profiles, so those survive a `FLUSHDB` and land in the developer's real
 `~/.luwi` unless `LUWI_HOME` is redirected. ADR 0018 records how that was found.
 
-**Every other prohibition below still stands.** Do not begin dashboard mutations,
-lifecycle/release scoring, task/lease systems, a semantic or vector knowledge graph, memory
-federation, GitHub integration, prompt injection, automatic optimization apply, cloud accounts,
-authentication, or remote control-plane work until that specific scope is explicitly approved.
-Shipping one phase does not authorize the rest.
+### Approved, not started: dashboard mutations
+
+On 2026-08-10 the owner approved **dashboard mutations** as the next phase. Nothing is built. The
+approval is recorded here so the next session has its mandate, and it authorizes that scope only.
+
+The daemon serves 48 read and 41 write endpoints; the dashboard consumes every read and no write.
+The phase should start with the config plan chain, whose approval-token, snapshot and rollback
+semantics are already implemented and tested — `#/config` reads it today and cannot apply it.
+
+Three decisions belong to that phase and are **not** settled here:
+
+- **Origin on state-changing requests.** `validateLocalHttpRequest` accepts a request with no
+  `Origin` header, which is correct for the CLI and MCP callers that legitimately have none. A
+  mutating browser surface should decide whether state-changing methods must instead *require* a
+  matching allowlisted origin. This is a section 4 decision, not a UI one.
+- **What a confirmation is.** A config apply writes the developer's own agent configuration files.
+  Whether the one-time approval token is surfaced, re-requested, or held by the daemon changes what
+  the dashboard is allowed to do without a second deliberate act.
+- **Which mutations are in.** Approval covers dashboard mutations as a class. Optimization
+  accept/reject/evaluate, graph rebuild, and Git mutation each carry their own prohibition
+  elsewhere in this document and are not carried in by this approval.
+
+**Every other prohibition below still stands.** Do not begin lifecycle/release scoring, task
+orchestration, a semantic or vector knowledge graph, memory federation, GitHub integration, prompt
+injection, automatic optimization apply, cloud accounts, authentication, or remote control-plane
+work until that specific scope is explicitly approved. Shipping one phase does not authorize the
+rest.
