@@ -1,6 +1,6 @@
 export type RedisFunctionRegistry = {
   libraryName: string;
-  version: 9;
+  version: 10;
   functions: {
     projectRegister: string;
     sessionRegister: string;
@@ -16,6 +16,10 @@ export type RedisFunctionRegistry = {
     messageReject: string;
     messageFail: string;
     messageTimeout: string;
+    leaseAcquire: string;
+    leaseRenew: string;
+    leaseRelease: string;
+    leaseExpire: string;
     controlUpsert: string;
     controlDelete: string;
     controlPlanTransition: string;
@@ -43,6 +47,10 @@ const productionFunctions = {
   messageReject: 'luwi_message_reject_v1',
   messageFail: 'luwi_message_fail_v1',
   messageTimeout: 'luwi_message_timeout_v1',
+  leaseAcquire: 'luwi_lease_acquire_v1',
+  leaseRenew: 'luwi_lease_renew_v1',
+  leaseRelease: 'luwi_lease_release_v1',
+  leaseExpire: 'luwi_lease_expire_v1',
   controlUpsert: 'luwi_control_upsert_v1',
   controlDelete: 'luwi_control_delete_v1',
   controlPlanTransition: 'luwi_control_plan_transition_v1',
@@ -58,7 +66,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
   if (testSuffix === undefined) {
     return {
       libraryName: 'luwi_v1',
-      version: 9,
+      version: 10,
       functions: { ...productionFunctions },
     };
   }
@@ -69,7 +77,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
 
   return {
     libraryName: `luwi_test_${testSuffix}_v1`,
-    version: 9,
+    version: 10,
     functions: Object.fromEntries(
       Object.entries(productionFunctions).map(([key, value]) => [key, `${value}_${testSuffix}`]),
     ) as RedisFunctionRegistry['functions'],

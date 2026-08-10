@@ -1,3 +1,5 @@
+import type { LeaseResources } from '../api/lease-scope.js';
+import { LeasePanel } from './lease-panel.js';
 import type {
   AgentPairResources,
   ContextFootprint,
@@ -509,6 +511,8 @@ export function ProjectsView({
   scopeLoading,
   agentPairResources = {},
   agentPairLoading = false,
+  leaseResources = {},
+  nowMs,
   onSelectProject,
   onSelectAgent,
 }: {
@@ -519,6 +523,9 @@ export function ProjectsView({
   scopeLoading: boolean;
   agentPairResources?: Partial<AgentPairResources>;
   agentPairLoading?: boolean;
+  leaseResources?: Partial<LeaseResources>;
+  /** Injected so the rendered time left is testable rather than clock-dependent. */
+  nowMs?: number;
   onSelectProject: (projectId: string) => void;
   onSelectAgent?: (agentId: string | undefined) => void;
 }) {
@@ -654,6 +661,12 @@ export function ProjectsView({
               </>
             )}
           </ResourcePanel>
+
+          <LeasePanel
+            leases={leaseResources.leases}
+            loading={scopeLoading}
+            nowMs={nowMs ?? Date.now()}
+          />
 
           <ResourcePanel<ProjectBinding[]>
             title="Bound agents"

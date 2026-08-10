@@ -143,9 +143,25 @@ applies, rolls back, assigns, or rescans.
 
 Every read-only domain the 2026-08-09 audit listed now has a dashboard consumer.
 
+ADR 0020 added **advisory work leases**, the first coordination capability since request/reply. A
+session claims a project-relative path before editing it; a claim that overlaps a held one is
+refused and told who holds it, why, and until when. Conflict is containment in either direction, so
+a lease over a directory and one over a file inside it are the same collision — while a sibling
+whose name merely starts with the same characters is not. Acquire, renew, release and expire are
+Redis Functions, so a race between two overlapping claims produces one grant and one denial rather
+than two grants. Agents take leases through four MCP tools that derive the holder from the bound
+session; the dashboard shows what is held and offers no control over it.
+
+The lease is advisory. LUWI coordinates execution and does not inject into terminals, so an agent
+that never asks still edits the file. What the runtime guarantees is an atomic answer and a record —
+including `lease.denied`, which is the only evidence that a collision was prevented rather than
+merely not observed.
+
 Dashboard mutations, optimization accept/reject/evaluate, lifecycle/release scoring, release
-readiness, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge
-graph, memory federation, cloud accounts, and authentication are not implemented.
+readiness, unified search, GitHub integration, prompt injection, task orchestration, a semantic
+knowledge graph, memory federation, cloud accounts, and authentication are not implemented. Work
+leases exist but are not renewed automatically, do not notify when a held path frees, and are not
+correlated with the commits made under them.
 
 ## Architecture and security
 

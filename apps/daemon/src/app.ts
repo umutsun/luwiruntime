@@ -51,6 +51,13 @@ import {
   heartbeatRequestSchema,
   inboxClaimRequestSchema,
   inboxClaimResponseSchema,
+  leaseAcquireRequestSchema,
+  leaseAcquireResponseSchema,
+  leaseCollectionSchema,
+  leaseListQuerySchema,
+  leaseReleaseRequestSchema,
+  leaseRenewRequestSchema,
+  workLeaseSchema,
   messageCollectionResponseSchema,
   messageCreateRequestSchema,
   messageCreateResponseSchema,
@@ -123,6 +130,7 @@ import type { DaemonConfig } from './config.js';
 import { defaultDashboardDistRoot, readDashboardAsset } from './dashboard-assets.js';
 import type { ConfigControlService } from './config-control-service.js';
 import type { ControlPlaneService } from './control-plane-service.js';
+import type { LeaseService } from './lease-service.js';
 import type { MessageService } from './message-service.js';
 import type { IntelligenceService } from './intelligence-service.js';
 import type { ProjectService } from './project-service.js';
@@ -150,6 +158,7 @@ export type BuildDaemonOptions = {
     projects: ProjectService;
     sessions: SessionService;
     messages?: MessageService;
+    leases?: LeaseService;
     controlPlane?: ControlPlaneService;
     configControl?: ConfigControlService;
     intelligence?: IntelligenceService;
@@ -382,6 +391,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
     const services = options.services;
     const projectParamsSchema = z.strictObject({ projectId: z.string().min(1).max(128) });
     const sessionParamsSchema = z.strictObject({ sessionId: z.string().min(1).max(128) });
+    const leaseParamsSchema = z.strictObject({ leaseId: z.string().min(1).max(128) });
     const messageParamsSchema = z.strictObject({
       correlationId: z.string().trim().min(1).max(128),
     });
@@ -936,6 +946,66 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         return inboxClaimResponseSchema.parse(
           await withMutation(() => messages.claimInbox(sessionId, body)),
         );
+      });
+    }
+
+    if (services.leases !== undefined) {
+      const leases = services.leases;
+
+      /**
+       * A denial is a 200, not a 409.
+       *
+       * The runtime answered the question it was asked — who holds this path —
+       * and the answer is a body the caller reads, not a fault. Returning an
+       * error status would make a working collision check look like a broken
+       * request to every generic HTTP client between here and the agent.
+       */
+      app.post('/api/v1/leases', async (request, reply) => {
+        const body = parseRequestInput(leaseAcquireRequestSchema, request.body);
+        const result = await withMutation(() => leases.acquire(body));
+        if (result.status === 'denied') {
+          return reply.code(200).send(leaseAcquireResponseSchema.parse(result));
+        }
+        return reply
+          .code(201)
+          .header('Location', `/api/v1/leases/${result.lease.id}`)
+          .send(leaseAcquireResponseSchema.parse(result));
+      });
+
+      app.post('/api/v1/leases/:leaseId/renew', async (request) => {
+        const { leaseId } = parseRequestInput(leaseParamsSchema, request.params);
+        const body = parseRequestInput(leaseRenewRequestSchema, request.body);
+        return workLeaseSchema.parse(
+          await withMutation(() => leases.renew(leaseId, body.sessionId, body.durationMs)),
+        );
+      });
+
+      app.post('/api/v1/leases/:leaseId/release', async (request) => {
+        const { leaseId } = parseRequestInput(leaseParamsSchema, request.params);
+        const body = parseRequestInput(leaseReleaseRequestSchema, request.body);
+        return workLeaseSchema.parse(
+          await withMutation(() => leases.release(leaseId, body.sessionId)),
+        );
+      });
+
+      app.get('/api/v1/leases', async (request) => {
+        const query = parseRequestInput(leaseListQuerySchema, request.query);
+        const found = await withCurrentRead(() =>
+          leases.list({
+            ...(query.projectId === undefined ? {} : { projectId: query.projectId }),
+            ...(query.sessionId === undefined ? {} : { sessionId: query.sessionId }),
+            limit: query.limit + 1,
+          }),
+        );
+        return leaseCollectionSchema.parse({
+          leases: found.slice(0, query.limit),
+          truncated: found.length > query.limit,
+        });
+      });
+
+      app.get('/api/v1/leases/:leaseId', async (request) => {
+        const { leaseId } = parseRequestInput(leaseParamsSchema, request.params);
+        return workLeaseSchema.parse(await withCurrentRead(() => leases.get(leaseId)));
       });
     }
 

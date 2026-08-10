@@ -577,6 +577,44 @@ async function main(): Promise<void> {
   }
   step(`${String(contributions)} context contributions`);
 
+  // --- Phase 6: work leases -------------------------------------------------
+
+  /**
+   * One held lease and one refusal.
+   *
+   * The refusal is the more important of the two: it is the only evidence that
+   * a collision was prevented rather than merely not observed, and it puts a
+   * `lease.denied` row in Activity where it can be looked at. The second path
+   * is deliberately inside the first, so the overlap is real.
+   */
+  const heldLease = await call<{ status: string; lease?: { id: string } }>(
+    'POST',
+    '/api/v1/leases',
+    {
+      projectId: project.id,
+      sessionId: codexSession,
+      path: 'src/api',
+      reason: 'rewriting the client transport',
+      durationMs: 1_800_000,
+    },
+  );
+  const refused = await call<{ status: string }>('POST', '/api/v1/leases', {
+    projectId: project.id,
+    sessionId: claudeSession,
+    path: 'src/api/client.ts',
+    reason: 'adding a retry wrapper',
+  });
+  await call('POST', '/api/v1/leases', {
+    projectId: project.id,
+    sessionId: claudeSession,
+    path: 'docs',
+    reason: 'updating the architecture notes',
+    durationMs: 1_800_000,
+  });
+  step(
+    `work leases: ${String(heldLease.status)} over src/api, ${String(refused.status)} over src/api/client.ts, granted over docs`,
+  );
+
   // --- Phase 3: config plans, snapshots, drift ------------------------------
 
   /**

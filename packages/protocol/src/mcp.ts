@@ -15,6 +15,7 @@ import {
   messageKindSchema,
   messageStateSchema,
 } from './message.js';
+import { leaseConflictSchema, workLeaseSchema } from './lease.js';
 import { projectSchema } from './project.js';
 import { agentIdSchema } from './session.js';
 import { sessionViewSchema } from './session.js';
@@ -83,6 +84,65 @@ export const mcpGetContextFootprintInputSchema = z.strictObject({
 });
 export const mcpGetConfigDriftInputSchema = z.strictObject({
   agentId: agentIdSchema.optional(),
+});
+/**
+ * Work leases, from the bound session's point of view.
+ *
+ * No tool takes a `sessionId`: the holder is always the session this server is
+ * bound to, so an agent cannot take or drop a lease on another's behalf.
+ */
+export const mcpAcquireLeaseInputSchema = z.strictObject({
+  path: z.string().trim().min(1).max(4096),
+  reason: z.string().trim().min(1).max(500),
+  durationMs: z.number().int().min(1_000).max(3_600_000).default(300_000),
+});
+export const mcpLeaseIdInputSchema = z.strictObject({
+  leaseId: identifierSchema,
+  durationMs: z.number().int().min(1_000).max(3_600_000).default(300_000),
+});
+export const mcpReleaseLeaseInputSchema = z.strictObject({
+  leaseId: identifierSchema,
+});
+export const mcpListLeasesInputSchema = z.strictObject({
+  /** Defaults to the bound session's own project, not to the whole runtime. */
+  mine: z.boolean().default(false),
+  limit: z.number().int().min(1).max(MCP_MAX_COLLECTION_ITEMS).default(MCP_MAX_COLLECTION_ITEMS),
+});
+/**
+ * The acquire result, as an object rather than as the discriminated union the
+ * HTTP contract uses.
+ *
+ * MCP tool output schemas have to be objects, so the two arms become optional
+ * fields — and the refinement below is what keeps that from being weaker: a
+ * granted result must carry a lease and no conflict, a denied one the reverse.
+ */
+export const mcpAcquireLeaseOutputSchema = z
+  .strictObject({
+    status: z.enum(['granted', 'denied']),
+    lease: workLeaseSchema.optional(),
+    conflict: leaseConflictSchema.optional(),
+  })
+  .superRefine((value, context) => {
+    const expected = value.status === 'granted' ? 'lease' : 'conflict';
+    const forbidden = value.status === 'granted' ? 'conflict' : 'lease';
+    if (value[expected] === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: `A ${value.status} acquire must carry its ${expected}.`,
+        path: [expected],
+      });
+    }
+    if (value[forbidden] !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: `A ${value.status} acquire cannot carry a ${forbidden}.`,
+        path: [forbidden],
+      });
+    }
+  });
+export const mcpLeaseCollectionOutputSchema = z.strictObject({
+  leases: z.array(workLeaseSchema).max(MCP_MAX_COLLECTION_ITEMS),
+  truncated: z.boolean(),
 });
 export const mcpGetUsageSummaryInputSchema = z.strictObject({
   sessionOnly: z.boolean().default(true),
@@ -304,3 +364,8 @@ export type McpListCapabilitiesInput = z.infer<typeof mcpListCapabilitiesInputSc
 export type McpGetCapabilityInput = z.infer<typeof mcpGetCapabilityInputSchema>;
 export type McpGetContextFootprintInput = z.infer<typeof mcpGetContextFootprintInputSchema>;
 export type McpGetConfigDriftInput = z.infer<typeof mcpGetConfigDriftInputSchema>;
+export type McpAcquireLeaseInput = z.infer<typeof mcpAcquireLeaseInputSchema>;
+export type McpLeaseIdInput = z.infer<typeof mcpLeaseIdInputSchema>;
+export type McpReleaseLeaseInput = z.infer<typeof mcpReleaseLeaseInputSchema>;
+export type McpListLeasesInput = z.infer<typeof mcpListLeasesInputSchema>;
+export type McpAcquireLeaseOutput = z.infer<typeof mcpAcquireLeaseOutputSchema>;

@@ -982,6 +982,21 @@ unnumbered depth work: `graph-diagram.tsx` has no direct test, three branches in
 `GraphExplorerView` are unasserted, and the app shell's degraded-path signals are asserted nowhere.
 None is a malfunction.
 
+ADR 0020 approved and built **advisory work leases**, the first coordination write since Phase 2 and
+the first work on the product promise's third clause. A session claims a project-relative path; a
+claim overlapping a held one is refused with the holder named, and the refusal is a 200 with a body
+because the runtime answered correctly. `luwi_v1` is at version 10 with `lease_acquire`,
+`lease_renew`, `lease_release` and `lease_expire`; the per-project held set is one declared hash so
+the conflict scan derives no key names; `deadline:leases` is a sorted set swept on the message
+timeout interval. Four MCP tools take the holder from the bound session and never from input, which
+is the coordination-state write section 12 already permits. The dashboard shows held leases and
+offers no control over them.
+
+The lease is advisory and this section does not pretend otherwise: section 3 keeps LUWI out of
+terminals, so an agent that never asks still edits the file. Automatic renewal for a live session,
+notification when a held path frees, and correlating a lease with the commits made under it are
+**not** built and remain new scope.
+
 Isolating a fixture takes `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and `WORKSPACE_ID` together.
 Redis alone is not enough: per ADR 0007 the filesystem is canonical for agent definitions,
 capability packages and profiles, so those survive a `FLUSHDB` and land in the developer's real

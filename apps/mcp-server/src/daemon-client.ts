@@ -1,4 +1,10 @@
 import {
+  leaseAcquireResponseSchema,
+  leaseCollectionSchema,
+  workLeaseSchema,
+  type LeaseAcquireResponse,
+  type LeaseCollection,
+  type WorkLease,
   agentDefinitionCollectionSchema,
   agentDefinitionSchema,
   capabilityCollectionSchema,
@@ -144,6 +150,19 @@ export type McpDaemonClient = {
     agentId?: string;
     minimumSessions?: number;
   }): Promise<OptimizationAnalysisResponse>;
+  acquireLease(request: {
+    projectId: string;
+    sessionId: string;
+    path: string;
+    reason: string;
+    durationMs: number;
+  }): Promise<LeaseAcquireResponse>;
+  renewLease(leaseId: string, sessionId: string, durationMs: number): Promise<WorkLease>;
+  releaseLease(leaseId: string, sessionId: string): Promise<WorkLease>;
+  listLeases(
+    scope: { projectId?: string; sessionId?: string },
+    limit: number,
+  ): Promise<LeaseCollection>;
   askAgent(request: MessageCreateRequest, idempotencyKey?: string): Promise<MessageCreateResponse>;
   getMessage(correlationId: string): Promise<AgentMessage>;
   waitForMessage(correlationId: string, waitMs: number): Promise<AgentMessage>;
@@ -350,6 +369,22 @@ export function createDaemonClient(options: {
       ),
     requestOptimizationAnalysis: (body) =>
       post('/api/v1/optimization/analyze', optimizationAnalysisResponseSchema, body),
+    acquireLease: (body) => post('/api/v1/leases', leaseAcquireResponseSchema, body),
+    renewLease: (leaseId, sessionId, durationMs) =>
+      post(`/api/v1/leases/${encodeURIComponent(leaseId)}/renew`, workLeaseSchema, {
+        sessionId,
+        durationMs,
+      }),
+    releaseLease: (leaseId, sessionId) =>
+      post(`/api/v1/leases/${encodeURIComponent(leaseId)}/release`, workLeaseSchema, {
+        sessionId,
+      }),
+    listLeases: (scope, limit) => {
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (scope.sessionId !== undefined) query.set('sessionId', scope.sessionId);
+      else if (scope.projectId !== undefined) query.set('projectId', scope.projectId);
+      return request(`/api/v1/leases?${query.toString()}`, leaseCollectionSchema);
+    },
     askAgent: (body, idempotencyKey) =>
       post(
         '/api/v1/messages',

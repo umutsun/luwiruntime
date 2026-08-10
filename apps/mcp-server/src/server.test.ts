@@ -51,7 +51,11 @@ describe('LUWI MCP server', () => {
     expect(tools.tools.map(({ name }) => name).toSorted()).toEqual(
       [
         'luwi_acknowledge_message',
+        'luwi_acquire_lease',
         'luwi_ask_agent',
+        'luwi_list_leases',
+        'luwi_release_lease',
+        'luwi_renew_lease',
         'luwi_await_response',
         'luwi_fail_message',
         'luwi_get_message',

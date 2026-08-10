@@ -50,6 +50,7 @@ const implementedEventPrefixes = [
   'project.',
   'session.',
   'message.',
+  'lease.',
   'agent.definition.',
   'capability.',
   'profile.',

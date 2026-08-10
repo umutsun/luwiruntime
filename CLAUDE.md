@@ -156,6 +156,13 @@ references resolved to names) and `#/config` (drift, plans, snapshots — read-o
 in that domain writes the developer's own agent configuration files). **No item-10 read domain is
 open any more.** It also fixed a hardcoded `truncated: false` on `GET /api/v1/capabilities`.
 
+ADR 0020 then built the first thing that is not a read: **advisory work leases**. A session claims a
+project-relative path before editing it, and an overlapping claim is refused with the holder named.
+`luwi_v1` is at version 10 with four lease Functions; `deadline:leases` is swept for expiry; four
+MCP tools take the holder from the bound session and never from input; the Projects route shows what
+is held. Advisory means the runtime cannot enforce it — §3 keeps LUWI out of terminals — only that
+it answers atomically and records who holds what.
+
 To look at any of it, start a fixture daemon — `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and
 `WORKSPACE_ID=fixture-…` **together**, because Redis alone is not isolation: per ADR 0007 agent
 definitions, capabilities and profiles are filesystem-canonical and land in the real `~/.luwi`
@@ -178,7 +185,12 @@ There is deliberately **no `.mcp.json`**. `apps/mcp-server/src/main.ts` calls
 unless the daemon is running and `LUWI_SESSION_ID` names a live, non-terminal session. Session IDs
 are runtime identity, not configuration — they go stale on every daemon restart.
 
-To use the project's own 32 read-only `luwi_*` tools, after `pnpm build` and with the daemon up
+The server exposes 36 `luwi_*` tools, and "read-only" was never accurate for all of them: 22 are
+reads, and 14 write **coordination** state — the messaging transitions, a bounded optimization
+analysis request, and since ADR 0020 the four work-lease tools. Control-plane writes (config
+approval/apply, rollback, graph rebuild, Git mutation) are never exposed, per `AGENTS.md` §12.
+
+To use them, after `pnpm build` and with the daemon up
 and a session registered:
 
 ```text

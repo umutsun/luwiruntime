@@ -19,6 +19,7 @@ const VIEWS = [
   '../routes/capabilities-view.tsx',
   '../routes/config-view.tsx',
   '../routes/messages-view.tsx',
+  '../projects/lease-panel.tsx',
 ] as const;
 
 const STYLESHEETS = [

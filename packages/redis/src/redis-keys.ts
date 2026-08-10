@@ -7,6 +7,8 @@ export interface RedisKeys {
   readonly messagesIndex: string;
   readonly terminalMessages: string;
   readonly messageDeadlines: string;
+  /** Every held lease, scored by expiry, so one sweep finds all of them. */
+  readonly leaseDeadlines: string;
   readonly daemonOwner: string;
   readonly agentDefinitionsIndex: string;
   readonly capabilitiesIndex: string;
@@ -37,6 +39,10 @@ export interface RedisKeys {
   projectPathIndex(pathIdentityHash: string): string;
   projectSessions(projectId: string): string;
   agentSessions(agentId: string): string;
+  lease(leaseId: string): string;
+  /** Held leases for one project, scored by expiry. The conflict check reads only this. */
+  projectLeases(projectId: string): string;
+  sessionLeases(sessionId: string): string;
   sessionPresence(sessionId: string): string;
   message(messageId: string): string;
   messageCorrelation(correlationId: string): string;
@@ -123,6 +129,7 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     messagesIndex: `${prefix}:index:messages`,
     terminalMessages: `${prefix}:index:messages:terminal`,
     messageDeadlines: `${prefix}:deadline:messages`,
+    leaseDeadlines: `${prefix}:deadline:leases`,
     daemonOwner: `${prefix}:runtime:daemon-owner`,
     agentDefinitionsIndex: `${prefix}:index:agent-definitions`,
     capabilitiesIndex: `${prefix}:index:capabilities`,
@@ -154,6 +161,9 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
       `${prefix}:index:project:path:${keyPart(pathIdentityHash)}`,
     projectSessions: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:sessions`,
     agentSessions: (agentId) => `${prefix}:index:agent:${keyPart(agentId)}:sessions`,
+    lease: (leaseId) => `${prefix}:lease:${keyPart(leaseId)}`,
+    projectLeases: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:leases`,
+    sessionLeases: (sessionId) => `${prefix}:index:session:${keyPart(sessionId)}:leases`,
     sessionPresence: (sessionId) => `${prefix}:presence:session:${keyPart(sessionId)}`,
     message: (messageId) => `${prefix}:message:${keyPart(messageId)}`,
     messageCorrelation: (correlationId) =>

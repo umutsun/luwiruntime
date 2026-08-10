@@ -1,6 +1,10 @@
 import {
   MCP_MAX_COLLECTION_ITEMS,
   mcpAcknowledgeMessageInputSchema,
+  mcpAcquireLeaseInputSchema,
+  mcpLeaseIdInputSchema,
+  mcpListLeasesInputSchema,
+  mcpReleaseLeaseInputSchema,
   mcpAskAgentInputSchema,
   mcpAwaitResponseInputSchema,
   mcpFailMessageInputSchema,
@@ -43,6 +47,10 @@ export type McpToolHandlers = {
   listSessions(input: unknown): Promise<unknown>;
   getSession(input: unknown): Promise<unknown>;
   getProjectState(input: unknown): Promise<unknown>;
+  acquireLease(input: unknown): Promise<unknown>;
+  renewLease(input: unknown): Promise<unknown>;
+  releaseLease(input: unknown): Promise<unknown>;
+  listLeases(input: unknown): Promise<unknown>;
   askAgent(input: unknown): Promise<unknown>;
   awaitResponse(input: unknown): Promise<unknown>;
   getMessage(input: unknown): Promise<unknown>;
@@ -172,6 +180,37 @@ export function createMcpToolHandlers(
         sessions: sessions.sessions.slice(0, MCP_MAX_COLLECTION_ITEMS),
         sessionsTruncated: sessions.sessions.length > MCP_MAX_COLLECTION_ITEMS,
       };
+    },
+    async acquireLease(input) {
+      const parsed = mcpAcquireLeaseInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      return client.acquireLease({
+        projectId: current.projectId,
+        sessionId: current.id,
+        path: parsed.path,
+        reason: parsed.reason,
+        durationMs: parsed.durationMs,
+      });
+    },
+    async renewLease(input) {
+      const parsed = mcpLeaseIdInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      return client.renewLease(parsed.leaseId, current.id, parsed.durationMs);
+    },
+    async releaseLease(input) {
+      const parsed = mcpReleaseLeaseInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      return client.releaseLease(parsed.leaseId, current.id);
+    },
+    async listLeases(input) {
+      const parsed = mcpListLeasesInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      // Either scope stays inside the bound session's project; there is no
+      // form of this tool that reads another project's leases.
+      return client.listLeases(
+        parsed.mine ? { sessionId: current.id } : { projectId: current.projectId },
+        parsed.limit,
+      );
     },
     async askAgent(input) {
       const parsed = mcpAskAgentInputSchema.parse(input);

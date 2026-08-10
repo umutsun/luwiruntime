@@ -17,6 +17,7 @@ import type { AgentPairResources } from './api/agent-pair-scope.js';
 import type { CapabilityCatalogResources } from './api/capability-catalog.js';
 import { CapabilitiesView } from './routes/capabilities-view.js';
 import type { ConfigResources } from './api/config-scope.js';
+import type { LeaseResources } from './api/lease-scope.js';
 import { ConfigView } from './routes/config-view.js';
 import type { MessageResources } from './api/messages-scope.js';
 import { MessagesView } from './routes/messages-view.js';
@@ -163,6 +164,7 @@ export function DashboardApp({
   configLoading = false,
   agentPairResources = {},
   agentPairLoading = false,
+  leaseResources = {},
   intelligenceLoading = false,
   loadSubgraph,
   onRetry,
@@ -191,6 +193,7 @@ export function DashboardApp({
   agentPairResources?: Partial<AgentPairResources>;
   /** The pair-scoped reads have not returned yet. */
   agentPairLoading?: boolean;
+  leaseResources?: Partial<LeaseResources>;
   loadSubgraph?: (
     root: GraphRoot,
     bounds: SubgraphBounds,
@@ -438,6 +441,7 @@ export function DashboardApp({
               scopeLoading={projectScopeLoading}
               agentPairResources={agentPairResources}
               agentPairLoading={agentPairLoading}
+              leaseResources={leaseResources}
               onSelectProject={(projectId) => {
                 window.location.hash = routeHref({ name: 'projects', projectId });
               }}

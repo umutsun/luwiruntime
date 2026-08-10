@@ -10,6 +10,7 @@ import {
   createDaemonOwnershipLease,
   createFunctionRegistry,
   createManagedRedisConnection,
+  createLeaseRepository,
   createMessageRepository,
   createControlPlaneRepository,
   createIntelligenceRepository,
@@ -29,6 +30,7 @@ import {
   type RedisKeys,
 } from '@luwi/redis';
 import {
+  createLeaseExpirySweeper,
   createMessageTimeoutSweeper,
   createPresenceSweeper,
   createRuntimeReadiness,
@@ -45,6 +47,7 @@ import { createCanonicalStore } from './canonical-store.js';
 import { createConfigControlService } from './config-control-service.js';
 import { clearStaleConfigFileLocks } from './config-file-engine.js';
 import { createControlPlaneService } from './control-plane-service.js';
+import { createLeaseService } from './lease-service.js';
 import { createMessageService } from './message-service.js';
 import { createIntelligenceService, type IntelligenceService } from './intelligence-service.js';
 import { createGitObserver } from './git-observer.js';
@@ -266,12 +269,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let app: DaemonApp | undefined;
   let sweepTimer: NodeJS.Timeout | undefined;
   let messageTimeoutTimer: NodeJS.Timeout | undefined;
+  let leaseExpiryTimer: NodeJS.Timeout | undefined;
   let retentionTimer: NodeJS.Timeout | undefined;
   let gitScanTimer: NodeJS.Timeout | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let recoveryPromise: Promise<void> | undefined;
   let sweeping = false;
   let sweepingMessageTimeouts = false;
+  let sweepingLeaseExpiry = false;
   let retaining = false;
   const backgroundWork = createBackgroundWorkTracker();
   const projectRefreshes = new Set<string>();
@@ -291,6 +296,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     functions: registry,
   });
   const messageRepository = createMessageRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const leaseRepository = createLeaseRepository({
     client: connections.command,
     keys,
     functions: registry,
@@ -512,6 +522,19 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       },
     },
   });
+  const leaseService = createLeaseService({
+    repository: leaseRepository,
+    sessions: sessionService,
+    workspaceId: config.workspaceId,
+  });
+  const leaseExpirySweeper = createLeaseExpirySweeper({
+    now: Date.now,
+    batchSize: setting(config, 'messageTimeoutBatchSize'),
+    repository: {
+      findDueLeases: (nowMs, limit) => leaseService.findDueLeases(nowMs, limit),
+      expireLease: (leaseId) => leaseService.expire(leaseId),
+    },
+  });
   const messageTimeoutSweeper = createMessageTimeoutSweeper({
     now: Date.now,
     batchSize: setting(config, 'messageTimeoutBatchSize'),
@@ -585,11 +608,15 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       backgroundWork.stop();
       sweeper.stop();
       messageTimeoutSweeper.stop();
+      leaseExpirySweeper.stop();
       if (sweepTimer !== undefined) {
         clearInterval(sweepTimer);
       }
       if (messageTimeoutTimer !== undefined) {
         clearInterval(messageTimeoutTimer);
+      }
+      if (leaseExpiryTimer !== undefined) {
+        clearInterval(leaseExpiryTimer);
       }
       if (retentionTimer !== undefined) {
         clearInterval(retentionTimer);
@@ -668,6 +695,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         projects: projectService,
         sessions: sessionService,
         messages: messageService,
+        leases: leaseService,
         controlPlane: controlPlaneService,
         configControl: configControlService,
         intelligence: intelligenceService,
@@ -745,6 +773,30 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     );
     messageTimeoutTimer.unref?.();
 
+    leaseExpiryTimer = setInterval(
+      () => {
+        if (sweepingLeaseExpiry || readiness.state !== 'ready') {
+          return;
+        }
+        sweepingLeaseExpiry = true;
+        const scheduled = backgroundWork.run(
+          async () => {
+            try {
+              await leaseExpirySweeper.sweepOnce();
+            } finally {
+              sweepingLeaseExpiry = false;
+            }
+          },
+          (error) => app?.log.error({ err: error }, 'Lease expiry sweep failed'),
+        );
+        if (!scheduled) {
+          sweepingLeaseExpiry = false;
+        }
+      },
+      setting(config, 'messageTimeoutSweepIntervalMs'),
+    );
+    leaseExpiryTimer.unref?.();
+
     retentionTimer = setInterval(
       () => {
         if (retaining || readiness.state !== 'ready') {
@@ -821,11 +873,15 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     backgroundWork.stop();
     sweeper.stop();
     messageTimeoutSweeper.stop();
+    leaseExpirySweeper.stop();
     if (sweepTimer !== undefined) {
       clearInterval(sweepTimer);
     }
     if (messageTimeoutTimer !== undefined) {
       clearInterval(messageTimeoutTimer);
+    }
+    if (leaseExpiryTimer !== undefined) {
+      clearInterval(leaseExpiryTimer);
     }
     if (retentionTimer !== undefined) {
       clearInterval(retentionTimer);

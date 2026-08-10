@@ -1,7 +1,14 @@
 import {
   mcpAcknowledgeMessageInputSchema,
   mcpAskAgentOutputSchema,
+  mcpAcquireLeaseInputSchema,
   mcpAskAgentInputSchema,
+  mcpLeaseIdInputSchema,
+  mcpListLeasesInputSchema,
+  mcpReleaseLeaseInputSchema,
+  mcpAcquireLeaseOutputSchema,
+  mcpLeaseCollectionOutputSchema,
+  workLeaseSchema,
   mcpAwaitResponseInputSchema,
   mcpFailMessageInputSchema,
   mcpGetMessageInputSchema,
@@ -479,6 +486,71 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
         ({ findings, proposals }) =>
           `Analysis produced ${findings.length} findings and ${proposals.length} proposals; no configuration was applied.`,
         () => handlers.requestOptimizationAnalysis(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_acquire_lease',
+    {
+      description:
+        'Take an advisory work lease over a project-relative path before editing it. A refusal names the session that already holds an overlapping path; it is an answer, not an error.',
+      inputSchema: mcpAcquireLeaseInputSchema,
+      outputSchema: mcpAcquireLeaseOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpAcquireLeaseOutputSchema,
+        // The schema's refinement guarantees the arm matching `status` is
+        // present; the fallbacks exist because the object shape MCP requires
+        // cannot express that to the type system.
+        (result) =>
+          result.status === 'granted'
+            ? `Lease ${result.lease?.id ?? 'unknown'} granted over ${result.lease?.path ?? 'unknown'} until ${result.lease?.expiresAt ?? 'unknown'}.`
+            : `Refused: session ${result.conflict?.sessionId ?? 'unknown'} (${result.conflict?.agentId ?? 'unknown'}) holds ${result.conflict?.path ?? 'unknown'} until ${result.conflict?.expiresAt ?? 'unknown'} — ${result.conflict?.reason ?? 'no reason recorded'}.`,
+        () => handlers.acquireLease(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_renew_lease',
+    {
+      description: 'Extend a work lease this session holds.',
+      inputSchema: mcpLeaseIdInputSchema,
+      outputSchema: workLeaseSchema,
+    },
+    (input) =>
+      toolResult(
+        workLeaseSchema,
+        (lease) => `Lease ${lease.id} over ${lease.path} now expires at ${lease.expiresAt}.`,
+        () => handlers.renewLease(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_release_lease',
+    {
+      description: 'Release a work lease this session holds, freeing the path for others.',
+      inputSchema: mcpReleaseLeaseInputSchema,
+      outputSchema: workLeaseSchema,
+    },
+    (input) =>
+      toolResult(
+        workLeaseSchema,
+        (lease) => `Lease ${lease.id} over ${lease.path} is released.`,
+        () => handlers.releaseLease(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_list_leases',
+    {
+      description:
+        'List held work leases in the bound project, or only this session’s with mine=true.',
+      inputSchema: mcpListLeasesInputSchema,
+      outputSchema: mcpLeaseCollectionOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpLeaseCollectionOutputSchema,
+        ({ leases, truncated }) =>
+          `${leases.length} held leases returned${truncated ? ' (result truncated)' : ''}.`,
+        () => handlers.listLeases(input),
       ),
   );
   server.registerTool(

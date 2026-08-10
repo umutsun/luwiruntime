@@ -39,6 +39,14 @@ export type {
   MessageTimeoutSweeperOptions,
   TimeoutMessageResult,
 } from './message-timeout-sweeper.js';
+export { createLeaseExpirySweeper } from './lease-expiry-sweeper.js';
+export type {
+  ExpireLeaseResult,
+  LeaseExpiryRepository,
+  LeaseExpirySweepResult,
+  LeaseExpirySweeper,
+  LeaseExpirySweeperOptions,
+} from './lease-expiry-sweeper.js';
 export { compileEffectiveConfiguration } from './capability-resolution.js';
 export type {
   CapabilityLayer,

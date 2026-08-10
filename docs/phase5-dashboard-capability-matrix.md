@@ -205,6 +205,25 @@ paint one pair's configuration under another pair's name.
 `agent.definition.` map to the effective configuration, because each changes what is bound;
 `context.` maps to both pair context reads, because they measure the same thing.
 
+## Work leases
+
+Date: 2026-08-10
+
+ADR 0020 added the first dashboard surface over a coordination capability rather than an
+observation.
+
+| Module      | REST read                                | Scope and behavior                                                                                                                                         | Status    |
+| ----------- | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Work leases | `GET /api/v1/leases?projectId&limit=100` | Project-scoped, loaded with the rest of the project scope. Held leases only — a list including released or expired ones would make a free path look taken. | SUPPORTED |
+
+`lease.` maps to this read alone, including `lease.denied`, which changes no record and is the
+strongest signal that someone is working in this project right now. The panel offers no control:
+taking, extending and releasing are the holder's, through MCP.
+
+A lease with an unreadable expiry reports `Not recorded` rather than a computed zero, and one still
+held past its expiry reports `Expiring` rather than `0s` — the sweep has not reached it yet, and
+saying zero would imply it is still holding for a moment longer.
+
 ## The catalogue and the config chain
 
 Date: 2026-08-10

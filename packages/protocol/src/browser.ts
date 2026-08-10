@@ -24,6 +24,7 @@ export {
   technologyCollectionSchema,
   usageSummarySchema,
 } from './intelligence.js';
+export { leaseCollectionSchema } from './lease.js';
 export { messageCollectionResponseSchema } from './message.js';
 export { projectCollectionResponseSchema } from './project.js';
 export { healthResponseSchema } from './runtime-http.js';

@@ -22,6 +22,15 @@ export const runtimeEventTypeSchema = z.enum([
   'message.rejected',
   'message.failed',
   'message.timed_out',
+  'lease.acquired',
+  'lease.renewed',
+  'lease.released',
+  'lease.expired',
+  /**
+   * A refused acquire. It records no state change, and it is the only evidence
+   * that a collision was prevented rather than merely not observed.
+   */
+  'lease.denied',
   'agent.definition.registered',
   'agent.definition.updated',
   'agent.definition.disabled',

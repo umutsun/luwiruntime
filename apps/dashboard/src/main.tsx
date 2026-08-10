@@ -33,6 +33,13 @@ import {
   type ConfigResources,
 } from './api/config-scope.js';
 import {
+  leaseResourceKeys,
+  leaseResourcesForEvent,
+  loadLeaseScope,
+  type LeaseResourceKey,
+  type LeaseResources,
+} from './api/lease-scope.js';
+import {
   loadMessageScope,
   messageResourceKeys,
   messageResourcesForEvent,
@@ -117,6 +124,7 @@ function DashboardRoute() {
   );
   const [projectResources, setProjectResources] = useState<Partial<ProjectScopeResources>>({});
   const [projectScopeLoading, setProjectScopeLoading] = useState(false);
+  const [leaseResources, setLeaseResources] = useState<Partial<LeaseResources>>({});
   // The realtime controller is created once per bootstrap, so it must read the
   // current selection through a ref rather than a captured value.
   const selectedProjectRef = useRef(selectedProjectId);
@@ -232,6 +240,7 @@ function DashboardRoute() {
   useEffect(() => {
     if (selectedProjectId === undefined) {
       setProjectResources({});
+      setLeaseResources({});
       setProjectScopeLoading(false);
       return undefined;
     }
@@ -240,12 +249,19 @@ function DashboardRoute() {
     // Previous results are cleared so a slow load never shows another
     // project's evidence under this project's name.
     setProjectResources({});
+    setLeaseResources({});
     void loadProjectScope(client, selectedProjectId, projectScopeResourceKeys, {
       signal: controller.signal,
     }).then((next) => {
       if (controller.signal.aborted) return;
       setProjectResources(next);
       setProjectScopeLoading(false);
+    });
+    void loadLeaseScope(client, selectedProjectId, leaseResourceKeys, {
+      signal: controller.signal,
+    }).then((next) => {
+      if (controller.signal.aborted) return;
+      setLeaseResources(next);
     });
     return () => controller.abort();
   }, [selectedProjectId, requestNumber]);
@@ -303,6 +319,16 @@ function DashboardRoute() {
     void loadCapabilityCatalog(client, keys).then((next) => {
       if (!needsCatalogRef.current) return;
       setCapabilityCatalogResources((current) => ({ ...current, ...next }));
+    });
+  }, []);
+
+  const refreshLeaseScope = useCallback((keys: readonly LeaseResourceKey[]) => {
+    const projectId = selectedProjectRef.current;
+    if (projectId === undefined || keys.length === 0) return;
+    void loadLeaseScope(client, projectId, keys).then((next) => {
+      // Generation guard: drop the response if the selection moved on.
+      if (selectedProjectRef.current !== projectId) return;
+      setLeaseResources((current) => ({ ...current, ...next }));
     });
   }, []);
 
@@ -407,6 +433,7 @@ function DashboardRoute() {
         refreshMessageScope(messageResourcesForEvent(event.type));
         refreshCapabilityCatalog(capabilityCatalogResourcesForEvent(event.type));
         refreshConfigScope(configResourcesForEvent(event.type));
+        refreshLeaseScope(leaseResourcesForEvent(event.type));
         refreshAgentPairScope(agentPairResourcesForEvent(event.type));
       },
       onInvalid: () => setInvalidEventCount((count) => Math.min(99, count + 1)),
@@ -426,6 +453,7 @@ function DashboardRoute() {
     refreshMessageScope,
     refreshCapabilityCatalog,
     refreshConfigScope,
+    refreshLeaseScope,
     refreshAgentPairScope,
   ]);
 
@@ -463,6 +491,7 @@ function DashboardRoute() {
       configLoading={configLoading}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
+      leaseResources={leaseResources}
       loadSubgraph={fetchSubgraph}
       onRetry={retry}
       onActivityStateChange={(next) => {

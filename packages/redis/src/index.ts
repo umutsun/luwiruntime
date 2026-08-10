@@ -53,6 +53,12 @@ export type {
   TransitionMessageInput,
   TransitionMessageResult,
 } from './message-repository.js';
+export { createLeaseRepository } from './lease-repository.js';
+export type {
+  AcquireLeaseResult,
+  LeaseRepository,
+  LeaseTransitionResult,
+} from './lease-repository.js';
 export { claimSessionInbox, ensureSessionInboxGroup } from './session-inbox.js';
 export type { ClaimSessionInboxInput } from './session-inbox.js';
 export { runMessageRetention } from './message-retention.js';

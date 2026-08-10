@@ -85,6 +85,24 @@ function client(): McpDaemonClient {
       proposals: [],
       analyzedAt: timestamp,
     })),
+    acquireLease: vi.fn(async (body) => ({
+      status: 'granted' as const,
+      lease: {
+        id: 'lease-1',
+        projectId: body.projectId,
+        sessionId: body.sessionId,
+        agentId: 'claude-sim',
+        path: body.path,
+        matchPath: `${body.path.toLowerCase()}/`,
+        reason: body.reason,
+        state: 'held' as const,
+        acquiredAt: timestamp,
+        expiresAt: timestamp,
+      },
+    })),
+    renewLease: vi.fn(),
+    releaseLease: vi.fn(),
+    listLeases: vi.fn(async () => ({ leases: [], truncated: false })),
     askAgent: vi.fn(async (body) => ({
       message: {
         id: 'message-1',
@@ -267,5 +285,56 @@ describe('MCP tool handlers', () => {
         'mutateGit',
       ]),
     );
+  });
+});
+
+describe('work lease tools', () => {
+  /**
+   * The binding is the whole safety property here. No lease tool takes a
+   * session id, so an agent cannot take or drop a hold on another's behalf.
+   */
+  it('derives the holder and the project from the bound session, never from input', async () => {
+    const daemon = client();
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await tools.acquireLease({ path: 'apps/daemon/src', reason: 'editing routes' });
+
+    expect(daemon.acquireLease).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      sessionId: 'source',
+      path: 'apps/daemon/src',
+      reason: 'editing routes',
+      durationMs: 300_000,
+    });
+  });
+
+  it('rejects an acquire that tries to name its own holder', async () => {
+    const tools = createMcpToolHandlers(client(), boundSession);
+
+    await expect(
+      tools.acquireLease({ path: 'src', reason: 'x', sessionId: 'someone-else' }),
+    ).rejects.toThrow();
+  });
+
+  it('renews and releases as the bound session', async () => {
+    const daemon = client();
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await tools.renewLease({ leaseId: 'lease-1', durationMs: 60_000 });
+    await tools.releaseLease({ leaseId: 'lease-1' });
+
+    expect(daemon.renewLease).toHaveBeenCalledWith('lease-1', 'source', 60_000);
+    expect(daemon.releaseLease).toHaveBeenCalledWith('lease-1', 'source');
+  });
+
+  it('lists the bound project by default and only this session with mine', async () => {
+    const daemon = client();
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await tools.listLeases({});
+    expect(daemon.listLeases).toHaveBeenCalledWith({ projectId: 'project-1' }, 100);
+
+    await tools.listLeases({ mine: true });
+    expect(daemon.listLeases).toHaveBeenCalledWith({ sessionId: 'source' }, 100);
   });
 });
