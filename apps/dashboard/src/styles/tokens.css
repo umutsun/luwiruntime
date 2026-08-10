@@ -74,6 +74,7 @@
   --focus: 0 0 0 3px rgba(129, 140, 248, 0.45);
   --z-sidebar: 20;
   --z-skip: 100;
+  --z-dialog: 200;
 }
 
 /*
