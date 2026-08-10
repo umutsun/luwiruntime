@@ -53,6 +53,7 @@ History is short and every commit is a large checkpoint:
 | `f06f718` | The audit's small findings: skip link, truncation, loading     |
 | `b476a73` | The audit's medium findings: counts, focus, bootstrap seams    |
 | `677fe98` | ADR 0017: git attribution, observation depth, two defect fixes |
+| `292fbcd` | ADR 0018: seeded fixture, messaging, project-agent pair scope  |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
