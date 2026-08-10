@@ -13,17 +13,14 @@ export const eventListResponseSchema = z.strictObject({
   events: z.array(realtimeEventMessageSchema),
 });
 
-const safeErrorDetailSchema = z.union([z.string().max(4096), z.number(), z.boolean(), z.null()]);
-
-export const publicErrorResponseSchema = z.strictObject({
-  error: z.strictObject({
-    code: z.string().min(1).max(128),
-    message: z.string().min(1).max(4096),
-    details: z.record(z.string(), safeErrorDetailSchema).optional(),
-  }),
-});
+/**
+ * Re-exported from a leaf module the browser bundle can reach. This file
+ * imports `realtime.js`, which transitively imports `node:crypto`, so
+ * `browser.ts` must take the schema from `public-error.js` and never from here.
+ */
+export { publicErrorResponseSchema } from './public-error.js';
 
 export type { RuntimeStateName } from './runtime-state.js';
 export type EventListQuery = z.infer<typeof eventListQuerySchema>;
 export type EventListResponse = z.infer<typeof eventListResponseSchema>;
-export type PublicErrorResponse = z.infer<typeof publicErrorResponseSchema>;
+export type { PublicErrorResponse } from './public-error.js';
