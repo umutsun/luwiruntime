@@ -117,12 +117,22 @@ file-to-file imports and the module dependencies aggregated from them into the s
 the event-derived relationships, kept apart by provenance. An import it cannot resolve is recorded
 as unresolved rather than pointed at the nearest plausible file.
 
-Five read-only daemon domains still have no dashboard consumer: inter-agent messaging, the
-capability and profile catalogue, effective agent configuration and its conflicts, config drift
-with its plans and snapshots, and the pair-scoped context reads. Their events reach the Activity
-feed, so a user sees that something happened without seeing what. ADR 0017 defers them on a
-measured condition — each holds zero records on the runtime that serves this dashboard — and states
-what would make each buildable.
+ADR 0018 added `#/messages`, a read-only view of inter-agent requests that renders what an
+Activity row cannot: who asked whom, the subject and body, why the runtime selected that recipient,
+the state, and the response with its own confidence. A rejected message is presented as an answer
+rather than as a fault. Selecting a bound agent on the Projects route opens
+`#/projects/<id>/agents/<agentId>` and loads the effective configuration with its conflicts and
+unsupported capabilities, plus the pair-scoped context summary and footprint — which is what makes
+the binding's profile and capability counts openable rather than terminal.
+
+`pnpm seed` populates an isolated fixture runtime over the daemon's own HTTP API so those surfaces
+can be looked at before being called done. It refuses to run unless the daemon reports a fixture
+workspace, because agent definitions, capabilities and profiles are filesystem-canonical and a
+Redis database alone does not isolate them.
+
+Two read-only daemon domains still have no dashboard consumer: the capability and profile
+catalogue, and config plans, snapshots and drift. Their events reach the Activity feed, so a user
+sees that something happened without seeing what.
 
 Dashboard mutations, optimization accept/reject/evaluate, lifecycle/release scoring, release
 readiness, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge

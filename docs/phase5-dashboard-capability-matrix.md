@@ -183,6 +183,34 @@ document counts as in scope. The reason is uniform and checkable: each holds zer
 runtime that serves this dashboard, so a view over it could not be verified by looking at it. The
 condition for building each is stated in ADR 0017 rather than left to judgement.
 
+## Messaging and the project-agent pair
+
+Date: 2026-08-10
+
+ADR 0018 built three more of the audit's item-10 domains, on data produced by `pnpm seed` into an
+isolated fixture runtime.
+
+| Module                        | REST read                                             | Scope and behavior                                                                                                                         | Status    |
+| ----------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | --------- |
+| Inter-agent messages          | `GET /api/v1/messages?limit=101`                      | Global bounded list on `#/messages`. The response carries no `truncated` flag, so the read asks for one more than the page and derives it. | SUPPORTED |
+| Effective agent configuration | `GET /api/v1/projects/:p/agents/:a/effective-config`  | Pair-scoped. `valid: false` renders as `Unresolved` with its conflicts and unsupported capabilities, never as an empty config.             | SUPPORTED |
+| Pair context summary          | `GET /api/v1/context/summary?projectId&agentId`       | Pair-scoped. Six independent counts; `unknown` keeps its own, per ADR 0010.                                                                | SUPPORTED |
+| Pair context footprint        | `GET /api/v1/projects/:p/agents/:a/context-footprint` | Pair-scoped. Categories ordered by weight; duplicate groups are byte-identical content, never a similarity score.                          | SUPPORTED |
+
+The three pair reads load only while `#/projects/<id>/agents/<agentId>` is open, and both halves of
+the pair are checked by the generation guard before a response is applied — a slow read must never
+paint one pair's configuration under another pair's name.
+
+`message.` maps to the message list alone. `capability.`, `profile.`, `project.agent.` and
+`agent.definition.` map to the effective configuration, because each changes what is bound;
+`context.` maps to both pair context reads, because they measure the same thing.
+
+### Still unconsumed
+
+The capability and profile catalogue (`/api/v1/capabilities`, `/api/v1/profiles`) and the config
+plan, snapshot and drift reads have fixture data and no dashboard consumer. They are the last two
+item-10 domains and remain new scope under AGENTS.md section 21.
+
 ### Honesty rules encoded in these routes
 
 - **Usage sources are never summed.** Exact, reported, adapter-extracted, and estimated records

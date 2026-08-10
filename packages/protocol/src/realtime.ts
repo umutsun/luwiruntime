@@ -1,8 +1,9 @@
 import { z } from 'zod';
 
 import { runtimeEventSchema } from './runtime-event.js';
+import { redisStreamIdSchema } from './stream-id.js';
 
-export const redisStreamIdSchema = z.string().regex(/^\d+-\d+$/);
+export { redisStreamIdSchema } from './stream-id.js';
 
 export const realtimeEventMessageSchema = z.strictObject({
   streamId: redisStreamIdSchema,

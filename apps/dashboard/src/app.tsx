@@ -13,6 +13,9 @@ import { ProjectsView } from './projects/projects-view.js';
 import { AgentsView } from './routes/agents-view.js';
 import { ContextView } from './routes/context-view.js';
 import { GraphView } from './routes/graph-view.js';
+import type { AgentPairResources } from './api/agent-pair-scope.js';
+import type { MessageResources } from './api/messages-scope.js';
+import { MessagesView } from './routes/messages-view.js';
 import { OptimizationView } from './routes/optimization-view.js';
 import { SessionsView } from './routes/sessions-view.js';
 import { UsageView } from './routes/usage-view.js';
@@ -41,6 +44,7 @@ const scopeRoutes = [
   { name: 'projects', label: 'Projects' },
   { name: 'agents', label: 'Agents' },
   { name: 'sessions', label: 'Sessions' },
+  { name: 'messages', label: 'Messages' },
 ] as const;
 
 const intelligenceRoutes = [
@@ -56,6 +60,7 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   projects: { eyebrow: 'Project scope', heading: 'Projects' },
   agents: { eyebrow: 'Registered definitions', heading: 'Agents' },
   sessions: { eyebrow: 'Observed sessions', heading: 'Sessions' },
+  messages: { eyebrow: 'Inter-agent requests', heading: 'Messages' },
   usage: { eyebrow: 'Observation sources', heading: 'Usage' },
   context: { eyebrow: 'Context evidence', heading: 'Context' },
   optimization: { eyebrow: 'Structural findings', heading: 'Optimization' },
@@ -142,6 +147,10 @@ export function DashboardApp({
   projectResources = {},
   projectScopeLoading = false,
   intelligenceResources = {},
+  messageResources = {},
+  messagesLoading = false,
+  agentPairResources = {},
+  agentPairLoading = false,
   intelligenceLoading = false,
   loadSubgraph,
   onRetry,
@@ -158,6 +167,12 @@ export function DashboardApp({
   intelligenceResources?: Partial<IntelligenceResources>;
   /** The on-demand intelligence reads have not returned yet. */
   intelligenceLoading?: boolean;
+  messageResources?: Partial<MessageResources>;
+  /** The on-demand message read has not returned yet. */
+  messagesLoading?: boolean;
+  agentPairResources?: Partial<AgentPairResources>;
+  /** The pair-scoped reads have not returned yet. */
+  agentPairLoading?: boolean;
   loadSubgraph?: (
     root: GraphRoot,
     bounds: SubgraphBounds,
@@ -350,6 +365,8 @@ export function DashboardApp({
                 openInspector({ kind: 'session', sessionId: session.id }, opener)
               }
             />
+          ) : route.name === 'messages' ? (
+            <MessagesView messages={messageResources.messages} loading={messagesLoading} />
           ) : route.name === 'agents' ? (
             <AgentsView snapshot={snapshot} />
           ) : route.name === 'usage' ? (
@@ -385,10 +402,21 @@ export function DashboardApp({
             <ProjectsView
               snapshot={snapshot}
               {...(route.projectId === undefined ? {} : { selectedProjectId: route.projectId })}
+              {...(route.agentId === undefined ? {} : { selectedAgentId: route.agentId })}
               resources={projectResources}
               scopeLoading={projectScopeLoading}
+              agentPairResources={agentPairResources}
+              agentPairLoading={agentPairLoading}
               onSelectProject={(projectId) => {
                 window.location.hash = routeHref({ name: 'projects', projectId });
+              }}
+              onSelectAgent={(agentId) => {
+                if (route.projectId === undefined) return;
+                window.location.hash = routeHref({
+                  name: 'projects',
+                  projectId: route.projectId,
+                  ...(agentId === undefined ? {} : { agentId }),
+                });
               }}
             />
           ) : (

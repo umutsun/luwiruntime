@@ -145,12 +145,24 @@ lifecycle/release scoring, task/lease systems, semantic or vector knowledge grap
 federation, GitHub integration, prompt injection, cloud accounts, authentication, remote
 control-plane work.
 
-Also unbuilt, and deferred rather than rejected: inter-agent messaging, the capability and profile
-catalogue, effective agent configuration, config drift, and the pair-scoped context reads. Each
-holds **zero records** on this machine's Redis, which is why ADR 0017 built attribution — 17 real
-records — instead. Before proposing any of them, check whether its namespace has data; a view that
-cannot be looked at cannot be verified, and that is how two real defects survived three sessions of
-green tests.
+ADR 0018 then removed the reason those domains were deferred. `pnpm seed` populates an isolated
+fixture runtime, and three of them were built on it: `#/messages`, effective agent configuration,
+and the pair-scoped context reads, the last two on `#/projects/<id>/agents/<agentId>`.
+
+**Still unbuilt, and still §21 scope: the capability/profile catalogue, and config plans, snapshots
+and drift.** The fixture produces data for both, so only approval is missing.
+
+To look at any of it, start a fixture daemon — `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and
+`WORKSPACE_ID=fixture-…` **together**, because Redis alone is not isolation: per ADR 0007 agent
+definitions, capabilities and profiles are filesystem-canonical and land in the real `~/.luwi`
+otherwise. `scripts/seed-runtime.ts` refuses to run unless the daemon reports a `fixture` workspace.
+
+Two capture traps worth knowing. `chrome --virtual-time-budget` accelerates timers while the
+network stays real, so the dashboard's reconnect timer aborts every on-demand read and the panels
+never leave "Loading" — that is the screenshot lying, not the page. Capture over the DevTools
+protocol with a real wait instead. And the daemon serves the dashboard build, so screenshots need
+`pnpm build` first and a restart; the owner lease also needs ~15 s to expire before it will start
+again.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.

@@ -72,3 +72,24 @@ describe('daemon API client', () => {
     );
   });
 });
+
+describe('a schema that throws rather than failing validation', () => {
+  it('is reported as unavailable instead of hanging the caller', async () => {
+    const throwing = {
+      safeParse: () => {
+        throw new ReferenceError('Buffer is not defined');
+      },
+    } as unknown as z.ZodType<unknown>;
+    const client = createDaemonClient(
+      (async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })) as unknown as typeof fetch,
+    );
+
+    const result = await client.get('/api/v1/anything', throwing);
+
+    expect(result).toMatchObject({ state: 'unavailable', reason: 'invalid' });
+  });
+});

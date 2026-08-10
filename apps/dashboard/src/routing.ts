@@ -20,6 +20,7 @@ export const SIMPLE_ROUTES = [
   'activity',
   'sessions',
   'agents',
+  'messages',
   'usage',
   'context',
   'optimization',
@@ -29,7 +30,13 @@ export const SIMPLE_ROUTES = [
 type SimpleRouteName = (typeof SIMPLE_ROUTES)[number];
 
 export type DashboardRoute =
-  { name: 'pulse' } | { name: SimpleRouteName } | { name: 'projects'; projectId?: string };
+  | { name: 'pulse' }
+  | { name: SimpleRouteName }
+  /**
+   * `agentId` is only meaningful with a `projectId`: the reads it selects are
+   * pair-scoped, so an agent without a project addresses nothing.
+   */
+  | { name: 'projects'; projectId?: string; agentId?: string };
 
 export type DashboardRouteName = DashboardRoute['name'];
 
@@ -60,6 +67,16 @@ export function parseRoute(hash: string): DashboardRoute {
     if (projectId === '' || projectId.length > MAX_PROJECT_ID_LENGTH) {
       return { name: 'projects' };
     }
+    // `projects/<id>/agents/<agentId>`. Anything else after the project id is
+    // not a route this shell knows, and degrades to the project rather than
+    // being rejected — the hash is user-editable.
+    const [, , third, fourth] = segments;
+    if (third === 'agents' && fourth !== undefined) {
+      const agentId = decodeSegment(fourth).trim();
+      if (agentId !== '' && agentId.length <= MAX_PROJECT_ID_LENGTH) {
+        return { name: 'projects', projectId, agentId };
+      }
+    }
     return { name: 'projects', projectId };
   }
 
@@ -69,9 +86,11 @@ export function parseRoute(hash: string): DashboardRoute {
 export function routeHref(route: DashboardRoute): string {
   if (route.name === 'projects') {
     // Encoding keeps an id containing `/` from forging an extra path segment.
-    return route.projectId === undefined
-      ? '#/projects'
-      : `#/projects/${encodeURIComponent(route.projectId)}`;
+    if (route.projectId === undefined) return '#/projects';
+    const base = `#/projects/${encodeURIComponent(route.projectId)}`;
+    return route.agentId === undefined
+      ? base
+      : `${base}/agents/${encodeURIComponent(route.agentId)}`;
   }
   return `#/${route.name}`;
 }

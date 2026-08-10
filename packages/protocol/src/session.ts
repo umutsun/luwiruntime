@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { utf8ByteLength } from './utf8-bytes.js';
+
 const identifierSchema = z.string().trim().min(1).max(128);
 const pathSchema = z.string().trim().min(1).max(4096);
 const timestampSchema = z.iso.datetime({ offset: false });
@@ -35,7 +37,7 @@ export const sessionStatusTargetSchema = z.enum([
 
 const metadataSchema = z
   .record(z.string(), z.json())
-  .refine((value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= 16 * 1024, {
+  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= 16 * 1024, {
     message: 'Session metadata exceeds 16 KiB',
   });
 

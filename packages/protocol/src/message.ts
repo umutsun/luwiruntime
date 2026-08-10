@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import { redisStreamIdSchema } from './realtime.js';
+import { redisStreamIdSchema } from './stream-id.js';
+import { utf8ByteLength } from './utf8-bytes.js';
 import { agentIdSchema } from './session.js';
 
 export const MESSAGE_MAX_CONTENT_BYTES = 32_768;
@@ -26,7 +27,7 @@ const nonBlankStringSchema = z
 const utf8BytesAtMost =
   (maximum: number) =>
   (value: string): boolean =>
-    Buffer.byteLength(value, 'utf8') <= maximum;
+    utf8ByteLength(value) <= maximum;
 
 export const messageStateSchema = z.enum([
   'queued',
@@ -56,7 +57,7 @@ export const evidenceTypeSchema = z.enum([
 
 const evidenceMetadataSchema = z
   .record(z.string(), z.unknown())
-  .refine((value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= 16_384, {
+  .refine((value) => utf8ByteLength(JSON.stringify(value)) <= 16_384, {
     message: 'Evidence metadata must not exceed 16 KiB.',
   });
 

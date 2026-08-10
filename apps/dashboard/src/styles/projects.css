@@ -156,6 +156,23 @@
   overflow-wrap: anywhere;
 }
 
+/* A message body is the agent's own text. It wraps rather than scrolling
+   sideways, and keeps its line breaks, because they carry meaning the runtime
+   did not add. */
+.message-body {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .bounded-note {
   margin: var(--space-2) 0 0;
   padding: var(--space-2) var(--space-3);

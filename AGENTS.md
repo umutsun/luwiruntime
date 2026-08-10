@@ -961,12 +961,21 @@ read, and renders the branch, tag, and worktree evidence the Git observation was
 and the dashboard was discarding at its boundary. No daemon route, dependency, datastore, or write
 path was added.
 
-The other four item-10 domains — inter-agent messaging, the capability and profile catalogue,
-effective agent configuration and its conflicts, config drift with its plans and snapshots — remain
-**unapproved**, as do the pair-scoped context reads. They defer on a measured condition rather than
-on preference: each holds zero records on this runtime, so a view over it could not be verified by
-looking at it. ADR 0017 states the condition under which each becomes buildable. Building any of
-them still requires explicit approval under this section.
+ADR 0018 then lifted the condition ADR 0017 set. `scripts/seed-runtime.ts` populates an isolated
+fixture runtime over the daemon's own HTTP API, so the deferred domains became verifiable, and
+three of them were approved and built: inter-agent messaging as `#/messages`, effective agent
+configuration and its conflicts, and the pair-scoped context summary and footprint. The last two
+hang off `#/projects/<id>/agents/<agentId>`, which is what finally makes the Projects route's
+`profileCount` and `capabilityCount` openable.
+
+**Two item-10 domains remain unbuilt: the capability and profile catalogue, and config plans,
+snapshots and drift.** They are no longer blocked by absent data — the fixture produces both — and
+remain new scope under this section. Building either still requires explicit approval.
+
+Isolating a fixture takes `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and `WORKSPACE_ID` together.
+Redis alone is not enough: per ADR 0007 the filesystem is canonical for agent definitions,
+capability packages and profiles, so those survive a `FLUSHDB` and land in the developer's real
+`~/.luwi` unless `LUWI_HOME` is redirected. ADR 0018 records how that was found.
 
 **Every other prohibition below still stands.** Do not begin dashboard mutations,
 lifecycle/release scoring, task/lease systems, a semantic or vector knowledge graph, memory

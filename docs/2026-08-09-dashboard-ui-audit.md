@@ -15,9 +15,15 @@
 > section 6. The other four domains are deferred on a measured condition rather
 > than on judgement; see the note under item 10.
 >
-> **Open:** the four deferred item-10 domains, the pair-scoped context reads,
-> and the smaller depth items in sections 5 and 6 that were never given a
-> priority number.
+> **Then ADR 0018** removed the reason the rest were deferred: `pnpm seed`
+> populates an isolated fixture runtime, and three more domains were built on
+> it — inter-agent messaging, effective agent configuration, and the
+> pair-scoped context reads.
+>
+> **Open:** two item-10 domains — the capability/profile catalogue and config
+> plans/snapshots/drift — plus the smaller depth items in sections 5 and 6 that
+> were never given a priority number. Neither remaining domain is blocked by
+> absent data any more; both need approval only.
 
 ## Verdict
 

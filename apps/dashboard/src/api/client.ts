@@ -51,7 +51,20 @@ export function createDaemonClient(fetchImpl: typeof fetch = fetch) {
         return { state: 'unavailable', reason: 'http', httpStatus: response.status };
       }
 
-      const parsed = schema.safeParse(value);
+      /**
+       * `safeParse` returns validation failures — it does not contain a schema
+       * that throws. A refinement using a Node-only global does exactly that in
+       * a browser, and the resulting rejection escaped every caller: the
+       * promise never settled, so panels sat on their loading state forever
+       * rather than reporting a fault. A read that cannot be validated is
+       * unavailable, however it failed to validate.
+       */
+      let parsed: ReturnType<typeof schema.safeParse>;
+      try {
+        parsed = schema.safeParse(value);
+      } catch {
+        return { state: 'unavailable', reason: 'invalid', httpStatus: response.status };
+      }
       if (!parsed.success) {
         return {
           state: 'unavailable',

@@ -457,3 +457,154 @@ describe('ProjectsView detail', () => {
     }
   });
 });
+
+describe('ProjectsView agent pair', () => {
+  const pair = {
+    effectiveConfig: {
+      state: 'ready' as const,
+      data: {
+        agentKind: 'codex',
+        valid: false,
+        capabilities: [
+          {
+            id: 'cap-review',
+            name: 'Code review',
+            kind: 'skill',
+            scope: 'global' as const,
+            enabled: true,
+          },
+          {
+            id: 'cap-migrate',
+            name: 'Schema migration',
+            kind: 'plugin',
+            scope: 'project' as const,
+            enabled: true,
+          },
+        ],
+        profileIds: ['profile-reviewer'],
+        conflicts: [
+          {
+            code: 'CAPABILITY_INCOMPATIBLE',
+            message: 'Not supported by this adapter.',
+            capabilityId: 'cap-migrate',
+          },
+        ],
+        missingDependencies: [],
+        unsupportedCapabilities: ['cap-migrate'],
+        nativeCapabilitySupport: [
+          { capabilityId: 'cap-review', capabilityKind: 'skill', supportLevel: 'full' as const },
+        ],
+        provenanceCount: 3,
+        estimatedTokens: 602,
+      },
+    },
+    contextSummary: {
+      state: 'ready' as const,
+      data: {
+        contributionCount: 6,
+        assignedCount: 4,
+        effectiveCount: 3,
+        observedLoadedCount: 2,
+        observedInvokedCount: 1,
+        unknownLoadedCount: 2,
+        measuredAt: '2026-08-10T00:00:00.000Z',
+      },
+    },
+    contextFootprint: {
+      state: 'ready' as const,
+      data: {
+        totalBytes: 4200,
+        totalLines: 120,
+        estimatedTokens: 602,
+        categories: [
+          { name: 'skill', bytes: 3000, lines: 90, estimatedTokens: 480, sourceCount: 2 },
+        ],
+        exactDuplicateGroups: [['context:a', 'context:b']],
+        measuredAt: '2026-08-10T00:00:00.000Z',
+      },
+    },
+  };
+
+  function pairView(extra: Record<string, unknown> = {}) {
+    return renderView({
+      selectedProjectId: 'proj-1',
+      selectedAgentId: 'agent-1',
+      resources: readyScope,
+      agentPairResources: pair,
+      ...extra,
+    });
+  }
+
+  it('renders no pair panel until an agent is selected', () => {
+    renderView({ selectedProjectId: 'proj-1', resources: readyScope });
+
+    expect(screen.queryByRole('region', { name: /effective configuration/i })).toBeNull();
+  });
+
+  it('selects the agent through its identifier', () => {
+    const onSelectAgent = vi.fn();
+    renderView({ selectedProjectId: 'proj-1', resources: readyScope, onSelectAgent });
+
+    fireEvent.click(screen.getByRole('button', { name: 'agent-1' }));
+
+    expect(onSelectAgent).toHaveBeenCalledWith('agent-1');
+  });
+
+  it('reports an unresolved configuration rather than hiding it', () => {
+    pairView();
+
+    const panel = screen.getByRole('region', { name: /effective configuration/i });
+    expect(within(panel).getByText('Unresolved')).toBeTruthy();
+    expect(within(panel).getByText('Not supported by this adapter.')).toBeTruthy();
+    expect(within(panel).getByText('Not usable by this agent')).toBeTruthy();
+  });
+
+  it('says a capability has no reported native support instead of implying none', () => {
+    pairView();
+
+    const panel = screen.getByRole('region', { name: /effective configuration/i });
+    expect(within(panel).getByText('Not reported')).toBeTruthy();
+  });
+
+  it('renders the pair context counts as six independent observations', () => {
+    pairView();
+
+    const panel = screen.getByRole('region', { name: /context for this pair/i });
+    for (const label of [
+      'Contributions',
+      'Assigned',
+      'Effective',
+      'Loaded',
+      'Invoked',
+      'Unknown',
+    ]) {
+      expect(within(panel).getByText(label)).toBeTruthy();
+    }
+    expect(within(panel).getByText(/not stages of one pipeline/i)).toBeTruthy();
+  });
+
+  it('labels footprint tokens as estimates and lists byte-identical groups', () => {
+    pairView();
+
+    const panel = screen.getByRole('region', { name: /context footprint/i });
+    expect(within(panel).getByText(/generic character estimates/i)).toBeTruthy();
+    expect(within(panel).getByText('context:a = context:b')).toBeTruthy();
+  });
+
+  it('reports an unavailable pair read as unavailable, not as an empty configuration', () => {
+    pairView({
+      agentPairResources: { ...pair, effectiveConfig: { state: 'unavailable' as const } },
+    });
+
+    const panel = screen.getByRole('region', { name: /effective configuration/i });
+    expect(within(panel).getByText('Unavailable')).toBeTruthy();
+  });
+
+  it('shows the pair reads as loading rather than as faults while in flight', () => {
+    pairView({ agentPairResources: {}, agentPairLoading: true });
+
+    const panel = screen.getByRole('region', { name: /effective configuration/i });
+    expect(within(panel).getByText(/loading/i)).toBeTruthy();
+    expect(within(panel).queryByText('Unavailable')).toBeNull();
+  });
+});

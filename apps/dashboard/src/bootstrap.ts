@@ -25,6 +25,12 @@ export function selectedProjectOf(hash: string): string | undefined {
   return route.name === 'projects' ? route.projectId : undefined;
 }
 
+/** The agent whose pair-scoped evidence should be loaded, if any. */
+export function selectedAgentOf(hash: string): string | undefined {
+  const route = parseRoute(hash);
+  return route.name === 'projects' ? route.agentId : undefined;
+}
+
 /**
  * Only these routes consume the extra global reads, so they load while one of
  * them is open and never otherwise. The graph summary is 56 Redis commands per
@@ -34,6 +40,18 @@ export function selectedProjectOf(hash: string): string | undefined {
 export function needsIntelligenceOf(hash: string): boolean {
   const route = parseRoute(hash);
   return route.name === 'context' || route.name === 'optimization' || route.name === 'graph';
+}
+
+/**
+ * The message list is its own scope for the same reason.
+ *
+ * It is a bounded read of up to 101 records that only `#/messages` renders, so
+ * the overview must not pay for it. Keeping it separate from the intelligence
+ * scope also keeps their refresh domains apart: a `message.*` event should not
+ * re-read the graph summary.
+ */
+export function needsMessagesOf(hash: string): boolean {
+  return parseRoute(hash).name === 'messages';
 }
 
 /**

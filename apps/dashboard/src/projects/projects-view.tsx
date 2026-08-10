@@ -1,4 +1,10 @@
 import type {
+  AgentPairResources,
+  ContextFootprint,
+  EffectiveConfig,
+  PairContextSummary,
+} from '../api/agent-pair-scope.js';
+import type {
   Bounded,
   ProjectAttribution,
   ProjectBinding,
@@ -197,18 +203,324 @@ function TruncationNote({ truncated, noun }: { truncated: boolean; noun: string 
   );
 }
 
+/**
+ * What a project-agent binding actually resolves to.
+ *
+ * `profileCount` and `capabilityCount` have been on screen since Phase 5C as
+ * two numbers whose contents could not be opened — the 2026-08-09 audit's one
+ * coverage gap with a concrete dead end. These panels are the other side of
+ * those numbers, and they are also where an invalid effective configuration
+ * becomes visible instead of staying an unreadable `valid: false`.
+ */
+function AgentPairPanels({
+  agentId,
+  resources,
+  loading,
+}: {
+  agentId: string;
+  resources: Partial<AgentPairResources>;
+  loading: boolean;
+}) {
+  return (
+    <>
+      <ResourcePanel<EffectiveConfig>
+        title="Effective configuration"
+        meta={agentId}
+        resource={resources.effectiveConfig}
+        loading={loading}
+        emptyMessage="No effective configuration resolved"
+        isEmpty={() => false}
+      >
+        {(config) => (
+          <div className="project-detail__body">
+            <dl className="key-values">
+              <div>
+                <dt>Resolves</dt>
+                <dd>
+                  <StatusChip tone={config.valid ? 'success' : 'warning'}>
+                    {config.valid ? 'Valid' : 'Unresolved'}
+                  </StatusChip>
+                </dd>
+              </div>
+              <div>
+                <dt>Agent kind</dt>
+                <dd>{config.agentKind}</dd>
+              </div>
+              <div>
+                <dt>Provenance entries</dt>
+                <dd>
+                  <strong className="metric">{config.provenanceCount}</strong>
+                  <small>Every value the resolver traced to a source</small>
+                </dd>
+              </div>
+              <div>
+                <dt>Estimated context</dt>
+                <dd>
+                  <strong className="metric">{config.estimatedTokens}</strong>
+                  <small>Generic character estimate, not measured tokens</small>
+                </dd>
+              </div>
+            </dl>
+
+            <GroupLabel label="Capabilities" count={config.capabilities.length} />
+            {config.capabilities.length === 0 ? (
+              <p className="empty-state">No capabilities resolved for this pair</p>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <caption className="visually-hidden">Resolved capabilities</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Capability</th>
+                      <th scope="col">Kind</th>
+                      <th scope="col">Scope</th>
+                      <th scope="col">State</th>
+                      <th scope="col">Native support</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {config.capabilities.map((capability) => {
+                      const support = config.nativeCapabilitySupport.find(
+                        (entry) => entry.capabilityId === capability.id,
+                      );
+                      const unsupported = config.unsupportedCapabilities.includes(capability.id);
+                      return (
+                        <tr key={capability.id}>
+                          <td>
+                            {capability.name}
+                            <small title={capability.id}>{capability.id}</small>
+                          </td>
+                          <td>{capability.kind}</td>
+                          <td>{capability.scope}</td>
+                          <td>
+                            <StatusChip tone={capability.enabled ? 'success' : 'unknown'}>
+                              {capability.enabled ? 'Enabled' : 'Disabled'}
+                            </StatusChip>
+                          </td>
+                          <td>
+                            {support === undefined ? (
+                              <span className="unavailable">Not reported</span>
+                            ) : (
+                              <StatusChip
+                                tone={
+                                  support.supportLevel === 'full'
+                                    ? 'success'
+                                    : support.supportLevel === 'unsupported'
+                                      ? 'warning'
+                                      : 'info'
+                                }
+                              >
+                                {support.supportLevel}
+                              </StatusChip>
+                            )}
+                            {unsupported ? <small>Not usable by this agent</small> : null}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <GroupLabel label="Profiles" count={config.profileIds.length} />
+            {config.profileIds.length === 0 ? (
+              <p className="empty-state">No profiles applied</p>
+            ) : (
+              <ul className="name-list">
+                {config.profileIds.map((profileId) => (
+                  <li key={profileId}>{profileId}</li>
+                ))}
+              </ul>
+            )}
+
+            <GroupLabel label="Conflicts" count={config.conflicts.length} />
+            {config.conflicts.length === 0 ? (
+              <p className="empty-state">No conflicts detected</p>
+            ) : (
+              <div className="table-wrap">
+                <table>
+                  <caption className="visually-hidden">Configuration conflicts</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Code</th>
+                      <th scope="col">Detail</th>
+                      <th scope="col">Capability</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {config.conflicts.map((conflict, index) => (
+                      <tr key={`${conflict.code}-${String(index)}`}>
+                        <td>
+                          <code>{conflict.code}</code>
+                        </td>
+                        <td>{conflict.message}</td>
+                        <td>
+                          {conflict.capabilityId ?? <span className="unavailable">Not scoped</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <GroupLabel label="Missing dependencies" count={config.missingDependencies.length} />
+            {config.missingDependencies.length === 0 ? (
+              <p className="empty-state">No missing dependencies</p>
+            ) : (
+              <ul className="name-list">
+                {config.missingDependencies.map((dependency) => (
+                  <li key={dependency}>{dependency}</li>
+                ))}
+              </ul>
+            )}
+
+            <p className="bounded-note">
+              An unresolved configuration is reported, not hidden. It means the runtime could not
+              produce a configuration this agent can use, and the conflicts and unsupported
+              capabilities above are the reason. Nothing here applies, renders, or repairs anything.
+            </p>
+          </div>
+        )}
+      </ResourcePanel>
+
+      <ResourcePanel<PairContextSummary>
+        title="Context for this pair"
+        resource={resources.contextSummary}
+        loading={loading}
+        emptyMessage="No context observed for this pair"
+        isEmpty={() => false}
+      >
+        {(summary) => (
+          <>
+            <dl className="key-values">
+              {(
+                [
+                  ['Contributions', summary.contributionCount],
+                  ['Assigned', summary.assignedCount],
+                  ['Effective', summary.effectiveCount],
+                  ['Loaded', summary.observedLoadedCount],
+                  ['Invoked', summary.observedInvokedCount],
+                  ['Unknown', summary.unknownLoadedCount],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>
+                    <strong className="metric">{value}</strong>
+                  </dd>
+                </div>
+              ))}
+            </dl>
+            <p className="bounded-note">
+              Four independent observations, not stages of one pipeline, and an unobserved value
+              stays unknown rather than being counted as unused. Measured {summary.measuredAt}.
+            </p>
+          </>
+        )}
+      </ResourcePanel>
+
+      <ResourcePanel<ContextFootprint>
+        title="Context footprint"
+        resource={resources.contextFootprint}
+        loading={loading}
+        emptyMessage="No context footprint measured"
+        isEmpty={(value) => value.categories.length === 0}
+      >
+        {(footprint) => (
+          <>
+            <dl className="key-values">
+              <div>
+                <dt>Estimated tokens</dt>
+                <dd>
+                  <strong className="metric">{footprint.estimatedTokens}</strong>
+                </dd>
+              </div>
+              <div>
+                <dt>Bytes</dt>
+                <dd>
+                  <strong className="metric">{footprint.totalBytes}</strong>
+                </dd>
+              </div>
+              <div>
+                <dt>Lines</dt>
+                <dd>
+                  <strong className="metric">{footprint.totalLines}</strong>
+                </dd>
+              </div>
+            </dl>
+
+            <GroupLabel label="By category" count={footprint.categories.length} />
+            <div className="table-wrap">
+              <table>
+                <caption className="visually-hidden">Context footprint by category</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Category</th>
+                    <th scope="col">Sources</th>
+                    <th scope="col">Lines</th>
+                    <th scope="col">Estimated tokens</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {footprint.categories.map((category) => (
+                    <tr key={category.name}>
+                      <td>{category.name}</td>
+                      <td>{category.sourceCount}</td>
+                      <td>{category.lines}</td>
+                      <td>{category.estimatedTokens}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <GroupLabel
+              label="Exact duplicate groups"
+              count={footprint.exactDuplicateGroups.length}
+            />
+            {footprint.exactDuplicateGroups.length === 0 ? (
+              <p className="empty-state">No byte-identical sources</p>
+            ) : (
+              <ul className="name-list">
+                {footprint.exactDuplicateGroups.map((group) => (
+                  <li key={group.join('|')}>{group.join(' = ')}</li>
+                ))}
+              </ul>
+            )}
+
+            <p className="bounded-note">
+              Token figures are generic character estimates, not measured consumption. Duplicate
+              groups are byte-identical content, never a similarity score.
+            </p>
+          </>
+        )}
+      </ResourcePanel>
+    </>
+  );
+}
+
 export function ProjectsView({
   snapshot,
   selectedProjectId,
+  selectedAgentId,
   resources,
   scopeLoading,
+  agentPairResources = {},
+  agentPairLoading = false,
   onSelectProject,
+  onSelectAgent,
 }: {
   snapshot: PulseSnapshot;
   selectedProjectId?: string | undefined;
+  selectedAgentId?: string | undefined;
   resources: Partial<ProjectScopeResources>;
   scopeLoading: boolean;
+  agentPairResources?: Partial<AgentPairResources>;
+  agentPairLoading?: boolean;
   onSelectProject: (projectId: string) => void;
+  onSelectAgent?: (agentId: string | undefined) => void;
 }) {
   const projectsAvailable = snapshot.projectCount.state !== 'unavailable';
   const selected = snapshot.projects.find((project) => project.id === selectedProjectId);
@@ -362,9 +674,19 @@ export function ProjectsView({
                   </thead>
                   <tbody>
                     {bindings.map((binding) => (
-                      <tr key={binding.id}>
+                      <tr key={binding.id} aria-selected={binding.agentId === selectedAgentId}>
                         <td>
-                          <code>{binding.agentId}</code>
+                          <button
+                            type="button"
+                            className="link-button"
+                            onClick={() =>
+                              onSelectAgent?.(
+                                binding.agentId === selectedAgentId ? undefined : binding.agentId,
+                              )
+                            }
+                          >
+                            {binding.agentId}
+                          </button>
                         </td>
                         <td>
                           <StatusChip tone={binding.enabled ? 'success' : 'unknown'}>
@@ -461,6 +783,14 @@ export function ProjectsView({
               </>
             )}
           </ResourcePanel>
+
+          {selectedAgentId === undefined ? null : (
+            <AgentPairPanels
+              agentId={selectedAgentId}
+              resources={agentPairResources}
+              loading={agentPairLoading}
+            />
+          )}
 
           <Panel title="Sessions">
             {projectSessions.length === 0 ? (

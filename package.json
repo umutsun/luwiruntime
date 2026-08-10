@@ -21,7 +21,8 @@
     "test": "vitest run --exclude \"**/*.integration.test.ts\"",
     "test:windows-cleanup-stress": "tsx scripts/windows-command-cleanup-stress.ts",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "typecheck": "pnpm --filter @luwi/dashboard typecheck && tsc -b --pretty false"
+    "typecheck": "pnpm --filter @luwi/dashboard typecheck && tsc -b --pretty false",
+    "seed": "tsx scripts/seed-runtime.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

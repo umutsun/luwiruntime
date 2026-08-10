@@ -88,3 +88,35 @@ describe('routeHref', () => {
     }
   });
 });
+
+describe('project-agent pair routes', () => {
+  it('parses an agent selected inside a project', () => {
+    expect(parseRoute('#/projects/proj-1/agents/agent-1')).toEqual({
+      name: 'projects',
+      projectId: 'proj-1',
+      agentId: 'agent-1',
+    });
+  });
+
+  it('round-trips a pair through routeHref', () => {
+    const route = { name: 'projects', projectId: 'proj/1', agentId: 'agent 1' } as const;
+    expect(routeHref(route)).toBe('#/projects/proj%2F1/agents/agent%201');
+    expect(parseRoute(routeHref(route))).toEqual(route);
+  });
+
+  it('degrades an unknown sub-path to the project rather than to pulse', () => {
+    expect(parseRoute('#/projects/proj-1/sessions/x')).toEqual({
+      name: 'projects',
+      projectId: 'proj-1',
+    });
+    expect(parseRoute('#/projects/proj-1/agents')).toEqual({
+      name: 'projects',
+      projectId: 'proj-1',
+    });
+  });
+
+  it('rejects an over-long agent id without losing the project', () => {
+    const route = parseRoute(`#/projects/proj-1/agents/${'a'.repeat(200)}`);
+    expect(route).toEqual({ name: 'projects', projectId: 'proj-1' });
+  });
+});
