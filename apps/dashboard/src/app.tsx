@@ -14,6 +14,10 @@ import { AgentsView } from './routes/agents-view.js';
 import { ContextView } from './routes/context-view.js';
 import { GraphView } from './routes/graph-view.js';
 import type { AgentPairResources } from './api/agent-pair-scope.js';
+import type { CapabilityCatalogResources } from './api/capability-catalog.js';
+import { CapabilitiesView } from './routes/capabilities-view.js';
+import type { ConfigResources } from './api/config-scope.js';
+import { ConfigView } from './routes/config-view.js';
 import type { MessageResources } from './api/messages-scope.js';
 import { MessagesView } from './routes/messages-view.js';
 import { OptimizationView } from './routes/optimization-view.js';
@@ -45,6 +49,8 @@ const scopeRoutes = [
   { name: 'agents', label: 'Agents' },
   { name: 'sessions', label: 'Sessions' },
   { name: 'messages', label: 'Messages' },
+  { name: 'capabilities', label: 'Capabilities' },
+  { name: 'config', label: 'Configuration' },
 ] as const;
 
 const intelligenceRoutes = [
@@ -61,6 +67,8 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   agents: { eyebrow: 'Registered definitions', heading: 'Agents' },
   sessions: { eyebrow: 'Observed sessions', heading: 'Sessions' },
   messages: { eyebrow: 'Inter-agent requests', heading: 'Messages' },
+  capabilities: { eyebrow: 'Registered catalogue', heading: 'Capabilities' },
+  config: { eyebrow: 'Native configuration', heading: 'Configuration' },
   usage: { eyebrow: 'Observation sources', heading: 'Usage' },
   context: { eyebrow: 'Context evidence', heading: 'Context' },
   optimization: { eyebrow: 'Structural findings', heading: 'Optimization' },
@@ -149,6 +157,10 @@ export function DashboardApp({
   intelligenceResources = {},
   messageResources = {},
   messagesLoading = false,
+  capabilityCatalogResources = {},
+  capabilityCatalogLoading = false,
+  configResources = {},
+  configLoading = false,
   agentPairResources = {},
   agentPairLoading = false,
   intelligenceLoading = false,
@@ -170,6 +182,12 @@ export function DashboardApp({
   messageResources?: Partial<MessageResources>;
   /** The on-demand message read has not returned yet. */
   messagesLoading?: boolean;
+  capabilityCatalogResources?: Partial<CapabilityCatalogResources>;
+  /** The on-demand catalogue reads have not returned yet. */
+  capabilityCatalogLoading?: boolean;
+  configResources?: Partial<ConfigResources>;
+  /** The on-demand config chain reads have not returned yet. */
+  configLoading?: boolean;
   agentPairResources?: Partial<AgentPairResources>;
   /** The pair-scoped reads have not returned yet. */
   agentPairLoading?: boolean;
@@ -367,6 +385,19 @@ export function DashboardApp({
             />
           ) : route.name === 'messages' ? (
             <MessagesView messages={messageResources.messages} loading={messagesLoading} />
+          ) : route.name === 'capabilities' ? (
+            <CapabilitiesView
+              capabilities={capabilityCatalogResources.capabilities}
+              profiles={capabilityCatalogResources.profiles}
+              loading={capabilityCatalogLoading}
+            />
+          ) : route.name === 'config' ? (
+            <ConfigView
+              drifts={configResources.drifts}
+              plans={configResources.plans}
+              snapshots={configResources.snapshots}
+              loading={configLoading}
+            />
           ) : route.name === 'agents' ? (
             <AgentsView snapshot={snapshot} />
           ) : route.name === 'usage' ? (

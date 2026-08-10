@@ -21,6 +21,8 @@ export const SIMPLE_ROUTES = [
   'sessions',
   'agents',
   'messages',
+  'capabilities',
+  'config',
   'usage',
   'context',
   'optimization',

@@ -49,6 +49,8 @@ import { join } from 'node:path';
 const daemonUrl = process.env.LUWI_SEED_DAEMON_URL ?? 'http://127.0.0.1:4782';
 const FIXTURE_WORKSPACE_PREFIX = 'fixture';
 const PROJECT_NAME = 'Seeded Workspace';
+/** The one seeded capability whose record names the project that owns it. */
+const PROJECT_SCOPED_CAPABILITY_ID = 'seed-cap-migrate';
 
 function refuse(reason: string): never {
   console.error(
@@ -74,6 +76,16 @@ function refuse(reason: string): never {
 }
 
 if (process.env.LUWI_SEED_CONFIRM !== '1') refuse('LUWI_SEED_CONFIRM=1 is not set.');
+
+/**
+ * Stops on a condition the operator has to clear, without the "start a fixture
+ * daemon" advice `refuse` gives — by the time this fires the daemon is already
+ * the right one and the remedy is something else entirely.
+ */
+function halt(lines: string[]): never {
+  console.error(['Stopping:', ...lines].join('\n'));
+  process.exit(1);
+}
 
 type Json = Record<string, unknown>;
 
@@ -210,6 +222,38 @@ async function main(): Promise<void> {
     }));
   step(`project ${project.id}${reused === undefined ? '' : ' (reused)'}`);
 
+  /**
+   * Reuse only works while the previous project is still in the registry.
+   *
+   * The two halves of the fixture can be cleared independently: `FLUSHDB` drops
+   * the project while `LUWI_HOME` keeps the project-scoped capability that
+   * names it, because ADR 0007 makes that one filesystem-canonical. The next
+   * run then registers a fresh project and the assignment fails with a bare
+   * CAPABILITY_CONFLICT that names neither the cause nor the fix. Detecting it
+   * here costs one read and turns it into an instruction.
+   */
+  const registered = await call<{ capabilities: Array<{ id: string; projectId?: string }> }>(
+    'GET',
+    '/api/v1/capabilities?limit=1000',
+  );
+  const orphan = registered.capabilities.find(
+    (capability) =>
+      capability.id === PROJECT_SCOPED_CAPABILITY_ID &&
+      capability.projectId !== undefined &&
+      capability.projectId !== project.id,
+  );
+  if (orphan !== undefined) {
+    halt([
+      `  capability ${PROJECT_SCOPED_CAPABILITY_ID} belongs to project ${String(orphan.projectId)},`,
+      `  but this run registered ${project.id}.`,
+      '',
+      "The fixture's Redis database and its LUWI_HOME have drifted apart: one was",
+      'cleared and the other was not. No API reassigns a capability, so reset both',
+      'halves together and seed again — stop the daemon, remove the fixture LUWI_HOME',
+      'and the seed workspace, and FLUSHDB the fixture Redis database.',
+    ]);
+  }
+
   const agents = [
     {
       id: 'seed-codex',
@@ -266,7 +310,7 @@ async function main(): Promise<void> {
       compatibleAgentKinds: ['codex', 'claude-code'],
     },
     {
-      id: 'seed-cap-migrate',
+      id: PROJECT_SCOPED_CAPABILITY_ID,
       kind: 'plugin',
       name: 'Schema migration',
       scope: 'project',

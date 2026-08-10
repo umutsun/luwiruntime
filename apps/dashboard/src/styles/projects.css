@@ -173,6 +173,27 @@
   overflow-wrap: anywhere;
 }
 
+/* One change inside a config plan: its path, what it does to that path, and
+   how the file is managed. Without an explicit gap the three run together into
+   one unreadable string, which is exactly how it first shipped. */
+.plan-change {
+  margin: var(--space-3) 0 0;
+}
+
+.plan-change__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.plan-change__head small {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
 .bounded-note {
   margin: var(--space-2) 0 0;
   padding: var(--space-2) var(--space-3);

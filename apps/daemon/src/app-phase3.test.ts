@@ -1,5 +1,6 @@
 import type {
   AgentDefinition,
+  CapabilityPackage,
   ContextFootprint,
   EffectiveAgentConfiguration,
   Project,
@@ -33,6 +34,21 @@ const agent: AgentDefinition = {
   createdAt: timestamp,
   updatedAt: timestamp,
   metadata: {},
+};
+const capability: CapabilityPackage = {
+  id: 'capability-1',
+  kind: 'skill',
+  name: 'Review',
+  scope: 'global',
+  source: 'luwi-global',
+  checksum: 'a'.repeat(64),
+  compatibleAgentKinds: ['codex'],
+  requiredCapabilityIds: [],
+  requiredMcpIds: [],
+  enabled: true,
+  manifest: {},
+  createdAt: timestamp,
+  updatedAt: timestamp,
 };
 const footprint: ContextFootprint = {
   projectId: project.id,
@@ -221,5 +237,88 @@ describe('Phase 3 HTTP routes', () => {
     expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({ error: { code: 'RUNTIME_NOT_READY' } });
     expect(inspect).not.toHaveBeenCalled();
+  });
+
+  /**
+   * `listCapabilities` applies the page limit itself, so a route that asks for
+   * exactly the limit cannot tell a full page from a cut one. It reported
+   * `truncated: false` either way — a complete-looking list that is not.
+   */
+  it('reports capability truncation instead of asserting a completeness it cannot know', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const listCapabilities = vi.fn(async (query: { limit?: number }) =>
+      Array.from({ length: query.limit ?? 0 }, (_unused, index) => ({
+        ...capability,
+        id: `capability-${String(index)}`,
+      })),
+    );
+    app = buildDaemon({
+      config: {
+        host: '127.0.0.1',
+        port: 80,
+        redisUrl: 'redis://127.0.0.1:6379',
+        logLevel: 'silent',
+        workspaceId: 'local',
+      },
+      redis: new HealthyRedis(),
+      logger: false,
+      readiness,
+      runtimeState: () => readiness.state,
+      services: {
+        projects: {
+          register: async () => project,
+          get: async () => project,
+          list: async () => [project],
+        } as ProjectService,
+        sessions: { list: async () => [] } as unknown as SessionService,
+        controlPlane: { listCapabilities } as unknown as ControlPlaneService,
+        listEvents: async () => [],
+      },
+    });
+
+    const full = await app.inject({ method: 'GET', url: '/api/v1/capabilities?limit=10' });
+
+    expect(full.statusCode).toBe(200);
+    // One more than the page is requested so the cut is observable at all.
+    expect(listCapabilities).toHaveBeenCalledWith(expect.objectContaining({ limit: 11 }));
+    expect(full.json().capabilities).toHaveLength(10);
+    expect(full.json().truncated).toBe(true);
+  });
+
+  it('reports a short capability page as complete', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    app = buildDaemon({
+      config: {
+        host: '127.0.0.1',
+        port: 80,
+        redisUrl: 'redis://127.0.0.1:6379',
+        logLevel: 'silent',
+        workspaceId: 'local',
+      },
+      redis: new HealthyRedis(),
+      logger: false,
+      readiness,
+      runtimeState: () => readiness.state,
+      services: {
+        projects: {
+          register: async () => project,
+          get: async () => project,
+          list: async () => [project],
+        } as ProjectService,
+        sessions: { list: async () => [] } as unknown as SessionService,
+        controlPlane: {
+          listCapabilities: async () => [capability],
+        } as unknown as ControlPlaneService,
+        listEvents: async () => [],
+      },
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/capabilities?limit=10' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().capabilities).toHaveLength(1);
+    expect(response.json().truncated).toBe(false);
   });
 });

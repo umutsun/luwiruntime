@@ -7,6 +7,7 @@ import {
   agentDefinitionSchema,
   agentDetectionRequestSchema,
   agentDetectionResponseSchema,
+  CONTROL_PLANE_COLLECTION_LIMIT,
   capabilityAssignmentRequestSchema,
   capabilityBindingSchema,
   capabilityCollectionSchema,
@@ -1016,18 +1017,31 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         );
       });
 
+      /**
+       * `listCapabilities` applies the page limit itself, unlike the collection
+       * reads that slice here, so asking it for exactly the limit leaves a full
+       * page and a cut one indistinguishable. One more than the page is
+       * requested for the same reason every other bounded read over-fetches by
+       * one: without it the response asserts a completeness it cannot know.
+       */
       app.get('/api/v1/capabilities', async (request) => {
         const query = parseRequestInput(capabilityListQuerySchema, request.query);
+        const capabilities = await withCurrentRead(() =>
+          control.listCapabilities({ ...query, limit: query.limit + 1 }),
+        );
         return capabilityCollectionSchema.parse({
-          capabilities: await withCurrentRead(() => control.listCapabilities(query)),
-          truncated: false,
+          capabilities: capabilities.slice(0, query.limit),
+          truncated: capabilities.length > query.limit,
         });
       });
       app.post('/api/v1/capabilities/scan', async (request) => {
         parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
+        const capabilities = await withCurrentRead(() =>
+          control.listCapabilities({ limit: CONTROL_PLANE_COLLECTION_LIMIT + 1 }),
+        );
         return capabilityCollectionSchema.parse({
-          capabilities: await withCurrentRead(() => control.listCapabilities()),
-          truncated: false,
+          capabilities: capabilities.slice(0, CONTROL_PLANE_COLLECTION_LIMIT),
+          truncated: capabilities.length > CONTROL_PLANE_COLLECTION_LIMIT,
         });
       });
       app.post('/api/v1/capabilities', async (request, reply) => {

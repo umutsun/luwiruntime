@@ -1,0 +1,67 @@
+import { readFileSync } from 'node:fs';
+
+import { describe, expect, it } from 'vitest';
+
+/**
+ * Every class a route view names must exist in a stylesheet.
+ *
+ * A `className` that no rule matches fails silently: the markup is correct, the
+ * render test passes because the text is present, and the page is wrong. That
+ * is exactly how `.plan-change__head` shipped — the path, the operation chip
+ * and the management mode had no gap between them and rendered as one string.
+ *
+ * Scoped to the route views rather than the whole app, because shared
+ * components compose class names from template strings and a literal scan would
+ * report those as missing.
+ */
+
+const VIEWS = [
+  '../routes/capabilities-view.tsx',
+  '../routes/config-view.tsx',
+  '../routes/messages-view.tsx',
+] as const;
+
+const STYLESHEETS = [
+  './tokens.css',
+  './shell.css',
+  './pulse.css',
+  './activity.css',
+  './projects.css',
+] as const;
+
+function definedClasses(): Set<string> {
+  const defined = new Set<string>();
+  for (const sheet of STYLESHEETS) {
+    const css = readFileSync(new URL(sheet, import.meta.url), 'utf8');
+    for (const match of css.matchAll(/\.([A-Za-z_][\w-]*)/g)) {
+      const name = match[1];
+      if (name !== undefined) defined.add(name);
+    }
+  }
+  return defined;
+}
+
+function usedClasses(view: string): string[] {
+  const source = readFileSync(new URL(view, import.meta.url), 'utf8');
+  const used = new Set<string>();
+  for (const match of source.matchAll(/className="([^"{}]+)"/g)) {
+    const value = match[1];
+    if (value === undefined) continue;
+    for (const name of value.split(/\s+/).filter((entry) => entry !== '')) used.add(name);
+  }
+  return [...used].sort();
+}
+
+describe('route view class coverage', () => {
+  it.each(VIEWS)('%s names only classes a stylesheet defines', (view) => {
+    const defined = definedClasses();
+    const missing = usedClasses(view).filter((name) => !defined.has(name));
+
+    expect(missing).toEqual([]);
+  });
+
+  it('reads real class names, so the scan itself cannot pass by finding nothing', () => {
+    for (const view of VIEWS) expect(usedClasses(view).length).toBeGreaterThan(3);
+    expect(definedClasses().has('route-stack')).toBe(true);
+  });
+});

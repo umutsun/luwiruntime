@@ -205,11 +205,32 @@ paint one pair's configuration under another pair's name.
 `agent.definition.` map to the effective configuration, because each changes what is bound;
 `context.` maps to both pair context reads, because they measure the same thing.
 
-### Still unconsumed
+## The catalogue and the config chain
 
-The capability and profile catalogue (`/api/v1/capabilities`, `/api/v1/profiles`) and the config
-plan, snapshot and drift reads have fixture data and no dashboard consumer. They are the last two
-item-10 domains and remain new scope under AGENTS.md section 21.
+Date: 2026-08-10
+
+ADR 0019 built the last two item-10 domains, each on its own route because both are whole-runtime
+inventories that no project or pair frame contains.
+
+| Module              | REST read                            | Scope and behavior                                                                                                                                    | Status    |
+| ------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Capability packages | `GET /api/v1/capabilities?limit=100` | Global bounded list on `#/capabilities`, filterable by kind, scope and enabled state. The response's own `truncated` flag is trusted, not re-derived. | SUPPORTED |
+| Capability profiles | `GET /api/v1/profiles`               | Global. Each reference resolves to a package name, or reports itself beyond the loaded page, not registered, or unresolvable — never merely missing.  | SUPPORTED |
+| Configuration drift | `GET /api/v1/config/drift`           | Global, on `#/config`. Classified from the two recorded hashes as edited, removed, appeared, unchanged, or unrecorded.                                | SUPPORTED |
+| Configuration plans | `GET /api/v1/config/plans`           | Global. Renders the daemon's own redacted diff and its warnings. A plan with no snapshot reports `Not applied` rather than a blank cell.              | SUPPORTED |
+| Config snapshots    | `GET /api/v1/config/snapshots`       | Global. A file with `existed: false` is marked as created by the apply, because undoing it is a delete and not a restore.                             | SUPPORTED |
+
+`capability.` and `profile.` map to their own halves of the catalogue by exact event type, not by
+prefix: `context.capability.loaded` records an agent loading a skill and changes no catalogue row.
+`config.drift.` maps to drift, the plan transitions to plans, and apply, rollback and reconcile to
+all three, because one operation moves the plan, writes a snapshot, and can clear drift together.
+
+Both routes are strictly read-only, and the config one most deliberately: plan, approve, apply,
+rollback, drift scan and reconcile all write the developer's own agent configuration files.
+
+Neither list has an unbounded read. The three config collections take no limit and carry no
+`truncated` field, so beyond the repository's cap of 1000 they would shorten in silence; the views
+therefore make no completeness claim.
 
 ### Honesty rules encoded in these routes
 

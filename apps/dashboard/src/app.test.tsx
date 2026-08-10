@@ -562,6 +562,9 @@ describe('Phase 5D routes', () => {
   const routes = [
     ['#/sessions', 'Sessions'],
     ['#/agents', 'Agents'],
+    ['#/messages', 'Messages'],
+    ['#/capabilities', 'Capabilities'],
+    ['#/config', 'Configuration'],
     ['#/usage', 'Usage'],
     ['#/context', 'Context'],
     ['#/optimization', 'Optimization'],

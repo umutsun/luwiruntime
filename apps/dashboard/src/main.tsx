@@ -19,6 +19,20 @@ import {
   type AgentPairResources,
 } from './api/agent-pair-scope.js';
 import {
+  capabilityCatalogResourceKeys,
+  capabilityCatalogResourcesForEvent,
+  loadCapabilityCatalog,
+  type CapabilityCatalogResourceKey,
+  type CapabilityCatalogResources,
+} from './api/capability-catalog.js';
+import {
+  configResourceKeys,
+  configResourcesForEvent,
+  loadConfigScope,
+  type ConfigResourceKey,
+  type ConfigResources,
+} from './api/config-scope.js';
+import {
   loadMessageScope,
   messageResourceKeys,
   messageResourcesForEvent,
@@ -41,6 +55,8 @@ import {
 import {
   affectsSelectedProject,
   buildPulseSnapshot,
+  needsCapabilityCatalogOf,
+  needsConfigOf,
   needsIntelligenceOf,
   needsMessagesOf,
   resourcesOf,
@@ -130,12 +146,30 @@ function DashboardRoute() {
   const needsMessagesRef = useRef(needsMessages);
   needsMessagesRef.current = needsMessages;
 
+  const [needsCatalog, setNeedsCatalog] = useState(() =>
+    needsCapabilityCatalogOf(window.location.hash),
+  );
+  const [capabilityCatalogResources, setCapabilityCatalogResources] = useState<
+    Partial<CapabilityCatalogResources>
+  >({});
+  const [capabilityCatalogLoading, setCapabilityCatalogLoading] = useState(false);
+  const needsCatalogRef = useRef(needsCatalog);
+  needsCatalogRef.current = needsCatalog;
+
+  const [needsConfig, setNeedsConfig] = useState(() => needsConfigOf(window.location.hash));
+  const [configResources, setConfigResources] = useState<Partial<ConfigResources>>({});
+  const [configLoading, setConfigLoading] = useState(false);
+  const needsConfigRef = useRef(needsConfig);
+  needsConfigRef.current = needsConfig;
+
   useEffect(() => {
     const update = () => {
       setSelectedProjectId(selectedProjectOf(window.location.hash));
       setSelectedAgentId(selectedAgentOf(window.location.hash));
       setNeedsIntelligence(needsIntelligenceOf(window.location.hash));
       setNeedsMessages(needsMessagesOf(window.location.hash));
+      setNeedsCatalog(needsCapabilityCatalogOf(window.location.hash));
+      setNeedsConfig(needsConfigOf(window.location.hash));
     };
     window.addEventListener('hashchange', update);
     return () => window.removeEventListener('hashchange', update);
@@ -168,6 +202,32 @@ function DashboardRoute() {
     );
     return () => controller.abort();
   }, [needsMessages, requestNumber]);
+
+  useEffect(() => {
+    if (!needsCatalog) return undefined;
+    const controller = new AbortController();
+    setCapabilityCatalogLoading(true);
+    void loadCapabilityCatalog(client, capabilityCatalogResourceKeys, {
+      signal: controller.signal,
+    }).then((next) => {
+      if (controller.signal.aborted) return;
+      setCapabilityCatalogResources(next);
+      setCapabilityCatalogLoading(false);
+    });
+    return () => controller.abort();
+  }, [needsCatalog, requestNumber]);
+
+  useEffect(() => {
+    if (!needsConfig) return undefined;
+    const controller = new AbortController();
+    setConfigLoading(true);
+    void loadConfigScope(client, configResourceKeys, { signal: controller.signal }).then((next) => {
+      if (controller.signal.aborted) return;
+      setConfigResources(next);
+      setConfigLoading(false);
+    });
+    return () => controller.abort();
+  }, [needsConfig, requestNumber]);
 
   useEffect(() => {
     if (selectedProjectId === undefined) {
@@ -235,6 +295,22 @@ function DashboardRoute() {
     void loadMessageScope(client, keys).then((next) => {
       if (!needsMessagesRef.current) return;
       setMessageResources((current) => ({ ...current, ...next }));
+    });
+  }, []);
+
+  const refreshCapabilityCatalog = useCallback((keys: readonly CapabilityCatalogResourceKey[]) => {
+    if (!needsCatalogRef.current || keys.length === 0) return;
+    void loadCapabilityCatalog(client, keys).then((next) => {
+      if (!needsCatalogRef.current) return;
+      setCapabilityCatalogResources((current) => ({ ...current, ...next }));
+    });
+  }, []);
+
+  const refreshConfigScope = useCallback((keys: readonly ConfigResourceKey[]) => {
+    if (!needsConfigRef.current || keys.length === 0) return;
+    void loadConfigScope(client, keys).then((next) => {
+      if (!needsConfigRef.current) return;
+      setConfigResources((current) => ({ ...current, ...next }));
     });
   }, []);
 
@@ -329,6 +405,8 @@ function DashboardRoute() {
         }
         refreshIntelligenceScope(intelligenceResourcesForEvent(event.type));
         refreshMessageScope(messageResourcesForEvent(event.type));
+        refreshCapabilityCatalog(capabilityCatalogResourcesForEvent(event.type));
+        refreshConfigScope(configResourcesForEvent(event.type));
         refreshAgentPairScope(agentPairResourcesForEvent(event.type));
       },
       onInvalid: () => setInvalidEventCount((count) => Math.min(99, count + 1)),
@@ -346,6 +424,8 @@ function DashboardRoute() {
     refreshProjectScope,
     refreshIntelligenceScope,
     refreshMessageScope,
+    refreshCapabilityCatalog,
+    refreshConfigScope,
     refreshAgentPairScope,
   ]);
 
@@ -377,6 +457,10 @@ function DashboardRoute() {
       intelligenceLoading={intelligenceLoading}
       messageResources={messageResources}
       messagesLoading={messagesLoading}
+      capabilityCatalogResources={capabilityCatalogResources}
+      capabilityCatalogLoading={capabilityCatalogLoading}
+      configResources={configResources}
+      configLoading={configLoading}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
       loadSubgraph={fetchSubgraph}

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   affectsSelectedProject,
+  needsCapabilityCatalogOf,
+  needsConfigOf,
   needsIntelligenceOf,
+  needsMessagesOf,
   resourcesOf,
   seedActivity,
   selectedProjectOf,
@@ -56,6 +59,36 @@ describe('needsIntelligenceOf', () => {
     // why the overview must not pay for it.
     for (const route of ['#/pulse', '#/activity', '#/projects', '#/sessions', '#/usage', '']) {
       expect(needsIntelligenceOf(route), route).toBe(false);
+    }
+  });
+});
+
+describe('needsCapabilityCatalogOf', () => {
+  it('opens the catalogue reads only on the route that renders them', () => {
+    expect(needsCapabilityCatalogOf('#/capabilities')).toBe(true);
+  });
+
+  it('keeps them off every other route, including the ones that show resolved capabilities', () => {
+    for (const route of ['#/projects/p1/agents/a1', '#/pulse', '#/messages', '#/config', '']) {
+      expect(needsCapabilityCatalogOf(route), route).toBe(false);
+    }
+  });
+});
+
+describe('needsConfigOf', () => {
+  it('opens the config chain reads only on the route that renders them', () => {
+    expect(needsConfigOf('#/config')).toBe(true);
+    for (const route of ['#/capabilities', '#/pulse', '#/projects/p1', '']) {
+      expect(needsConfigOf(route), route).toBe(false);
+    }
+  });
+});
+
+describe('needsMessagesOf', () => {
+  it('opens the message read only on its own route', () => {
+    expect(needsMessagesOf('#/messages')).toBe(true);
+    for (const route of ['#/pulse', '#/capabilities', '#/activity', '']) {
+      expect(needsMessagesOf(route), route).toBe(false);
     }
   });
 });

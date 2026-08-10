@@ -55,6 +55,22 @@ export function needsMessagesOf(hash: string): boolean {
 }
 
 /**
+ * The catalogue reads, on the same rule.
+ *
+ * `#/capabilities` is the only route that renders either collection, and both
+ * are whole-runtime inventories rather than project-scoped reads, so nothing
+ * else should pay for them.
+ */
+export function needsCapabilityCatalogOf(hash: string): boolean {
+  return parseRoute(hash).name === 'capabilities';
+}
+
+/** The config chain reads, on the same rule. */
+export function needsConfigOf(hash: string): boolean {
+  return parseRoute(hash).name === 'config';
+}
+
+/**
  * Whether a realtime event can change what the currently open project panels
  * show. An event for another project changes nothing that is rendered, so it
  * must not cost a request; an event carrying no project may still matter.

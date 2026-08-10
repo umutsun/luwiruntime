@@ -150,8 +150,10 @@ ADR 0018 then removed the reason those domains were deferred. `pnpm seed` popula
 fixture runtime, and three of them were built on it: `#/messages`, effective agent configuration,
 and the pair-scoped context reads, the last two on `#/projects/<id>/agents/<agentId>`.
 
-**Still unbuilt, and still §21 scope: the capability/profile catalogue, and config plans, snapshots
-and drift.** The fixture produces data for both, so only approval is missing.
+ADR 0019 built the last two: `#/capabilities` (the package and profile inventory, with profile
+references resolved to names) and `#/config` (drift, plans, snapshots — read-only; every mutation
+in that domain writes the developer's own agent configuration files). **No item-10 read domain is
+open any more.** It also fixed a hardcoded `truncated: false` on `GET /api/v1/capabilities`.
 
 To look at any of it, start a fixture daemon — `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and
 `WORKSPACE_ID=fixture-…` **together**, because Redis alone is not isolation: per ADR 0007 agent

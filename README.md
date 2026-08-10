@@ -130,9 +130,18 @@ can be looked at before being called done. It refuses to run unless the daemon r
 workspace, because agent definitions, capabilities and profiles are filesystem-canonical and a
 Redis database alone does not isolate them.
 
-Two read-only daemon domains still have no dashboard consumer: the capability and profile
-catalogue, and config plans, snapshots and drift. Their events reach the Activity feed, so a user
-sees that something happened without seeing what.
+ADR 0019 closed the last two of those domains. `#/capabilities` renders the registered inventory —
+every package with its kind, scope, source, and compatible agent kinds, and every profile with the
+capabilities it names resolved to their real names. A profile reference with no match is reported
+as beyond the loaded page or as not registered, which are opposite facts, and as unresolvable when
+the catalogue read itself failed. `#/config` renders the native-configuration chain in the order a
+reader needs it: drift first, classified from its two recorded hashes as an edit, a removal, an
+unexpected file, or nothing at all; then plans with the redacted diff the daemon produced; then the
+snapshots, where a file that did not exist before the apply is marked as such, because undoing that
+apply is a delete and not a restore. Neither route offers any control that plans, approves,
+applies, rolls back, assigns, or rescans.
+
+Every read-only domain the 2026-08-09 audit listed now has a dashboard consumer.
 
 Dashboard mutations, optimization accept/reject/evaluate, lifecycle/release scoring, release
 readiness, unified search, GitHub integration, prompt injection, tasks, leases, semantic knowledge

@@ -20,10 +20,13 @@
 > it — inter-agent messaging, effective agent configuration, and the
 > pair-scoped context reads.
 >
-> **Open:** two item-10 domains — the capability/profile catalogue and config
-> plans/snapshots/drift — plus the smaller depth items in sections 5 and 6 that
-> were never given a priority number. Neither remaining domain is blocked by
-> absent data any more; both need approval only.
+> **Then ADR 0019** closed item 10 entirely: `#/capabilities` and `#/config`
+> are the last two domains, and building the first consumer of the capability
+> collection exposed a hardcoded `truncated: false` — an instance of this
+> report's own second finding class, in a route it never examined.
+>
+> **Open:** the smaller depth items in sections 5 and 6 that were never given a
+> priority number. Every numbered item is closed.
 
 ## Verdict
 
@@ -156,3 +159,5 @@ Not defects. Recorded because they shape how the UI reads.
 10. **Decide, explicitly, on the unbuilt read domains — large, and needs approval first.** Messages, capability/profile catalogue, effective agent config, git attribution, config drift. Every one is a read-only endpoint the daemon already serves and whose events already flow into Activity, and none was in the Phase 5 matrix — so building any of them is new scope under §21, not a bug fix. The pair-scoped context reads (item: `docs/phase5-dashboard-capability-matrix.md:17`) are the exception: the project's own matrix already counted them as in scope, which makes them the cheapest honest place to start.
 
     **Decided on 2026-08-10 — ADR 0017.** The ranking above is by user loss and does not measure whether the data exists. Against the live runtime (`luwi:v1:*`, 3072 keys): `attribution` holds 17 records, while `message`, `capability`, `profile`, `config` and `context` hold zero. Four of the five domains — and the pair-scoped context reads named as the cheap exception — would therefore render an empty table and could not be verified by looking at them, which is precisely how the two defects in this report survived three sessions of green tests. Git attribution was built; the rest defer until each holds records, with the condition for each stated in ADR 0017. The correction worth carrying forward: "cheapest under §21" and "cheapest to verify" are different axes, and this report only weighed the first.
+
+    **Closed on 2026-08-10 — ADR 0018 and ADR 0019.** `pnpm seed` produced the records the deferral waited for, and all five domains were built against it: messaging, effective agent configuration and the pair-scoped context reads under ADR 0018, then the capability/profile catalogue and the config chain under ADR 0019. Building the first consumer of `GET /api/v1/capabilities` found a hardcoded `truncated: false` over a list the service cuts at `limit` — this report's own finding class (2), in a route it never read. That is the third time a defect surfaced only when something consumed the endpoint, and the pattern is now the argument for building the consumer rather than auditing the producer.
