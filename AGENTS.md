@@ -968,9 +968,19 @@ configuration and its conflicts, and the pair-scoped context summary and footpri
 hang off `#/projects/<id>/agents/<agentId>`, which is what finally makes the Projects route's
 `profileCount` and `capabilityCount` openable.
 
-**Two item-10 domains remain unbuilt: the capability and profile catalogue, and config plans,
-snapshots and drift.** They are no longer blocked by absent data — the fixture produces both — and
-remain new scope under this section. Building either still requires explicit approval.
+ADR 0019 then built the last two, both approved: the capability and profile catalogue as
+`#/capabilities`, and config plans, snapshots and drift as `#/config`. Each is a route rather than a
+panel because both are whole-runtime inventories that no project or pair frame contains. The config
+route is strictly read-only, which matters more there than anywhere else on this surface: plan,
+approve, apply, rollback, drift scan and reconcile all write the developer's own agent
+configuration files. Building the first consumer of `GET /api/v1/capabilities` also exposed a
+hardcoded `truncated: false` over a list the service cuts at `limit`; the route now over-fetches by
+one and compares, as every other bounded collection already did.
+
+**No read domain from the 2026-08-09 audit is open.** What remains from that report is its
+unnumbered depth work: `graph-diagram.tsx` has no direct test, three branches in
+`GraphExplorerView` are unasserted, and the app shell's degraded-path signals are asserted nowhere.
+None is a malfunction.
 
 Isolating a fixture takes `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and `WORKSPACE_ID` together.
 Redis alone is not enough: per ADR 0007 the filesystem is canonical for agent definitions,
