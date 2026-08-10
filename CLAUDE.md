@@ -55,6 +55,7 @@ History is short and every commit is a large checkpoint:
 | `677fe98` | ADR 0017: git attribution, observation depth, two defect fixes |
 | `292fbcd` | ADR 0018: seeded fixture, messaging, project-agent pair scope  |
 | `89d0ef0` | ADR 0019: capability catalogue, config chain, truncation fix   |
+| `0e76bf4` | ADR 0020: advisory work leases, `luwi_v1` v10, four MCP tools  |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
