@@ -1,31 +1,62 @@
 import { useState } from 'react';
 
+import type { ConfigMutations, MutationResult } from '../api/config-mutations.js';
 import {
   changeSummary,
+  type ConfigAgentOption,
   type ConfigDriftRecord,
   type ConfigPlanRecord,
   type ConfigSnapshotRecord,
   type DriftKind,
   type DriftSeverity,
 } from '../api/config-scope.js';
+import { ConfirmDialog } from '../components/confirm-dialog.js';
 import { IdBadge } from '../components/id-badge.js';
 import { Panel, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
 import { StatusChip, type StatusTone } from '../components/status-chip.js';
 
 /**
- * Native configuration management, read-only.
+ * Native configuration management.
  *
  * The three panels are one chain, in the order a reader needs them: what is
  * wrong now (drift), what was proposed and what became of it (plans), and what
  * the runtime preserved before it wrote (snapshots). Twelve `config.*` event
  * types have been reaching Activity since Phase 3 recording that these steps
- * happened; this is the first surface that says which files they touched.
+ * happened; this is the surface that says which files they touched.
  *
- * Every mutation in this domain — plan, approve, apply, rollback, drift scan,
- * reconcile — is a POST the daemon serves and none of them is reachable here.
- * AGENTS.md section 21 keeps them off read surfaces, and these are the
- * operations that write to the developer's own agent configuration files.
+ * Plan creation, apply, rollback and rescan are reachable here as of the
+ * dashboard-mutation approval recorded in AGENTS.md section 21. Apply is the
+ * only one behind a confirmation, because it is the only one that writes the
+ * developer's own configuration files — a plan prepares changes and writes
+ * nothing until it is applied. `reconcile` remains absent.
+ *
+ * Every control is driven by the optional `mutations` prop. A caller that
+ * passes none gets the read-only surface unchanged.
  */
+
+/** What the surface says after a mutation returned. */
+type Outcome = { tone: 'success' | 'danger'; text: string };
+
+function outcomeOf(result: MutationResult<unknown>, success: string): Outcome {
+  if (result.state === 'ok') return { tone: 'success', text: success };
+  if (result.reason === 'transport') {
+    return { tone: 'danger', text: 'The daemon could not be reached.' };
+  }
+  if (result.reason === 'invalid') {
+    return { tone: 'danger', text: 'The daemon returned a response this view cannot validate.' };
+  }
+  // The daemon's own words. It knows why it refused and this view does not.
+  return { tone: 'danger', text: result.message };
+}
+
+function OutcomeLine({ outcome }: { outcome: Outcome | undefined }) {
+  if (outcome === undefined) return null;
+  return (
+    <p className={outcome.tone === 'success' ? 'outcome outcome--ok' : 'outcome outcome--bad'}>
+      {outcome.text}
+    </p>
+  );
+}
 
 const driftLabels: Record<DriftKind, string> = {
   edited: 'Edited',
@@ -83,6 +114,93 @@ function summaryLine(changes: ConfigPlanRecord['changes']): string {
     counts.delete === 0 ? undefined : `${String(counts.delete)} delete`,
   ].filter((part): part is string => part !== undefined);
   return parts.length === 0 ? 'No changes' : parts.join(' · ');
+}
+
+/**
+ * Creating a plan touches no file of the developer's, so it needs no
+ * confirmation. The gate is on apply, which is where the writing happens.
+ */
+function PlanForm({
+  agents,
+  mutations,
+  onMutated,
+}: {
+  agents: readonly ConfigAgentOption[];
+  mutations: ConfigMutations;
+  onMutated: () => void;
+}) {
+  const [agentId, setAgentId] = useState(agents[0]?.id ?? '');
+  const [adoptUnmanaged, setAdoptUnmanaged] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [outcome, setOutcome] = useState<Outcome>();
+
+  const run = (
+    create: (input: {
+      agentId: string;
+      adoptUnmanaged: boolean;
+    }) => Promise<MutationResult<unknown>>,
+  ) => {
+    setBusy(true);
+    setOutcome(undefined);
+    void create({ agentId, adoptUnmanaged }).then((result) => {
+      setBusy(false);
+      setOutcome(outcomeOf(result, 'Plan prepared. Review its changes, then apply it.'));
+      if (result.state === 'ok') onMutated();
+    });
+  };
+
+  return (
+    <Panel title="New plan" meta="Prepares changes; writes nothing until applied">
+      <div className="plan-form">
+        <label htmlFor="plan-form-agent">Agent</label>
+        <select
+          id="plan-form-agent"
+          value={agentId}
+          disabled={busy}
+          onChange={(event) => setAgentId(event.target.value)}
+        >
+          {agents.map((agent) => (
+            <option key={agent.id} value={agent.id}>
+              {agent.displayName}
+            </option>
+          ))}
+        </select>
+
+        <label htmlFor="plan-form-adopt">
+          <input
+            id="plan-form-adopt"
+            type="checkbox"
+            checked={adoptUnmanaged}
+            disabled={busy}
+            onChange={(event) => setAdoptUnmanaged(event.target.checked)}
+          />
+          Adopt files LUWI does not already manage
+        </label>
+
+        <div className="plan-form__actions">
+          <button
+            type="button"
+            disabled={busy || agentId === ''}
+            onClick={() => run(mutations.createImportPlan)}
+          >
+            Import plan
+          </button>
+          <button
+            type="button"
+            disabled={busy || agentId === ''}
+            onClick={() => run(mutations.createRenderPlan)}
+          >
+            Render plan
+          </button>
+        </div>
+      </div>
+      <OutcomeLine outcome={outcome} />
+      <p className="bounded-note">
+        An import plan brings the agent&apos;s existing native configuration under management. A
+        render plan writes what LUWI would produce. Neither touches a file until it is applied.
+      </p>
+    </Panel>
+  );
 }
 
 function PlanDetail({ plan }: { plan: ConfigPlanRecord }) {
@@ -156,8 +274,8 @@ function PlanDetail({ plan }: { plan: ConfigPlanRecord }) {
       ))}
 
       <p className="bounded-note">
-        The diff is the one the daemon recorded, already redacted at the source. This view neither
-        redacts it a second time nor can apply it.
+        The diff is the one the daemon recorded, already redacted at the source. This view does not
+        redact it a second time.
       </p>
     </Panel>
   );
@@ -236,23 +354,50 @@ export function ConfigView({
   drifts,
   plans,
   snapshots,
+  agents,
+  mutations,
+  onMutated,
   loading = false,
 }: {
   drifts: ResourceState<ConfigDriftRecord[]> | undefined;
   plans: ResourceState<ConfigPlanRecord[]> | undefined;
   snapshots: ResourceState<ConfigSnapshotRecord[]> | undefined;
+  agents?: ResourceState<ConfigAgentOption[]> | undefined;
+  /** Absent on a read-only render, which is what every read-only test does. */
+  mutations?: ConfigMutations | undefined;
+  onMutated?: (() => void) | undefined;
   loading?: boolean;
 }) {
   const [selectedPlanId, setSelectedPlanId] = useState<string>();
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>();
+  const [pendingPlan, setPendingPlan] = useState<ConfigPlanRecord>();
+  const [busy, setBusy] = useState(false);
+  const [planOutcome, setPlanOutcome] = useState<Outcome>();
+  const [driftOutcome, setDriftOutcome] = useState<Outcome>();
 
   const allPlans = plans?.state === 'ready' ? plans.data : [];
   const allSnapshots = snapshots?.state === 'ready' ? snapshots.data : [];
   const selectedPlan = allPlans.find((plan) => plan.id === selectedPlanId);
   const selectedSnapshot = allSnapshots.find((snapshot) => snapshot.id === selectedSnapshotId);
+  const notifyMutated = onMutated ?? (() => undefined);
+
+  const confirmApply = () => {
+    if (mutations === undefined || pendingPlan === undefined) return;
+    const planId = pendingPlan.id;
+    setBusy(true);
+    void mutations.applyPlanWithApproval(planId).then((result) => {
+      setBusy(false);
+      setPendingPlan(undefined);
+      setPlanOutcome(outcomeOf(result, `Plan ${planId} applied.`));
+      if (result.state === 'ok') notifyMutated();
+    });
+  };
 
   return (
     <div className="route-stack">
+      {mutations === undefined || agents?.state !== 'ready' || agents.data.length === 0 ? null : (
+        <PlanForm agents={agents.data} mutations={mutations} onMutated={notifyMutated} />
+      )}
       <ResourcePanel<ConfigDriftRecord[]>
         title="Configuration drift"
         meta={drifts?.state === 'ready' ? `${String(drifts.data.length)} outstanding` : undefined}
@@ -301,12 +446,38 @@ export function ConfigView({
             </TableWrap>
             <p className="bounded-note">
               The finding is derived from the two hashes the runtime recorded, and the suggested
-              resolution is the runtime&apos;s own. Nothing here carries it out: importing,
-              reapplying, and rescanning are all daemon operations.
+              resolution is the runtime&apos;s own. Rescanning re-reads the managed files; carrying
+              out a suggested resolution means preparing a plan and applying it.
             </p>
           </>
         )}
       </ResourcePanel>
+
+      {/*
+       * Outside the panel deliberately. A `ResourcePanel` renders its children
+       * only for a non-empty ready resource, and a clean drift list is exactly
+       * when a reader wants to rescan for new drift.
+       */}
+      {mutations === undefined ? null : (
+        <div className="panel-actions">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              setDriftOutcome(undefined);
+              void mutations.scanDrift().then((result) => {
+                setBusy(false);
+                setDriftOutcome(outcomeOf(result, 'Drift rescanned.'));
+                if (result.state === 'ok') notifyMutated();
+              });
+            }}
+          >
+            Rescan drift
+          </button>
+          <OutcomeLine outcome={driftOutcome} />
+        </div>
+      )}
 
       <ResourcePanel<ConfigPlanRecord[]>
         title="Configuration plans"
@@ -327,6 +498,9 @@ export function ConfigView({
                 <th scope="col">Changes</th>
                 <th scope="col">Snapshot</th>
                 <th scope="col">Detail</th>
+                {/* A column whose every cell is a dash is noise, so the
+                    read-only surface does not carry one. */}
+                {mutations === undefined ? null : <th scope="col">Apply</th>}
               </tr>
             </thead>
             <tbody>
@@ -370,6 +544,27 @@ export function ConfigView({
                         {plan.id === selectedPlanId ? 'Hide' : 'Open'}
                       </button>
                     </td>
+                    {/*
+                     * Only a prepared plan is actionable. An approved one needs
+                     * the token its approval returned, which this surface
+                     * deliberately never held past the gesture, and the state
+                     * machine mints no second one.
+                     */}
+                    {mutations === undefined ? null : (
+                      <td>
+                        {plan.state === 'prepared' ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => setPendingPlan(plan)}
+                          >
+                            {`Apply ${plan.id}`}
+                          </button>
+                        ) : (
+                          <span className="unavailable">—</span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -377,6 +572,8 @@ export function ConfigView({
           </TableWrap>
         )}
       </ResourcePanel>
+
+      <OutcomeLine outcome={planOutcome} />
 
       {selectedPlan === undefined ? null : <PlanDetail plan={selectedPlan} />}
 
@@ -399,6 +596,7 @@ export function ConfigView({
                 <th scope="col">Files</th>
                 <th scope="col">Captured</th>
                 <th scope="col">Detail</th>
+                {mutations === undefined ? null : <th scope="col">Roll back</th>}
               </tr>
             </thead>
             <tbody>
@@ -429,6 +627,30 @@ export function ConfigView({
                       {snapshot.id === selectedSnapshotId ? 'Hide' : 'Open'}
                     </button>
                   </td>
+                  {mutations === undefined ? null : (
+                    <td>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        aria-label={`Roll back to ${snapshot.id}`}
+                        onClick={() => {
+                          setBusy(true);
+                          void mutations.createRollbackPlan(snapshot.id).then((result) => {
+                            setBusy(false);
+                            setPlanOutcome(
+                              outcomeOf(
+                                result,
+                                'Rollback plan prepared. Review its changes, then apply it.',
+                              ),
+                            );
+                            if (result.state === 'ok') notifyMutated();
+                          });
+                        }}
+                      >
+                        Roll back
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -437,6 +659,37 @@ export function ConfigView({
       </ResourcePanel>
 
       {selectedSnapshot === undefined ? null : <SnapshotDetail snapshot={selectedSnapshot} />}
+
+      {pendingPlan === undefined ? null : (
+        <ConfirmDialog
+          title={`Apply ${pendingPlan.id}`}
+          confirmLabel="Apply"
+          busy={busy}
+          onConfirm={confirmApply}
+          onCancel={() => setPendingPlan(undefined)}
+        >
+          <p>
+            This writes {pendingPlan.changes.length} file
+            {pendingPlan.changes.length === 1 ? '' : 's'} belonging to{' '}
+            <code>{pendingPlan.agentId}</code>. These are your own agent configuration files.
+          </p>
+          <ul className="name-list">
+            {pendingPlan.changes.map((change, index) => (
+              <li key={`${change.path}-${String(index)}`}>
+                <code>{change.path}</code> — {change.operation}
+                {change.warnings.length === 0
+                  ? null
+                  : ` (${String(change.warnings.length)} warning${
+                      change.warnings.length === 1 ? '' : 's'
+                    })`}
+              </li>
+            ))}
+          </ul>
+          <p className="bounded-note">
+            A snapshot of what is there now is written first, so this can be rolled back.
+          </p>
+        </ConfirmDialog>
+      )}
     </div>
   );
 }
