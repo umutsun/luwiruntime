@@ -34,17 +34,36 @@ describe('dashboard product independence', () => {
     expect(dependencies).not.toMatch(/(?:goose|acp|redis|claude|codex|gemini|kimi)/i);
   });
 
-  it('issues no mutation request from any production module', () => {
+  it('issues mutation requests from the config mutation module and nowhere else', () => {
+    const files = productionSources(sourceRoot);
+    const mutationModule = join(sourceRoot, 'api', 'config-mutations.ts');
+    expect(files, 'the allowlisted module must exist, or this test passes vacuously').toContain(
+      mutationModule,
+    );
+
+    // Dashboard mutations were approved on 2026-08-10 for the configuration
+    // plan chain only. The ban is not lifted, it is narrowed to one module, so
+    // a mutation reaching the daemon from anywhere else is still a defect.
+    const elsewhere = files
+      .filter((path) => path !== mutationModule)
+      .map((path) => readFileSync(path, 'utf8'))
+      .join('\n');
+
+    expect(elsewhere).not.toMatch(/method:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/i);
+    expect(elsewhere).not.toMatch(/['"`][^'"`]*\/(?:scan|rebuild|apply|approve|rollback)['"`]/);
+  });
+
+  it('calls no prohibited mutation, including from the allowlisted module', () => {
     const source = productionSources(sourceRoot)
       .map((path) => readFileSync(path, 'utf8'))
       .join('\n');
 
-    // Phase 5 is read-only. The daemon exposes scan, apply, approve, rollback,
-    // accept, reject, and rebuild endpoints; calling any of them from the
-    // dashboard would turn a read surface into a mutation surface.
-    expect(source).not.toMatch(/method:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/i);
-    expect(source).not.toMatch(/['"`][^'"`]*\/(?:scan|rebuild|apply|approve|rollback)['"`]/);
+    // These carry their own prohibitions elsewhere in AGENTS.md and the
+    // dashboard-mutation approval explicitly does not carry them in.
     expect(source).not.toMatch(/\/proposals\/[^'"`]*\/(?:accept|reject|evaluate)/);
+    expect(source).not.toMatch(/\/graph\/rebuild/);
+    expect(source).not.toMatch(/\/config\/reconcile/);
+    expect(source).not.toMatch(/\/git\/[^'"`]*\/(?:commit|checkout|push)/);
   });
 
   it('renders no lifecycle stage or release-readiness claim', () => {
