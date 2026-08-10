@@ -4,6 +4,7 @@ import type { z } from 'zod';
 import type { DaemonClient, ResourceResult } from './client.js';
 import {
   changeSummary,
+  configResourceKeys,
   configResourcesForEvent,
   driftKind,
   loadConfigScope,
@@ -257,8 +258,17 @@ describe('configResourcesForEvent', () => {
     }
   });
 
-  it('refreshes the whole chain on a runtime lifecycle event', () => {
-    expect(configResourcesForEvent('runtime.started')).toEqual(['drifts', 'plans', 'snapshots']);
+  /**
+   * A restart can change which agents are registered, so the picker is stale
+   * too — unlike a chain event, which moves plans without touching the roster.
+   */
+  it('refreshes every read the route holds on a runtime lifecycle event', () => {
+    expect(configResourcesForEvent('runtime.started')).toEqual([
+      'agents',
+      'drifts',
+      'plans',
+      'snapshots',
+    ]);
   });
 
   /** `config.inspected` reads native configuration; it changes none of these records. */
@@ -271,5 +281,58 @@ describe('configResourcesForEvent', () => {
     ]) {
       expect(configResourcesForEvent(type)).toEqual([]);
     }
+  });
+});
+
+describe('config scope agents read', () => {
+  it('loads the agent options the plan form needs', async () => {
+    const client = {
+      get: vi.fn().mockResolvedValue({
+        state: 'ready',
+        httpStatus: 200,
+        receivedAt: timestamp,
+        data: {
+          agents: [
+            {
+              id: 'codex-main',
+              kind: 'codex',
+              displayName: 'Codex',
+              enabled: true,
+              adapterId: 'adapter-1',
+              nativeConfigRoots: [],
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              metadata: {},
+            },
+          ],
+        },
+      }),
+    };
+
+    const result = await loadConfigScope(client as unknown as DaemonClient, ['agents']);
+
+    expect(client.get).toHaveBeenCalledWith('/api/v1/agents', expect.anything(), {});
+    expect(result.agents).toEqual({
+      state: 'ready',
+      data: [{ id: 'codex-main', displayName: 'Codex', enabled: true }],
+    });
+  });
+
+  it('marks the agents read unavailable rather than offering an empty picker', async () => {
+    const client = { get: vi.fn().mockResolvedValue({ state: 'unavailable', reason: 'http' }) };
+
+    const result = await loadConfigScope(client as unknown as DaemonClient, ['agents']);
+
+    expect(result.agents).toEqual({ state: 'unavailable' });
+  });
+
+  it('refreshes the agent list when an agent event arrives', () => {
+    expect(configResourcesForEvent('agent.registered')).toContain('agents');
+    expect(configResourcesForEvent('agent.updated')).toContain('agents');
+    expect(configResourcesForEvent('config.plan.created')).not.toContain('agents');
+  });
+
+  it('includes agents in the keys the route loads', () => {
+    expect(configResourceKeys).toContain('agents');
   });
 });

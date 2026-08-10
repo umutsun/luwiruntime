@@ -1,4 +1,5 @@
 import {
+  agentDefinitionCollectionSchema,
   configDriftCollectionSchema,
   configPlanCollectionSchema,
   configSnapshotCollectionSchema,
@@ -19,11 +20,9 @@ import type { DaemonClient } from './client.js';
  *
  * Loaded only while `#/config` is open.
  *
- * Nothing here plans, approves, applies, rolls back, rescans, or reconciles.
- * Every one of those is a POST the daemon serves, and AGENTS.md section 21
- * keeps them off read surfaces — which matters more here than anywhere else in
- * the dashboard, because these are the operations that write to the developer's
- * own agent configuration files.
+ * This module still only reads. The chain's writes live in
+ * `config-mutations.ts`, which is the single module the product-independence
+ * guard permits to issue one, and `reconcile` is in neither.
  */
 
 export type DriftSeverity = 'info' | 'warning' | 'error';
@@ -105,7 +104,19 @@ export type ConfigSnapshotRecord = {
   files: SnapshotFile[];
 };
 
+/**
+ * Only the three fields the plan form needs. The daemon's agent record carries
+ * native config roots and metadata this picker has no use for, and a narrower
+ * type is one less thing to keep in step.
+ */
+export type ConfigAgentOption = {
+  id: string;
+  displayName: string;
+  enabled: boolean;
+};
+
 export type ConfigResources = {
+  agents: ResourceState<ConfigAgentOption[]>;
   drifts: ResourceState<ConfigDriftRecord[]>;
   plans: ResourceState<ConfigPlanRecord[]>;
   snapshots: ResourceState<ConfigSnapshotRecord[]>;
@@ -113,8 +124,22 @@ export type ConfigResources = {
 
 export type ConfigResourceKey = keyof ConfigResources;
 
-export const configResourceKeys: readonly ConfigResourceKey[] = ['drifts', 'plans', 'snapshots'];
+export const configResourceKeys: readonly ConfigResourceKey[] = [
+  'agents',
+  'drifts',
+  'plans',
+  'snapshots',
+];
 
+/**
+ * The plan chain proper. An apply moves a plan, writes a snapshot and can
+ * create drift in one operation, but it never changes which agents exist — so
+ * a chain event invalidates these three and leaves the picker alone.
+ */
+const chainResourceKeys: readonly ConfigResourceKey[] = ['drifts', 'plans', 'snapshots'];
+
+/** The plan form's picker is only as current as the agent list behind it. */
+const AGENT_EVENTS = new Set(['agent.registered', 'agent.updated', 'agent.removed']);
 const DRIFT_EVENTS = new Set(['config.drift.detected', 'config.drift.resolved']);
 const PLAN_EVENTS = new Set([
   'config.import.planned',
@@ -137,7 +162,8 @@ const CHAIN_EVENTS = new Set([
 
 export function configResourcesForEvent(eventType: string): ConfigResourceKey[] {
   if (eventType.startsWith('runtime.')) return [...configResourceKeys];
-  if (CHAIN_EVENTS.has(eventType)) return [...configResourceKeys];
+  if (CHAIN_EVENTS.has(eventType)) return [...chainResourceKeys];
+  if (AGENT_EVENTS.has(eventType)) return ['agents'];
   if (DRIFT_EVENTS.has(eventType)) return ['drifts'];
   if (PLAN_EVENTS.has(eventType)) return ['plans'];
   // `config.inspected` reads native configuration and records nothing here.
@@ -163,6 +189,21 @@ export async function loadConfigScope(
 ): Promise<Partial<ConfigResources>> {
   const get = options.signal === undefined ? {} : { signal: options.signal };
   const result: Partial<ConfigResources> = {};
+
+  if (keys.includes('agents')) {
+    const response = await client.get('/api/v1/agents', agentDefinitionCollectionSchema, get);
+    result.agents =
+      response.state === 'ready'
+        ? {
+            state: 'ready',
+            data: response.data.agents.map((entry) => ({
+              id: entry.id,
+              displayName: entry.displayName,
+              enabled: entry.enabled,
+            })),
+          }
+        : { state: 'unavailable' };
+  }
 
   if (keys.includes('drifts')) {
     const response = await client.get('/api/v1/config/drift', configDriftCollectionSchema, get);
