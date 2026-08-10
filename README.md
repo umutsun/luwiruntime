@@ -138,8 +138,8 @@ the catalogue read itself failed. `#/config` renders the native-configuration ch
 reader needs it: drift first, classified from its two recorded hashes as an edit, a removal, an
 unexpected file, or nothing at all; then plans with the redacted diff the daemon produced; then the
 snapshots, where a file that did not exist before the apply is marked as such, because undoing that
-apply is a delete and not a restore. Neither route offers any control that plans, approves,
-applies, rolls back, assigns, or rescans.
+apply is a delete and not a restore. `#/capabilities` offers no control at all; `#/config` was
+read-only too until ADR 0021.
 
 Every read-only domain the 2026-08-09 audit listed now has a dashboard consumer.
 
@@ -157,11 +157,25 @@ that never asks still edits the file. What the runtime guarantees is an atomic a
 including `lease.denied`, which is the only evidence that a collision was prevented rather than
 merely not observed.
 
-Dashboard mutations, optimization accept/reject/evaluate, lifecycle/release scoring, release
-readiness, unified search, GitHub integration, prompt injection, task orchestration, a semantic
-knowledge graph, memory federation, cloud accounts, and authentication are not implemented. Work
-leases exist but are not renewed automatically, do not notify when a held path frees, and are not
-correlated with the commits made under them.
+ADR 0021 made the dashboard capable of writing, for one domain. `#/config` now creates import and
+render plans, prepares a rollback plan from a snapshot, rescans drift, and applies a plan behind a
+confirmation that names every file the apply will write. Creating a plan touches nothing, so only
+the apply is gated; a rollback is itself a plan and must pass the same gate, so an undo cannot skip
+the review the forward change needed. The one-time approval token never outlives the gesture — the
+client approves and applies inside one function and stores it nowhere — so an already-approved plan
+is shown with no control rather than a button that would fail.
+
+Two things followed. A `POST` that carries no `Origin` must now declare `application/json`, which a
+browser cannot send cross-site without a preflight the daemon deliberately never answers; `PUT`,
+`PATCH` and `DELETE` are unaffected because a cross-site one of those always preflights. And one
+module, `api/config-mutations.ts`, is the only place in the dashboard permitted to issue a
+state-changing request, enforced as an allowlist of one.
+
+`config/reconcile`, optimization accept/reject/evaluate, graph rebuild, Git mutation, lease release,
+lifecycle/release scoring, release readiness, unified search, GitHub integration, prompt injection,
+task orchestration, a semantic knowledge graph, memory federation, cloud accounts, and
+authentication are not implemented. Work leases exist but are not renewed automatically, do not
+notify when a held path frees, and are not correlated with the commits made under them.
 
 ## Architecture and security
 
@@ -175,6 +189,8 @@ local API. The daemon:
 - accepts only `HOST=127.0.0.1`;
 - validates exact loopback `Host` and browser/WebSocket `Origin` values;
 - rejects wildcard origins and `Origin: null`;
+- requires `content-type: application/json` on a `POST` that carries no `Origin`, and serves no CORS
+  header and no `OPTIONS` handler, so a cross-site mutation cannot pass the preflight it needs;
 - does not log Redis URLs, secrets, complete prompts, or unbounded payloads;
 - acquires a TTL-backed single-daemon owner lease before bootstrap mutation.
 

@@ -970,10 +970,10 @@ hang off `#/projects/<id>/agents/<agentId>`, which is what finally makes the Pro
 
 ADR 0019 then built the last two, both approved: the capability and profile catalogue as
 `#/capabilities`, and config plans, snapshots and drift as `#/config`. Each is a route rather than a
-panel because both are whole-runtime inventories that no project or pair frame contains. The config
-route is strictly read-only, which matters more there than anywhere else on this surface: plan,
-approve, apply, rollback, drift scan and reconcile all write the developer's own agent
-configuration files. Building the first consumer of `GET /api/v1/capabilities` also exposed a
+panel because both are whole-runtime inventories that no project or pair frame contains. That config
+route was strictly read-only until ADR 0021, which matters more there than anywhere else on this
+surface: plan, approve, apply, rollback, drift scan and reconcile all write the developer's own
+agent configuration files. Building the first consumer of `GET /api/v1/capabilities` also exposed a
 hardcoded `truncated: false` over a list the service cuts at `limit`; the route now over-fetches by
 one and compares, as every other bounded collection already did.
 
@@ -1002,30 +1002,35 @@ Redis alone is not enough: per ADR 0007 the filesystem is canonical for agent de
 capability packages and profiles, so those survive a `FLUSHDB` and land in the developer's real
 `~/.luwi` unless `LUWI_HOME` is redirected. ADR 0018 records how that was found.
 
-### Approved, not started: dashboard mutations
+### Built: dashboard configuration mutations
 
-On 2026-08-10 the owner approved **dashboard mutations** as the next phase. Nothing is built. The
-approval is recorded here so the next session has its mandate, and it authorizes that scope only.
+On 2026-08-10 the owner approved **dashboard mutations**, and the configuration plan chain was
+built. ADR 0021 records the phase and settles the three decisions this section had left open.
 
-The daemon serves 48 read and 41 write endpoints; the dashboard consumes every read and no write.
-The phase should start with the config plan chain, whose approval-token, snapshot and rollback
-semantics are already implemented and tested — `#/config` reads it today and cannot apply it.
+The dashboard is no longer read-only. `#/config` creates import and render plans, applies a plan
+behind a confirmation, prepares a rollback plan from a snapshot, and rescans drift. It gained a
+fourth read, `GET /api/v1/agents`, to populate the plan form's picker.
 
-Three decisions belong to that phase and are **not** settled here:
+How the three decisions landed:
 
-- **Origin on state-changing requests.** `validateLocalHttpRequest` accepts a request with no
-  `Origin` header, which is correct for the CLI and MCP callers that legitimately have none. A
-  mutating browser surface should decide whether state-changing methods must instead *require* a
-  matching allowlisted origin. This is a section 4 decision, not a UI one.
-- **What a confirmation is.** A config apply writes the developer's own agent configuration files.
-  Whether the one-time approval token is surfaced, re-requested, or held by the daemon changes what
-  the dashboard is allowed to do without a second deliberate act.
-- **Which mutations are in.** Approval covers dashboard mutations as a class. Optimization
-  accept/reject/evaluate, graph rebuild, and Git mutation each carry their own prohibition
-  elsewhere in this document and are not carried in by this approval.
+- **Origin on state-changing requests.** `validateLocalHttpRequest` now requires, for a `POST` that
+  carries no `Origin`, that the media type be `application/json` — a thing a browser cannot send
+  cross-site without a preflight the daemon deliberately never answers. The check is POST-only:
+  `PUT`, `PATCH` and `DELETE` are not CORS-safelisted, so a cross-site one always preflights and
+  never reaches a handler. No CORS header and no `OPTIONS` handler were added.
+- **What a confirmation is.** The dialog comes before `approve`, and `approve` and `apply` run
+  inside one function so the one-time token never outlives the gesture or reaches storage. An
+  already-`approved` plan is shown with no control, because the state machine mints no second token.
+- **Which mutations are in.** The plan chain, minus `reconcile`. Optimization
+  accept/reject/evaluate, graph rebuild, Git mutation, `inspect` and lease release are out and
+  untouched.
 
-**Every other prohibition below still stands.** Do not begin lifecycle/release scoring, task
-orchestration, a semantic or vector knowledge graph, memory federation, GitHub integration, prompt
-injection, automatic optimization apply, cloud accounts, authentication, or remote control-plane
-work until that specific scope is explicitly approved. Shipping one phase does not authorize the
-rest.
+`apps/dashboard/src/api/config-mutations.ts` is the **only** production module in the dashboard
+permitted to issue a state-changing request. `product-independence.test.ts` enforces that as an
+allowlist of one and still forbids the prohibited operations everywhere, including inside it.
+
+**Every other prohibition below still stands.** Do not begin `config/reconcile`, lifecycle/release
+scoring, task orchestration, a semantic or vector knowledge graph, memory federation, GitHub
+integration, prompt injection, automatic optimization apply, cloud accounts, authentication, or
+remote control-plane work until that specific scope is explicitly approved. Shipping one phase does
+not authorize the rest.

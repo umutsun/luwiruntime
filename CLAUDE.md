@@ -6,7 +6,7 @@ Kimi; it does not replace or impersonate them.
 
 ## Where the binding rules live
 
-`AGENTS.md` (886 lines) is the single source of truth for this repository's architecture. It is
+`AGENTS.md` (1036 lines) is the single source of truth for this repository's architecture. It is
 binding. This file does not restate it — it routes to it and adds only what is specific to running
 Claude Code on this machine.
 
@@ -56,6 +56,7 @@ History is short and every commit is a large checkpoint:
 | `292fbcd` | ADR 0018: seeded fixture, messaging, project-agent pair scope  |
 | `89d0ef0` | ADR 0019: capability catalogue, config chain, truncation fix   |
 | `0e76bf4` | ADR 0020: advisory work leases, `luwi_v1` v10, four MCP tools  |
+| `fdf69a2` | ADR 0021: dashboard config mutations (7 commits, this first)   |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
@@ -143,8 +144,8 @@ projection-input defects. ADR 0017 added commit attribution as a fifth project-s
 rendered the branch, tag, and worktree evidence the Git observation was already delivering.
 `README.md` "Current status" is accurate and maintained.
 
-Not implemented, and per §21 still explicitly out of scope without approval: dashboard mutations,
-lifecycle/release scoring, task/lease systems, semantic or vector knowledge graph, memory
+Not implemented, and per §21 still explicitly out of scope without approval: `config/reconcile`,
+lifecycle/release scoring, task orchestration, semantic or vector knowledge graph, memory
 federation, GitHub integration, prompt injection, cloud accounts, authentication, remote
 control-plane work.
 
@@ -163,6 +164,22 @@ project-relative path before editing it, and an overlapping claim is refused wit
 MCP tools take the holder from the bound session and never from input; the Projects route shows what
 is held. Advisory means the runtime cannot enforce it — §3 keeps LUWI out of terminals — only that
 it answers atomically and records who holds what.
+
+ADR 0021 then made the dashboard write. **`#/config` is no longer read-only**: it creates import and
+render plans, prepares a rollback plan from a snapshot, rescans drift, and applies a plan behind a
+confirmation dialog that names every target file. `approve` and `apply` run inside one function so
+the one-time token never outlives the gesture, which is why an already-`approved` plan is shown with
+no control — the state machine mints no second token.
+
+Two consequences to know before touching the daemon or the dashboard:
+
+- **An `Origin`-less `POST` must send `content-type: application/json`**, or it is refused with
+  `403 REQUEST_ORIGIN_REJECTED`. `PUT`, `PATCH` and `DELETE` are unaffected — a cross-site one of
+  those always preflights and the daemon answers no preflight. A test that injects a bodyless POST
+  now fails; real callers pass `{}`, which is what makes Fastify's `inject` set the header.
+- **`apps/dashboard/src/api/config-mutations.ts` is the only dashboard module allowed to write.**
+  `product-independence.test.ts` is an allowlist of exactly one and fails if that module goes
+  missing, so it cannot pass vacuously. A mutation anywhere else is a test failure by design.
 
 To look at any of it, start a fixture daemon — `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and
 `WORKSPACE_ID=fixture-…` **together**, because Redis alone is not isolation: per ADR 0007 agent
