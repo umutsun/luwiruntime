@@ -101,6 +101,23 @@ describe('LUWI daemon HTTP API', () => {
           origin: 'http://evil.test',
         },
       },
+      // A state-changing request with no Origin is only tolerated when its
+      // media type is one a browser cannot send cross-site without a preflight.
+      {
+        method: 'POST' as const,
+        url: '/test/mutation',
+        headers: {
+          host: 'localhost:80',
+          'content-type': 'text/plain',
+        },
+      },
+      {
+        method: 'POST' as const,
+        url: '/test/mutation',
+        headers: {
+          host: 'localhost:80',
+        },
+      },
     ]) {
       const response = await app.inject(request);
       expect(response.statusCode).toBe(403);
@@ -118,6 +135,20 @@ describe('LUWI daemon HTTP API', () => {
           method: 'GET',
           url: '/api/v1/runtime',
           headers: { host: 'localhost:80' },
+          remoteAddress: '127.0.0.1',
+        })
+      ).statusCode,
+    ).toBe(200);
+
+    // The CLI and MCP shape: no Origin, JSON body. This must keep working, and
+    // it is the only Origin-less shape that may.
+    expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/test/mutation',
+          headers: { host: 'localhost:80', 'content-type': 'application/json' },
+          payload: {},
           remoteAddress: '127.0.0.1',
         })
       ).statusCode,

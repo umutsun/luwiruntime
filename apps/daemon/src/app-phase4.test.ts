@@ -484,7 +484,11 @@ describe('Phase 4 HTTP routes', () => {
       const response = await app!.inject({
         method,
         url,
-        ...(payload === undefined ? {} : { payload }),
+        // A state-changing request that carries no Origin must declare a JSON
+        // media type, and `inject` only sets that header when a payload is
+        // present. Every real caller sends `{}` rather than nothing for these,
+        // which is what `scripts/seed-runtime.ts` does.
+        ...(method === 'GET' ? {} : { payload: payload ?? {} }),
       });
       expect(response.statusCode, `${method} ${url}: ${response.body}`).toBeLessThan(300);
     }

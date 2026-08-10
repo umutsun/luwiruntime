@@ -159,11 +159,29 @@ function isLoopback(address: string | undefined): boolean {
 
 export type LocalHttpRequestInput = {
   host: string | undefined;
+  method: string;
   origin?: string;
+  contentType?: string;
   remoteAddress: string | undefined;
   expectedHosts: ReadonlySet<string>;
   allowedOrigins: ReadonlySet<string>;
 };
+
+/**
+ * The only method a browser can send cross-site without a CORS preflight and
+ * still change state.
+ *
+ * GET and HEAD change nothing. PUT, PATCH and DELETE are not CORS-safelisted
+ * methods, so a cross-site one always preflights, and the daemon answers no
+ * preflight — they cannot reach a handler from a browser at all. POST is the
+ * exception: a form submission or a fetch with a safelisted content type is
+ * sent for real, which is why the media type is checked for it alone.
+ */
+const MEDIA_TYPE_CHECKED_METHOD = 'POST';
+
+function mediaType(value: string | undefined): string | undefined {
+  return value?.split(';')[0]?.trim().toLowerCase();
+}
 
 export function validateLocalHttpRequest(input: LocalHttpRequestInput): boolean {
   const host = input.host?.trim().toLowerCase();
@@ -173,7 +191,24 @@ export function validateLocalHttpRequest(input: LocalHttpRequestInput): boolean 
   if (input.origin === 'null') {
     return false;
   }
-  return input.origin === undefined || input.allowedOrigins.has(input.origin);
+  if (input.origin !== undefined) {
+    return input.allowedOrigins.has(input.origin);
+  }
+  if (input.method.toUpperCase() !== MEDIA_TYPE_CHECKED_METHOD) {
+    return true;
+  }
+  /**
+   * A POST that carries no Origin at all.
+   *
+   * A browser attaches Origin to every POST, so an absent one already implies a
+   * non-browser client — but that is the browser's promise rather than the
+   * daemon's. Requiring a media type a browser cannot send cross-site without a
+   * preflight makes it the daemon's too: no `Access-Control-*` header and no
+   * `OPTIONS` handler exists here, so the preflight fails and the request never
+   * leaves the browser. The CLI, the MCP server and the seed script all send
+   * this header already, including on the operations that take an empty body.
+   */
+  return mediaType(input.contentType) === 'application/json';
 }
 
 export function validateRealtimeUpgrade(input: RealtimeUpgradeInput): boolean {

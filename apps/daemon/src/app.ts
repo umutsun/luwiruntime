@@ -273,10 +273,13 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       localPort === undefined
         ? new Set(['localhost:80'])
         : new Set([`127.0.0.1:${localPort}`, `localhost:${localPort}`, `[::1]:${localPort}`]);
+    const contentType = request.headers['content-type'];
     if (
       !validateLocalHttpRequest({
         host: request.headers.host,
+        method: request.method,
         ...(typeof origin === 'string' ? { origin } : {}),
+        ...(typeof contentType === 'string' ? { contentType } : {}),
         remoteAddress: request.raw.socket.remoteAddress,
         expectedHosts,
         allowedOrigins,

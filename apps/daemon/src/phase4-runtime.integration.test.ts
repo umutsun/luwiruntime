@@ -267,6 +267,9 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       const gitScan = await runtime.app.inject({
         method: 'POST',
         url: `/api/v1/projects/${projectId}/git/scan`,
+        // An Origin-less POST must declare a JSON media type, and `inject` only
+        // sets that header when a payload is present. Real callers send `{}`.
+        payload: {},
       });
       expect(gitScan.statusCode, gitScan.body).toBe(200);
       expect(gitScan.json()).toMatchObject({ clean: false });
@@ -289,6 +292,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       const packageScan = await runtime.app.inject({
         method: 'POST',
         url: `/api/v1/projects/${projectId}/packages/scan`,
+        payload: {},
       });
       expect(packageScan.statusCode, packageScan.body).toBe(200);
       expect(packageScan.json().packages).toEqual(
@@ -301,6 +305,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       const rebuild = await runtime.app.inject({
         method: 'POST',
         url: '/api/v1/graph/rebuild',
+        payload: {},
       });
       expect(rebuild.statusCode, rebuild.body).toBe(202);
       expect(rebuild.json()).toMatchObject({

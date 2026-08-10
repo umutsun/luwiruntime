@@ -202,6 +202,7 @@ describe('HTTP loopback security', () => {
     expect(
       validateLocalHttpRequest({
         host: '127.0.0.1:4782',
+        method: 'GET',
         remoteAddress: '127.0.0.1',
         expectedHosts,
         allowedOrigins,
@@ -210,6 +211,7 @@ describe('HTTP loopback security', () => {
     expect(
       validateLocalHttpRequest({
         host: 'localhost:4782',
+        method: 'GET',
         origin: 'http://localhost:4782',
         remoteAddress: '::1',
         expectedHosts,
@@ -244,7 +246,161 @@ describe('HTTP loopback security', () => {
         remoteAddress: '192.0.2.10',
       },
     ]) {
-      expect(validateLocalHttpRequest({ ...input, expectedHosts, allowedOrigins })).toBe(false);
+      expect(
+        validateLocalHttpRequest({ ...input, method: 'GET', expectedHosts, allowedOrigins }),
+      ).toBe(false);
     }
+  });
+
+  it('keeps every read rule unchanged when the method is safe', () => {
+    for (const method of ['GET', 'HEAD', 'get']) {
+      expect(
+        validateLocalHttpRequest({
+          host: '127.0.0.1:4782',
+          method,
+          remoteAddress: '127.0.0.1',
+          expectedHosts,
+          allowedOrigins,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it('accepts a state-changing request whose Origin is allowlisted, whatever it sends', () => {
+    for (const contentType of ['application/json', 'text/plain', undefined]) {
+      expect(
+        validateLocalHttpRequest({
+          host: '127.0.0.1:4782',
+          method: 'POST',
+          origin: 'http://127.0.0.1:4782',
+          ...(contentType === undefined ? {} : { contentType }),
+          remoteAddress: '127.0.0.1',
+          expectedHosts,
+          allowedOrigins,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it('rejects a state-changing request whose Origin is not allowlisted', () => {
+    expect(
+      validateLocalHttpRequest({
+        host: '127.0.0.1:4782',
+        method: 'POST',
+        origin: 'http://evil.test',
+        contentType: 'application/json',
+        remoteAddress: '127.0.0.1',
+        expectedHosts,
+        allowedOrigins,
+      }),
+    ).toBe(false);
+  });
+
+  it('accepts an Origin-less state-changing request only with a JSON media type', () => {
+    // The CLI, the MCP server and the seed script all send this header. A
+    // browser cannot send it cross-site without a preflight the daemon never
+    // answers, so an absent Origin plus JSON means a non-browser client.
+    for (const contentType of [
+      'application/json',
+      'application/json; charset=utf-8',
+      'APPLICATION/JSON',
+    ]) {
+      expect(
+        validateLocalHttpRequest({
+          host: '127.0.0.1:4782',
+          method: 'POST',
+          contentType,
+          remoteAddress: '127.0.0.1',
+          expectedHosts,
+          allowedOrigins,
+        }),
+      ).toBe(true);
+    }
+
+    for (const contentType of [
+      'text/plain',
+      'application/x-www-form-urlencoded',
+      'multipart/form-data; boundary=x',
+      'text/plain; charset=utf-8',
+    ]) {
+      expect(
+        validateLocalHttpRequest({
+          host: '127.0.0.1:4782',
+          method: 'POST',
+          contentType,
+          remoteAddress: '127.0.0.1',
+          expectedHosts,
+          allowedOrigins,
+        }),
+      ).toBe(false);
+    }
+
+    expect(
+      validateLocalHttpRequest({
+        host: '127.0.0.1:4782',
+        method: 'POST',
+        remoteAddress: '127.0.0.1',
+        expectedHosts,
+        allowedOrigins,
+      }),
+    ).toBe(false);
+  });
+
+  /**
+   * Only POST is a CORS-safelisted method, so only POST can be sent cross-site
+   * for real without a preflight the daemon never answers. Demanding a body's
+   * media type on a bodyless DELETE would refuse a legitimate CLI call and
+   * close no vector, so the check is deliberately POST-only.
+   */
+  it('checks the media type on POST alone, because only POST can arrive unpreflighted', () => {
+    expect(
+      validateLocalHttpRequest({
+        host: '127.0.0.1:4782',
+        method: 'POST',
+        remoteAddress: '127.0.0.1',
+        expectedHosts,
+        allowedOrigins,
+      }),
+    ).toBe(false);
+
+    for (const method of ['PUT', 'PATCH', 'DELETE']) {
+      expect(
+        validateLocalHttpRequest({
+          host: '127.0.0.1:4782',
+          method,
+          remoteAddress: '127.0.0.1',
+          expectedHosts,
+          allowedOrigins,
+        }),
+      ).toBe(true);
+    }
+
+    // An unlisted Origin still loses on every one of them.
+    for (const method of ['PUT', 'PATCH', 'DELETE']) {
+      expect(
+        validateLocalHttpRequest({
+          host: '127.0.0.1:4782',
+          method,
+          origin: 'http://evil.test',
+          remoteAddress: '127.0.0.1',
+          expectedHosts,
+          allowedOrigins,
+        }),
+      ).toBe(false);
+    }
+  });
+
+  it('still rejects a literal null Origin on a state-changing request', () => {
+    expect(
+      validateLocalHttpRequest({
+        host: '127.0.0.1:4782',
+        method: 'POST',
+        origin: 'null',
+        contentType: 'application/json',
+        remoteAddress: '127.0.0.1',
+        expectedHosts,
+        allowedOrigins,
+      }),
+    ).toBe(false);
   });
 });
