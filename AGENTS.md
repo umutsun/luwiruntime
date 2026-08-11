@@ -1029,6 +1029,25 @@ How the three decisions landed:
 permitted to issue a state-changing request. `product-independence.test.ts` enforces that as an
 allowlist of one and still forbids the prohibited operations everywhere, including inside it.
 
+### Built: native session binding (A1 of two)
+
+ADR 0022 added **native session identity**. A client may declare its vendor-native session reference
+when it registers a LUWI session, and the runtime records a stable `NativeSessionBinding` plus an
+immutable, time-bounded `NativeSessionLink` for each LUWI session that reference produced.
+
+What holds: identity carries no presence, project, agent or confidence; a live holder is refused,
+never evicted; a conflict writes nothing and creates no session; missing evidence is
+`NATIVE_BINDING_INCONSISTENT` rather than a free reference; product policy lives in a pure
+`@luwi/runtime` function and Lua only validates a compare-and-set on a monotonic `version`;
+validation runs before `XGROUP CREATE`, so a refused declaration leaves no inbox stream; append
+capacity is proven per append; all three terminal paths — `close`, `status → completed` and the
+sweeper's `disconnect` — close the link, and resolution is fail-closed. Every timestamp comes from
+one Redis transition clock. `luwi_v1` is at **v11**.
+
+**A1 is not acceptance of A.** Link retention is A2 and is not implemented, so closed links
+accumulate without bound. `usage.sessionId` is not solved, MCP self-registration is not included, and
+transcript ingestion has not begun.
+
 **Every other prohibition below still stands.** Do not begin `config/reconcile`, lifecycle/release
 scoring, task orchestration, a semantic or vector knowledge graph, memory federation, GitHub
 integration, prompt injection, automatic optimization apply, cloud accounts, authentication, or

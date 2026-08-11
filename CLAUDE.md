@@ -57,6 +57,7 @@ History is short and every commit is a large checkpoint:
 | `89d0ef0` | ADR 0019: capability catalogue, config chain, truncation fix   |
 | `0e76bf4` | ADR 0020: advisory work leases, `luwi_v1` v10, four MCP tools  |
 | `fdf69a2` | ADR 0021: dashboard config mutations (7 commits, this first)   |
+| _pending_ | ADR 0022: native session binding A1, `luwi_v1` v11             |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
@@ -162,7 +163,16 @@ ADR 0020 then built the first thing that is not a read: **advisory work leases**
 project-relative path before editing it, and an overlapping claim is refused with the holder named.
 `luwi_v1` is at version 10 with four lease Functions; `deadline:leases` is swept for expiry; four
 MCP tools take the holder from the bound session and never from input; the Projects route shows what
-is held. Advisory means the runtime cannot enforce it — §3 keeps LUWI out of terminals — only that
+is held. ADR 0022 then added **native session identity** (A1 of two). A client may declare its vendor-native
+session reference at registration; the runtime records a stable binding plus an immutable,
+time-bounded link per LUWI session. Identity carries no presence, project or agent; a live holder is
+refused rather than evicted; a conflict writes nothing; missing evidence is
+`NATIVE_BINDING_INCONSISTENT`. Policy is a pure `@luwi/runtime` function and Lua only validates a
+CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no inbox stream.
+`luwi_v1` is at **v11**. **A1 is not acceptance of A**: retention is A2 and unbuilt, so closed links
+grow without bound.
+
+Advisory means the runtime cannot enforce it — §3 keeps LUWI out of terminals — only that
 it answers atomically and records who holds what.
 
 ADR 0021 then made the dashboard write. **`#/config` is no longer read-only**: it creates import and

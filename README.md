@@ -171,6 +171,19 @@ browser cannot send cross-site without a preflight the daemon deliberately never
 module, `api/config-mutations.ts`, is the only place in the dashboard permitted to issue a
 state-changing request, enforced as an allowlist of one.
 
+ADR 0022 added **native session identity** (A1 of two). A client may declare its vendor-native
+session reference when it registers a LUWI session; the runtime records a stable binding and an
+immutable, time-bounded link for each LUWI session that reference produced. Identity carries no
+presence, project or agent — a binding says who, never whether anyone is working. A live holder is
+refused rather than evicted, a conflict writes nothing and creates no session, and a binding naming
+an unreadable link is reported as inconsistent instead of treated as free. Validation runs before the
+inbox stream is created, so a refused declaration leaves no trace at all. All three terminal paths
+close the link, and every timestamp comes from one Redis clock.
+
+Link retention is not implemented: closed links accumulate without bound, so **A is not complete**.
+Attributing transcript token records to sessions is also not solved, and native transcript ingestion
+has not begun.
+
 `config/reconcile`, optimization accept/reject/evaluate, graph rebuild, Git mutation, lease release,
 lifecycle/release scoring, release readiness, unified search, GitHub integration, prompt injection,
 task orchestration, a semantic knowledge graph, memory federation, cloud accounts, and
