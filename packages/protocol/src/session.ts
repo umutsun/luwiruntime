@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { nativeSessionRefSchema } from './native-session.js';
 import { utf8ByteLength } from './utf8-bytes.js';
 
 const identifierSchema = z.string().trim().min(1).max(128);
@@ -49,6 +50,12 @@ export const sessionRegistrationRequestSchema = z.strictObject({
   branch: z.string().trim().min(1).max(512).optional(),
   worktreePath: pathSchema.optional(),
   metadata: metadataSchema.default({}),
+  /**
+   * The vendor-native session this LUWI session belongs to. The reference and
+   * nothing else: project and agent are taken from this registration, never
+   * accepted a second time from the declaration.
+   */
+  native: nativeSessionRefSchema.optional(),
 });
 
 export const heartbeatRequestSchema = z.strictObject({

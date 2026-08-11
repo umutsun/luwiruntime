@@ -135,3 +135,27 @@ describe('Redis key registry', () => {
     expect(() => keys.contextFootprint('project-1', 'bad/agent')).toThrow();
   });
 });
+
+describe('native session keys', () => {
+  const keys = createRedisKeys();
+
+  it('namespaces every native key under the library prefix', () => {
+    expect(keys.nativeSessionBinding('b1')).toBe('luwi:v1:native-session:b1');
+    expect(keys.nativeSessionLink('l1')).toBe('luwi:v1:native-session-link:l1');
+    expect(keys.nativeSessionLinks('b1')).toBe('luwi:v1:index:native-session:b1:links');
+    expect(keys.sessionNativeBinding('s1')).toBe('luwi:v1:index:session:s1:native');
+  });
+
+  /**
+   * The identifiers reaching these builders are derived hashes, but the guard is
+   * what keeps a future caller from passing a raw native value through.
+   */
+  it('rejects an unsafe identifier rather than building a key from it', () => {
+    for (const unsafe of ['', 'has space', 'a/b', '-leading']) {
+      expect(() => keys.nativeSessionBinding(unsafe)).toThrow('Unsafe Redis key identifier');
+      expect(() => keys.nativeSessionLink(unsafe)).toThrow('Unsafe Redis key identifier');
+      expect(() => keys.nativeSessionLinks(unsafe)).toThrow('Unsafe Redis key identifier');
+      expect(() => keys.sessionNativeBinding(unsafe)).toThrow('Unsafe Redis key identifier');
+    }
+  });
+});

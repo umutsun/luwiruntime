@@ -1,6 +1,6 @@
 export type RedisFunctionRegistry = {
   libraryName: string;
-  version: 10;
+  version: 11;
   functions: {
     projectRegister: string;
     sessionRegister: string;
@@ -66,7 +66,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
   if (testSuffix === undefined) {
     return {
       libraryName: 'luwi_v1',
-      version: 10,
+      version: 11,
       functions: { ...productionFunctions },
     };
   }
@@ -77,7 +77,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
 
   return {
     libraryName: `luwi_test_${testSuffix}_v1`,
-    version: 10,
+    version: 11,
     functions: Object.fromEntries(
       Object.entries(productionFunctions).map(([key, value]) => [key, `${value}_${testSuffix}`]),
     ) as RedisFunctionRegistry['functions'],

@@ -1,11 +1,15 @@
 import {
   agentSessionSchema,
+  nativeSessionBindingSchema,
+  nativeSessionLinkSchema,
   projectSchema,
   redisStreamIdSchema,
   runtimeEventSchema,
   sessionStatusSchema,
   sessionViewSchema,
   type AgentSession,
+  type NativeSessionBinding,
+  type NativeSessionLink,
   type Project,
   type RuntimeEvent,
   type SessionStatus,
@@ -69,6 +73,58 @@ export type RegisterSessionInput = {
   workspaceId: string;
   eventId: string;
   presenceTtlMs: number;
+  native?: NativeRegistrationInput;
+};
+
+/**
+ * A native declaration carried atomically with the registration.
+ *
+ * `payload` is serialised verbatim into the Function's native argument. The
+ * separate identifier fields exist because the caller must also declare the
+ * matching keys, and a Function may not derive a key name.
+ */
+export type NativeRegistrationInput = {
+  bindingId: string;
+  linkId: string;
+  staleLinkId?: string;
+  linkedEventId: string;
+  unlinkedEventId?: string;
+  payload: {
+    bindingId: string;
+    expectedVersion: number;
+    expectedOpenLinkId?: string;
+    staleLinkId?: string;
+    link: { id: string; sessionId: string };
+    binding?: {
+      id: string;
+      adapterId: string;
+      nativeSessionId: string;
+      nativeSubagentId?: string;
+      kind: 'main' | 'subagent';
+      parentRefJson?: string;
+    };
+  };
+};
+
+export type NativeUnlinkInput = {
+  bindingId: string;
+  linkId: string;
+  expectedVersion: number;
+  expectedOpenLinkId: string;
+  unlinkedEventId: string;
+};
+
+export type NativeTransitionResult = {
+  transition: 'created' | 'linked';
+  binding: NativeSessionBinding;
+  link: NativeSessionLink;
+  staleLink?: NativeSessionLink;
+};
+
+export type AppendedEvent = {
+  event: RuntimeEvent;
+  globalStreamId: string;
+  projectStreamId: string;
 };
 
 export type RegisterSessionResult =
@@ -78,6 +134,9 @@ export type RegisterSessionResult =
       event: RuntimeEvent;
       globalStreamId: string;
       projectStreamId: string;
+      /** Present only when a native declaration was supplied. */
+      native?: NativeTransitionResult;
+      events?: AppendedEvent[];
     }
   | { status: 'not_found'; entity: 'project' };
 
@@ -87,6 +146,8 @@ export type UpdateSessionStatusInput = {
   targetStatus: SessionStatusTarget;
   workspaceId: string;
   eventId: string;
+  /** Present only when the target is terminal and the session holds an open link. */
+  native?: NativeUnlinkInput;
 };
 
 export type UpdateSessionStatusResult =
@@ -135,6 +196,8 @@ export type CloseSessionInput = {
   projectId: string;
   workspaceId: string;
   eventId: string;
+  /** Present only when the session holds an open native link. */
+  native?: NativeUnlinkInput;
 };
 
 export type CloseSessionResult =
@@ -155,6 +218,8 @@ export type DisconnectExpiredSessionInput = HeartbeatDeadline & {
   expectedDeadlineMs: number;
   workspaceId: string;
   eventId: string;
+  /** Present only when the lapsing session holds an open native link. */
+  native?: NativeUnlinkInput;
 };
 
 export type DisconnectExpiredSessionResult =
@@ -173,6 +238,9 @@ export interface RuntimeRepository {
   getProject(projectId: string): Promise<Project | null>;
   listProjects(): Promise<Project[]>;
   registerSession(input: RegisterSessionInput): Promise<RegisterSessionResult>;
+  getNativeBinding(bindingId: string): Promise<NativeSessionBinding | null>;
+  getNativeLink(linkId: string): Promise<NativeSessionLink | null>;
+  getSessionNativeBindingId(sessionId: string): Promise<string | null>;
   getSession(sessionId: string): Promise<SessionView | null>;
   listSessions(projectId?: string): Promise<SessionView[]>;
   updateSessionStatus(input: UpdateSessionStatusInput): Promise<UpdateSessionStatusResult>;
@@ -298,6 +366,10 @@ function parseRegisterSessionResult(value: unknown): RegisterSessionResult {
         event: event.data,
         globalStreamId: globalStreamId.data,
         projectStreamId: projectStreamId.data,
+        // Present only for a native declaration; a 9-key registration keeps
+        // exactly the shape every existing caller already parses.
+        ...(value.native === undefined ? {} : { native: parseNativeTransition(value.native) }),
+        ...(value.events === undefined ? {} : { events: parseAppendedEvents(value.events) }),
       };
     }
   }
@@ -305,6 +377,53 @@ function parseRegisterSessionResult(value: unknown): RegisterSessionResult {
     'REDIS_DATA_INVALID',
     'Redis returned an incompatible session registration result.',
   );
+}
+
+function parseNativeTransition(value: unknown): NativeTransitionResult {
+  const invalid = (): never => {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis returned an incompatible native session transition.',
+    );
+  };
+  if (!isRecord(value)) return invalid();
+  if (value.transition !== 'created' && value.transition !== 'linked') return invalid();
+  const binding = parseNativeBindingHash(value.binding);
+  const link = parseNativeLinkHash(value.link);
+  if (binding === null || link === null) return invalid();
+  const staleLink = value.staleLink === undefined ? null : parseNativeLinkHash(value.staleLink);
+  return {
+    transition: value.transition,
+    binding,
+    link,
+    ...(staleLink === null ? {} : { staleLink }),
+  };
+}
+
+function parseAppendedEvents(value: unknown): AppendedEvent[] {
+  if (!Array.isArray(value)) {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis returned an incompatible appended event list.',
+    );
+  }
+  return value.map((entry) => {
+    const record = isRecord(entry) ? entry : {};
+    const event = runtimeEventSchema.safeParse(record.event);
+    const globalStreamId = redisStreamIdSchema.safeParse(record.globalStreamId);
+    const projectStreamId = redisStreamIdSchema.safeParse(record.projectStreamId);
+    if (!event.success || !globalStreamId.success || !projectStreamId.success) {
+      throw new RedisRepositoryError(
+        'REDIS_DATA_INVALID',
+        'Redis returned an incompatible appended event.',
+      );
+    }
+    return {
+      event: event.data,
+      globalStreamId: globalStreamId.data,
+      projectStreamId: projectStreamId.data,
+    };
+  });
 }
 
 function parseUpdateSessionStatusResult(value: unknown): UpdateSessionStatusResult {
@@ -528,6 +647,63 @@ function parseProjectHash(reply: unknown): Project | null {
   return projectSchema.parse(normalized);
 }
 
+function optional(record: Record<string, unknown>, field: string): Record<string, unknown> {
+  const value = record[field];
+  return typeof value === 'string' && value !== '' ? { [field]: value } : {};
+}
+
+function parseNativeBindingHash(reply: unknown): NativeSessionBinding | null {
+  const record = hashRecord(reply, 'native session binding');
+  if (record === null) {
+    return null;
+  }
+  const parsed = nativeSessionBindingSchema.safeParse({
+    id: record.id,
+    adapterId: record.adapterId,
+    nativeSessionId: record.nativeSessionId,
+    ...optional(record, 'nativeSubagentId'),
+    kind: record.kind,
+    ...(typeof record.parentRef === 'string' && record.parentRef !== ''
+      ? { parentRef: JSON.parse(record.parentRef) as unknown }
+      : {}),
+    ...optional(record, 'openLinkId'),
+    version: Number(record.version),
+    linkCount: Number(record.linkCount),
+    trimmedLinkCount: Number(record.trimmedLinkCount),
+    ...optional(record, 'oldestRetainedLinkedAt'),
+    firstLinkedAt: record.firstLinkedAt,
+    lastLinkedAt: record.lastLinkedAt,
+  });
+  if (!parsed.success) {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis contains an invalid native session binding projection.',
+    );
+  }
+  return parsed.data;
+}
+
+function parseNativeLinkHash(reply: unknown): NativeSessionLink | null {
+  const record = hashRecord(reply, 'native session link');
+  if (record === null) {
+    return null;
+  }
+  const parsed = nativeSessionLinkSchema.safeParse({
+    id: record.id,
+    bindingId: record.bindingId,
+    sessionId: record.sessionId,
+    linkedAt: record.linkedAt,
+    ...optional(record, 'unlinkedAt'),
+  });
+  if (!parsed.success) {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis contains an invalid native session link projection.',
+    );
+  }
+  return parsed.data;
+}
+
 function parseSessionHash(reply: unknown): AgentSession | null {
   const record = hashRecord(reply, 'session');
   if (record === null) {
@@ -623,10 +799,7 @@ export function createRuntimeRepository(options: {
     },
 
     async registerSession(input) {
-      const reply = await client.sendCommand([
-        'FCALL',
-        functions.functions.sessionRegister,
-        '9',
+      const commandKeys = [
         keys.session(input.session.id),
         keys.project(input.session.projectId),
         keys.projectSessions(input.session.projectId),
@@ -636,13 +809,56 @@ export function createRuntimeRepository(options: {
         keys.globalEvents,
         keys.projectEvents(input.session.projectId),
         keys.sessionInbox(input.session.id),
+      ];
+      const commandArgs = [
         JSON.stringify(input.session),
         input.workspaceId,
         input.eventId,
         String(input.presenceTtlMs),
         SESSION_INBOX_CONSUMER_GROUP,
+      ];
+      if (input.native !== undefined) {
+        const native = input.native;
+        commandKeys.push(
+          keys.nativeSessionBinding(native.bindingId),
+          keys.nativeSessionLink(native.linkId),
+          keys.nativeSessionLinks(native.bindingId),
+          keys.sessionNativeBinding(input.session.id),
+          // Declared but never written when there is no stale link.
+          native.staleLinkId === undefined
+            ? keys.nativeSessionBinding(native.bindingId)
+            : keys.nativeSessionLink(native.staleLinkId),
+        );
+        commandArgs.push(JSON.stringify(native.payload), native.linkedEventId);
+        if (native.unlinkedEventId !== undefined) {
+          commandArgs.push(native.unlinkedEventId);
+        }
+      }
+      const reply = await client.sendCommand([
+        'FCALL',
+        functions.functions.sessionRegister,
+        String(commandKeys.length),
+        ...commandKeys,
+        ...commandArgs,
       ]);
       return parseRegisterSessionResult(decodeJsonReply(reply));
+    },
+
+    async getNativeBinding(bindingId) {
+      return parseNativeBindingHash(
+        await client.sendCommand(['HGETALL', keys.nativeSessionBinding(bindingId)]),
+      );
+    },
+
+    async getNativeLink(linkId) {
+      return parseNativeLinkHash(
+        await client.sendCommand(['HGETALL', keys.nativeSessionLink(linkId)]),
+      );
+    },
+
+    async getSessionNativeBindingId(sessionId) {
+      const reply = await client.sendCommand(['GET', keys.sessionNativeBinding(sessionId)]);
+      return typeof reply === 'string' && reply !== '' ? reply : null;
     },
 
     async getSession(sessionId) {
@@ -705,16 +921,33 @@ export function createRuntimeRepository(options: {
       const reply = await client.sendCommand([
         'FCALL',
         functions.functions.sessionStatus,
-        '5',
+        String(5 + (input.native === undefined ? 0 : 2)),
         keys.session(input.sessionId),
         keys.sessionPresence(input.sessionId),
         keys.heartbeatDeadlines,
         keys.globalEvents,
         keys.projectEvents(input.projectId),
+        ...(input.native === undefined
+          ? []
+          : [
+              keys.nativeSessionBinding(input.native.bindingId),
+              keys.nativeSessionLink(input.native.linkId),
+            ]),
         input.targetStatus,
         input.projectId,
         input.workspaceId,
         input.eventId,
+        ...(input.native === undefined
+          ? []
+          : [
+              JSON.stringify({
+                bindingId: input.native.bindingId,
+                linkId: input.native.linkId,
+                expectedVersion: input.native.expectedVersion,
+                expectedOpenLinkId: input.native.expectedOpenLinkId,
+              }),
+              input.native.unlinkedEventId,
+            ]),
       ]);
       return parseUpdateSessionStatusResult(decodeJsonReply(reply));
     },
@@ -741,18 +974,36 @@ export function createRuntimeRepository(options: {
     },
 
     async closeSession(input) {
-      const reply = await client.sendCommand([
-        'FCALL',
-        functions.functions.sessionClose,
-        '5',
+      const commandKeys = [
         keys.session(input.sessionId),
         keys.sessionPresence(input.sessionId),
         keys.heartbeatDeadlines,
         keys.globalEvents,
         keys.projectEvents(input.projectId),
-        input.projectId,
-        input.workspaceId,
-        input.eventId,
+      ];
+      const commandArgs = [input.projectId, input.workspaceId, input.eventId];
+      if (input.native !== undefined) {
+        const native = input.native;
+        commandKeys.push(
+          keys.nativeSessionBinding(native.bindingId),
+          keys.nativeSessionLink(native.linkId),
+        );
+        commandArgs.push(
+          JSON.stringify({
+            bindingId: native.bindingId,
+            linkId: native.linkId,
+            expectedVersion: native.expectedVersion,
+            expectedOpenLinkId: native.expectedOpenLinkId,
+          }),
+          native.unlinkedEventId,
+        );
+      }
+      const reply = await client.sendCommand([
+        'FCALL',
+        functions.functions.sessionClose,
+        String(commandKeys.length),
+        ...commandKeys,
+        ...commandArgs,
       ]);
       return parseCloseResult(decodeJsonReply(reply));
     },
@@ -798,16 +1049,33 @@ export function createRuntimeRepository(options: {
       const reply = await client.sendCommand([
         'FCALL',
         functions.functions.sessionDisconnect,
-        '5',
+        String(5 + (input.native === undefined ? 0 : 2)),
         keys.session(input.sessionId),
         keys.sessionPresence(input.sessionId),
         keys.heartbeatDeadlines,
         keys.globalEvents,
         keys.projectEvents(input.projectId),
+        ...(input.native === undefined
+          ? []
+          : [
+              keys.nativeSessionBinding(input.native.bindingId),
+              keys.nativeSessionLink(input.native.linkId),
+            ]),
         input.projectId,
         input.workspaceId,
         input.eventId,
         String(input.expectedDeadlineMs),
+        ...(input.native === undefined
+          ? []
+          : [
+              JSON.stringify({
+                bindingId: input.native.bindingId,
+                linkId: input.native.linkId,
+                expectedVersion: input.native.expectedVersion,
+                expectedOpenLinkId: input.native.expectedOpenLinkId,
+              }),
+              input.native.unlinkedEventId,
+            ]),
       ]);
       return parseDisconnectResult(decodeJsonReply(reply));
     },

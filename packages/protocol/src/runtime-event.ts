@@ -14,6 +14,12 @@ export const runtimeEventTypeSchema = z.enum([
   'session.status.changed',
   'session.completed',
   'session.disconnected',
+  /**
+   * A native session reference was bound to, or released from, a LUWI session.
+   * Identifiers only: no transcript content, no path, no native payload.
+   */
+  'session.native.linked',
+  'session.native.unlinked',
   'message.requested',
   'message.delivered',
   'message.acknowledged',

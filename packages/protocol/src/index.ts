@@ -57,6 +57,18 @@ export type {
   SessionView,
 } from './session.js';
 export {
+  nativeSessionBindingSchema,
+  nativeSessionKindSchema,
+  nativeSessionLinkSchema,
+  nativeSessionRefSchema,
+} from './native-session.js';
+export type {
+  NativeSessionBinding,
+  NativeSessionKind,
+  NativeSessionLink,
+  NativeSessionRef,
+} from './native-session.js';
+export {
   healthResponseSchema,
   redisConnectedSchema,
   redisDisconnectedSchema,

@@ -217,3 +217,50 @@ describe('realtime relay', () => {
     expect(client.commands.some((command) => command[0] === 'XACK')).toBe(false);
   });
 });
+
+describe('native session events', () => {
+  /**
+   * The relay validates every entry against the closed event enum and
+   * dead-letters what fails. A native event missing from that enum would be
+   * written to the Stream and then silently discarded on the way out.
+   */
+  it('relays a native link event instead of dead-lettering it', async () => {
+    const nativeEvent = createRuntimeEvent(
+      {
+        type: 'session.native.linked',
+        workspaceId: 'local',
+        projectId: 'project-1',
+        agentId: 'codex-main',
+        sessionId: 'session-1',
+        payload: { bindingId: 'b1', linkId: 'l1' },
+      },
+      { createId: () => 'event-native-1', now: () => new Date('2026-08-11T00:00:00.000Z') },
+    );
+    const client = new ScriptedClient();
+    client.replies.push({ events: [['4-0', ['event', JSON.stringify(nativeEvent)]]] });
+    const delivered: RealtimeEventMessage[] = [];
+    const relay = createRealtimeRelay({
+      client,
+      stream: 'events',
+      group: 'group',
+      consumer: 'consumer',
+      deadLetterStream: 'dead',
+      claimIdleMs: 30_000,
+      blockMs: 1_000,
+      batchSize: 10,
+      deadLetterMaxLength: 100,
+      accept: (message) => {
+        delivered.push(message);
+        return true;
+      },
+      onFailure: vi.fn(),
+      now: () => new Date(),
+    });
+
+    await relay.pollOnce();
+
+    expect(delivered.map((message) => message.event.type)).toEqual(['session.native.linked']);
+    expect(client.commands.some((command) => command[1] === 'dead')).toBe(false);
+    expect(client.commands.some((command) => command[0] === 'XACK')).toBe(true);
+  });
+});

@@ -138,3 +138,16 @@ describe('runtime event envelope', () => {
     }
   });
 });
+
+describe('native session event types', () => {
+  /**
+   * `runtimeEventTypeSchema` is a closed enum. A type missing from it is written
+   * to the Stream and then rejected by the repository parser and the realtime
+   * relay, so the write succeeds and the notification never arrives.
+   */
+  it('accepts the two native binding event types', () => {
+    for (const type of ['session.native.linked', 'session.native.unlinked']) {
+      expect(runtimeEventTypeSchema.safeParse(type).success, type).toBe(true);
+    }
+  });
+});

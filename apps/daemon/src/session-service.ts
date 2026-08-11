@@ -4,12 +4,166 @@ import {
   canonicalJsonStringify,
   type HeartbeatRequest,
   type HeartbeatResponse,
+  type NativeSessionRef,
   type SessionRegistrationRequest,
   type SessionStatusTarget,
   type SessionView,
 } from '@luwi/protocol';
-import type { RuntimeRepository } from '@luwi/redis';
-import { ApplicationError, canonicalizeWorkingDirectory, type CanonicalPath } from '@luwi/runtime';
+import type { NativeRegistrationInput, NativeUnlinkInput, RuntimeRepository } from '@luwi/redis';
+import {
+  ApplicationError,
+  canonicalizeWorkingDirectory,
+  deriveNativeBindingId,
+  deriveNativeKind,
+  deriveNativeLinkId,
+  deriveParentRef,
+  evaluateNativeDeclaration,
+  NATIVE_DECLARATION_MAX_ATTEMPTS,
+  type CanonicalPath,
+  type NativeOpenLinkObservation,
+} from '@luwi/runtime';
+
+function isVersionConflict(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'VERSION_CONFLICT'
+  );
+}
+
+/**
+ * The binding and its open link are read here rather than inside Lua, because a
+ * Redis Function may not derive another session's key name. The pure policy in
+ * `@luwi/runtime` turns that observation into one outcome; this only shapes the
+ * payload the Function will verify.
+ */
+async function planNativeDeclaration(
+  repository: RuntimeRepository,
+  ref: NativeSessionRef,
+  sessionId: string,
+  eventIds: { linked: string; unlinked: string },
+): Promise<NativeRegistrationInput> {
+  const bindingId = deriveNativeBindingId(ref);
+  const binding = (await repository.getNativeBinding(bindingId)) ?? undefined;
+  let openLink: NativeOpenLinkObservation | undefined;
+  if (binding?.openLinkId !== undefined) {
+    const link = await repository.getNativeLink(binding.openLinkId);
+    if (link !== null && link.unlinkedAt === undefined) {
+      const linked = await repository.getSession(link.sessionId);
+      if (linked !== null) {
+        openLink = { id: link.id, sessionId: link.sessionId, sessionStatus: linked.status };
+      }
+    }
+  }
+
+  const decision = evaluateNativeDeclaration({ binding, openLink, sessionId });
+  if (decision.outcome === 'conflict') {
+    throw new ApplicationError(
+      'NATIVE_SESSION_CONFLICT',
+      'Another live session already holds this native session reference.',
+      409,
+    );
+  }
+  if (decision.outcome === 'inconsistent') {
+    throw new ApplicationError(
+      'NATIVE_BINDING_INCONSISTENT',
+      'The native session binding names an open link that cannot be read.',
+      409,
+    );
+  }
+  /**
+   * Unreachable during registration, because the session id is new and no open
+   * link can already name it. Refused rather than ignored, so a future
+   * declaration surface cannot silently fall through to an unbound session.
+   */
+  if (decision.outcome === 'unchanged') {
+    throw new ApplicationError(
+      'NATIVE_BINDING_INCONSISTENT',
+      'The native session binding already names this session.',
+      409,
+    );
+  }
+
+  const linkId = deriveNativeLinkId(bindingId, sessionId);
+  const parentRef = deriveParentRef(ref);
+  return {
+    bindingId,
+    linkId,
+    ...(decision.staleLinkId === undefined ? {} : { staleLinkId: decision.staleLinkId }),
+    linkedEventId: eventIds.linked,
+    ...(decision.staleLinkId === undefined ? {} : { unlinkedEventId: eventIds.unlinked }),
+    payload: {
+      bindingId,
+      expectedVersion: decision.expectedVersion,
+      ...(decision.expectedOpenLinkId === undefined
+        ? {}
+        : { expectedOpenLinkId: decision.expectedOpenLinkId }),
+      ...(decision.staleLinkId === undefined ? {} : { staleLinkId: decision.staleLinkId }),
+      link: { id: linkId, sessionId },
+      ...(decision.outcome === 'created'
+        ? {
+            binding: {
+              id: bindingId,
+              adapterId: ref.adapterId,
+              nativeSessionId: ref.nativeSessionId,
+              ...(ref.nativeSubagentId === undefined
+                ? {}
+                : { nativeSubagentId: ref.nativeSubagentId }),
+              kind: deriveNativeKind(ref),
+              ...(parentRef === undefined ? {} : { parentRefJson: JSON.stringify(parentRef) }),
+            },
+          }
+        : {}),
+    },
+  };
+}
+
+/**
+ * Fail-closed. No reverse index means no binding, and the unchanged 5-key path
+ * is correct. But once the reverse index exists the evidence must be complete:
+ * falling back on partial evidence would complete the session while abandoning
+ * an open link, which is the loss this refusal exists to prevent.
+ */
+async function resolveNativeUnlink(
+  repository: RuntimeRepository,
+  sessionId: string,
+  unlinkedEventId: string,
+): Promise<NativeUnlinkInput | undefined> {
+  const bindingId = await repository.getSessionNativeBindingId(sessionId);
+  if (bindingId === null) return undefined;
+
+  const inconsistent = (): never => {
+    throw new ApplicationError(
+      'NATIVE_BINDING_INCONSISTENT',
+      'The native session binding for this session cannot be resolved.',
+      409,
+    );
+  };
+
+  const binding = await repository.getNativeBinding(bindingId);
+  if (binding === null) return inconsistent();
+  const openLinkId = binding.openLinkId;
+  if (openLinkId === undefined) return inconsistent();
+
+  const link = await repository.getNativeLink(openLinkId);
+  if (
+    link === null ||
+    link.id !== openLinkId ||
+    link.bindingId !== bindingId ||
+    link.sessionId !== sessionId ||
+    link.unlinkedAt !== undefined
+  ) {
+    return inconsistent();
+  }
+
+  return {
+    bindingId,
+    linkId: link.id,
+    expectedVersion: binding.version,
+    expectedOpenLinkId: openLinkId,
+    unlinkedEventId,
+  };
+}
 
 export type SessionService = {
   register(request: SessionRegistrationRequest): Promise<SessionView>;
@@ -59,29 +213,63 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
       const workingDirectory = await canonicalize(request.workingDirectory);
       const worktree =
         request.worktreePath === undefined ? undefined : await canonicalize(request.worktreePath);
+      /**
+       * The session id and every event id are minted once, before the loop, and
+       * reused on every attempt. Minting fresh ids on a retry would append a
+       * second registration event for the same registration if an earlier
+       * attempt had in fact succeeded unobserved.
+       */
       const sessionId = createId();
-      const result = await options.repository.registerSession({
-        session: {
-          id: sessionId,
-          agentId: request.agentId,
-          projectId: request.projectId,
-          status: 'starting',
-          workingDirectory: workingDirectory.canonicalPath,
-          metadataJson: canonicalJsonStringify(request.metadata),
-          ...(request.taskSummary === undefined ? {} : { taskSummary: request.taskSummary }),
-          ...(request.branch === undefined ? {} : { branch: request.branch }),
-          ...(worktree === undefined ? {} : { worktreePath: worktree.canonicalPath }),
-        },
-        workspaceId: options.workspaceId,
-        eventId: createId(),
-        presenceTtlMs: options.presenceTtlMs,
-      });
-      if (result.status === 'not_found') {
-        throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
+      const registrationEventId = createId();
+      const linkedEventId = createId();
+      const unlinkedEventId = createId();
+      const session = {
+        id: sessionId,
+        agentId: request.agentId,
+        projectId: request.projectId,
+        status: 'starting' as const,
+        workingDirectory: workingDirectory.canonicalPath,
+        metadataJson: canonicalJsonStringify(request.metadata),
+        ...(request.taskSummary === undefined ? {} : { taskSummary: request.taskSummary }),
+        ...(request.branch === undefined ? {} : { branch: request.branch }),
+        ...(worktree === undefined ? {} : { worktreePath: worktree.canonicalPath }),
+      };
+
+      for (let attempt = 1; attempt <= NATIVE_DECLARATION_MAX_ATTEMPTS; attempt += 1) {
+        const native =
+          request.native === undefined
+            ? undefined
+            : await planNativeDeclaration(options.repository, request.native, sessionId, {
+                linked: linkedEventId,
+                unlinked: unlinkedEventId,
+              });
+
+        try {
+          const result = await options.repository.registerSession({
+            session,
+            workspaceId: options.workspaceId,
+            eventId: registrationEventId,
+            presenceTtlMs: options.presenceTtlMs,
+            ...(native === undefined ? {} : { native }),
+          });
+          if (result.status === 'not_found') {
+            throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
+          }
+          const registered = await requireSession(options.repository, sessionId);
+          options.onRegistered?.(registered);
+          return registered;
+        } catch (error) {
+          // A third VERSION_CONFLICT must not escape as a raw repository error,
+          // which a caller would see as a 500 for what is a refusal.
+          if (!isVersionConflict(error)) throw error;
+        }
       }
-      const session = await requireSession(options.repository, sessionId);
-      options.onRegistered?.(session);
-      return session;
+
+      throw new ApplicationError(
+        'NATIVE_BINDING_CONTENDED',
+        'The native session binding changed while it was being declared.',
+        409,
+      );
     },
 
     get: (sessionId) => options.repository.getSession(sessionId),
@@ -89,13 +277,39 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
 
     async updateStatus(sessionId, targetStatus) {
       const session = await requireSession(options.repository, sessionId);
-      const result = await options.repository.updateSessionStatus({
-        sessionId,
-        projectId: session.projectId,
-        targetStatus,
-        workspaceId: options.workspaceId,
-        eventId: createId(),
-      });
+      const eventId = createId();
+      const unlinkedEventId = createId();
+      let result: Awaited<ReturnType<RuntimeRepository['updateSessionStatus']>> | undefined;
+
+      for (let attempt = 1; attempt <= NATIVE_DECLARATION_MAX_ATTEMPTS; attempt += 1) {
+        // Only `completed` is terminal here, and it is the path that would
+        // otherwise leave an open link behind.
+        const native =
+          targetStatus === 'completed'
+            ? await resolveNativeUnlink(options.repository, sessionId, unlinkedEventId)
+            : undefined;
+        try {
+          result = await options.repository.updateSessionStatus({
+            sessionId,
+            projectId: session.projectId,
+            targetStatus,
+            workspaceId: options.workspaceId,
+            eventId,
+            ...(native === undefined ? {} : { native }),
+          });
+          break;
+        } catch (error) {
+          if (!isVersionConflict(error)) throw error;
+        }
+      }
+
+      if (result === undefined) {
+        throw new ApplicationError(
+          'NATIVE_BINDING_CONTENDED',
+          'The native session binding changed while the session status was changing.',
+          409,
+        );
+      }
       if (result.status === 'not_found') {
         throw sessionNotFound();
       }
@@ -147,18 +361,35 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
 
     async close(sessionId) {
       const session = await requireSession(options.repository, sessionId);
-      const result = await options.repository.closeSession({
-        sessionId,
-        projectId: session.projectId,
-        workspaceId: options.workspaceId,
-        eventId: createId(),
-      });
-      if (result.status === 'not_found') {
-        throw sessionNotFound();
+      const eventId = createId();
+      const unlinkedEventId = createId();
+
+      for (let attempt = 1; attempt <= NATIVE_DECLARATION_MAX_ATTEMPTS; attempt += 1) {
+        const native = await resolveNativeUnlink(options.repository, sessionId, unlinkedEventId);
+        try {
+          const result = await options.repository.closeSession({
+            sessionId,
+            projectId: session.projectId,
+            workspaceId: options.workspaceId,
+            eventId,
+            ...(native === undefined ? {} : { native }),
+          });
+          if (result.status === 'not_found') {
+            throw sessionNotFound();
+          }
+          const closed = await requireSession(options.repository, sessionId);
+          options.onClosed?.(closed);
+          return closed;
+        } catch (error) {
+          if (!isVersionConflict(error)) throw error;
+        }
       }
-      const closed = await requireSession(options.repository, sessionId);
-      options.onClosed?.(closed);
-      return closed;
+
+      throw new ApplicationError(
+        'NATIVE_BINDING_CONTENDED',
+        'The native session binding changed while the session was closing.',
+        409,
+      );
     },
   };
 }

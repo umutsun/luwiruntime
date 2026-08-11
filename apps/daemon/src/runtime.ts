@@ -27,7 +27,9 @@ import {
   type RedisFunctionRegistry,
   type RedisGateway,
   type RedisHealth,
+  type NativeUnlinkInput,
   type RedisKeys,
+  type RuntimeRepository,
 } from '@luwi/redis';
 import {
   createLeaseExpirySweeper,
@@ -60,6 +62,42 @@ import {
   type SignalSource,
 } from './shutdown.js';
 import { createWebSocketHub } from './websocket-hub.js';
+
+/**
+ * The open native link a lapsing session holds, if it holds one.
+ *
+ * Fail-closed: no reverse index means no binding and the unchanged path is
+ * correct, but partial evidence is a fault rather than an absence, because
+ * disconnecting anyway would abandon an open link.
+ */
+async function resolveExpiringNativeUnlink(
+  repository: RuntimeRepository,
+  sessionId: string,
+): Promise<Omit<NativeUnlinkInput, 'unlinkedEventId'> | undefined> {
+  const bindingId = await repository.getSessionNativeBindingId(sessionId);
+  if (bindingId === null) return undefined;
+  const binding = await repository.getNativeBinding(bindingId);
+  const openLinkId = binding?.openLinkId;
+  if (binding === null || openLinkId === undefined) {
+    throw new Error('The native session binding for the lapsing session cannot be resolved.');
+  }
+  const link = await repository.getNativeLink(openLinkId);
+  if (
+    link === null ||
+    link.id !== openLinkId ||
+    link.bindingId !== bindingId ||
+    link.sessionId !== sessionId ||
+    link.unlinkedAt !== undefined
+  ) {
+    throw new Error('The native session link for the lapsing session cannot be resolved.');
+  }
+  return {
+    bindingId,
+    linkId: link.id,
+    expectedVersion: binding.version,
+    expectedOpenLinkId: openLinkId,
+  };
+}
 
 export type StartDaemonConnections = {
   command: ManagedRedisConnection;
@@ -508,12 +546,20 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         if (session === null) {
           return 'unchanged';
         }
+        /**
+         * A lapsing session must not leave an open native link behind, so the
+         * sweep resolves the binding and closes the link in the same
+         * transition. Resolution is fail-closed: incomplete evidence throws
+         * rather than quietly disconnecting and abandoning the link.
+         */
+        const native = await resolveExpiringNativeUnlink(repository, deadline.sessionId);
         const result = await repository.disconnectExpiredSession({
           ...deadline,
           expectedDeadlineMs: deadline.deadlineMs,
           projectId: session.projectId,
           workspaceId: config.workspaceId,
           eventId: randomUUID(),
+          ...(native === undefined ? {} : { native: { ...native, unlinkedEventId: randomUUID() } }),
         });
         if (result.status === 'disconnected') {
           return 'disconnected';

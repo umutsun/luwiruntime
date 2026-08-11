@@ -104,6 +104,10 @@ export interface RedisKeys {
   optimizationProposal(proposalId: string): string;
   projectOptimizationProposals(projectId: string): string;
   optimizationEvaluation(evaluationId: string): string;
+  nativeSessionBinding(bindingId: string): string;
+  nativeSessionLink(linkId: string): string;
+  nativeSessionLinks(bindingId: string): string;
+  sessionNativeBinding(sessionId: string): string;
 }
 
 export const SESSION_INBOX_CONSUMER_GROUP = 'luwi-session-inbox-v1';
@@ -165,6 +169,10 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     projectLeases: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:leases`,
     sessionLeases: (sessionId) => `${prefix}:index:session:${keyPart(sessionId)}:leases`,
     sessionPresence: (sessionId) => `${prefix}:presence:session:${keyPart(sessionId)}`,
+    nativeSessionBinding: (bindingId) => `${prefix}:native-session:${keyPart(bindingId)}`,
+    nativeSessionLink: (linkId) => `${prefix}:native-session-link:${keyPart(linkId)}`,
+    nativeSessionLinks: (bindingId) => `${prefix}:index:native-session:${keyPart(bindingId)}:links`,
+    sessionNativeBinding: (sessionId) => `${prefix}:index:session:${keyPart(sessionId)}:native`,
     message: (messageId) => `${prefix}:message:${keyPart(messageId)}`,
     messageCorrelation: (correlationId) =>
       `${prefix}:index:message:correlation:${keyPart(correlationId)}`,

@@ -8,6 +8,21 @@ export { canonicalizeProjectPath, canonicalizeWorkingDirectory } from './project
 export type { CanonicalPath, PathDependencies } from './project-path.js';
 export { evaluateSessionStatusTransition } from './session-status.js';
 export type { SessionStatusTransitionResult } from './session-status.js';
+export {
+  deriveNativeBindingId,
+  deriveNativeKind,
+  deriveNativeLinkId,
+  deriveParentRef,
+} from './native-session-identity.js';
+export {
+  evaluateNativeDeclaration,
+  NATIVE_DECLARATION_MAX_ATTEMPTS,
+} from './native-session-policy.js';
+export type {
+  NativeDeclarationDecision,
+  NativeDeclarationObservation,
+  NativeOpenLinkObservation,
+} from './native-session-policy.js';
 export { createRuntimeReadiness } from './runtime-readiness.js';
 export type { MutationSlot, RuntimeReadiness } from './runtime-readiness.js';
 export { createPresenceSweeper } from './presence-sweeper.js';

@@ -72,6 +72,11 @@ function repository(options?: {
     closeSession: async () => ({ status: 'unchanged', currentStatus: 'completed' }),
     findExpiredHeartbeatDeadlines: async () => [],
     disconnectExpiredSession: async () => ({ status: 'unchanged' }),
+    // No reverse index: this session has no native binding, so the terminal
+    // paths take the unchanged 5-key form.
+    getSessionNativeBindingId: async () => null,
+    getNativeBinding: async () => null,
+    getNativeLink: async () => null,
   };
 }
 
