@@ -399,6 +399,7 @@ LUWI_INBOX_MAX_CLAIM_LIMIT=100
 LUWI_TERMINAL_MESSAGE_RETENTION_MS=604800000
 LUWI_MESSAGE_IDEMPOTENCY_RETENTION_MS=86400000
 LUWI_SESSION_INBOX_MAXLEN=10000
+LUWI_NATIVE_LINK_RETENTION_MAX=1000
 ```
 
 On standard Redis versions before 8.2, trim the global Stream only when group metadata is
@@ -1029,7 +1030,7 @@ How the three decisions landed:
 permitted to issue a state-changing request. `product-independence.test.ts` enforces that as an
 allowlist of one and still forbids the prohibited operations everywhere, including inside it.
 
-### Built: native session binding (A1 of two)
+### Built: native session binding (A1 and A2, complete)
 
 ADR 0022 added **native session identity**. A client may declare its vendor-native session reference
 when it registers a LUWI session, and the runtime records a stable `NativeSessionBinding` plus an
@@ -1044,9 +1045,18 @@ capacity is proven per append; all three terminal paths — `close`, `status →
 sweeper's `disconnect` — close the link, and resolution is fail-closed. Every timestamp comes from
 one Redis transition clock. `luwi_v1` is at **v11**.
 
-**A1 is not acceptance of A.** Link retention is A2 and is not implemented, so closed links
-accumulate without bound. `usage.sessionId` is not solved, MCP self-registration is not included, and
-transcript ingestion has not begun.
+**A2 landed, so A is accepted.** Link retention bounds a binding at 1000 retained closed links
+through `LUWI_NATIVE_LINK_RETENTION_MAX`. `native_link_trim` takes `2 + 2N` keys, removes at most 32
+links per call, and takes the zset member, the link hash and the session reverse index together, so
+no dangling `openLinkId` and no dangling reverse index survives. It appends no event and touches no
+stream: retention is a service on the existing retention interval, not a transition. Every key is
+declared with the identity it must hold, and any mismatch — an unclosed link, another binding,
+another session, a duplicate, an empty batch — is refused with nothing written. The sweep enumerates
+bindings through `index:session:{sessionId}:native`, which keeps `session_register` at 14 keys at the
+cost of being O(sessions) per pass.
+
+`usage.sessionId` is still not solved, MCP self-registration is still not included, transcript
+ingestion has not begun, and a trimmed interval is never evidence for attribution.
 
 **Every other prohibition below still stands.** Do not begin `config/reconcile`, lifecycle/release
 scoring, task orchestration, a semantic or vector knowledge graph, memory federation, GitHub

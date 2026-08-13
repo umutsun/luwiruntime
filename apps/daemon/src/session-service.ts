@@ -23,7 +23,12 @@ import {
   type NativeOpenLinkObservation,
 } from '@luwi/runtime';
 
-function isVersionConflict(error: unknown): boolean {
+/**
+ * Exported so the presence sweeper maps contention the same way. Two copies of
+ * this predicate would be two chances for one of them to stop matching what the
+ * repository actually throws.
+ */
+export function isVersionConflict(error: unknown): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&
@@ -48,7 +53,18 @@ async function planNativeDeclaration(
   let openLink: NativeOpenLinkObservation | undefined;
   if (binding?.openLinkId !== undefined) {
     const link = await repository.getNativeLink(binding.openLinkId);
-    if (link !== null && link.unlinkedAt === undefined) {
+    /**
+     * The record read at `openLinkId` must actually be that link, and must
+     * belong to this binding. A record that contradicts the pointer is not a
+     * free reference: it is the same loss of evidence `inconsistent` exists
+     * for, and leaving `openLink` undefined is what reports it.
+     */
+    if (
+      link !== null &&
+      link.id === binding.openLinkId &&
+      link.bindingId === bindingId &&
+      link.unlinkedAt === undefined
+    ) {
       const linked = await repository.getSession(link.sessionId);
       if (linked !== null) {
         openLink = { id: link.id, sessionId: link.sessionId, sessionStatus: linked.status };

@@ -62,6 +62,19 @@ export type {
   LeaseExpirySweeper,
   LeaseExpirySweeperOptions,
 } from './lease-expiry-sweeper.js';
+export {
+  createNativeLinkRetentionSweeper,
+  selectTrimmableNativeLinks,
+} from './native-link-retention.js';
+export type {
+  NativeLinkRetentionRepository,
+  NativeLinkRetentionState,
+  NativeLinkRetentionSweepResult,
+  NativeLinkRetentionSweeper,
+  NativeLinkRetentionSweeperOptions,
+  NativeLinkTrimTarget,
+  RetainedNativeLink,
+} from './native-link-retention.js';
 export { compileEffectiveConfiguration } from './capability-resolution.js';
 export type {
   CapabilityLayer,

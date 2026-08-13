@@ -57,6 +57,7 @@ export type {
   SessionView,
 } from './session.js';
 export {
+  NATIVE_LINK_TRIM_MAX_PER_CALL,
   nativeSessionBindingSchema,
   nativeSessionKindSchema,
   nativeSessionLinkSchema,

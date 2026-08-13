@@ -16,13 +16,12 @@ separate.
 
 **A2** — link retention (§11) only.
 
-The split is safe because transition Functions never trim: A1 is correct without retention. It is
-**not free**. Until A2 lands, closed links accumulate without bound — one per LUWI session per native
-identity — so `trimmedLinkCount` stays `0`, `oldestRetainedLinkedAt` stays absent, and the retention
-guarantees in §11 are unimplemented. **A1 alone is therefore not acceptance of A.** A is accepted only
-when A2 has landed and §11 holds.
+The split was safe because transition Functions never trim: A1 was correct without retention, at the
+cost of closed links accumulating without bound until A2 landed.
 
-The fields §11 needs are defined in the A1 schema so that A2 requires no projection migration.
+**Both increments are implemented.** A2 landed on 2026-08-12 as `native_link_trim` plus a periodic
+sweep driven from the daemon's existing retention pass, and §11 holds. The fields §11 needs were
+defined in the A1 schema, so A2 required no projection migration.
 
 ## 1. Problem and current state
 
@@ -184,7 +183,8 @@ Function verifies the state that decision was based on and applies the already-d
 
 **Retry limit: three CAS attempts per request in total** (one initial plus two retries). On
 exhaustion the daemon returns `409 NATIVE_BINDING_CONTENDED`, which is distinct from
-`409 NATIVE_SESSION_CONFLICT` so that a contended binding is never reported as a held one.
+`409 NATIVE_SESSION_CONFLICT` so that a contended binding is never reported as a held one. The
+presence sweeper serves no request and therefore reports differently; see §8.
 
 `version` is a monotonically increasing integer, starting at `1` for a newly created binding, and is
 incremented by every binding mutation — link, unlink and retention trim alike.
@@ -364,9 +364,15 @@ exact match on all four fields runs the 7-key unlink. `close`, `status → compl
 
 **CAS exhaustion maps to a refusal, never to a leaked error.** The first two `VERSION_CONFLICT`
 results are re-read and re-evaluated. The third does not escape as a raw repository error: every
-path — registration, `close`, `status → completed` and sweeper `disconnect` — returns
+caller-facing path — registration, `close` and `status → completed` — returns
 `409 NATIVE_BINDING_CONTENDED`. The session id and the registration, linked and unlinked event ids
 are minted once and stay fixed across all three attempts.
+
+The sweeper's `disconnect` is the exception, because it has no caller to refuse. An exhausted sweep
+reports the session **unchanged** instead. A conflict wrote nothing, so the heartbeat deadline still
+names the session and the next sweep sees it again; throwing there would abandon the remaining
+candidates in the batch in order to retry a single contended one. Its event ids are minted once for
+the same reason a declaration's are.
 
 **The unlink must validate before it writes, and must never create a record.** `HSET` creates a hash
 that does not exist, so an unlink pointed at a missing or mismatched link would silently manufacture
@@ -453,6 +459,40 @@ declared by the caller after it has read which links to remove. It carries the s
 `expectedVersion` guards the binding, and a trim that races a link or unlink returns
 `version_conflict` and is retried on the next sweep rather than immediately.
 
+### What implementation settled
+
+**Every key arrives paired with the identity it must hold.** A key alone proves nothing about its
+contents, and a Function may not derive a key name, so the declaration carries each link's `id` and
+its `sessionId` — the latter being what the reverse-index key was built from. The Function refuses,
+with nothing written, when a link hash names another id, another binding or another session, when it
+carries no `unlinkedAt`, when it is absent from the links zset, when the reverse index names another
+binding, or when a link is declared twice. Validation runs to completion before the first removal,
+which is what makes every one of those refusals leave the binding exactly as it was.
+
+**The sweep enumerates bindings through sessions.** There is no binding index and no production
+`SCAN`. The distinct set of binding ids named by `index:session:{sessionId}:native` over all sessions
+is exactly the set of bindings that still retain a link: session records are never deleted, and the
+reverse index outlives its link's closure, so a binding with anything left to trim is still named.
+The alternative — a dedicated index written inside `native_apply` — would make `session_register` a
+15-key Function and break the 9-key/14-key contract in §7. The cost is that the sweep is O(sessions)
+in reverse-index reads; it reuses the session list the daemon's retention pass already reads and
+fetches the indexes with one `MGET` over caller-declared keys.
+
+**An empty trim is refused, not a silent success.** `#keys < 4`, an odd `#keys`, and `#keys > 66` are
+all `REDIS_ARGUMENT_INVALID` with zero mutation and no version change. §5 defines `version` as
+incremented by every binding mutation, and a call that removes nothing is not a mutation — letting it
+increment would invalidate every concurrent observation while changing no state. The sweep never
+issues one: with nothing to select it skips the Function.
+
+**Retention rides the existing retention interval.** It is a separate service, not a separate timer:
+`LUWI_RETENTION_INTERVAL_MS` already drives stream, message and intelligence retention, and a fourth
+timer would be one more thing to clear on shutdown for no gain.
+
+The library version stays at **11**. `isCompatible` compares a SHA-256 of the installed source and
+the function-name list, so adding `native_link_trim` forces `FUNCTION LOAD REPLACE` on its own;
+the version number buys no compatibility behaviour here, and v11 is ADR 0022's number for A as a
+whole.
+
 ## 12. Failure and recovery
 
 | Situation                                                                    | Behaviour                                                                                                                                             |
@@ -460,7 +500,8 @@ declared by the caller after it has read which links to remove. It carries the s
 | Unknown `projectId`                                                          | `404`; nothing written                                                                                                                                |
 | Redis unavailable                                                            | `503`; no partial write, because the transition is one Function                                                                                       |
 | Native conflict                                                              | `409 NATIVE_SESSION_CONFLICT`; nothing written; no session created                                                                                    |
-| CAS retries exhausted                                                        | `409 NATIVE_BINDING_CONTENDED`; nothing written                                                                                                       |
+| CAS retries exhausted on a caller-facing path                                | `409 NATIVE_BINDING_CONTENDED`; nothing written                                                                                                       |
+| CAS retries exhausted in the presence sweeper                                | the session is reported `unchanged`; nothing written; the deadline survives, so the next sweep retries it                                             |
 | Malformed or over-long native id                                             | schema rejection; the session is not registered either                                                                                                |
 | A required stream cannot accept an append                                    | whole transition aborts before the first mutation                                                                                                     |
 | Client crashed with an open link                                             | the sweeper's `session_disconnect` closes it, bounded by the presence TTL                                                                             |

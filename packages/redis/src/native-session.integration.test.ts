@@ -72,7 +72,11 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       };
     }
 
-    const register = async (sessionId: string, native?: NativeRegistrationInput) =>
+    const register = async (
+      sessionId: string,
+      native?: NativeRegistrationInput,
+      presenceTtlMs = 15_000,
+    ) =>
       repository.registerSession({
         session: {
           id: sessionId,
@@ -84,8 +88,13 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         },
         workspaceId: 'local',
         eventId: `event-session-${sessionId}`,
-        presenceTtlMs: 15_000,
+        presenceTtlMs,
         ...(native === undefined ? {} : { native }),
+      });
+
+    const delay = (ms: number) =>
+      new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
       });
 
     beforeAll(async () => {
@@ -206,6 +215,143 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       expect(await repository.getNativeLink(rejectedLinkId)).toBeNull();
     });
 
+    /**
+     * The key a link is written into is derived from the declared `linkId`,
+     * while the record written into it comes from the payload. If the Function
+     * only compares the payload against itself, those two can disagree and the
+     * link key ends up holding a record that names a different link.
+     */
+    it('refuses a declaration whose declared link id differs from its payload', async () => {
+      const current = nextCase();
+      const declaredLinkId = deriveNativeLinkId(current.bindingId, current.sessionId);
+      const payloadLinkId = deriveNativeLinkId(current.bindingId, `${current.sessionId}-other`);
+
+      await expect(
+        register(current.sessionId, {
+          bindingId: current.bindingId,
+          linkId: declaredLinkId,
+          linkedEventId: `event-linked-${current.sessionId}`,
+          payload: {
+            bindingId: current.bindingId,
+            expectedVersion: 0,
+            link: { id: payloadLinkId, sessionId: current.sessionId },
+            binding: {
+              id: current.bindingId,
+              adapterId: current.adapterId,
+              nativeSessionId: current.nativeSessionId,
+              kind: 'main',
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'REDIS_ARGUMENT_INVALID' });
+
+      expect(await repository.getSession(current.sessionId)).toBeNull();
+      // The refusal precedes XGROUP CREATE, so no inbox stream or group survives.
+      expect(
+        await commandClient.sendCommand(['EXISTS', keys.sessionInbox(current.sessionId)]),
+      ).toBe(0);
+      expect(await repository.getNativeBinding(current.bindingId)).toBeNull();
+      expect(await repository.getNativeLink(declaredLinkId)).toBeNull();
+      expect(await repository.getNativeLink(payloadLinkId)).toBeNull();
+      expect(await repository.getSessionNativeBindingId(current.sessionId)).toBeNull();
+    });
+
+    /**
+     * The stale case: an open link whose session already went terminal without
+     * the close being written. The arriving declaration closes it and creates
+     * its own in one transition, and the closing event carries the id the
+     * caller declared for it.
+     */
+    it('closes a stale link and creates the new one in the same transition', async () => {
+      const holder = nextCase();
+      const staleLinkId = deriveNativeLinkId(holder.bindingId, holder.sessionId);
+      await register(holder.sessionId, firstDeclaration(holder));
+      // Terminal through the 5-key path, so the link is left open behind it.
+      await repository.updateSessionStatus({
+        sessionId: holder.sessionId,
+        projectId: 'project-1',
+        targetStatus: 'completed',
+        workspaceId: 'local',
+        eventId: `event-status-${holder.sessionId}`,
+      });
+
+      const arriving = `${holder.sessionId}-arriving`;
+      const linkId = deriveNativeLinkId(holder.bindingId, arriving);
+      const result = await register(arriving, {
+        bindingId: holder.bindingId,
+        linkId,
+        staleLinkId,
+        linkedEventId: `event-linked-${arriving}`,
+        unlinkedEventId: `event-unlinked-${arriving}`,
+        payload: {
+          bindingId: holder.bindingId,
+          expectedVersion: 1,
+          expectedOpenLinkId: staleLinkId,
+          staleLinkId,
+          link: { id: linkId, sessionId: arriving },
+        },
+      });
+
+      expect(result.status).toBe('created');
+      if (result.status !== 'created') return;
+      expect(result.native?.transition).toBe('linked');
+      const binding = await repository.getNativeBinding(holder.bindingId);
+      expect(binding?.openLinkId).toBe(linkId);
+      expect(binding?.version).toBe(2);
+      expect(binding?.linkCount).toBe(2);
+      expect((await repository.getNativeLink(staleLinkId))?.unlinkedAt).toBeDefined();
+      expect((await repository.getNativeLink(linkId))?.unlinkedAt).toBeUndefined();
+      // Three events in order, and the unlinked one carries the declared id.
+      expect(result.events?.map((entry) => entry.event.type)).toEqual([
+        'session.registered',
+        'session.native.unlinked',
+        'session.native.linked',
+      ]);
+      expect(result.events?.map((entry) => entry.event.id)).toEqual([
+        `event-session-${arriving}`,
+        `event-unlinked-${arriving}`,
+        `event-linked-${arriving}`,
+      ]);
+    });
+
+    /**
+     * The unlink proves the link is the one it means, but the link also has to
+     * belong to the session being made terminal. Without that, closing one
+     * session would close another session's open interval.
+     */
+    it('refuses a terminal unlink whose link belongs to another session', async () => {
+      const holder = nextCase();
+      const linkId = deriveNativeLinkId(holder.bindingId, holder.sessionId);
+      await register(holder.sessionId, firstDeclaration(holder));
+      const intruder = `${holder.sessionId}-intruder`;
+      await register(intruder);
+
+      const bindingBefore = await repository.getNativeBinding(holder.bindingId);
+      const linkBefore = await repository.getNativeLink(linkId);
+      const globalBefore = await commandClient.sendCommand(['XLEN', keys.globalEvents]);
+
+      await expect(
+        repository.closeSession({
+          sessionId: intruder,
+          projectId: 'project-1',
+          workspaceId: 'local',
+          eventId: `event-close-${intruder}`,
+          native: {
+            bindingId: holder.bindingId,
+            linkId,
+            expectedVersion: 1,
+            expectedOpenLinkId: linkId,
+            unlinkedEventId: `event-unlink-${intruder}`,
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+
+      expect(await repository.getSession(intruder)).toMatchObject({ status: 'starting' });
+      expect(await repository.getNativeBinding(holder.bindingId)).toEqual(bindingBefore);
+      expect(await repository.getNativeLink(linkId)).toEqual(linkBefore);
+      expect(await commandClient.sendCommand(['XLEN', keys.globalEvents])).toBe(globalBefore);
+    });
+
     it('closes the link through session_close, clears openLinkId, and keeps the reverse index', async () => {
       const current = nextCase();
       const linkId = deriveNativeLinkId(current.bindingId, current.sessionId);
@@ -232,6 +378,85 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       expect((await repository.getNativeLink(linkId))?.unlinkedAt).toBeDefined();
       // The reverse index outlives the link's closure: a terminal session still
       // has to resolve to its binding for later transcript mapping.
+      expect(await repository.getSessionNativeBindingId(current.sessionId)).toBe(current.bindingId);
+    });
+
+    /**
+     * The third terminal path, and the one the design calls easiest to miss: a
+     * session can reach `completed` through the status endpoint without ever
+     * calling close, and must not leave `openLinkId` behind when it does.
+     */
+    it('closes the link through session_status when the target is completed', async () => {
+      const current = nextCase();
+      const linkId = deriveNativeLinkId(current.bindingId, current.sessionId);
+      await register(current.sessionId, firstDeclaration(current));
+
+      const result = await repository.updateSessionStatus({
+        sessionId: current.sessionId,
+        projectId: 'project-1',
+        targetStatus: 'completed',
+        workspaceId: 'local',
+        eventId: `event-status-${current.sessionId}`,
+        native: {
+          bindingId: current.bindingId,
+          linkId,
+          expectedVersion: 1,
+          expectedOpenLinkId: linkId,
+          unlinkedEventId: `event-unlink-${current.sessionId}`,
+        },
+      });
+
+      expect(result).toMatchObject({ status: 'updated', currentStatus: 'completed' });
+      const closed = await repository.getNativeBinding(current.bindingId);
+      expect(closed?.openLinkId).toBeUndefined();
+      expect(closed?.version).toBe(2);
+      expect((await repository.getNativeLink(linkId))?.unlinkedAt).toBeDefined();
+      expect(await repository.getSessionNativeBindingId(current.sessionId)).toBe(current.bindingId);
+    });
+
+    /**
+     * The sweeper's path, proven against Redis rather than against a stub: the
+     * daemon-side adapter is unit-tested, but only this asserts that the 7-key
+     * `session_disconnect` actually clears `openLinkId` and stamps `unlinkedAt`.
+     */
+    it('closes the link through session_disconnect when the heartbeat lapses', async () => {
+      const current = nextCase();
+      const linkId = deriveNativeLinkId(current.bindingId, current.sessionId);
+      // Short enough that the presence key is gone by the time the sweep runs;
+      // a live presence key would return `reconciled` and write no unlink.
+      await register(current.sessionId, firstDeclaration(current), 40);
+      await delay(70);
+      const expired = (await repository.findExpiredHeartbeatDeadlines(Date.now(), 10)).find(
+        ({ sessionId }) => sessionId === current.sessionId,
+      );
+      expect(expired).toBeDefined();
+      if (expired === undefined) return;
+
+      const result = await repository.disconnectExpiredSession({
+        ...expired,
+        expectedDeadlineMs: expired.deadlineMs,
+        projectId: 'project-1',
+        workspaceId: 'local',
+        eventId: `event-disconnect-${current.sessionId}`,
+        native: {
+          bindingId: current.bindingId,
+          linkId,
+          expectedVersion: 1,
+          expectedOpenLinkId: linkId,
+          unlinkedEventId: `event-unlink-${current.sessionId}`,
+        },
+      });
+
+      expect(result.status).toBe('disconnected');
+      expect(await repository.getSession(current.sessionId)).toMatchObject({
+        status: 'disconnected',
+      });
+      const closed = await repository.getNativeBinding(current.bindingId);
+      expect(closed?.openLinkId).toBeUndefined();
+      expect(closed?.version).toBe(2);
+      expect((await repository.getNativeLink(linkId))?.unlinkedAt).toBeDefined();
+      // The reverse index outlives a lapse for the same reason it outlives a
+      // graceful close.
       expect(await repository.getSessionNativeBindingId(current.sessionId)).toBe(current.bindingId);
     });
 

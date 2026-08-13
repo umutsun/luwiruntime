@@ -114,6 +114,31 @@ export type NativeUnlinkInput = {
   unlinkedEventId: string;
 };
 
+/** What retention needs to decide, read in one place so policy stays pure. */
+export type NativeRetentionState = {
+  binding: NativeSessionBinding;
+  /** Members of the links index, open link included. */
+  linkCount: number;
+};
+
+export type NativeLinkTrimInput = {
+  bindingId: string;
+  expectedVersion: number;
+  /**
+   * The links to remove. `sessionId` travels with each id because the reverse
+   * index key is built from it and a Function may not derive a key name.
+   */
+  links: readonly { id: string; sessionId: string }[];
+};
+
+export type NativeLinkTrimResult = {
+  trimmedCount: number;
+  version: number;
+  trimmedLinkCount: number;
+  /** Absent once the binding retains no link at all. */
+  oldestRetainedLinkedAt?: string;
+};
+
 export type NativeTransitionResult = {
   transition: 'created' | 'linked';
   binding: NativeSessionBinding;
@@ -241,6 +266,10 @@ export interface RuntimeRepository {
   getNativeBinding(bindingId: string): Promise<NativeSessionBinding | null>;
   getNativeLink(linkId: string): Promise<NativeSessionLink | null>;
   getSessionNativeBindingId(sessionId: string): Promise<string | null>;
+  listSessionNativeBindingIds(sessionIds: readonly string[]): Promise<string[]>;
+  getNativeRetentionState(bindingId: string): Promise<NativeRetentionState | null>;
+  listOldestNativeLinks(bindingId: string, limit: number): Promise<NativeSessionLink[]>;
+  trimNativeLinks(input: NativeLinkTrimInput): Promise<NativeLinkTrimResult>;
   getSession(sessionId: string): Promise<SessionView | null>;
   listSessions(projectId?: string): Promise<SessionView[]>;
   updateSessionStatus(input: UpdateSessionStatusInput): Promise<UpdateSessionStatusResult>;
@@ -683,6 +712,37 @@ function parseNativeBindingHash(reply: unknown): NativeSessionBinding | null {
   return parsed.data;
 }
 
+function parseNativeLinkTrimResult(value: unknown): NativeLinkTrimResult {
+  const invalid = (): never => {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis returned an invalid native link trim result.',
+    );
+  };
+  if (!isRecord(value)) return invalid();
+  if (value.status === 'error' && typeof value.code === 'string') {
+    throw new RedisRepositoryError(value.code, 'Redis rejected the native link trim.');
+  }
+  if (
+    value.status !== 'trimmed' ||
+    !Number.isInteger(value.trimmed) ||
+    !Number.isInteger(value.version) ||
+    !Number.isInteger(value.trimmedLinkCount)
+  ) {
+    return invalid();
+  }
+  const oldestRetainedLinkedAt = value.oldestRetainedLinkedAt;
+  if (oldestRetainedLinkedAt !== undefined && typeof oldestRetainedLinkedAt !== 'string') {
+    return invalid();
+  }
+  return {
+    trimmedCount: value.trimmed as number,
+    version: value.version as number,
+    trimmedLinkCount: value.trimmedLinkCount as number,
+    ...(oldestRetainedLinkedAt === undefined ? {} : { oldestRetainedLinkedAt }),
+  };
+}
+
 function parseNativeLinkHash(reply: unknown): NativeSessionLink | null {
   const record = hashRecord(reply, 'native session link');
   if (record === null) {
@@ -829,7 +889,18 @@ export function createRuntimeRepository(options: {
             ? keys.nativeSessionBinding(native.bindingId)
             : keys.nativeSessionLink(native.staleLinkId),
         );
-        commandArgs.push(JSON.stringify(native.payload), native.linkedEventId);
+        // The identifiers the keys above were built from, declared separately
+        // from the payload so the Function can prove the two agree. A Function
+        // may not derive a key name, so it cannot recover them any other way.
+        commandArgs.push(
+          JSON.stringify(native.payload),
+          JSON.stringify({
+            bindingId: native.bindingId,
+            linkId: native.linkId,
+            ...(native.staleLinkId === undefined ? {} : { staleLinkId: native.staleLinkId }),
+          }),
+          native.linkedEventId,
+        );
         if (native.unlinkedEventId !== undefined) {
           commandArgs.push(native.unlinkedEventId);
         }
@@ -859,6 +930,106 @@ export function createRuntimeRepository(options: {
     async getSessionNativeBindingId(sessionId) {
       const reply = await client.sendCommand(['GET', keys.sessionNativeBinding(sessionId)]);
       return typeof reply === 'string' && reply !== '' ? reply : null;
+    },
+
+    /**
+     * The bindings a session list names, de-duplicated in first-seen order.
+     *
+     * This is retention's only enumeration route: there is no binding index,
+     * and the reverse index outlives its link's closure, so a binding that
+     * still retains a link is still named by that link's session.
+     */
+    async listSessionNativeBindingIds(sessionIds) {
+      const seen = new Set<string>();
+      const bindingIds: string[] = [];
+      for (let index = 0; index < sessionIds.length; index += 256) {
+        const chunk = sessionIds.slice(index, index + 256);
+        if (chunk.length === 0) continue;
+        const reply = await client.sendCommand([
+          'MGET',
+          ...chunk.map((sessionId) => keys.sessionNativeBinding(sessionId)),
+        ]);
+        if (!Array.isArray(reply)) {
+          throw new RedisRepositoryError(
+            'REDIS_DATA_INVALID',
+            'Redis returned an invalid native session binding index.',
+          );
+        }
+        for (const value of reply) {
+          const bindingId = typeof value === 'string' ? value : undefined;
+          if (bindingId === undefined || bindingId === '' || seen.has(bindingId)) continue;
+          seen.add(bindingId);
+          bindingIds.push(bindingId);
+        }
+      }
+      return bindingIds;
+    },
+
+    async getNativeRetentionState(bindingId) {
+      const binding = parseNativeBindingHash(
+        await client.sendCommand(['HGETALL', keys.nativeSessionBinding(bindingId)]),
+      );
+      if (binding === null) {
+        return null;
+      }
+      const linkCount = Number(
+        await client.sendCommand(['ZCARD', keys.nativeSessionLinks(bindingId)]),
+      );
+      if (!Number.isInteger(linkCount) || linkCount < 0) {
+        throw new RedisRepositoryError(
+          'REDIS_DATA_INVALID',
+          'Redis returned an invalid native session link count.',
+        );
+      }
+      return { binding, linkCount };
+    },
+
+    async listOldestNativeLinks(bindingId, limit) {
+      if (limit < 1) {
+        return [];
+      }
+      const linkIds = stringArray(
+        await client.sendCommand([
+          'ZRANGE',
+          keys.nativeSessionLinks(bindingId),
+          '0',
+          String(limit - 1),
+        ]),
+        'native session link',
+      );
+      const links = await Promise.all(
+        linkIds.map(async (linkId) =>
+          parseNativeLinkHash(
+            await client.sendCommand(['HGETALL', keys.nativeSessionLink(linkId)]),
+          ),
+        ),
+      );
+      // A member whose hash is gone is not a trim candidate; it is a record the
+      // caller cannot declare, so it is left for inspection rather than guessed at.
+      return links.filter((link): link is NativeSessionLink => link !== null);
+    },
+
+    async trimNativeLinks(input) {
+      const commandKeys = [
+        keys.nativeSessionBinding(input.bindingId),
+        keys.nativeSessionLinks(input.bindingId),
+        ...input.links.flatMap((link) => [
+          keys.nativeSessionLink(link.id),
+          keys.sessionNativeBinding(link.sessionId),
+        ]),
+      ];
+      const reply = await client.sendCommand([
+        'FCALL',
+        functions.functions.nativeLinkTrim,
+        String(commandKeys.length),
+        ...commandKeys,
+        String(input.expectedVersion),
+        JSON.stringify({
+          bindingId: input.bindingId,
+          links: input.links.map((link) => ({ id: link.id, sessionId: link.sessionId })),
+        }),
+      ]);
+      return parseNativeLinkTrimResult(decodeJsonReply(reply));
     },
 
     async getSession(sessionId) {

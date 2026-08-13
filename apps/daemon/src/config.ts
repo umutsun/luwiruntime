@@ -38,6 +38,7 @@ const environmentSchema = z.object({
   LUWI_STREAM_MAXLEN_PROJECT: z.coerce.number().int().min(100).default(50_000),
   LUWI_STREAM_MAXLEN_DEAD_LETTER: z.coerce.number().int().min(10).default(10_000),
   LUWI_RETENTION_INTERVAL_MS: z.coerce.number().int().min(1_000).default(60_000),
+  LUWI_NATIVE_LINK_RETENTION_MAX: z.coerce.number().int().min(1).max(1_000_000).default(1_000),
   LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS: z.coerce.number().int().min(50).default(1_000),
   LUWI_MESSAGE_TIMEOUT_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
   LUWI_MESSAGE_MAX_CONTENT_BYTES: z.coerce
@@ -145,6 +146,7 @@ export type DaemonConfig = {
   projectStreamMaxLength?: number;
   deadLetterStreamMaxLength?: number;
   retentionIntervalMs?: number;
+  nativeLinkRetentionMax?: number;
   messageTimeoutSweepIntervalMs?: number;
   messageTimeoutBatchSize?: number;
   messageMaxContentBytes?: number;
@@ -242,6 +244,7 @@ export function loadDaemonConfig(
     projectStreamMaxLength: parsed.LUWI_STREAM_MAXLEN_PROJECT,
     deadLetterStreamMaxLength: parsed.LUWI_STREAM_MAXLEN_DEAD_LETTER,
     retentionIntervalMs: parsed.LUWI_RETENTION_INTERVAL_MS,
+    nativeLinkRetentionMax: parsed.LUWI_NATIVE_LINK_RETENTION_MAX,
     messageTimeoutSweepIntervalMs: parsed.LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS,
     messageTimeoutBatchSize: parsed.LUWI_MESSAGE_TIMEOUT_BATCH_SIZE,
     messageMaxContentBytes: parsed.LUWI_MESSAGE_MAX_CONTENT_BYTES,

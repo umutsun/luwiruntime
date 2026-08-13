@@ -26,6 +26,7 @@ describe('daemon configuration', () => {
       projectStreamMaxLength: 50000,
       deadLetterStreamMaxLength: 10000,
       retentionIntervalMs: 60000,
+      nativeLinkRetentionMax: 1000,
       messageTimeoutSweepIntervalMs: 1000,
       messageTimeoutBatchSize: 100,
       messageMaxContentBytes: 32768,
@@ -91,6 +92,7 @@ describe('daemon configuration', () => {
       projectStreamMaxLength: 50000,
       deadLetterStreamMaxLength: 10000,
       retentionIntervalMs: 60000,
+      nativeLinkRetentionMax: 1000,
       messageTimeoutSweepIntervalMs: 1000,
       messageTimeoutBatchSize: 100,
       messageMaxContentBytes: 32768,
@@ -135,6 +137,19 @@ describe('daemon configuration', () => {
       luwiHome: 'C:/fixture/luwi-home',
       nativeHome: 'C:/fixture/native-home',
     });
+  });
+
+  it('bounds retained native session links, with an overridable default', () => {
+    expect(loadDaemonConfig({}).nativeLinkRetentionMax).toBe(1000);
+    expect(loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: '32' }).nativeLinkRetentionMax).toBe(
+      32,
+    );
+  });
+
+  it('rejects a native link retention bound that would retain nothing', () => {
+    expect(() => loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: '0' })).toThrow();
+    expect(() => loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: '-1' })).toThrow();
+    expect(() => loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: 'many' })).toThrow();
   });
 
   it('rejects non-loopback binding', () => {

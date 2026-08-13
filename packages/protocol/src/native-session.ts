@@ -15,6 +15,16 @@ import { z } from 'zod';
 const identifierSchema = z.string().trim().min(1).max(128);
 const timestampSchema = z.iso.datetime({ offset: false });
 
+/**
+ * Closed links one retention call may remove.
+ *
+ * It lives here because both `@luwi/redis`, which enforces it as a key-count
+ * bound inside the Function, and `@luwi/runtime`, which enforces it when
+ * selecting candidates, must agree on the number, and neither package depends
+ * on the other.
+ */
+export const NATIVE_LINK_TRIM_MAX_PER_CALL = 32;
+
 const nativeIdSchema = z
   .string()
   .trim()

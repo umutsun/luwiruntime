@@ -1,9 +1,25 @@
-import type { AgentSession, SessionRegistrationRequest, SessionView } from '@luwi/protocol';
 import type {
-  RegisterSessionResult,
-  RuntimeRepository,
-  UpdateSessionStatusResult,
+  AgentSession,
+  NativeSessionBinding,
+  NativeSessionLink,
+  NativeSessionRef,
+  SessionRegistrationRequest,
+  SessionView,
+} from '@luwi/protocol';
+import {
+  RedisRepositoryError,
+  type CloseSessionInput,
+  type RegisterSessionInput,
+  type RegisterSessionResult,
+  type RuntimeRepository,
+  type UpdateSessionStatusInput,
+  type UpdateSessionStatusResult,
 } from '@luwi/redis';
+import {
+  deriveNativeBindingId,
+  deriveNativeLinkId,
+  NATIVE_DECLARATION_MAX_ATTEMPTS,
+} from '@luwi/runtime';
 import { describe, expect, it } from 'vitest';
 
 import { createSessionService } from './session-service.js';
@@ -189,5 +205,430 @@ describe('session service', () => {
       code: 'SESSION_TERMINAL',
       statusCode: 409,
     });
+  });
+});
+
+const nativeRef: NativeSessionRef = {
+  adapterId: 'claude-code',
+  nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+};
+const bindingId = deriveNativeBindingId(nativeRef);
+const linkId = deriveNativeLinkId(bindingId, 'session-1');
+const foreignLinkId = deriveNativeLinkId(bindingId, 'session-2');
+
+const holder: SessionView = {
+  ...baseSession,
+  id: 'session-2',
+  status: 'thinking',
+  presence: 'online',
+};
+const terminalHolder: SessionView = {
+  ...baseSession,
+  id: 'session-2',
+  status: 'completed',
+  presence: 'offline',
+};
+
+function nativeBinding(overrides: Partial<NativeSessionBinding> = {}): NativeSessionBinding {
+  return {
+    id: bindingId,
+    adapterId: nativeRef.adapterId,
+    nativeSessionId: nativeRef.nativeSessionId,
+    kind: 'main',
+    version: 4,
+    linkCount: 1,
+    trimmedLinkCount: 0,
+    firstLinkedAt: '2026-07-28T11:00:00.000Z',
+    lastLinkedAt: '2026-07-28T11:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function nativeLink(overrides: Partial<NativeSessionLink> = {}): NativeSessionLink {
+  return {
+    id: linkId,
+    bindingId,
+    sessionId: 'session-1',
+    linkedAt: '2026-07-28T11:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function idSequence(values: string[]): () => string {
+  let index = 0;
+  return () => {
+    const value = values[index] ?? `unexpected-${index}`;
+    index += 1;
+    return value;
+  };
+}
+
+function versionConflict(): RedisRepositoryError {
+  return new RedisRepositoryError('VERSION_CONFLICT', 'The native binding changed.');
+}
+
+/**
+ * A stub runtime whose native reads are fixed and whose three writing
+ * transitions can be made to lose a compare-and-set a chosen number of times.
+ * Every call is recorded, because what these tests assert is the payload the
+ * service builds and how many attempts it makes — not what Lua then does.
+ */
+function nativeHarness(config: {
+  binding?: NativeSessionBinding;
+  link?: NativeSessionLink;
+  linkedSession?: SessionView;
+  reverseBindingId?: string;
+  registerConflicts?: number;
+  statusConflicts?: number;
+  closeConflicts?: number;
+  ids?: string[];
+}): {
+  service: ReturnType<typeof createSessionService>;
+  registrations: RegisterSessionInput[];
+  statusUpdates: UpdateSessionStatusInput[];
+  closes: CloseSessionInput[];
+  bindingReads: string[];
+} {
+  const registrations: RegisterSessionInput[] = [];
+  const statusUpdates: UpdateSessionStatusInput[] = [];
+  const closes: CloseSessionInput[] = [];
+  const bindingReads: string[] = [];
+  let registerConflicts = config.registerConflicts ?? 0;
+  let statusConflicts = config.statusConflicts ?? 0;
+  let closeConflicts = config.closeConflicts ?? 0;
+  const backing = repository();
+
+  const service = createSessionService({
+    repository: {
+      ...backing,
+      getSession: async (sessionId) => {
+        if (sessionId === 'session-1') return view;
+        return config.linkedSession?.id === sessionId ? config.linkedSession : null;
+      },
+      getNativeBinding: async (id) => {
+        bindingReads.push(id);
+        return config.binding ?? null;
+      },
+      getNativeLink: async () => config.link ?? null,
+      getSessionNativeBindingId: async () => config.reverseBindingId ?? null,
+      registerSession: async (input) => {
+        registrations.push(input);
+        if (registerConflicts > 0) {
+          registerConflicts -= 1;
+          throw versionConflict();
+        }
+        return backing.registerSession(input);
+      },
+      updateSessionStatus: async (input) => {
+        statusUpdates.push(input);
+        if (statusConflicts > 0) {
+          statusConflicts -= 1;
+          throw versionConflict();
+        }
+        return { status: 'unchanged', currentStatus: 'completed' };
+      },
+      closeSession: async (input) => {
+        closes.push(input);
+        if (closeConflicts > 0) {
+          closeConflicts -= 1;
+          throw versionConflict();
+        }
+        return { status: 'unchanged', currentStatus: 'completed' };
+      },
+    },
+    workspaceId: 'local',
+    presenceTtlMs: 15_000,
+    createId: idSequence(
+      config.ids ?? ['session-1', 'registration-event', 'linked-event', 'unlinked-event'],
+    ),
+    canonicalizeWorkingDirectory: async () => ({
+      localPath: 'C:/workspace/luwi',
+      canonicalPath: 'C:/workspace/luwi',
+      identityPath: 'c:/workspace/luwi',
+      pathIdentityHash: 'a'.repeat(64),
+    }),
+  });
+
+  return { service, registrations, statusUpdates, closes, bindingReads };
+}
+
+const declaration: SessionRegistrationRequest = {
+  projectId: 'project-1',
+  agentId: 'codex-sim',
+  workingDirectory: '.',
+  metadata: {},
+  native: nativeRef,
+};
+
+describe('native session declaration', () => {
+  it('declares a new binding when the reference is free', async () => {
+    const harness = nativeHarness({});
+
+    await expect(harness.service.register(declaration)).resolves.toEqual(view);
+    expect(harness.registrations).toHaveLength(1);
+    expect(harness.registrations[0]?.native).toEqual({
+      bindingId,
+      linkId,
+      linkedEventId: 'linked-event',
+      payload: {
+        bindingId,
+        expectedVersion: 0,
+        link: { id: linkId, sessionId: 'session-1' },
+        binding: {
+          id: bindingId,
+          adapterId: 'claude-code',
+          nativeSessionId: nativeRef.nativeSessionId,
+          kind: 'main',
+        },
+      },
+    });
+  });
+
+  it('links over a stale link when the previous holder is terminal', async () => {
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: foreignLinkId }),
+      link: nativeLink({ id: foreignLinkId, sessionId: 'session-2' }),
+      linkedSession: terminalHolder,
+    });
+
+    await expect(harness.service.register(declaration)).resolves.toEqual(view);
+    expect(harness.registrations[0]?.native).toEqual({
+      bindingId,
+      linkId,
+      staleLinkId: foreignLinkId,
+      linkedEventId: 'linked-event',
+      unlinkedEventId: 'unlinked-event',
+      payload: {
+        bindingId,
+        expectedVersion: 4,
+        expectedOpenLinkId: foreignLinkId,
+        staleLinkId: foreignLinkId,
+        link: { id: linkId, sessionId: 'session-1' },
+      },
+    });
+  });
+
+  it('refuses a live holder with NATIVE_SESSION_CONFLICT and never calls registerSession', async () => {
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: foreignLinkId }),
+      link: nativeLink({ id: foreignLinkId, sessionId: 'session-2' }),
+      linkedSession: holder,
+    });
+
+    await expect(harness.service.register(declaration)).rejects.toMatchObject({
+      code: 'NATIVE_SESSION_CONFLICT',
+      statusCode: 409,
+    });
+    expect(harness.registrations).toHaveLength(0);
+  });
+
+  it('refuses with NATIVE_BINDING_INCONSISTENT when the open link cannot be read', async () => {
+    const harness = nativeHarness({ binding: nativeBinding({ openLinkId: foreignLinkId }) });
+
+    await expect(harness.service.register(declaration)).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_INCONSISTENT',
+      statusCode: 409,
+    });
+    expect(harness.registrations).toHaveLength(0);
+  });
+
+  it('refuses with NATIVE_BINDING_INCONSISTENT when the open link record disagrees with the binding', async () => {
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: foreignLinkId }),
+      // The record read at `openLinkId` names a different link, so the only
+      // statement of who holds this identity contradicts itself.
+      link: nativeLink({ id: 'some-other-link', sessionId: 'session-2' }),
+      linkedSession: terminalHolder,
+    });
+
+    await expect(harness.service.register(declaration)).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_INCONSISTENT',
+      statusCode: 409,
+    });
+    expect(harness.registrations).toHaveLength(0);
+  });
+
+  it('refuses with NATIVE_BINDING_INCONSISTENT when the open link belongs to another binding', async () => {
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: foreignLinkId }),
+      link: nativeLink({ id: foreignLinkId, bindingId: 'other-binding', sessionId: 'session-2' }),
+      linkedSession: terminalHolder,
+    });
+
+    await expect(harness.service.register(declaration)).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_INCONSISTENT',
+      statusCode: 409,
+    });
+    expect(harness.registrations).toHaveLength(0);
+  });
+
+  it('retries a version conflict and gives up as NATIVE_BINDING_CONTENDED', async () => {
+    const harness = nativeHarness({ registerConflicts: NATIVE_DECLARATION_MAX_ATTEMPTS });
+
+    await expect(harness.service.register(declaration)).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_CONTENDED',
+      statusCode: 409,
+    });
+    expect(harness.registrations).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+    // The binding is re-read on every attempt, because a conflict means the
+    // observation the decision rested on is no longer the one that won.
+    expect(harness.bindingReads).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+  });
+
+  it('keeps the session id and the event ids stable across retries', async () => {
+    const harness = nativeHarness({ registerConflicts: NATIVE_DECLARATION_MAX_ATTEMPTS - 1 });
+
+    await expect(harness.service.register(declaration)).resolves.toEqual(view);
+    expect(harness.registrations).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+    const identities = harness.registrations.map((input) => ({
+      sessionId: input.session.id,
+      eventId: input.eventId,
+      linkedEventId: input.native?.linkedEventId,
+      linkId: input.native?.linkId,
+    }));
+    expect(identities).toEqual([identities[0], identities[0], identities[0]]);
+    expect(identities[0]).toEqual({
+      sessionId: 'session-1',
+      eventId: 'registration-event',
+      linkedEventId: 'linked-event',
+      linkId,
+    });
+  });
+
+  it('registers with no native payload when no reference is supplied', async () => {
+    const harness = nativeHarness({});
+
+    await expect(
+      harness.service.register({
+        projectId: 'project-1',
+        agentId: 'codex-sim',
+        workingDirectory: '.',
+        metadata: {},
+      }),
+    ).resolves.toEqual(view);
+    expect(harness.registrations[0]?.native).toBeUndefined();
+    expect(harness.bindingReads).toHaveLength(0);
+  });
+});
+
+describe('native session release', () => {
+  const openLink = {
+    binding: nativeBinding({ openLinkId: linkId }),
+    link: nativeLink(),
+    reverseBindingId: bindingId,
+  };
+  const unlink = {
+    bindingId,
+    linkId,
+    expectedVersion: 4,
+    expectedOpenLinkId: linkId,
+  };
+
+  it('closes the open link when the status target is completed', async () => {
+    const harness = nativeHarness({ ...openLink, ids: ['status-event', 'unlinked-event'] });
+
+    await harness.service.updateStatus('session-1', 'completed');
+    expect(harness.statusUpdates).toHaveLength(1);
+    expect(harness.statusUpdates[0]?.native).toEqual({
+      ...unlink,
+      unlinkedEventId: 'unlinked-event',
+    });
+  });
+
+  it('carries no native payload for a non-terminal status target', async () => {
+    const harness = nativeHarness({ ...openLink, ids: ['status-event', 'unlinked-event'] });
+
+    await harness.service.updateStatus('session-1', 'idle');
+    expect(harness.statusUpdates[0]?.native).toBeUndefined();
+    expect(harness.bindingReads).toHaveLength(0);
+  });
+
+  it('closes the open link on a graceful close', async () => {
+    const harness = nativeHarness({ ...openLink, ids: ['close-event', 'unlinked-event'] });
+
+    await harness.service.close('session-1');
+    expect(harness.closes).toHaveLength(1);
+    expect(harness.closes[0]?.native).toEqual({ ...unlink, unlinkedEventId: 'unlinked-event' });
+  });
+
+  it('refuses to complete a session whose binding cannot be read', async () => {
+    const harness = nativeHarness({ reverseBindingId: bindingId });
+
+    await expect(harness.service.updateStatus('session-1', 'completed')).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_INCONSISTENT',
+      statusCode: 409,
+    });
+    expect(harness.statusUpdates).toHaveLength(0);
+  });
+
+  it('refuses to close a session whose open link names another session', async () => {
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: linkId }),
+      link: nativeLink({ sessionId: 'session-2' }),
+      reverseBindingId: bindingId,
+    });
+
+    await expect(harness.service.close('session-1')).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_INCONSISTENT',
+      statusCode: 409,
+    });
+    expect(harness.closes).toHaveLength(0);
+  });
+
+  it('refuses to close a session whose link is already closed', async () => {
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: linkId }),
+      link: nativeLink({ unlinkedAt: '2026-07-28T11:30:00.000Z' }),
+      reverseBindingId: bindingId,
+    });
+
+    await expect(harness.service.close('session-1')).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_INCONSISTENT',
+      statusCode: 409,
+    });
+    expect(harness.closes).toHaveLength(0);
+  });
+
+  it('maps a contended completion to NATIVE_BINDING_CONTENDED after three attempts', async () => {
+    const harness = nativeHarness({
+      ...openLink,
+      statusConflicts: NATIVE_DECLARATION_MAX_ATTEMPTS,
+      ids: ['status-event', 'unlinked-event'],
+    });
+
+    await expect(harness.service.updateStatus('session-1', 'completed')).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_CONTENDED',
+      statusCode: 409,
+    });
+    expect(harness.statusUpdates).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+  });
+
+  it('maps a contended close to NATIVE_BINDING_CONTENDED after three attempts', async () => {
+    const harness = nativeHarness({
+      ...openLink,
+      closeConflicts: NATIVE_DECLARATION_MAX_ATTEMPTS,
+      ids: ['close-event', 'unlinked-event'],
+    });
+
+    await expect(harness.service.close('session-1')).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_CONTENDED',
+      statusCode: 409,
+    });
+    expect(harness.closes).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+  });
+
+  it('keeps the unlink event id stable across a retried close', async () => {
+    const harness = nativeHarness({
+      ...openLink,
+      closeConflicts: NATIVE_DECLARATION_MAX_ATTEMPTS - 1,
+      ids: ['close-event', 'unlinked-event'],
+    });
+
+    await harness.service.close('session-1');
+    expect(harness.closes).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+    for (const call of harness.closes) {
+      expect(call.eventId).toBe('close-event');
+      expect(call.native?.unlinkedEventId).toBe('unlinked-event');
+    }
   });
 });

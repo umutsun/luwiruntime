@@ -34,8 +34,12 @@ import {
 import {
   createLeaseExpirySweeper,
   createMessageTimeoutSweeper,
+  createNativeLinkRetentionSweeper,
   createPresenceSweeper,
   createRuntimeReadiness,
+  NATIVE_DECLARATION_MAX_ATTEMPTS,
+  type NativeLinkRetentionRepository,
+  type PresenceSweeperRepository,
 } from '@luwi/runtime';
 
 import { buildDaemon, type BuildDaemonOptions, type DaemonApp } from './app.js';
@@ -55,7 +59,7 @@ import { createIntelligenceService, type IntelligenceService } from './intellige
 import { createGitObserver } from './git-observer.js';
 import { createProjectService } from './project-service.js';
 import { createRealtimeRelay } from './realtime-relay.js';
-import { createSessionService } from './session-service.js';
+import { createSessionService, isVersionConflict } from './session-service.js';
 import {
   installGracefulShutdown,
   type GracefulShutdownController,
@@ -99,6 +103,119 @@ async function resolveExpiringNativeUnlink(
   };
 }
 
+/**
+ * The presence sweeper's view of the runtime.
+ *
+ * It is built here rather than inline in `startDaemon` because this is the one
+ * presence path that can make a session terminal with no caller to answer to,
+ * and it is therefore the one worth exercising without a Redis stack behind it.
+ */
+export function createPresenceSweeperRepository(options: {
+  repository: RuntimeRepository;
+  workspaceId: string;
+  createId: () => string;
+}): PresenceSweeperRepository {
+  const { repository, workspaceId, createId } = options;
+  return {
+    findExpiredHeartbeatDeadlines: (nowMs, limit) =>
+      repository.findExpiredHeartbeatDeadlines(nowMs, limit),
+    async disconnectExpiredSession(deadline) {
+      const session = await repository.getSession(deadline.sessionId);
+      if (session === null) {
+        return 'unchanged';
+      }
+      /**
+       * Both event ids are minted once and reused on every attempt, for the
+       * same reason a declaration mints its ids before its loop: a retry that
+       * minted new ones would append a second disconnect event for one lapse
+       * if an earlier attempt had in fact succeeded unobserved.
+       */
+      const eventId = createId();
+      const unlinkedEventId = createId();
+
+      for (let attempt = 1; attempt <= NATIVE_DECLARATION_MAX_ATTEMPTS; attempt += 1) {
+        /**
+         * A lapsing session must not leave an open native link behind, so the
+         * sweep resolves the binding and closes the link in the same
+         * transition. Resolution is fail-closed: incomplete evidence throws
+         * rather than quietly disconnecting and abandoning the link. It is
+         * re-read on every attempt, because a conflict means the observation
+         * the previous attempt rested on is no longer the one that won.
+         */
+        const native = await resolveExpiringNativeUnlink(repository, deadline.sessionId);
+        try {
+          const result = await repository.disconnectExpiredSession({
+            ...deadline,
+            expectedDeadlineMs: deadline.deadlineMs,
+            projectId: session.projectId,
+            workspaceId,
+            eventId,
+            ...(native === undefined ? {} : { native: { ...native, unlinkedEventId } }),
+          });
+          if (result.status === 'disconnected') {
+            return 'disconnected';
+          }
+          return result.status === 'reconciled' ? 'reconciled' : 'unchanged';
+        } catch (error) {
+          if (!isVersionConflict(error)) throw error;
+        }
+      }
+
+      /**
+       * A conflict writes nothing, so the heartbeat deadline still names this
+       * session and the next sweep sees it again. Reporting `unchanged` rather
+       * than throwing is what keeps one contended session from aborting the
+       * remaining candidates in the batch.
+       */
+      return 'unchanged';
+    },
+  };
+}
+
+/**
+ * The seam between link retention and Redis.
+ *
+ * A refused trim is an outcome, not a failure: the compare-and-set lost to a
+ * link or unlink that ran first, the Function wrote nothing, and the overshoot
+ * is still there for the next sweep. Anything else is a real fault and escapes.
+ */
+export function createNativeLinkRetentionRepository(options: {
+  repository: RuntimeRepository;
+}): NativeLinkRetentionRepository {
+  const { repository } = options;
+  return {
+    listBindingIds: (sessionIds) => repository.listSessionNativeBindingIds(sessionIds),
+    async getRetentionState(bindingId) {
+      const state = await repository.getNativeRetentionState(bindingId);
+      if (state === null) {
+        return null;
+      }
+      return {
+        version: state.binding.version,
+        ...(state.binding.openLinkId === undefined ? {} : { openLinkId: state.binding.openLinkId }),
+        linkCount: state.linkCount,
+      };
+    },
+    async listOldestLinks(bindingId, limit) {
+      const links = await repository.listOldestNativeLinks(bindingId, limit);
+      return links.map((link) => ({
+        id: link.id,
+        sessionId: link.sessionId,
+        ...(link.unlinkedAt === undefined ? {} : { unlinkedAt: link.unlinkedAt }),
+      }));
+    },
+    async trimLinks(input) {
+      try {
+        await repository.trimNativeLinks(input);
+        return 'trimmed';
+      } catch (error) {
+        if (!isVersionConflict(error)) throw error;
+        return 'conflict';
+      }
+    },
+  };
+}
+
 export type StartDaemonConnections = {
   command: ManagedRedisConnection;
   admin: ManagedRedisConnection;
@@ -139,6 +256,7 @@ const defaults = {
   projectStreamMaxLength: 50_000,
   deadLetterStreamMaxLength: 10_000,
   retentionIntervalMs: 60_000,
+  nativeLinkRetentionMax: 1_000,
   messageTimeoutSweepIntervalMs: 1_000,
   messageTimeoutBatchSize: 100,
   messageMaxContentBytes: 32_768,
@@ -538,35 +656,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   const sweeper = createPresenceSweeper({
     now: Date.now,
     batchSize: setting(config, 'relayBatchSize'),
-    repository: {
-      findExpiredHeartbeatDeadlines: (nowMs, limit) =>
-        repository.findExpiredHeartbeatDeadlines(nowMs, limit),
-      disconnectExpiredSession: async (deadline) => {
-        const session = await repository.getSession(deadline.sessionId);
-        if (session === null) {
-          return 'unchanged';
-        }
-        /**
-         * A lapsing session must not leave an open native link behind, so the
-         * sweep resolves the binding and closes the link in the same
-         * transition. Resolution is fail-closed: incomplete evidence throws
-         * rather than quietly disconnecting and abandoning the link.
-         */
-        const native = await resolveExpiringNativeUnlink(repository, deadline.sessionId);
-        const result = await repository.disconnectExpiredSession({
-          ...deadline,
-          expectedDeadlineMs: deadline.deadlineMs,
-          projectId: session.projectId,
-          workspaceId: config.workspaceId,
-          eventId: randomUUID(),
-          ...(native === undefined ? {} : { native: { ...native, unlinkedEventId: randomUUID() } }),
-        });
-        if (result.status === 'disconnected') {
-          return 'disconnected';
-        }
-        return result.status === 'reconciled' ? 'reconciled' : 'unchanged';
-      },
-    },
+    repository: createPresenceSweeperRepository({
+      repository,
+      workspaceId: config.workspaceId,
+      createId: randomUUID,
+    }),
   });
   const leaseService = createLeaseService({
     repository: leaseRepository,
@@ -580,6 +674,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       findDueLeases: (nowMs, limit) => leaseService.findDueLeases(nowMs, limit),
       expireLease: (leaseId) => leaseService.expire(leaseId),
     },
+  });
+  const nativeLinkRetentionSweeper = createNativeLinkRetentionSweeper({
+    repository: createNativeLinkRetentionRepository({ repository }),
+    retentionMax: setting(config, 'nativeLinkRetentionMax'),
   });
   const messageTimeoutSweeper = createMessageTimeoutSweeper({
     now: Date.now,
@@ -655,6 +753,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       sweeper.stop();
       messageTimeoutSweeper.stop();
       leaseExpirySweeper.stop();
+      nativeLinkRetentionSweeper.stop();
       if (sweepTimer !== undefined) {
         clearInterval(sweepTimer);
       }
@@ -874,6 +973,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
                 batchSize: setting(config, 'messageTimeoutBatchSize'),
                 sessionIds: sessions.map(({ id }) => id),
               });
+              // Rides the existing retention interval and the session list it
+              // already read: a timer of its own would be a second thing to
+              // clear on shutdown for no gain.
+              await nativeLinkRetentionSweeper.sweepOnce(sessions.map(({ id }) => id));
               await intelligenceRepository.runRetention({
                 now: new Date(),
                 usageRetentionDays: setting(config, 'usageRetentionDays'),

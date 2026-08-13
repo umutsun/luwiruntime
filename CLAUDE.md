@@ -163,14 +163,21 @@ ADR 0020 then built the first thing that is not a read: **advisory work leases**
 project-relative path before editing it, and an overlapping claim is refused with the holder named.
 `luwi_v1` is at version 10 with four lease Functions; `deadline:leases` is swept for expiry; four
 MCP tools take the holder from the bound session and never from input; the Projects route shows what
-is held. ADR 0022 then added **native session identity** (A1 of two). A client may declare its vendor-native
+is held. ADR 0022 then added **native session identity**. A client may declare its vendor-native
 session reference at registration; the runtime records a stable binding plus an immutable,
 time-bounded link per LUWI session. Identity carries no presence, project or agent; a live holder is
 refused rather than evicted; a conflict writes nothing; missing evidence is
 `NATIVE_BINDING_INCONSISTENT`. Policy is a pure `@luwi/runtime` function and Lua only validates a
 CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no inbox stream.
-`luwi_v1` is at **v11**. **A1 is not acceptance of A**: retention is A2 and unbuilt, so closed links
-grow without bound.
+`luwi_v1` is at **v11**.
+
+**Both increments are built, so A is complete.** A2 bounds a binding at 1000 retained closed links
+(`LUWI_NATIVE_LINK_RETENTION_MAX`). `native_link_trim` takes `2 + 2N` keys, trims at most 32 per
+call, removes index entry, link hash and session reverse index together, and never touches an open
+link. It emits no event and rides the existing retention interval rather than a timer of its own.
+Every key is declared with the identity it must hold; any mismatch is refused with nothing written.
+The sweep finds bindings through `index:session:{sessionId}:native` — there is no binding index, and
+adding one would have pushed `session_register` past its 14 keys.
 
 Advisory means the runtime cannot enforce it — §3 keeps LUWI out of terminals — only that
 it answers atomically and records who holds what.

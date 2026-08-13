@@ -49,6 +49,11 @@ writes nothing at all and creates no session.
 link whose record cannot be read has lost the only statement of who held that identity; writing a
 fresh link over it would destroy the discrepancy instead of reporting it.
 
+**Contradictory evidence counts as missing.** If the record read at `openLinkId` names a different
+link, or belongs to a different binding, the declaration is `inconsistent` too. Deciding against a
+record the pointer does not actually claim would either evict a holder named nowhere or spend all
+three attempts losing a compare-and-set, reporting corruption as contention.
+
 `correlated`, `estimated` and `unknown` are deliberately absent. They belong to a later discovery
 phase, where they will describe evidence LUWI inferred rather than a client declared.
 
@@ -66,9 +71,16 @@ consumer group behind for a session that was never registered. An integration te
 `EXISTS` on the inbox key is `0` after a refused declaration.
 
 Contention is bounded at three attempts. The third `VERSION_CONFLICT` does not escape as a raw
-repository error — every path maps it to `409 NATIVE_BINDING_CONTENDED`, because a caller would
-otherwise see a 500 for what is a refusal. The session id and all event ids are minted once and stay
-fixed across attempts, so a retry cannot append a second registration event for one registration.
+repository error — every **caller-facing** path, meaning registration, `close` and
+`status → completed`, maps it to `409 NATIVE_BINDING_CONTENDED`, because a caller would otherwise
+see a 500 for what is a refusal. The session id and all event ids are minted once and stay fixed
+across attempts, so a retry cannot append a second registration event for one registration.
+
+The presence sweeper is the fourth path and the only one with no caller to refuse, so an exhausted
+sweep reports the session **unchanged** rather than throwing. A conflict writes nothing, the
+heartbeat deadline still names the session, and the next sweep sees it again; throwing there would
+abandon the remaining candidates in the batch to retry a single contended one. Its two event ids are
+minted once for the same reason a declaration's are.
 
 ### Append capacity is proven per append, not per stream
 
@@ -122,9 +134,29 @@ concurrent-instance handling; without all of it a self-registered session simply
 `disconnected` after the presence TTL. A1 is therefore a seam: within it, declarations are made
 through the existing session registration API.
 
-**A1 is not acceptance of A.** Link retention is A2 and is not implemented. Closed links accumulate
-without bound, `trimmedLinkCount` stays `0` and `oldestRetainedLinkedAt` stays absent. Those fields
-exist in the A1 schema so that A2 needs no projection migration.
+**A2 has landed, so A is accepted.** Link retention bounds a binding at 1000 retained closed links,
+configurable through `LUWI_NATIVE_LINK_RETENTION_MAX`. `native_link_trim` takes `2 + 2N` keys and
+removes at most 32 links per call, taking the zset member, the link hash and the session reverse
+index together so no dangling `openLinkId` and no dangling reverse index survives. It is not a
+transition Function: it appends no event, touches no stream, and increments `version` exactly once
+per real removal. `trimmedLinkCount` and `oldestRetainedLinkedAt` now move.
+
+Three things the design left open were settled by building it. Every key is declared together with
+the identity it must hold, because a key alone proves nothing and Lua may not derive one; the
+resulting mismatch checks all refuse with zero mutation, which an integration test proves by
+reordering the removal ahead of the validation and watching every refusal case fail. The sweep
+enumerates bindings through `index:session:{sessionId}:native` rather than through a new index,
+which keeps `session_register` at its 14 keys at the cost of being O(sessions) per pass. And an
+empty trim is `REDIS_ARGUMENT_INVALID` rather than a no-op success, because a call that removes
+nothing is not a mutation and must not move a `version` other observers are comparing against.
+
+Retention is a separate service on the existing `LUWI_RETENTION_INTERVAL_MS` pass, not a fourth
+timer. The library stays at v11: `isCompatible` hashes the source and compares the function-name
+list, so a new Function forces a reload without a version change.
+
+**What A still does not solve is unchanged.** `usage.sessionId` needs transcript ingestion, MCP
+self-registration is not included, and a trimmed interval is never evidence for attribution — a
+record inside one stays unbound rather than being assigned to the nearest session.
 
 **`usage.sessionId` is not solved.** Only a transcript record falling inside an unambiguous
 `[linkedAt, unlinkedAt)` interval can be attributed. A record outside every such interval stays

@@ -171,7 +171,7 @@ browser cannot send cross-site without a preflight the daemon deliberately never
 module, `api/config-mutations.ts`, is the only place in the dashboard permitted to issue a
 state-changing request, enforced as an allowlist of one.
 
-ADR 0022 added **native session identity** (A1 of two). A client may declare its vendor-native
+ADR 0022 added **native session identity**. A client may declare its vendor-native
 session reference when it registers a LUWI session; the runtime records a stable binding and an
 immutable, time-bounded link for each LUWI session that reference produced. Identity carries no
 presence, project or agent — a binding says who, never whether anyone is working. A live holder is
@@ -180,9 +180,12 @@ an unreadable link is reported as inconsistent instead of treated as free. Valid
 inbox stream is created, so a refused declaration leaves no trace at all. All three terminal paths
 close the link, and every timestamp comes from one Redis clock.
 
-Link retention is not implemented: closed links accumulate without bound, so **A is not complete**.
-Attributing transcript token records to sessions is also not solved, and native transcript ingestion
-has not begun.
+Link retention bounds a binding at 1000 retained closed links, configurable through
+`LUWI_NATIVE_LINK_RETENTION_MAX`. A periodic sweep removes the oldest closed links — at most 32 per
+call — taking the index entry, the link record and the session reverse index together; an open link
+is never removed, whatever the count. Attributing transcript token records to sessions is still not
+solved, native transcript ingestion has not begun, and a record falling inside a trimmed interval
+stays unbound rather than being assigned to the nearest session.
 
 `config/reconcile`, optimization accept/reject/evaluate, graph rebuild, Git mutation, lease release,
 lifecycle/release scoring, release readiness, unified search, GitHub integration, prompt injection,
