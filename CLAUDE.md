@@ -57,7 +57,9 @@ History is short and every commit is a large checkpoint:
 | `89d0ef0` | ADR 0019: capability catalogue, config chain, truncation fix   |
 | `0e76bf4` | ADR 0020: advisory work leases, `luwi_v1` v10, four MCP tools  |
 | `fdf69a2` | ADR 0021: dashboard config mutations (7 commits, this first)   |
-| _pending_ | ADR 0022: native session binding A1, `luwi_v1` v11             |
+| `80f3939` | ADR 0022 A1: native session identity, `luwi_v1` v11            |
+| `02fb41e` | ADR 0022 and the native session binding status                 |
+| `fd2a498` | ADR 0022 A2: link retention, plus two A1 boundary fixes        |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
