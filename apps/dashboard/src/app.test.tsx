@@ -241,7 +241,7 @@ describe('LUWI Pulse shell', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Inspect project LUWI Runtime' }));
-    expect(screen.getByRole('dialog', { name: 'Project inspector' })).toBeTruthy();
+    expect(screen.getByRole('complementary', { name: 'Project inspector' })).toBeTruthy();
     expect(screen.getAllByText('C:/xampp/htdocs/luwiruntime')).toHaveLength(2);
   });
 
@@ -406,7 +406,7 @@ describe('LUWI Pulse shell', () => {
     });
     inspect.focus();
     fireEvent.click(inspect, { detail: 0 });
-    expect(screen.getByRole('dialog', { name: 'Session inspector' })).toBeTruthy();
+    expect(screen.getByRole('complementary', { name: 'Session inspector' })).toBeTruthy();
   });
 
   it('uses explicit empty and unavailable session states instead of an invalid table', () => {
@@ -667,7 +667,7 @@ describe('Phase 5D routes', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Inspect session s1' }));
 
-    expect(screen.getByRole('dialog', { name: /session inspector/i })).toBeTruthy();
+    expect(screen.getByRole('complementary', { name: /session inspector/i })).toBeTruthy();
   });
 });
 

@@ -113,32 +113,37 @@
 .activity-feed code {
   color: var(--text-dim);
 }
-.inspector-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(0, 0, 0, 0.54);
-}
+/*
+ * The docked inspector: grid column three, not an overlay.
+ *
+ * It is `position: fixed` for the same reason the rail is — the pane scrolls
+ * independently of the page while the grid track reserves its gutter — and the
+ * two widths therefore read the same token. There is no backdrop and no shadow
+ * any more; nothing is being covered.
+ */
 .inspector {
-  width: min(520px, 44vw);
-  height: 100%;
-  overflow: auto;
-  border-left: 1px solid var(--border-strong);
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: var(--z-sidebar);
+  display: flex;
+  width: var(--inspector-width);
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--border);
   background: var(--bg-raised);
-  box-shadow: -18px 0 50px rgba(0, 0, 0, 0.4);
 }
 .inspector > header {
-  position: sticky;
-  top: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 16px;
+  gap: var(--space-4);
+  min-height: var(--topbar-height);
+  padding: 0 var(--space-4);
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
+}
+.inspector--empty .empty-state {
+  margin-top: var(--space-6);
 }
 .inspector h2,
 .inspector h3 {
@@ -155,7 +160,10 @@
   font-size: 20px;
 }
 .inspector__body {
-  padding: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
 }
 .inspector-details {
   margin: 0 0 22px;

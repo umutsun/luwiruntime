@@ -5,9 +5,15 @@ import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.j
 import type { IntelligenceResources } from './api/intelligence-scope.js';
 import type { ProjectScopeResources } from './api/project-scope.js';
 import type { PulseFreshness } from './api/refresh-state.js';
+import { NavIcon } from './components/nav-icon.js';
 import type { ResourceState } from './components/panel.js';
 import { StatusChip } from './components/status-chip.js';
-import { InspectorPanel, type InspectorSelection } from './inspectors/inspector-panel.js';
+import { nextTheme, THEME_LABELS, useTheme } from './components/use-theme.js';
+import {
+  InspectorEmpty,
+  InspectorPanel,
+  type InspectorSelection,
+} from './inspectors/inspector-panel.js';
 import type { GraphSeed } from './routes/graph-explorer-view.js';
 import { ProjectsView } from './projects/projects-view.js';
 import { AgentsView } from './routes/agents-view.js';
@@ -139,6 +145,35 @@ function scopeSummary(route: DashboardRouteName, snapshot: PulseSnapshot): strin
   )}`;
 }
 
+/**
+ * The count beside a rail entry.
+ *
+ * It renders nothing at all when the read failed. A badge is glanceable and
+ * unlabelled, so an `Unavailable` word does not fit and a `0` would be a lie —
+ * "no projects" and "we could not ask" are different facts, and only the first
+ * of them is a number. The command bar still states the unavailability in full.
+ *
+ * `aria-hidden` because it is a second rendering of a number, not a second
+ * number. Inside the link it would append to the accessible name and produce
+ * "Projects 3", which reads as an ordinal rather than a count; the authoritative
+ * figure is on the destination and in the command bar's scope summary. The rail
+ * keeps its one-word link names, which is what `app.test.tsx` pins.
+ */
+function navBadge(route: DashboardRouteName, snapshot: PulseSnapshot) {
+  const counts: Partial<Record<DashboardRouteName, PulseSnapshot['projectCount']>> = {
+    projects: snapshot.projectCount,
+    agents: snapshot.agentCount,
+    optimization: snapshot.findingCount,
+  };
+  const count = counts[route];
+  if (count === undefined || count.state === 'unavailable' || count.value === 0) return null;
+  return (
+    <span className="nav-item__badge" aria-hidden="true">
+      {count.value}
+    </span>
+  );
+}
+
 function connectionLabel(state: WebSocketState): string {
   if (state === 'live') return 'Realtime live';
   if (state === 'connecting') return 'Realtime connecting';
@@ -213,6 +248,8 @@ export function DashboardApp({
 }) {
   const [route, setRoute] = useState(() => parseRoute(window.location.hash));
   const [selection, setSelection] = useState<InspectorSelection>();
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const mainRegion = useRef<HTMLElement>(null);
   const fallbackActivity = useMemo(
     () =>
@@ -246,7 +283,7 @@ export function DashboardApp({
         : 'danger';
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${railCollapsed ? ' app-shell--rail-collapsed' : ''}`}>
       {/*
        * The href keeps the link meaningful without JavaScript, but the click is
        * handled here: `#main-content` is not a route, so letting it reach the
@@ -279,14 +316,16 @@ export function DashboardApp({
             href={routeHref({ name: 'pulse' })}
             aria-current={route.name === 'pulse' ? 'page' : undefined}
           >
-            Pulse
+            <NavIcon route="pulse" />
+            <span className="nav-item__label">Pulse</span>
           </a>
           <a
             className={`nav-item${route.name === 'activity' ? ' nav-item--active' : ''}`}
             href={routeHref({ name: 'activity' })}
             aria-current={route.name === 'activity' ? 'page' : undefined}
           >
-            Activity
+            <NavIcon route="activity" />
+            <span className="nav-item__label">Activity</span>
             {displayedActivity.pendingCount > 0 ? (
               <small>{displayedActivity.pendingCount} new</small>
             ) : null}
@@ -299,7 +338,9 @@ export function DashboardApp({
               href={routeHref({ name: entry.name })}
               aria-current={route.name === entry.name ? 'page' : undefined}
             >
-              {entry.label}
+              <NavIcon route={entry.name} />
+              <span className="nav-item__label">{entry.label}</span>
+              {navBadge(entry.name, snapshot)}
             </a>
           ))}
           <p className="nav-group">Intelligence</p>
@@ -310,7 +351,9 @@ export function DashboardApp({
               href={routeHref({ name: entry.name })}
               aria-current={route.name === entry.name ? 'page' : undefined}
             >
-              {entry.label}
+              <NavIcon route={entry.name} />
+              <span className="nav-item__label">{entry.label}</span>
+              {navBadge(entry.name, snapshot)}
             </a>
           ))}
           {planned.length === 0 ? null : (
@@ -337,15 +380,56 @@ export function DashboardApp({
           adding a tab stop of its own. */}
       <main id="main-content" className="workspace" ref={mainRegion} tabIndex={-1}>
         <header className="command-bar">
-          <div>
-            <p className="eyebrow">{titles.eyebrow}</p>
-            <h1>{titles.heading}</h1>
+          <div className="command-bar__left">
+            <button
+              type="button"
+              className="icon-button"
+              aria-pressed={railCollapsed}
+              aria-label={
+                railCollapsed ? 'Expand the navigation rail' : 'Collapse the navigation rail'
+              }
+              onClick={() => setRailCollapsed((collapsed) => !collapsed)}
+            >
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.4"
+                aria-hidden="true"
+              >
+                <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round" />
+              </svg>
+            </button>
+            <div>
+              <p className="eyebrow">{titles.eyebrow}</p>
+              <h1>{titles.heading}</h1>
+            </div>
           </div>
           <div className="command-bar__right">
             <span className="command-shell" aria-label="Current scope">
               {scopeSummary(route.name, snapshot)}
             </span>
             <StatusChip tone={websocketTone}>{connectionLabel(websocketState)}</StatusChip>
+            {/* Three states, not two: the stylesheet has always had a
+                system-following mode, and collapsing it into a light/dark
+                switch would take away the default that tracks the OS. */}
+            <button
+              type="button"
+              className="icon-button"
+              aria-label={`${THEME_LABELS[themeChoice]}. Activate to change.`}
+              onClick={() => setThemeChoice(nextTheme(themeChoice))}
+            >
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                aria-hidden="true"
+              >
+                <circle cx="8" cy="8" r="5.25" />
+                <path d="M8 2.75v10.5a5.25 5.25 0 0 0 0-10.5z" fill="currentColor" stroke="none" />
+              </svg>
+            </button>
             {invalidEventCount > 0 ? (
               <span className="sr-only" role="status">
                 {invalidEventCount} invalid realtime messages ignored
@@ -483,7 +567,13 @@ export function DashboardApp({
           )}
         </div>
       </main>
-      {selection === undefined ? null : (
+      {/* Grid column three. Permanently mounted, so it keeps its landmark and
+          its accessible name whether or not anything is selected — an overlay
+          that appears and disappears was a different contract, and the empty
+          state is what a docked pane needs instead. */}
+      {selection === undefined ? (
+        <InspectorEmpty />
+      ) : (
         <InspectorPanel
           selection={selection}
           activity={displayedActivity.events}

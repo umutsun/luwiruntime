@@ -62,15 +62,49 @@
   --info: #65bff3;
   --font-ui: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  --space-0: 2px;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+  /*
+   * A named type scale. The design system's density comes from deliberate small
+   * sizes, and without tokens each one gets hardcoded at its use site — which is
+   * how the old stylesheets ended up with `font: 12px var(--font-mono)` repeated
+   * a dozen times and no way to shift the scale.
+   *
+   * Named `--font-size-*` rather than `--text-*` on purpose: `--text`,
+   * `--text-secondary`, `--text-muted` and `--text-dim` are colours, and a
+   * `--text-sm` sitting beside them would read as one.
+   *
+   * 11px is the floor. The mockup goes to 9.5px; the 2026-08-05 audit raised
+   * anything under 11px because metadata that small is not readable here.
+   */
+  --font-size-2xs: 11px;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-base: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 18px;
+  --font-size-2xl: 22px;
+  /*
+   * Shell metrics. The third track is what makes the inspector a docked pane
+   * rather than an overlay; below the 1399px breakpoint it collapses back to an
+   * overlay, because 220 + 344 of chrome leaves too little content width.
+   */
+  --rail-width: 220px;
+  --rail-width-collapsed: 62px;
+  --inspector-width: 344px;
+  --topbar-height: 52px;
   --focus: 0 0 0 3px rgba(129, 140, 248, 0.45);
   --z-sidebar: 20;
   --z-skip: 100;

@@ -52,22 +52,81 @@ button:focus-visible {
 .skip-link:focus {
   top: 12px;
 }
+/*
+ * The rail is `position: fixed`, so its width has to be stated twice — once as
+ * the grid track that reserves the gutter and once on the element itself. They
+ * are the same token because they drifted apart once and the content sat under
+ * the rail.
+ */
 .app-shell {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: var(--rail-width) minmax(0, 1fr) var(--inspector-width);
   min-height: 100vh;
+}
+.app-shell--rail-collapsed {
+  grid-template-columns: var(--rail-width-collapsed) minmax(0, 1fr) var(--inspector-width);
+}
+/*
+ * Below the desktop breakpoint the inspector stops being a column and becomes a
+ * full-width section under the content. It does **not** become a modal again:
+ * two layouts are a responsive concern, but two accessibility contracts for the
+ * same pane is a maintenance trap, and the docked contract is the honest one.
+ */
+@media (max-width: 1399px) {
+  .app-shell,
+  .app-shell--rail-collapsed {
+    grid-template-columns: var(--rail-width) minmax(0, 1fr);
+  }
+  .app-shell--rail-collapsed {
+    grid-template-columns: var(--rail-width-collapsed) minmax(0, 1fr);
+  }
+  .inspector {
+    position: static;
+    grid-column: 2;
+    width: auto;
+    max-height: none;
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
 }
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
   z-index: var(--z-sidebar);
   display: flex;
-  width: 220px;
+  width: var(--rail-width);
   min-width: 0;
   flex-direction: column;
   overflow: hidden;
   border-right: 1px solid var(--border);
   background: var(--sidebar-bg);
+}
+.app-shell--rail-collapsed .sidebar {
+  width: var(--rail-width-collapsed);
+}
+/*
+ * Collapsed, the rail keeps its icons and drops every label. The labels stay in
+ * the accessibility tree — a rail that reads as eight unnamed buttons to a
+ * screen reader is not collapsed, it is broken.
+ */
+.app-shell--rail-collapsed .identity > div,
+.app-shell--rail-collapsed .nav-group,
+.app-shell--rail-collapsed .nav-item__label,
+.app-shell--rail-collapsed .nav-item__badge,
+.app-shell--rail-collapsed .runtime-footer small {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.app-shell--rail-collapsed .identity,
+.app-shell--rail-collapsed .nav-item {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
 }
 .identity {
   display: flex;
@@ -117,13 +176,36 @@ button:focus-visible {
   display: flex;
   min-width: 0;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 2px 0;
+  gap: var(--space-2);
+  margin: var(--space-0) 0;
   padding: 7px 9px;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   text-decoration: none;
+}
+.nav-item__icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  color: var(--text-dim);
+}
+.nav-item__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/*
+ * A count, not a notification. It renders only when the read succeeded — an
+ * unavailable count shows nothing rather than a zero, because "0 projects" and
+ * "we could not ask" are different facts.
+ */
+.nav-item__badge {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font: var(--font-size-xs) var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 .nav-item--active {
   color: var(--text);
@@ -131,12 +213,15 @@ button:focus-visible {
   background: var(--selection-soft);
   box-shadow: inset 2px 0 var(--selection);
 }
+.nav-item--active .nav-item__icon {
+  color: var(--selection);
+}
 .nav-item--disabled {
   color: var(--text-dim);
   cursor: default;
 }
 .nav-item small {
-  font: 12px var(--font-mono);
+  font: var(--font-size-xs) var(--font-mono);
 }
 .runtime-footer {
   display: grid;
@@ -161,23 +246,56 @@ button:focus-visible {
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 20px;
-  min-height: 64px;
-  padding: 10px 22px;
+  gap: var(--space-5);
+  min-height: var(--topbar-height);
+  padding: 0 var(--space-4);
   border-bottom: 1px solid var(--border);
   background: var(--command-bar-bg);
   backdrop-filter: blur(14px);
 }
+.command-bar__left {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-3);
+}
 .command-bar h1 {
   margin: 0;
-  font-size: 20px;
+  font-size: var(--font-size-lg);
   letter-spacing: -0.02em;
 }
 .command-bar__right {
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
+}
+/*
+ * The square icon buttons in the top bar and the rail. They carry no visible
+ * text, so each one needs an accessible name at its call site; the shared style
+ * only makes the hit target square and large enough.
+ */
+.icon-button {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: none;
+  cursor: pointer;
+}
+.icon-button:hover {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+.icon-button svg {
+  width: 16px;
+  height: 16px;
 }
 .command-shell {
   width: min(420px, 32vw);
@@ -225,20 +343,42 @@ button:focus-visible {
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
+/*
+ * Dual encoding, taken from the design system: the tone carries colour AND the
+ * dot carries a border style. Colour alone fails under grayscale, colour-vision
+ * deficiency, and a monochrome print — and the grade is the one thing on this
+ * surface a reader must not have to guess. The text label is still first; these
+ * two are the reinforcement, not the message.
+ */
 .status-chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   color: var(--tone);
-  font-size: 12px;
+  font-size: var(--font-size-xs);
   font-weight: 600;
   white-space: nowrap;
 }
 .status-chip__dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid currentColor;
   border-radius: 50%;
   background: currentColor;
+}
+.status-chip--warning .status-chip__dot {
+  background: none;
+  border-style: dashed;
+}
+.status-chip--danger .status-chip__dot {
+  background: none;
+}
+.status-chip--unknown .status-chip__dot {
+  background: none;
+  border-style: dotted;
+}
+.status-chip--info .status-chip__dot {
+  background: linear-gradient(to bottom, currentColor 50%, transparent 50%);
 }
 .status-chip--success {
   --tone: var(--success);

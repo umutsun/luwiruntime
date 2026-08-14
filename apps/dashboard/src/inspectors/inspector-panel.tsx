@@ -1,12 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { Count } from '../components/panel.js';
 import type { CountValue, PulseProject, PulseSession } from '../pulse/model.js';
@@ -193,32 +185,16 @@ export function InspectorPanel({
   }, [close]);
 
   /*
-   * `aria-modal` removes everything outside this dialog from the assistive
-   * tree, so Tab must not leave it either. The dialog is a sibling rendered
-   * after `</main>`, and without this a screen-reader user who tabbed past
-   * Close landed on background controls their reader could no longer describe.
+   * There is deliberately no focus trap here any more.
+   *
+   * The inspector used to be an overlay dialog with `aria-modal="true"`, which
+   * removes everything outside it from the assistive tree — so Tab had to be
+   * contained or a screen-reader user could land on controls their reader could
+   * no longer describe. The pane is docked now: it is permanently visible
+   * beside the content, nothing behind it is inert, and trapping Tab in a region
+   * the user never "entered" would strand them. Tab passes through, and Escape
+   * still returns to whatever opened it.
    */
-  const containTab = (event: ReactKeyboardEvent<HTMLElement>): void => {
-    if (event.key !== 'Tab') return;
-    const focusable = [
-      ...event.currentTarget.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      ),
-    ];
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (first === undefined || last === undefined) return;
-    const active = document.activeElement;
-    if (event.shiftKey && (active === first || !event.currentTarget.contains(active))) {
-      event.preventDefault();
-      last.focus();
-      return;
-    }
-    if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
   useEffect(() => {
     if (previousClockTarget.current !== activeSessionKey) {
       previousClockTarget.current = activeSessionKey;
@@ -250,137 +226,149 @@ export function InspectorPanel({
   const duration =
     selectedSession === undefined ? undefined : sessionDuration(selectedSession, clockNowMs);
   return (
-    <div
-      className="inspector-backdrop"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) close();
-      }}
-    >
-      <aside
-        className="inspector"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="inspector-title"
-        onKeyDown={containTab}
-      >
-        <header>
-          <div>
-            <p className="eyebrow">Read-only evidence</p>
-            <h2 id="inspector-title">{title}</h2>
-          </div>
-          <button ref={closeButton} type="button" onClick={close} aria-label="Close inspector">
-            ×
-          </button>
-        </header>
-        <div className="inspector__body">
-          {selection.kind === 'project' ? (
-            selectedProject === undefined ? (
-              <p className="empty-state">Selected project unavailable</p>
-            ) : (
-              <>
-                <DetailList
-                  rows={[
-                    ['Name', selectedProject.name],
-                    ['Project ID', selectedProject.id],
-                    ['Local path', selectedProject.localPath],
-                    ['Active sessions', <Count value={selectedProject.activeSessions} />],
-                  ]}
-                />
-                <RelatedActivity events={projectEvents} />
-              </>
-            )
-          ) : selection.kind === 'session' ? (
-            selectedSession === undefined ? (
-              <p className="empty-state">Selected session unavailable</p>
-            ) : (
-              <>
-                <DetailList
-                  rows={[
-                    ['Session ID', selectedSession.id],
-                    ['Agent ID', selectedSession.agentId],
-                    ['Project', selectedSession.projectName],
-                    ['Project ID', selectedSession.projectId],
-                    ['Status', selectedSession.statusLabel],
-                    ['Presence', selectedSession.presence],
-                    ['Branch', selectedSession.branch],
-                    ['Started', selectedSession.startedAt],
-                    ['Last heartbeat', selectedSession.lastHeartbeatAt],
-                    [
-                      'Duration',
-                      <span aria-label={`Session duration: ${duration}`}>{duration}</span>,
-                    ],
-                  ]}
-                />
-                <RelatedActivity events={sessionEvents} />
-              </>
-            )
-          ) : selectedEvent === undefined ? (
-            <p className="empty-state">
-              Selected event unavailable from the retained Activity window
-            </p>
+    <aside className="inspector" aria-labelledby="inspector-title">
+      <header>
+        <div>
+          <p className="eyebrow">Read-only evidence</p>
+          <h2 id="inspector-title">{title}</h2>
+        </div>
+        <button ref={closeButton} type="button" onClick={close} aria-label="Close inspector">
+          ×
+        </button>
+      </header>
+      <div className="inspector__body">
+        {selection.kind === 'project' ? (
+          selectedProject === undefined ? (
+            <p className="empty-state">Selected project unavailable</p>
           ) : (
             <>
               <DetailList
                 rows={[
-                  ['Event type', selectedEvent.type],
-                  ['Stream ID', selectedEvent.streamId],
-                  ['Event ID', selectedEvent.id],
-                  ['Occurred at', selectedEvent.occurredAt],
-                  ['Workspace ID', selectedEvent.workspaceId],
-                  ['Project ID', selectedEvent.projectId],
-                  ['Agent ID', selectedEvent.agentId],
-                  ['Session ID', selectedEvent.sessionId],
-                  ['Correlation ID', selectedEvent.correlationId],
-                  ['Causation ID', selectedEvent.causationId],
+                  ['Name', selectedProject.name],
+                  ['Project ID', selectedProject.id],
+                  ['Local path', selectedProject.localPath],
+                  ['Active sessions', <Count value={selectedProject.activeSessions} />],
                 ]}
               />
-              <h3>Payload</h3>
-              <pre className="inspector-json">
-                <code>{formatSafeJson(selectedEvent.payload)}</code>
-              </pre>
-              {selectedEvent.projectId === undefined &&
-              selectedEvent.sessionId === undefined ? null : (
-                <section className="inspector-navigation" aria-labelledby="related-entities-title">
-                  <h3 id="related-entities-title">Related entities</h3>
-                  {selectedEvent.projectId === undefined
-                    ? null
-                    : (() => {
-                        const project = projects.find(
-                          (candidate) => candidate.id === selectedEvent.projectId,
-                        );
-                        return project === undefined ? (
-                          <p>Referenced project unavailable</p>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => onNavigate?.({ kind: 'project', projectId: project.id })}
-                          >
-                            Open project inspector
-                          </button>
-                        );
-                      })()}
-                  {selectedEvent.sessionId === undefined ? null : eventSession === undefined ? (
-                    <p>Referenced session unavailable</p>
-                  ) : eventSessionProjectMismatch ? (
-                    <p>
-                      Referenced session unavailable because its project does not match the event
-                      project.
-                    </p>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => onNavigate?.({ kind: 'session', sessionId: eventSession.id })}
-                    >
-                      Open session inspector
-                    </button>
-                  )}
-                </section>
-              )}
+              <RelatedActivity events={projectEvents} />
             </>
-          )}
+          )
+        ) : selection.kind === 'session' ? (
+          selectedSession === undefined ? (
+            <p className="empty-state">Selected session unavailable</p>
+          ) : (
+            <>
+              <DetailList
+                rows={[
+                  ['Session ID', selectedSession.id],
+                  ['Agent ID', selectedSession.agentId],
+                  ['Project', selectedSession.projectName],
+                  ['Project ID', selectedSession.projectId],
+                  ['Status', selectedSession.statusLabel],
+                  ['Presence', selectedSession.presence],
+                  ['Branch', selectedSession.branch],
+                  ['Started', selectedSession.startedAt],
+                  ['Last heartbeat', selectedSession.lastHeartbeatAt],
+                  [
+                    'Duration',
+                    <span aria-label={`Session duration: ${duration}`}>{duration}</span>,
+                  ],
+                ]}
+              />
+              <RelatedActivity events={sessionEvents} />
+            </>
+          )
+        ) : selectedEvent === undefined ? (
+          <p className="empty-state">
+            Selected event unavailable from the retained Activity window
+          </p>
+        ) : (
+          <>
+            <DetailList
+              rows={[
+                ['Event type', selectedEvent.type],
+                ['Stream ID', selectedEvent.streamId],
+                ['Event ID', selectedEvent.id],
+                ['Occurred at', selectedEvent.occurredAt],
+                ['Workspace ID', selectedEvent.workspaceId],
+                ['Project ID', selectedEvent.projectId],
+                ['Agent ID', selectedEvent.agentId],
+                ['Session ID', selectedEvent.sessionId],
+                ['Correlation ID', selectedEvent.correlationId],
+                ['Causation ID', selectedEvent.causationId],
+              ]}
+            />
+            <h3>Payload</h3>
+            <pre className="inspector-json">
+              <code>{formatSafeJson(selectedEvent.payload)}</code>
+            </pre>
+            {selectedEvent.projectId === undefined &&
+            selectedEvent.sessionId === undefined ? null : (
+              <section className="inspector-navigation" aria-labelledby="related-entities-title">
+                <h3 id="related-entities-title">Related entities</h3>
+                {selectedEvent.projectId === undefined
+                  ? null
+                  : (() => {
+                      const project = projects.find(
+                        (candidate) => candidate.id === selectedEvent.projectId,
+                      );
+                      return project === undefined ? (
+                        <p>Referenced project unavailable</p>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => onNavigate?.({ kind: 'project', projectId: project.id })}
+                        >
+                          Open project inspector
+                        </button>
+                      );
+                    })()}
+                {selectedEvent.sessionId === undefined ? null : eventSession === undefined ? (
+                  <p>Referenced session unavailable</p>
+                ) : eventSessionProjectMismatch ? (
+                  <p>
+                    Referenced session unavailable because its project does not match the event
+                    project.
+                  </p>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onNavigate?.({ kind: 'session', sessionId: eventSession.id })}
+                  >
+                    Open session inspector
+                  </button>
+                )}
+              </section>
+            )}
+          </>
+        )}
+      </div>
+    </aside>
+  );
+}
+
+/**
+ * What the docked pane shows when nothing is selected.
+ *
+ * A docked column has a state an overlay never had: present, and empty. Leaving
+ * it blank reads as a rendering fault, so it names itself and says what fills
+ * it. It is the same landmark either way, so the region's accessible name does
+ * not change as the selection comes and goes.
+ */
+export function InspectorEmpty() {
+  return (
+    <aside className="inspector inspector--empty" aria-labelledby="inspector-title">
+      <header>
+        <div>
+          <p className="eyebrow">Read-only evidence</p>
+          <h2 id="inspector-title">Inspector</h2>
         </div>
-      </aside>
-    </div>
+      </header>
+      <div className="inspector__body">
+        <p className="empty-state">
+          Select a project, session or event to inspect the evidence behind it.
+        </p>
+      </div>
+    </aside>
   );
 }

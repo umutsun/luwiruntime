@@ -4,7 +4,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { InspectorPanel, formatSafeJson, type InspectorSelection } from './inspector-panel.js';
+import {
+  InspectorEmpty,
+  InspectorPanel,
+  formatSafeJson,
+  type InspectorSelection,
+} from './inspector-panel.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 
 afterEach(() => {
@@ -378,7 +383,7 @@ describe('read-only inspectors', () => {
     render(<Harness />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open project inspector' }));
-    expect(screen.getByRole('dialog', { name: 'Project inspector' })).toBeTruthy();
+    expect(screen.getByRole('complementary', { name: 'Project inspector' })).toBeTruthy();
   });
 
   it('keeps a valid project action but suppresses a session owned by another project', () => {
@@ -533,7 +538,7 @@ describe('read-only inspectors', () => {
     const opener = screen.getByRole('button', { name: 'Open event' });
     fireEvent.click(opener);
     fireEvent.click(screen.getByRole('button', { name: 'Open session inspector' }));
-    expect(screen.getByRole('dialog', { name: 'Session inspector' })).toBeTruthy();
+    expect(screen.getByRole('complementary', { name: 'Session inspector' })).toBeTruthy();
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(document.activeElement).toBe(opener));
   });
@@ -630,10 +635,16 @@ describe('read-only inspectors', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: /close inspector/i }));
   });
 
-  it('keeps Tab inside the dialog, because it declares aria-modal', () => {
-    // An event that references both a project and a session renders two
-    // navigation buttons besides Close, so the wrap is a real move rather than
-    // a single element focusing itself.
+  /**
+   * This replaces "keeps Tab inside the dialog, because it declares aria-modal".
+   *
+   * That test was correct for an overlay. The inspector is a docked column now:
+   * it is permanently visible, nothing behind it is inert, and it declares no
+   * `aria-modal`. Trapping Tab in a region the user never entered would strand
+   * them, so the trap was removed on purpose and this asserts the removal rather
+   * than leaving a hole where a contract used to be.
+   */
+  it('lets Tab leave, because it is docked rather than modal', () => {
     render(
       <InspectorPanel
         selection={{ kind: 'event', streamId: '1-0' }}
@@ -644,18 +655,24 @@ describe('read-only inspectors', () => {
       />,
     );
 
-    const dialog = screen.getByRole('dialog');
-    const focusable = [...dialog.querySelectorAll<HTMLElement>('button')];
+    const pane = screen.getByRole('complementary', { name: 'Event inspector' });
+    expect(pane.getAttribute('aria-modal')).toBeNull();
+
+    const focusable = [...pane.querySelectorAll<HTMLElement>('button')];
     expect(focusable.length).toBeGreaterThan(1);
-    const first = focusable[0]!;
     const last = focusable[focusable.length - 1]!;
 
+    // Tab is not intercepted, so focus stays where the browser left it rather
+    // than wrapping to the first control.
     last.focus();
-    fireEvent.keyDown(dialog, { key: 'Tab' });
-    expect(document.activeElement).toBe(first);
-
-    first.focus();
-    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    fireEvent.keyDown(pane, { key: 'Tab' });
     expect(document.activeElement).toBe(last);
+  });
+
+  it('names itself as a landmark even with nothing selected', () => {
+    render(<InspectorEmpty />);
+
+    const pane = screen.getByRole('complementary', { name: 'Inspector' });
+    expect(pane.textContent).toContain('Select a project, session or event');
   });
 });
