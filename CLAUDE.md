@@ -173,6 +173,24 @@ refused rather than evicted; a conflict writes nothing; missing evidence is
 CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no inbox stream.
 `luwi_v1` is at **v11**.
 
+ADR 0023 then approved the next item in the sequence — **native transcript ingestion** — and
+specified it as B0 / B1 / B2, with only B0 planned. **Nothing of it is built.**
+
+The fact that orders the phase: there are **zero native bindings in either Redis database**, against
+nine sessions. A declaration rides only on `POST /api/v1/sessions` and nothing that registers a
+session sends one — not the CLI, not the seed — so an already-registered session can never declare.
+That is why **B0 is a declaration surface, not a reader**: build the reader first and it attributes
+nothing. B1 is the reader; B2 fills `SESSION_CHANGED_FILE`, which is in the edge enum with no
+producer.
+
+Two measured traps for anyone touching this. `subagents/` directories exist at
+`<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` and hold 11.3% of distinct requests,
+so a reader that walks only the top level of a project directory loses a ninth of the evidence — and
+their filename stem is an agent id, so **the join key is the `sessionId` inside each record, never
+the filename**. And usage is per `requestId`, not per record: summing per record over-counts by
+1.88×, and 362 of 1961 multi-record requests carry _differing_ usage, so dedupe needs a stated
+winner rather than whichever record is read last.
+
 **Both increments are built, so A is complete.** A2 bounds a binding at 1000 retained closed links
 (`LUWI_NATIVE_LINK_RETENTION_MAX`). `native_link_trim` takes `2 + 2N` keys, trims at most 32 per
 call, removes index entry, link hash and session reverse index together, and never touches an open
@@ -222,9 +240,12 @@ There is deliberately **no `.mcp.json`**. `apps/mcp-server/src/main.ts` calls
 unless the daemon is running and `LUWI_SESSION_ID` names a live, non-terminal session. Session IDs
 are runtime identity, not configuration — they go stale on every daemon restart.
 
-The server exposes 36 `luwi_*` tools, and "read-only" was never accurate for all of them: 22 are
-reads, and 14 write **coordination** state — the messaging transitions, a bounded optimization
-analysis request, and since ADR 0020 the four work-lease tools. Control-plane writes (config
+The server exposes 36 `luwi_*` tools, and "read-only" was never accurate for all of them: by the
+daemon method each one calls, **25 are reads and 11 write** coordination state — the messaging
+transitions, a bounded optimization analysis request, and since ADR 0020 three of the four
+work-lease tools. Counting the messaging, optimization and lease families whole gives 14, but three
+of their members only read: `luwi_await_response` and `luwi_get_message` are `GET
+/api/v1/messages/…`, and `luwi_list_leases` is `GET /api/v1/leases`. Control-plane writes (config
 approval/apply, rollback, graph rebuild, Git mutation) are never exposed, per `AGENTS.md` §12.
 
 To use them, after `pnpm build` and with the daemon up

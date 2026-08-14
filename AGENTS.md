@@ -1055,8 +1055,30 @@ another session, a duplicate, an empty batch — is refused with nothing written
 bindings through `index:session:{sessionId}:native`, which keeps `session_register` at 14 keys at the
 cost of being O(sessions) per pass.
 
-`usage.sessionId` is still not solved, MCP self-registration is still not included, transcript
-ingestion has not begun, and a trimmed interval is never evidence for attribution.
+`usage.sessionId` is still not solved, MCP self-registration is still not included, and a trimmed
+interval is never evidence for attribution.
+
+**Approved and specified, not built: native transcript ingestion (ADR 0023).** The design is
+`docs/superpowers/specs/2026-08-14-native-transcript-ingestion-design.md`, split B0 / B1 / B2, with
+only B0 planned so far.
+
+**B0 is a declaration surface, not a reader,** because there are **zero native bindings in either
+database** against nine sessions: a declaration rides only on `POST /api/v1/sessions` and nothing
+that registers a session sends one, so an already-registered session can never declare and no
+interval has ever existed. A reader built first would attribute nothing. B0 reuses
+`evaluateNativeDeclaration` unchanged. B1 is the reader and usage attribution; B2 fills
+`SESSION_CHANGED_FILE`, which sits in the edge enum with no producer.
+
+Measurement corrected two earlier conclusions. `subagents/` directories **do** exist — 71 of them,
+oldest 2026-06-18, at `<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` — and hold
+11.3% of distinct requests, so a top-level-only reader loses a ninth of the evidence. And the usage
+object does **not** always repeat identically across a request: 362 of 1961 multi-record requests
+disagree, so the design fixes an explicit resolution rule. Usage is per `requestId`, never per record
+— summing per record over-counts by 1.88×. **The join key is the `sessionId` inside each record,
+never the filename**, which is a stem only for top-level transcripts. `cachedInputTokens` is left
+alone with its `<= inputTokens` invariant and two new additive fields are added beside it. Nothing
+discovered is executed and no conversation content is ever stored or logged. Automatic lease renewal
+and autostart — the two items that follow ingestion in the sequence — remain unapproved.
 
 **Every other prohibition below still stands.** Do not begin `config/reconcile`, lifecycle/release
 scoring, task orchestration, a semantic or vector knowledge graph, memory federation, GitHub
