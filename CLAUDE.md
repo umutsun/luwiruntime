@@ -60,6 +60,9 @@ History is short and every commit is a large checkpoint:
 | `80f3939` | ADR 0022 A1: native session identity, `luwi_v1` v11            |
 | `02fb41e` | ADR 0022 and the native session binding status                 |
 | `fd2a498` | ADR 0022 A2: link retention, plus two A1 boundary fixes        |
+| `3699fde` | Seed re-runnability and the missing four MCP lease handlers    |
+| `ff2f25d` | ADR 0023: transcript ingestion approved, B0/B1/B2 specified    |
+| `09b152a` | Dashboard redesign phases 1–2: shell tokens, docked inspector  |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
