@@ -41,6 +41,10 @@ describe('LUWI MCP server', () => {
       listOptimizationFindings: operation,
       getOptimizationProposal: operation,
       requestOptimizationAnalysis: operation,
+      acquireLease: operation,
+      renewLease: operation,
+      releaseLease: operation,
+      listLeases: vi.fn(async () => ({ leases: [], truncated: false })),
     };
     const server = createLuwiMcpServer(handlers);
     const client = new Client({ name: 'test', version: '1.0.0' });

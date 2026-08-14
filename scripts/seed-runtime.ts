@@ -661,13 +661,36 @@ async function main(): Promise<void> {
        * there is none, so the scan would report zero and the dashboard panel
        * would have nothing to render. Editing the applied file by hand is
        * exactly the event a developer would cause.
+       *
+       * The edit goes through JSON.parse rather than a regex on the closing
+       * brace, because the renderer legitimately emits `{}` and appending a
+       * member to that textually yields `{,` — not drift but a corrupt file,
+       * which fails the next render with NATIVE_CONFIG_PARSE_FAILED and makes
+       * the fixture impossible to seed twice. Drift is a file that differs,
+       * never a file that cannot be read.
+       *
+       * It also has to change a key the claude-code adapter can render —
+       * `model` — rather than invent one. An unknown key is not drift either:
+       * the adapter reports it as a field it cannot preserve and refuses the
+       * next render with NATIVE_CONFIG_UNMANAGED, which is correct behaviour
+       * and equally unseedable a second time.
+       *
+       * Because the renderer preserves a renderable key it already finds, a
+       * fixed value drifts only on the first run: the second render emits the
+       * value this edit wrote, and rewriting it changes nothing. Alternating
+       * between two names keeps the written value different from the one just
+       * applied, on every run.
        */
       const managed = join(projectDir, '.claude', 'settings.json');
       if (existsSync(managed)) {
-        const current = readFileSync(managed, 'utf8');
+        const current = JSON.parse(readFileSync(managed, 'utf8')) as Record<string, unknown>;
+        const drifted =
+          current.model === 'seeded-drifted-model'
+            ? 'seeded-redrifted-model'
+            : 'seeded-drifted-model';
         await writeFile(
           managed,
-          current.replace(/\}\s*$/u, ',\n  "seededOutOfBandEdit": true\n}\n'),
+          `${JSON.stringify({ ...current, model: drifted }, null, 2)}\n`,
           'utf8',
         );
         step('edited the applied file out of band so drift has something to find');
