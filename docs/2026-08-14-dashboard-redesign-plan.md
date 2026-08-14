@@ -104,3 +104,84 @@ a visual check needs `pnpm build` and a restart, and the owner lease needs ~15 s
   definition.
 - Truncation is disclosed wherever a bounded read can hit its limit.
 - No vendor branching, and no colour that carries meaning alone.
+
+## Status after phase 2
+
+Phases 1 and 2 are committed at `09b152a`. Tokens, the rail (icons, counts, collapse), the 52 px top
+bar, the theme toggle and the status dual encoding are in; the inspector is docked as grid column
+three with its modal contract removed and its tests rewritten. **Phase 3 is the next work and has not
+started.** `pulse-view.tsx`, `pulse/model.ts` and `styles/pulse.css` are still the pre-redesign
+versions.
+
+## Phase 3 — the panel anatomy, and what each field may honestly say
+
+Written from the mockup so the next session does not have to re-derive it. Every row below is
+"what the comp draws" → "what the runtime may put there".
+
+### Stat strip
+
+The comp: one inline row of dotted counts — `7 projects · 4 agents · 8 sessions · 2 waiting ·
+1 blocked · 42ms latency · Redis connected` — with `events/min`, a sparkline and `246` pushed right.
+
+- projects / agents / sessions / latency / Redis: **already in the snapshot**; they are the six boxed
+  tiles today, so this is a layout change, not a data change. Each stays a `CountValue`.
+- `waiting` and `blocked`: derive by counting `sessions` on their real status values
+  (`waiting_for_input`, `waiting_for_agent`, `blocked`). Do **not** invent a `running` bucket.
+- The sparkline: there is **no server-side event rate** — `GET /api/v1/events` takes `limit`, not a
+  time bound. Bucket the retained activity window client-side, label it as such, and draw an empty
+  bucket as a **gap, never a zero**. On a quiet runtime that window may span days, so the label has
+  to say "retained window" rather than "per minute".
+- Each stat is a link into its route.
+
+### Active Work
+
+The comp: four dual-line columns — `AGENT · PROJECT` / `TASK · SCOPE` / `CONTEXT · USAGE` /
+`STATUS · AGE`. The header carries `4 running · 2 waiting · 1 blocked · 1 idle` on the left and
+`agent · project · status` (the sort control) on the right. A blocked row gets a left rail and a
+raised background.
+
+| Comp cell                        | Honest content                                                                                                                        |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent name / project name        | `session.agentId` → `AgentDefinition.displayName`, **falling back to the raw id**; project name                                       |
+| Task title                       | **No task domain exists.** Use the session's own status sentence, not an invented task name                                           |
+| `3 files · branch feature/graph` | branch is on the session record; "3 files" is not observed — use the session's held lease paths, labelled as advisory claims, or omit |
+| `12 loaded · 4 invoked`          | real context counts, already in the snapshot                                                                                          |
+| `18.4k` magnitude chip           | per-session usage is **not** in the batched reads; either accept the fan-out (Decision 4) or omit                                     |
+| Status pill                      | the nine-value vocabulary, never "Running"                                                                                            |
+| `01:24:32 · 8s ago`              | duration from `startedAt`, age from `lastHeartbeatAt` — both already derived for the inspector                                        |
+| Blocked row treatment            | keep the rail; the **reason** may not be stated as a cause (see the honest-replacement table)                                         |
+
+Row selection drives the docked inspector, which phase 2 already mounted.
+
+### Project Pulse
+
+The comp: a monogram tile, bold name, a dim meta line `active dev · 1a 2s · 31c4f54`, a right-aligned
+status word, and a seven-bar trace.
+
+- Monogram: initials from `displayName`, tile colour by hashing the id into the five graph-family
+  tokens (they are already OKLCH-checked in both themes). No vendor palette.
+- `1a 2s`: agents and sessions bound to the project — derivable from the snapshot.
+- `active dev`: **not a real field.** Drop it.
+- `31c4f54`: the HEAD sha needs one git read per project (Decision 4). Omit unless that cost is taken.
+- **`Ready` / `Needs Attention` / `Blocked` / `Unknown`: there is no project status domain.** Do not
+  invent one. Either drop the column or show a fact that is observed, such as held-lease count.
+- The seven-bar trace: same rule as the sparkline — bucket the retained window, gaps for empty.
+
+### Tests phase 3 will break
+
+`app.test.tsx:391-405` pins the Active Sessions caption and the `cells[3]/[4]/[5]` indices; those go
+when the table becomes four dual-line columns, and they should be rewritten with the reason stated.
+Keep `app.test.tsx:243, 339` — the `Inspect project <name>` / `Inspect session <id>` button names.
+`components/panel.test.tsx:107-115` still requires two confidence tones to produce different class
+strings.
+
+### Where the fixture and the capture tooling stand
+
+The fixture survives between sessions: db15 holds the data, `%TEMP%/luwi-fixture` holds `LUWI_HOME`
+and `LUWI_NATIVE_HOME`, and `%TEMP%/luwi-seed-workspace` holds the git repo. Start the daemon with
+those four variables together and the screens have data; re-seeding is no longer required, and is
+now safe if you do. Screenshot over the DevTools protocol with a real wall-clock wait.
+
+Two traps that cost time in this round: `TaskStop` kills the `tsx watch` parent but leaves the daemon
+listening on 4782, so check the port and `taskkill` the survivor; and the daemon's owner lease needs
+~15 s to expire after an ungraceful kill before the next start succeeds.
