@@ -63,6 +63,9 @@ History is short and every commit is a large checkpoint:
 | `3699fde` | Seed re-runnability and the missing four MCP lease handlers    |
 | `ff2f25d` | ADR 0023: transcript ingestion approved, B0/B1/B2 specified    |
 | `09b152a` | Dashboard redesign phases 1–2: shell tokens, docked inspector  |
+| `98daefc` | The phase 3 panel anatomy written into the redesign plan       |
+| `4404b1a` | Redesign phases 3–6: pulse rows, runtime route, palette, scope |
+| `9b6e351` | scp-style git remotes admitted; detected-remote write guard    |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
