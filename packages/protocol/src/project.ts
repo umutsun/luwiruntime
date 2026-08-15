@@ -1,13 +1,31 @@
 import { z } from 'zod';
 
 const identifierSchema = z.string().trim().min(1).max(128);
+
+/**
+ * A git remote, not merely a URL.
+ *
+ * The register path fills this from `git config remote.origin.url`, and the
+ * most common SSH remote is scp-style — `git@host:owner/repo.git` — which is
+ * not an RFC URL and fails `z.url()`. That mismatch once poisoned a
+ * projection: Lua wrote a record the TypeScript read path refused, and one
+ * refused record turned the whole project list into a 500 (ADR 0015 makes
+ * internal validation failures server errors on purpose). The rule that
+ * matters is write-what-you-can-read: this schema is the single definition
+ * both the request and the projection use.
+ */
+const scpStyleRemotePattern = /^[\w.-]+@[\w.-]+:[^\s]+$/u;
+export const repositoryRemoteSchema = z.union([
+  z.url().max(2048),
+  z.string().trim().max(2048).regex(scpStyleRemotePattern),
+]);
 const pathSchema = z.string().trim().min(1).max(4096);
 const timestampSchema = z.iso.datetime({ offset: false });
 
 export const projectRegistrationRequestSchema = z.strictObject({
   name: z.string().trim().min(1).max(200),
   localPath: pathSchema,
-  repositoryUrl: z.url().max(2048).optional(),
+  repositoryUrl: repositoryRemoteSchema.optional(),
   defaultBranch: z.string().trim().min(1).max(512).optional(),
 });
 
@@ -16,7 +34,7 @@ export const projectSchema = z.strictObject({
   name: z.string().trim().min(1).max(200),
   localPath: pathSchema,
   canonicalPath: pathSchema,
-  repositoryUrl: z.url().max(2048).optional(),
+  repositoryUrl: repositoryRemoteSchema.optional(),
   defaultBranch: z.string().trim().min(1).max(512).optional(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,

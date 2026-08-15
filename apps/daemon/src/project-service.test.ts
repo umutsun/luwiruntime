@@ -116,3 +116,73 @@ describe('project service', () => {
     });
   });
 });
+
+describe('detected repository url hardening', () => {
+  // Write-what-you-can-read: a detected remote that would fail the projection
+  // schema must be dropped before it reaches Redis, not persisted into a
+  // record the read path will refuse forever.
+  it('keeps an scp-style detected remote now that the schema admits it', async () => {
+    const registered: unknown[] = [];
+    const service = createProjectService({
+      workspaceId: 'w',
+      repository: {
+        registerProject: async (input: { project: { repositoryUrl?: string } }) => {
+          registered.push(input.project);
+          return {
+            status: 'created',
+            project: { ...input.project, createdAt: 'x', updatedAt: 'x' },
+            event: {},
+            globalStreamId: '1-1',
+            projectStreamId: '1-1',
+          };
+        },
+      } as never,
+      canonicalizePath: async (localPath: string) => ({
+        localPath,
+        canonicalPath: localPath,
+        identityPath: localPath.toLowerCase(),
+        pathIdentityHash: 'h'.repeat(64),
+      }),
+      detectGitMetadata: async () => ({
+        repositoryUrl: 'git@github.com:owner/luwi-press.git',
+        defaultBranch: 'master',
+      }),
+      emit: async () => undefined,
+    } as never);
+
+    await service.register({ name: 'Press', localPath: 'C:/press' });
+    expect(registered[0]).toMatchObject({
+      repositoryUrl: 'git@github.com:owner/luwi-press.git',
+    });
+  });
+
+  it('drops a detected remote the projection schema would refuse', async () => {
+    const registered: Array<{ repositoryUrl?: string }> = [];
+    const service = createProjectService({
+      workspaceId: 'w',
+      repository: {
+        registerProject: async (input: { project: { repositoryUrl?: string } }) => {
+          registered.push(input.project);
+          return {
+            status: 'created',
+            project: { ...input.project, createdAt: 'x', updatedAt: 'x' },
+            event: {},
+            globalStreamId: '1-1',
+            projectStreamId: '1-1',
+          };
+        },
+      } as never,
+      canonicalizePath: async (localPath: string) => ({
+        localPath,
+        canonicalPath: localPath,
+        identityPath: localPath.toLowerCase(),
+        pathIdentityHash: 'h'.repeat(64),
+      }),
+      detectGitMetadata: async () => ({ repositoryUrl: 'not a remote at all' }),
+      emit: async () => undefined,
+    } as never);
+
+    await service.register({ name: 'Press', localPath: 'C:/press' });
+    expect(registered[0]?.repositoryUrl).toBeUndefined();
+  });
+});

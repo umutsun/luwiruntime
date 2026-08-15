@@ -4,6 +4,7 @@ import {
   projectCollectionResponseSchema,
   projectRegistrationRequestSchema,
   projectResponseSchema,
+  projectSchema,
 } from './index.js';
 
 const project = {
@@ -45,5 +46,41 @@ describe('project protocol', () => {
     expect(projectCollectionResponseSchema.parse({ projects: [project] })).toEqual({
       projects: [project],
     });
+  });
+});
+
+describe('repository URL shapes', () => {
+  // The register path fills repositoryUrl from `git config remote.origin.url`
+  // when the caller omits it, and the most common SSH remote is scp-style —
+  // `git@host:owner/repo.git` — which is not an RFC URL. Rejecting it poisoned
+  // a projection: Lua wrote a record the TypeScript read path refused, and one
+  // refused record turns the whole project list into a 500 (ADR 0015).
+  it('accepts an scp-style git remote as a repository url', () => {
+    const parsed = projectSchema.safeParse({
+      id: 'p1',
+      name: 'Press',
+      localPath: 'C:/work/press',
+      canonicalPath: 'C:/work/press',
+      repositoryUrl: 'git@github.com:owner/luwi-press.git',
+      defaultBranch: 'master',
+      createdAt: '2026-08-15T10:00:00.000Z',
+      updatedAt: '2026-08-15T10:00:00.000Z',
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('still accepts https remotes and rejects free text', () => {
+    const base = {
+      id: 'p1',
+      name: 'Press',
+      localPath: 'C:/work/press',
+      canonicalPath: 'C:/work/press',
+      createdAt: '2026-08-15T10:00:00.000Z',
+      updatedAt: '2026-08-15T10:00:00.000Z',
+    };
+    expect(
+      projectSchema.safeParse({ ...base, repositoryUrl: 'https://github.com/o/r.git' }).success,
+    ).toBe(true);
+    expect(projectSchema.safeParse({ ...base, repositoryUrl: 'not a remote' }).success).toBe(false);
   });
 });

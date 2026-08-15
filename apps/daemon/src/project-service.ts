@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
+import { repositoryRemoteSchema } from '@luwi/protocol';
 import type { Project, ProjectRegistrationRequest } from '@luwi/protocol';
 import type { RuntimeRepository } from '@luwi/redis';
 import { ApplicationError, canonicalizeProjectPath, type CanonicalPath } from '@luwi/runtime';
@@ -63,7 +64,19 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
     async register(request) {
       const canonical = await canonicalizePath(request.localPath);
       const detected = await inspectGit(canonical.canonicalPath);
-      const repositoryUrl = request.repositoryUrl ?? detected.repositoryUrl;
+      /*
+       * Write-what-you-can-read: a detected remote that the projection schema
+       * would refuse must be dropped here, not persisted into a record the
+       * read path rejects forever — one such record turns the whole project
+       * list into a server error (ADR 0015). The schema now admits scp-style
+       * remotes; this guards whatever else `git config` may hand back.
+       */
+      const detectedUrl =
+        detected.repositoryUrl !== undefined &&
+        repositoryRemoteSchema.safeParse(detected.repositoryUrl).success
+          ? detected.repositoryUrl
+          : undefined;
+      const repositoryUrl = request.repositoryUrl ?? detectedUrl;
       const defaultBranch = request.defaultBranch ?? detected.defaultBranch;
       const result = await options.repository.registerProject({
         project: {
