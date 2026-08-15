@@ -84,7 +84,16 @@ describe('skip link', () => {
 });
 
 describe('Runtime health panel', () => {
+  /*
+   * Rewritten for phases 4-5 of the redesign: the panel moved from Pulse to
+   * the new #/runtime route, because the stat strip now states daemon,
+   * latency and Redis on Pulse and the panel duplicated the line above it.
+   * The assertions it carried are unchanged — including the ban it exists
+   * for: no "Function library" or "Projection health" rows may reappear,
+   * on any route, without a daemon read behind them.
+   */
   it('reports only what it actually read', () => {
+    window.location.hash = '#/runtime';
     render(
       <DashboardApp
         snapshot={buildPulseSnapshot(input())}
@@ -135,7 +144,27 @@ describe('LUWI Pulse shell', () => {
     expect(screen.getByText('Realtime disconnected')).toBeTruthy();
   });
 
+  /*
+   * Split for phase 4: the Usage summary panel left Pulse for the mockup's
+   * row-3 anatomy — its evidence grades live on #/usage, which the rail links.
+   * The five context labels stay on Pulse in the Context Efficiency panel.
+   * Both vocabularies must survive verbatim; that is what this test pins.
+   */
   it('preserves usage confidence and context state labels', () => {
+    window.location.hash = '#/usage';
+    const usage = render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+    for (const label of ['Exact', 'Reported', 'Extracted', 'Estimated', 'Unavailable']) {
+      expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+    }
+    usage.unmount();
+
+    window.location.hash = '#/pulse';
     render(
       <DashboardApp
         snapshot={buildPulseSnapshot(input())}
@@ -143,10 +172,6 @@ describe('LUWI Pulse shell', () => {
         onRetry={vi.fn()}
       />,
     );
-
-    for (const label of ['Exact', 'Reported', 'Extracted', 'Estimated', 'Unavailable']) {
-      expect(screen.getAllByText(label).length).toBeGreaterThan(0);
-    }
     for (const label of ['Assigned', 'Effective', 'Loaded', 'Invoked', 'Unknown']) {
       expect(screen.getAllByText(label).length).toBeGreaterThan(0);
     }
@@ -360,7 +385,22 @@ describe('LUWI Pulse shell', () => {
     expect(clearIntervalSpy).toHaveBeenCalledOnce();
   });
 
-  it('aligns Active Sessions headers and cells with an accessible final Inspect action', () => {
+  /*
+   * Rewritten, not patched, for phase 3 of the dashboard redesign.
+   *
+   * This used to pin an "Active LUWI agent sessions" table by column order and
+   * by `cells[3]`/`cells[4]`/`cells[5]` index. Active Work is not that table any
+   * more: it is four dual-line columns, and the row itself is the control that
+   * drives the docked inspector, so there is no sixth cell holding an Inspect
+   * button and no cell indices to align. Adapting the old assertions would have
+   * meant asserting positions that no longer describe the component.
+   *
+   * What survives is the contract the redesign did not change: the action name
+   * is still `Inspect session <id>`, keyboard activation still opens the pane,
+   * and the row's evidence is still reachable — now as the button's description,
+   * because an `aria-label` naming the action would otherwise replace it.
+   */
+  it('drives the docked inspector from the whole row, keeping its evidence announced', () => {
     const withSession = input();
     withSession.projects = {
       state: 'ready',
@@ -388,25 +428,53 @@ describe('LUWI Pulse shell', () => {
       />,
     );
 
-    const table = screen.getByRole('table', { name: 'Active LUWI agent sessions' });
-    expect(
-      within(table)
-        .getAllByRole('columnheader')
-        .map((header) => header.textContent?.trim()),
-    ).toEqual(['Agent', 'Project', 'State', 'Started', 'Last heartbeat', 'Inspect']);
-    const cells = within(table).getAllByRole('cell');
-    expect(cells).toHaveLength(6);
-    expect(cells[0]?.textContent).toBe('codex-main');
-    expect(cells[1]?.textContent).toBe('LUWI Runtime');
-    expect(cells[2]?.textContent).toBe('thinking');
-    expect(cells[3]?.querySelector('time')?.dateTime).toBe('2026-08-05T07:00:00.000Z');
-    expect(cells[4]?.querySelector('time')?.dateTime).toBe('2026-08-05T07:59:00.000Z');
-    const inspect = within(cells[5] as HTMLElement).getByRole('button', {
-      name: 'Inspect session session-1',
-    });
-    inspect.focus();
-    fireEvent.click(inspect, { detail: 0 });
+    const work = screen.getByRole('region', { name: 'Active Work' });
+    expect(within(work).getByTestId('work-columns').textContent).toBe(
+      'Agent · ProjectTask · ScopeContextStatus · Age',
+    );
+
+    const row = within(work).getByRole('button', { name: 'Inspect session session-1' });
+    const description = document.getElementById(row.getAttribute('aria-describedby') ?? '');
+    expect(description?.textContent).toContain('codex-main');
+    expect(description?.textContent).toContain('LUWI Runtime');
+    expect(description?.textContent).toContain('thinking');
+
+    row.focus();
+    fireEvent.click(row, { detail: 0 });
     expect(screen.getByRole('complementary', { name: 'Session inspector' })).toBeTruthy();
+  });
+
+  it('marks the row the docked inspector is showing, since both stay on screen', () => {
+    const withSession = input();
+    withSession.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'LUWI Runtime', localPath: 'C:/luwi' }],
+    };
+    withSession.sessions = {
+      state: 'ready',
+      data: [
+        {
+          id: 'session-1',
+          agentId: 'codex-main',
+          projectId: 'p1',
+          status: 'thinking',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+        },
+      ],
+    };
+    const { container } = render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(withSession)}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(container.querySelector('.work-row--selected')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect session session-1' }));
+    expect(container.querySelector('.work-row--selected')).toBeTruthy();
   });
 
   it('uses explicit empty and unavailable session states instead of an invalid table', () => {
@@ -464,7 +532,8 @@ describe('LUWI Pulse shell', () => {
     );
 
     expect(screen.getByText('Refreshing snapshot')).toBeTruthy();
-    expect(screen.getByText('Retained Project')).toBeTruthy();
+    // Also an <option> in the scope switcher now, hence getAllByText.
+    expect(screen.getAllByText('Retained Project').length).toBeGreaterThan(0);
   });
 });
 
@@ -504,7 +573,8 @@ describe('Projects route', () => {
     expect(screen.getByRole('link', { name: 'Projects' }).getAttribute('aria-current')).toBe(
       'page',
     );
-    expect(screen.getByText('Scoped Project')).toBeTruthy();
+    // Also an <option> in the scope switcher now, hence getAllByText.
+    expect(screen.getAllByText('Scoped Project').length).toBeGreaterThan(0);
     // The command bar carries its own "Select a project" hint, so this matches
     // the detail prompt specifically.
     expect(screen.getByText(/load its scoped evidence/i)).toBeTruthy();
@@ -561,6 +631,7 @@ describe('Phase 5D routes', () => {
   };
 
   const routes = [
+    ['#/runtime', 'Runtime'],
     ['#/sessions', 'Sessions'],
     ['#/agents', 'Agents'],
     ['#/messages', 'Messages'],
@@ -719,5 +790,55 @@ describe('command bar scope line', () => {
     );
 
     expect(screen.getByText(/activity snapshot unavailable/i)).toBeTruthy();
+  });
+});
+
+describe('project scope switcher', () => {
+  it('narrows the operational rows to the chosen project and back', () => {
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [
+        { id: 'p1', name: 'Alpha', localPath: 'C:/a' },
+        { id: 'p2', name: 'Beta', localPath: 'C:/b' },
+      ],
+    };
+    value.sessions = {
+      state: 'ready',
+      data: [
+        {
+          id: 's1',
+          agentId: 'a1',
+          projectId: 'p1',
+          status: 'thinking',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+        },
+        {
+          id: 's2',
+          agentId: 'a1',
+          projectId: 'p2',
+          status: 'blocked',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+        },
+      ],
+    };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Inspect session s2' })).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Project scope'), { target: { value: 'p1' } });
+    expect(screen.queryByRole('button', { name: 'Inspect session s2' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Inspect session s1' })).toBeTruthy();
+    // The scope line follows the scope, so the bar cannot contradict itself.
+    expect(screen.getByLabelText('Current scope').textContent).toContain('1 project');
+
+    fireEvent.change(screen.getByLabelText('Project scope'), { target: { value: '' } });
+    expect(screen.getByRole('button', { name: 'Inspect session s2' })).toBeTruthy();
   });
 });

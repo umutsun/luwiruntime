@@ -105,6 +105,16 @@
   --rail-width-collapsed: 62px;
   --inspector-width: 344px;
   --topbar-height: 52px;
+  /*
+   * Panel rhythm. Every panel header, row and empty state reads from these two
+   * so the horizontal edge is continuous down a column: they were a dozen
+   * separate `9px 12px` / `10px 12px` / `4px 12px` literals, and the 1-2px
+   * differences were visible as a ragged left edge wherever two panels stacked.
+   * 14px matches the design system; the vertical value is the row, and headers
+   * take a little more.
+   */
+  --panel-pad-x: 14px;
+  --panel-pad-y: 9px;
   --focus: 0 0 0 3px rgba(129, 140, 248, 0.45);
   --z-sidebar: 20;
   --z-skip: 100;

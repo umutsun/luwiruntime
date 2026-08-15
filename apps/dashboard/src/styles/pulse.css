@@ -1,13 +1,24 @@
+/*
+ * Pulse asks its own width, not the window's.
+ *
+ * The mockup was drawn with no docked inspector, so its row-2 pair had the
+ * whole window. Here the rail and the inspector take 564 px before any content
+ * exists, and a media query cannot see that: at 1440 the viewport says "wide"
+ * while the content column is 836 px. Measured, the four-column work row needs
+ * about 620 px, so a viewport-driven layout put it side by side with Project
+ * Pulse at 511 px and clipped two of its columns.
+ */
 .pulse-stack {
   display: grid;
   gap: 10px;
   min-width: 0;
+  container: pulse / inline-size;
 }
 .state-banner {
   display: flex;
   gap: 12px;
   align-items: baseline;
-  padding: 10px 12px;
+  padding: 10px var(--panel-pad-x);
   border: 1px solid currentColor;
   border-radius: var(--radius-sm);
   background: var(--surface-1);
@@ -18,43 +29,132 @@
 .state-banner span {
   color: var(--text-secondary);
 }
-.operational-strip {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+/*
+ * One line of counters, replacing six boxed tiles.
+ *
+ * The design system's density comes from the strip being a sentence rather than
+ * a dashboard of cards: a reader takes the whole runtime in one pass, and the
+ * space that six borders used to occupy goes to the panels below.
+ */
+.stat-strip {
+  display: flex;
+  min-height: 46px;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface-1);
 }
-.operational-strip > div {
-  min-width: 0;
-  padding: 10px 12px;
+.stat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  padding: 3px var(--space-3);
   border-right: 1px solid var(--border);
-}
-.operational-strip > div:last-child {
-  border-right: 0;
-}
-.operational-strip span,
-.operational-strip strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: inherit;
+  text-decoration: none;
   white-space: nowrap;
 }
-.operational-strip span {
-  color: var(--text-dim);
-  font: 12px var(--font-mono);
-  text-transform: uppercase;
-}
-.operational-strip strong {
-  margin-top: 3px;
+a.stat:hover .stat__label {
   color: var(--text-secondary);
-  font: 600 13px var(--font-mono);
+}
+a.stat:focus-visible {
+  outline: none;
+  border-radius: var(--radius-xs);
+  box-shadow: var(--focus);
+}
+.stat__value {
+  color: var(--text);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.stat__label {
+  color: var(--text-muted);
+  font-size: var(--font-size-2xs);
+}
+/*
+ * Dual encoding again: the count takes the tone AND a dot whose border style
+ * differs, matching `.status-chip__dot`. The label beside it already says
+ * "waiting" or "blocked" in words, so neither mark is carrying the meaning by
+ * itself — they only make a non-zero condition findable at a glance.
+ */
+.stat--warning .stat__value,
+.stat--danger .stat__value {
+  color: var(--tone);
+}
+.stat--warning .stat__value::before,
+.stat--danger .stat__value::before {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--space-1);
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  vertical-align: middle;
+  content: '';
+}
+.stat--warning {
+  --tone: var(--warning);
+}
+.stat--warning .stat__value::before {
+  border-style: dashed;
+}
+.stat--danger {
+  --tone: var(--danger);
+}
+.stat--danger .stat__value::before {
+  background: currentColor;
+}
+.stat-strip__window {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
+  padding: 3px var(--space-2) 3px var(--space-3);
+}
+/*
+ * The retained-event trace. Bars, not a polyline, because a line interpolates
+ * across an empty bucket and would draw activity that was never observed. A
+ * bucket with no events draws nothing at all and there is no baseline behind
+ * it, so a gap cannot be misread as a measured zero.
+ */
+.retained-trace {
+  display: block;
+  width: 96px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+.retained-trace__bar {
+  fill: var(--magnitude-fill);
 }
 .pulse-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.65fr) minmax(300px, 0.75fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
+  align-items: start;
+}
+/*
+ * 1060 px, not a round 1000: at 1.62fr of a narrower row the work panel lands
+ * under the 640 px where its four columns stop fitting, and the pair would go
+ * side by side only to fold each row into two by two. Below this the two panels
+ * stack, which gives the work row the whole content width.
+ */
+@container pulse (min-width: 1060px) {
+  .pulse-grid {
+    grid-template-columns: minmax(0, 1.62fr) minmax(300px, 1fr);
+  }
+  /* Explicit placement, so the two row-2 panels cannot swap when one of them
+     renders an empty state shorter than the other's header. */
+  .panel--work {
+    grid-column: 1;
+  }
+  .panel--projects {
+    grid-column: 2;
+  }
 }
 .pulse-grid--secondary {
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -66,13 +166,21 @@
   border-radius: var(--radius-md);
   background: var(--surface-1);
 }
+/* A container of its own: the work row's layout depends on the panel's width,
+   which is not the page's. */
+.panel--work {
+  container-type: inline-size;
+}
+.panel--projects {
+  min-width: 0;
+}
 .panel__header {
   display: flex;
   min-height: 52px;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 9px 12px;
+  padding: var(--panel-pad-y) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
 }
 .panel__header h2 {
@@ -85,7 +193,7 @@
 }
 .empty-state {
   margin: 0;
-  padding: 24px 14px;
+  padding: 24px var(--panel-pad-x);
   color: var(--text-muted);
 }
 .unavailable {
@@ -102,7 +210,7 @@ table {
 }
 th,
 td {
-  padding: 9px 12px;
+  padding: var(--panel-pad-y) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
   text-align: left;
 }
@@ -124,6 +232,142 @@ td small {
   margin-top: 2px;
   color: var(--text-dim);
 }
+/*
+ * Active Work: four dual-line columns, and the row itself is the control.
+ *
+ * The first three widths follow the design system's proportions, with the third
+ * widened from its 0.9: "2 loaded · 1 invoked" is 20 monospace characters and
+ * clipped at the comp's ratio. The fourth is a fixed 148 px rather than a
+ * fraction — its content is a closed vocabulary whose longest member is
+ * "waiting for input", so it has a knowable width, and as a fraction it was the
+ * column that clipped worst. A fixed track also keeps the legend aligned with
+ * the rows, which are separate grids and would resolve `max-content`
+ * differently.
+ */
+.work-columns,
+.work-row__cells {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1.65fr) minmax(0, 1.2fr) 148px;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.work-columns {
+  padding: 7px var(--panel-pad-x);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font: var(--font-size-2xs) var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.work-columns span:last-child {
+  text-align: right;
+}
+.work-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.work-row {
+  border-bottom: 1px solid var(--border);
+}
+.work-row:last-child {
+  border-bottom: 0;
+}
+.work-row:hover {
+  background: var(--surface-2);
+}
+/*
+ * A left rail, and nothing else. Session status carries no reason, so the row
+ * marks that something is blocked without naming a cause the runtime never
+ * recorded — the nearest evidence is a correlated `lease.denied` event, which
+ * is a correlation and not an explanation.
+ */
+.work-row--blocked {
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 var(--danger);
+}
+.work-row--selected {
+  background: var(--selection-soft);
+  box-shadow: inset 2px 0 var(--selection);
+}
+/*
+ * Both raised states put the dim metadata on a tinted ground, where
+ * `--text-dim` drops to about 4.35:1 in the light theme. One step up restores
+ * it; the two rows a reader is most likely to be looking at are the wrong ones
+ * to make hardest to read.
+ */
+.work-row--blocked .work-dim,
+.work-row--selected .work-dim,
+.project-row--selected .project-row__meta {
+  color: var(--text-muted);
+}
+.work-row__button {
+  display: block;
+  width: 100%;
+  padding: var(--panel-pad-y) var(--panel-pad-x);
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.work-cell {
+  display: grid;
+  gap: var(--space-0);
+  min-width: 0;
+  align-content: start;
+}
+.work-cell--end {
+  justify-items: end;
+  text-align: right;
+}
+.work-agent {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/*
+ * An unresolved agent id is set as an identifier, not as a name: mono, and
+ * underlined the way an abbreviation is. A session's opaque agent id must never
+ * look like a definition the runtime read.
+ */
+.work-agent--id {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  text-decoration: underline dotted var(--border-strong);
+  text-underline-offset: 3px;
+}
+.work-task {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-dim {
+  overflow: hidden;
+  color: var(--text-dim);
+  font: var(--font-size-2xs) var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.work-branch {
+  color: var(--text-muted);
+}
+.work-context {
+  overflow: hidden;
+  color: var(--text-muted);
+  font: var(--font-size-xs) var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .project-list,
 .evidence-list,
 .context-path {
@@ -131,42 +375,126 @@ td small {
   padding: 0;
   list-style: none;
 }
-.project-list li,
 .evidence-list li {
   display: flex;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 12px;
+  padding: 10px var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
 }
-.project-list li {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-}
-.project-list li:last-child,
 .evidence-list li:last-child {
   border-bottom: 0;
 }
-.project-list div {
+.project-row {
+  border-bottom: 1px solid var(--border);
+}
+.project-row:last-child {
+  border-bottom: 0;
+}
+.project-row:hover {
+  background: var(--surface-2);
+}
+.project-row--selected {
+  background: var(--selection-soft);
+  box-shadow: inset 2px 0 var(--selection);
+}
+.project-row__button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--panel-pad-y) var(--panel-pad-x);
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+/*
+ * The identity tile. Initials from the display name, tone from a hash of the
+ * id into the graph families — which are already OKLCH-checked in both themes.
+ * It distinguishes one row from the next and asserts nothing else; there is no
+ * per-product palette here, and `product-independence.test.ts` keeps it so.
+ */
+.project-monogram--0 {
+  --mark: var(--graph-scope);
+}
+.project-monogram--1 {
+  --mark: var(--graph-structure);
+}
+.project-monogram--2 {
+  --mark: var(--graph-actor);
+}
+.project-monogram--3 {
+  --mark: var(--graph-history);
+}
+.project-monogram--4 {
+  --mark: var(--graph-other);
+}
+.project-monogram {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--mark);
+  /* The tinted pair is progressive: an engine without `color-mix` keeps the
+     plain surface and border above and the tile stays legible. */
+  border-color: color-mix(in oklab, var(--mark) 32%, transparent);
+  background: var(--surface-2);
+  background: color-mix(in oklab, var(--mark) 12%, var(--surface-2));
+  font: 600 var(--font-size-2xs) var(--font-mono);
+}
+.project-row__body {
+  display: grid;
+  flex: 1;
+  gap: var(--space-0);
   min-width: 0;
 }
-.project-list strong,
-.project-list small {
-  display: block;
+.project-row__head,
+.project-row__meta {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.project-row__meta {
+  align-items: center;
+  color: var(--text-dim);
+  font: var(--font-size-2xs) var(--font-mono);
+}
+.project-row__name {
   overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-list small {
-  color: var(--text-dim);
-  font: 12px var(--font-mono);
-}
-.project-list > li > span {
-  color: var(--text-muted);
-  font: 12px var(--font-mono);
+.project-row__path {
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-width: 0;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+.project-row__counts {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font: var(--font-size-2xs) var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Smaller here than in the strip: this trace shares its line with a path, and
+   the path is the fact a reader needs to tell two projects apart. */
+.project-row .retained-trace {
+  width: 56px;
+  height: 16px;
 }
 .evidence-list li {
   display: grid;
@@ -200,7 +528,7 @@ td small {
 .context-path {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  padding: 14px 12px 18px;
+  padding: 14px var(--panel-pad-x) 18px;
 }
 .context-path li {
   position: relative;
@@ -230,7 +558,7 @@ td small {
 }
 .health-list {
   margin: 0;
-  padding: 4px 12px;
+  padding: 4px var(--panel-pad-x);
 }
 .health-list div {
   display: flex;
@@ -260,7 +588,7 @@ td small {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr) auto auto;
   gap: 12px;
-  padding: 9px 12px;
+  padding: var(--panel-pad-y) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
   font: 12px var(--font-mono);
 }
@@ -277,18 +605,228 @@ td small {
 .activity-list time {
   color: var(--text-dim);
 }
+/*
+ * A last resort, keyed on the panel rather than the page: four columns do not
+ * survive below about 640 px, so the row folds into two by two and the legend
+ * goes with them — a header naming four columns above a two-by-two row is worse
+ * than no header. Nothing is dropped; every cell still renders, and the order
+ * keeps agent and status on the first line where they are scanned.
+ */
+@container (max-width: 639px) {
+  .work-columns {
+    display: none;
+  }
+  .work-row__cells {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .work-cell:nth-child(4) {
+    grid-area: 1 / 2;
+  }
+  .work-cell:nth-child(2) {
+    grid-area: 2 / 1;
+  }
+  .work-cell:nth-child(3) {
+    grid-area: 2 / 2;
+    justify-items: end;
+    text-align: right;
+  }
+}
 @media (max-width: 1399px) {
-  .pulse-grid,
   .pulse-grid--secondary {
     grid-template-columns: minmax(0, 1fr);
   }
-  .operational-strip {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .stat-strip__window {
+    margin-left: 0;
   }
-  .operational-strip > div:nth-child(3) {
-    border-right: 0;
+}
+/*
+ * Row 3, per the mockup: the stream takes the wide track. Same container
+ * discipline as row 2 — below the threshold the three panels stack.
+ */
+.pulse-grid--tertiary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  min-width: 0;
+  align-items: start;
+}
+@container pulse (min-width: 1060px) {
+  .pulse-grid--tertiary {
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.05fr) minmax(0, 1.05fr);
   }
-  .operational-strip > div:nth-child(-n + 3) {
-    border-bottom: 1px solid var(--border);
-  }
+}
+/* The stream owns the wide first track and never swaps on reflow. */
+.panel--stream {
+  min-width: 0;
+}
+.stream-list {
+  margin: 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  list-style: none;
+}
+.stream-row {
+  border-bottom: 1px solid var(--border);
+}
+.stream-row:last-child {
+  border-bottom: 0;
+}
+.stream-row:hover {
+  background: var(--surface-2);
+}
+.stream-row__button {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 0.8fr) minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  width: 100%;
+  align-items: baseline;
+  padding: 6px var(--panel-pad-x);
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: var(--font-size-2xs) var(--font-mono);
+}
+.stream-row__time {
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.stream-row__source,
+.stream-row__object {
+  overflow: hidden;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stream-row__object {
+  color: var(--text-dim);
+}
+.stream-row__type {
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/*
+ * Family tints for event types. The five families are the graph tokens —
+ * OKLCH-checked in both themes — and the type text beside the colour is the
+ * identity, so nothing rides on hue alone.
+ */
+.evt--scope {
+  color: var(--graph-scope);
+}
+.evt--actor {
+  color: var(--graph-actor);
+}
+.evt--structure {
+  color: var(--graph-structure);
+}
+.evt--history {
+  color: var(--graph-history);
+}
+.evt--operational {
+  color: var(--graph-operational);
+}
+.evt--other {
+  color: var(--graph-other);
+}
+.evt--plain {
+  color: var(--text-secondary);
+}
+.context-stages {
+  display: grid;
+  gap: 9px;
+  padding: 13px var(--panel-pad-x) 16px;
+}
+.context-stage {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 28px;
+  gap: 10px;
+  align-items: center;
+}
+.context-stage__label {
+  color: var(--text-secondary);
+  font-size: var(--font-size-2xs);
+}
+.context-stage__track {
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--magnitude-track);
+}
+.context-stage__fill {
+  display: block;
+  height: 100%;
+  background: var(--magnitude-fill);
+}
+.context-stage__value {
+  color: var(--text);
+  font: var(--font-size-xs) var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.context-divider {
+  height: 1px;
+  margin: 4px 0 2px;
+  background: var(--border);
+}
+.context-insight {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-2xs);
+  line-height: 1.45;
+}
+.repo-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.repo-row {
+  display: grid;
+  gap: var(--space-0);
+  padding: 10px var(--panel-pad-x);
+  border-bottom: 1px solid var(--border);
+}
+.repo-row:last-child {
+  border-bottom: 0;
+}
+.repo-row__name {
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+.repo-row__facts {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.repo-row__branch {
+  color: var(--text-secondary);
+  font: var(--font-size-2xs) var(--font-mono);
+}
+.repo-row__sha,
+.repo-row__counts,
+.repo-row__age {
+  color: var(--text-dim);
+  font: var(--font-size-2xs) var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.panel__meta--link {
+  color: var(--text-dim);
+  text-decoration: none;
+}
+.panel__meta--link:hover {
+  color: var(--text-secondary);
+}
+.runtime-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
+  gap: var(--space-4);
+  min-width: 0;
 }

@@ -1,14 +1,23 @@
 import {
   agentDefinitionCollectionSchema,
   contextContributionCollectionSchema,
+  gitObservationSchema,
   healthResponseSchema,
   optimizationFindingCollectionSchema,
   projectCollectionResponseSchema,
+  runtimeInfoResponseSchema,
   usageSummarySchema,
 } from '@luwi/protocol/browser';
 import { z } from 'zod';
 
-import type { Availability, PulseInput, PulseResources } from '../pulse/model.js';
+import type {
+  Availability,
+  PulseGitEntry,
+  PulseGitResource,
+  PulseInput,
+  PulseProject,
+  PulseResources,
+} from '../pulse/model.js';
 import { dashboardEventMessageSchema, toDashboardEvent } from '../realtime/schema.js';
 import type { DaemonClient, ResourceResult } from './client.js';
 
@@ -23,6 +32,13 @@ const sessionCollectionBrowserSchema = z.object({
       startedAt: z.iso.datetime({ offset: false }),
       lastHeartbeatAt: z.iso.datetime({ offset: false }),
       branch: z.string().optional(),
+      /**
+       * What the session said it is doing, at registration. It is evidence the
+       * session reported about itself — not a task the runtime assigned, and
+       * not a task domain: AGENTS.md section 21 still prohibits orchestration.
+       * The Active Work row labels it as reported for exactly that reason.
+       */
+      taskSummary: z.string().optional(),
     }),
   ),
 });
@@ -55,7 +71,62 @@ const pulseResourceKeys: PulseResourceKey[] = [
   'context',
   'activity',
   'findings',
+  'runtime',
+  'git',
 ];
+
+/**
+ * The per-row read cost the redesign's Decision 4 accepted, bounded.
+ *
+ * One `GET /projects/:id/git` per registered project gives the Pulse its
+ * Repository facts and the Projects table its HEAD column. The fan-out is
+ * capped and the cap is disclosed as `truncated` — a project past it renders
+ * `Unavailable`, never a silently missing row.
+ */
+const GIT_FANOUT_MAX = 12;
+
+async function loadGitResource(
+  client: DaemonClient,
+  projects: Availability<PulseProject[]>,
+  options: { signal?: AbortSignal },
+): Promise<Availability<PulseGitResource>> {
+  if (projects.state !== 'ready') return { state: 'unavailable' };
+  const capped = projects.data.slice(0, GIT_FANOUT_MAX);
+  const entries = await Promise.all(
+    capped.map(async (project): Promise<PulseGitEntry> => {
+      const result = await client.get(
+        `/api/v1/projects/${encodeURIComponent(project.id)}/git`,
+        gitObservationSchema,
+        options,
+      );
+      if (result.state === 'ready') {
+        return {
+          projectId: project.id,
+          git: {
+            state: 'ready',
+            data: {
+              ...(result.data.branch === undefined ? {} : { branch: result.data.branch }),
+              ...(result.data.headSha === undefined ? {} : { headSha: result.data.headSha }),
+              clean: result.data.clean,
+              untrackedCount: result.data.untrackedCount,
+              tagCount: result.data.tags.length,
+              observedAt: result.data.observedAt,
+            },
+          },
+        };
+      }
+      // A 404 is the daemon's complete answer: no scan has been recorded for
+      // this project. Reporting it as unavailable would claim a fault.
+      if (result.httpStatus === 404)
+        return { projectId: project.id, git: { state: 'not-observed' } };
+      return { projectId: project.id, git: { state: 'unavailable' } };
+    }),
+  );
+  return {
+    state: 'ready',
+    data: { truncated: projects.data.length > GIT_FANOUT_MAX, entries },
+  };
+}
 
 export async function loadPulseResources(
   client: DaemonClient,
@@ -117,6 +188,7 @@ export async function loadPulseResources(
                 startedAt: session.startedAt,
                 lastHeartbeatAt: session.lastHeartbeatAt,
                 ...(session.branch === undefined ? {} : { branch: session.branch }),
+                ...(session.taskSummary === undefined ? {} : { taskSummary: session.taskSummary }),
               })),
           ),
         );
@@ -178,6 +250,38 @@ export async function loadPulseResources(
           ),
         );
         break;
+      case 'runtime':
+        requests.push(
+          entry(
+            key,
+            client.get('/api/v1/runtime', runtimeInfoResponseSchema, options),
+            ({
+              workspaceId,
+              version,
+              protocolVersion,
+              runtimeState,
+              runtimeInstanceId,
+              startedAt,
+              uptimeMs,
+              host,
+              port,
+            }) => ({
+              workspaceId,
+              version,
+              protocolVersion,
+              runtimeState,
+              runtimeInstanceId,
+              startedAt,
+              uptimeMs,
+              host,
+              port,
+            }),
+          ),
+        );
+        break;
+      case 'git':
+        // Depends on the project list; resolved after the batch below.
+        break;
       case 'findings':
         requests.push(
           entry(
@@ -207,8 +311,24 @@ export async function loadPulseResources(
   }
 
   const entries = await Promise.all(requests);
+  const resources = Object.fromEntries(entries) as Partial<PulseResources>;
 
-  return Object.fromEntries(entries) as Partial<PulseResources>;
+  if (requested.has('git')) {
+    // The fan-out needs the project list. Reuse the one from this batch when
+    // it was requested; a git-only invalidation fetches it fresh.
+    const projects: Availability<PulseProject[]> =
+      resources.projects ??
+      (await client
+        .get('/api/v1/projects', projectCollectionResponseSchema, options)
+        .then((result) =>
+          availability(result, ({ projects: values }) =>
+            values.map(({ id, name, localPath }) => ({ id, name, localPath })),
+          ),
+        ));
+    resources.git = await loadGitResource(client, projects, options);
+  }
+
+  return resources;
 }
 
 export async function loadPulseInput(
@@ -233,5 +353,7 @@ export async function loadPulseInput(
     context: resources.context ?? { state: 'unavailable' },
     activity: resources.activity ?? { state: 'unavailable' },
     findings: resources.findings ?? { state: 'unavailable' },
+    runtime: resources.runtime ?? { state: 'unavailable' },
+    git: resources.git ?? { state: 'unavailable' },
   };
 }

@@ -529,3 +529,19 @@ tr[data-selected='true'] {
 .outcome--bad {
   color: var(--danger);
 }
+
+/* The registry row's identity cell: monogram beside name and path, as the
+   mockup's Projects table draws it. */
+.project-cell {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.project-cell__body {
+  display: grid;
+  min-width: 0;
+}
+.table-dim {
+  color: var(--text-dim);
+}

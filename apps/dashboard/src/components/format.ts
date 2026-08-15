@@ -38,6 +38,38 @@ export function abbreviateId(id: string): string {
 }
 
 /**
+ * Two letters for an identity tile.
+ *
+ * The design system draws a monogram beside every project and agent. It is a
+ * label, not a claim: it is derived from the display name the runtime already
+ * holds, and it never encodes which product an agent is — there is no vendor
+ * map here and `product-independence.test.ts` exists to keep it that way.
+ */
+export function monogramInitials(name: string): string {
+  const words = name.split(/[^\p{L}\p{N}]+/u).filter((word) => word !== '');
+  if (words.length === 0) return '??';
+  if (words.length === 1) return (words[0] ?? '').slice(0, 2).toUpperCase();
+  return `${(words[0] ?? '').slice(0, 1)}${(words[1] ?? '').slice(0, 1)}`.toUpperCase();
+}
+
+/**
+ * A stable palette slot for an identifier.
+ *
+ * FNV-1a, because it mixes position: registries here are far more often
+ * sequential (`project-1`, `project-2`) than random, and a sum-of-characters
+ * hash would give a whole registry one colour. The colour carries no meaning
+ * on its own — it only makes one row's tile distinguishable from the next.
+ */
+export function paletteIndex(id: string, size: number): number {
+  let hash = 0x81_1c_9d_c5;
+  for (let index = 0; index < id.length; index += 1) {
+    hash ^= id.charCodeAt(index);
+    hash = Math.imul(hash, 0x01_00_01_93);
+  }
+  return Math.abs(hash) % size;
+}
+
+/**
  * Relative display for an observed timestamp. Callers keep the absolute value
  * as a `title`/`dateTime`. Skew into the future reads as "just now" — claiming
  * a negative age would be a statement the runtime never observed — and an

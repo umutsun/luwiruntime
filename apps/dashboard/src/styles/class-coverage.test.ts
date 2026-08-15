@@ -20,6 +20,15 @@ const VIEWS = [
   '../routes/config-view.tsx',
   '../routes/messages-view.tsx',
   '../projects/lease-panel.tsx',
+  /*
+   * Added with the phase-3 Pulse redesign, which introduced a whole new set of
+   * class names in one change — exactly the situation this guard exists for.
+   * The blind spot above still applies: the row variants are composed from
+   * template literals and stay invisible here, so the base classes are the ones
+   * this covers.
+   */
+  '../pulse/pulse-view.tsx',
+  '../routes/runtime-view.tsx',
 ] as const;
 
 const STYLESHEETS = [

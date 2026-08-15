@@ -1,3 +1,4 @@
+import { BrandMark } from './components/brand-mark.js';
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -481,7 +482,9 @@ function DashboardRoute() {
   if (snapshot === undefined) {
     return (
       <main className="route-loading" aria-busy="true">
-        <span className="identity__mark">L</span>
+        <span className="identity__mark">
+          <BrandMark size={20} />
+        </span>
         <p className="eyebrow">LUWI Runtime</p>
         <h1>Loading validated Pulse snapshot</h1>
       </main>

@@ -5,6 +5,8 @@ import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.j
 import type { IntelligenceResources } from './api/intelligence-scope.js';
 import type { ProjectScopeResources } from './api/project-scope.js';
 import type { PulseFreshness } from './api/refresh-state.js';
+import { BrandMark } from './components/brand-mark.js';
+import { CommandPalette } from './components/command-palette.js';
 import { NavIcon } from './components/nav-icon.js';
 import type { ResourceState } from './components/panel.js';
 import { StatusChip } from './components/status-chip.js';
@@ -29,9 +31,10 @@ import { ConfigView } from './routes/config-view.js';
 import type { MessageResources } from './api/messages-scope.js';
 import { MessagesView } from './routes/messages-view.js';
 import { OptimizationView } from './routes/optimization-view.js';
+import { RuntimeView } from './routes/runtime-view.js';
 import { SessionsView } from './routes/sessions-view.js';
 import { UsageView } from './routes/usage-view.js';
-import type { PulseSnapshot } from './pulse/model.js';
+import { scopePulseSnapshot, type PulseSnapshot } from './pulse/model.js';
 import { PulseView } from './pulse/pulse-view.js';
 import {
   acceptActivityEvent,
@@ -71,6 +74,7 @@ const intelligenceRoutes = [
 const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string }> = {
   pulse: { eyebrow: 'Operational snapshot', heading: 'Pulse' },
   activity: { eyebrow: 'Event observer', heading: 'Activity' },
+  runtime: { eyebrow: 'Local boundary', heading: 'Runtime' },
   projects: { eyebrow: 'Project scope', heading: 'Projects' },
   agents: { eyebrow: 'Registered definitions', heading: 'Agents' },
   sessions: { eyebrow: 'Observed sessions', heading: 'Sessions' },
@@ -249,6 +253,16 @@ export function DashboardApp({
   const [route, setRoute] = useState(() => parseRoute(window.location.hash));
   const [selection, setSelection] = useState<InspectorSelection>();
   const [railCollapsed, setRailCollapsed] = useState(false);
+  /*
+   * The mockup's scope switcher. Client-side narrowing only: rows carrying a
+   * projectId are filtered and their counts recomputed; nothing is refetched
+   * and reads without a per-project shape stay runtime-wide.
+   */
+  const [scopeProjectId, setScopeProjectId] = useState<string>();
+  const scoped = useMemo(
+    () => scopePulseSnapshot(snapshot, scopeProjectId),
+    [snapshot, scopeProjectId],
+  );
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const mainRegion = useRef<HTMLElement>(null);
   const fallbackActivity = useMemo(
@@ -303,7 +317,9 @@ export function DashboardApp({
       </a>
       <aside className="sidebar">
         <div className="identity">
-          <span className="identity__mark">L</span>
+          <span className="identity__mark">
+            <BrandMark />
+          </span>
           <div>
             <strong>LUWI Runtime</strong>
             <small>local control plane</small>
@@ -329,6 +345,14 @@ export function DashboardApp({
             {displayedActivity.pendingCount > 0 ? (
               <small>{displayedActivity.pendingCount} new</small>
             ) : null}
+          </a>
+          <a
+            className={`nav-item${route.name === 'runtime' ? ' nav-item--active' : ''}`}
+            href={routeHref({ name: 'runtime' })}
+            aria-current={route.name === 'runtime' ? 'page' : undefined}
+          >
+            <NavIcon route="runtime" />
+            <span className="nav-item__label">Runtime</span>
           </a>
           <p className="nav-group">Scope</p>
           {scopeRoutes.map((entry) => (
@@ -406,9 +430,24 @@ export function DashboardApp({
             </div>
           </div>
           <div className="command-bar__right">
-            <span className="command-shell" aria-label="Current scope">
-              {scopeSummary(route.name, snapshot)}
-            </span>
+            <CommandPalette snapshot={snapshot} scopeSummary={scopeSummary(route.name, scoped)} />
+            {/* A native select: eleven projects do not cycle well, and a
+                custom dropdown would be accessibility work for no gain. */}
+            <select
+              className="scope-select"
+              aria-label="Project scope"
+              value={scopeProjectId ?? ''}
+              onChange={(event) =>
+                setScopeProjectId(event.target.value === '' ? undefined : event.target.value)
+              }
+            >
+              <option value="">All projects</option>
+              {snapshot.projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
             <StatusChip tone={websocketTone}>{connectionLabel(websocketState)}</StatusChip>
             {/* Three states, not two: the stylesheet has always had a
                 system-following mode, and collapsing it into a light/dark
@@ -472,9 +511,11 @@ export function DashboardApp({
                 openInspector({ kind: 'event', streamId: event.streamId }, opener)
               }
             />
+          ) : route.name === 'runtime' ? (
+            <RuntimeView snapshot={snapshot} websocketState={websocketState} />
           ) : route.name === 'sessions' ? (
             <SessionsView
-              snapshot={snapshot}
+              snapshot={scoped}
               onOpenSession={(session, opener) =>
                 openInspector({ kind: 'session', sessionId: session.id }, opener)
               }
@@ -551,9 +592,16 @@ export function DashboardApp({
               }}
             />
           ) : (
+            /*
+             * The docked pane is permanently visible, so the row it is showing
+             * has to be identifiable in the list too — otherwise the inspector
+             * describes a row the reader has to find again by eye.
+             */
             <PulseView
-              snapshot={snapshot}
+              snapshot={scoped}
               websocketState={websocketState}
+              {...(selection?.kind === 'session' ? { selectedSessionId: selection.sessionId } : {})}
+              {...(selection?.kind === 'project' ? { selectedProjectId: selection.projectId } : {})}
               onOpenProject={(project, opener) =>
                 openInspector({ kind: 'project', projectId: project.id }, opener)
               }

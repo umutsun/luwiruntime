@@ -148,8 +148,10 @@ describe('resourcesOf', () => {
       'agents',
       'context',
       'findings',
+      'git',
       'health',
       'projects',
+      'runtime',
       'sessions',
       'usage',
     ]);

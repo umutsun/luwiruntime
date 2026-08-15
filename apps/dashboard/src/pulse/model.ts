@@ -13,6 +13,8 @@ export type PulseSession = {
   startedAt: string;
   lastHeartbeatAt: string;
   branch?: string;
+  /** Reported by the session about itself; absent when it reported none. */
+  taskSummary?: string;
 };
 export type PulseUsageSource = {
   source: 'agent-exact' | 'agent-reported' | 'adapter-extracted' | 'luwi-estimated' | 'unavailable';
@@ -20,6 +22,11 @@ export type PulseUsageSource = {
   totalTokens?: number;
 };
 export type PulseContextContribution = {
+  /**
+   * Optional in the protocol, and therefore optional here. A contribution that
+   * names no session belongs to no session — it is never attributed to one.
+   */
+  sessionId?: string;
   assigned: ObservedBoolean;
   effective: ObservedBoolean;
   loaded: ObservedBoolean;
@@ -64,6 +71,44 @@ export type PulseHealth = {
     | { connected: false; status: 'disconnected' };
 };
 
+/**
+ * One project's Git facts, as the daemon's read-only observation reported
+ * them. Only stated facts — the mockup's `Release Readiness` judgement was
+ * replaced by exactly this list (see the redesign plan's honest replacements).
+ */
+export type PulseGitFacts = {
+  branch?: string;
+  headSha?: string;
+  clean: boolean;
+  untrackedCount: number;
+  tagCount: number;
+  observedAt: string;
+};
+
+/**
+ * `not-observed` is a complete answer: no scan was ever recorded. It must not
+ * be folded into `unavailable`, which claims a fault.
+ */
+export type PulseGitEntry = {
+  projectId: string;
+  git:
+    { state: 'ready'; data: PulseGitFacts } | { state: 'not-observed' } | { state: 'unavailable' };
+};
+
+export type PulseGitResource = { truncated: boolean; entries: PulseGitEntry[] };
+
+export type PulseRuntimeInfo = {
+  workspaceId: string;
+  version: string;
+  protocolVersion: number;
+  runtimeState: string;
+  runtimeInstanceId: string;
+  startedAt: string;
+  uptimeMs: number;
+  host: string;
+  port: number;
+};
+
 export type PulseResources = {
   health: Availability<PulseHealth>;
   projects: Availability<PulseProject[]>;
@@ -73,11 +118,21 @@ export type PulseResources = {
   context: Availability<PulseContextContribution[]>;
   activity: Availability<DashboardEvent[]>;
   findings: Availability<PulseFinding[]>;
+  runtime: Availability<PulseRuntimeInfo>;
+  git: Availability<PulseGitResource>;
 };
 
-export type PulseInput = PulseResources & {
+export type PulseInput = Omit<PulseResources, 'runtime' | 'git'> & {
   measuredLatencyMs: number;
   snapshotAt: string;
+  /**
+   * Optional because most unit tests build an input without the two newest
+   * reads; the real loader always supplies them. An absent key means "not
+   * requested" and does not mark the snapshot partial — an explicit
+   * `unavailable` still does.
+   */
+  runtime?: Availability<PulseRuntimeInfo>;
+  git?: Availability<PulseGitResource>;
 };
 
 /**
@@ -106,7 +161,15 @@ const usageLabels: Record<(typeof usageOrder)[number], string> = {
   unavailable: 'Unavailable',
 };
 
-const knownSessionStatuses = new Set([
+/**
+ * The nine observed session statuses, in the order a breakdown reads them.
+ *
+ * Ordered rather than a bare set because the Active Work header states the
+ * whole vocabulary in this sequence. There is deliberately no "running" entry:
+ * it is not a status the runtime records, and folding `thinking` and
+ * `tool_running` into one would manufacture it.
+ */
+const sessionStatusOrder = [
   'starting',
   'idle',
   'thinking',
@@ -116,12 +179,19 @@ const knownSessionStatuses = new Set([
   'blocked',
   'completed',
   'disconnected',
-]);
+] as const;
+
+const knownSessionStatuses = new Set<string>(sessionStatusOrder);
+
+const waitingStatuses = new Set(['waiting_for_input', 'waiting_for_agent']);
 
 export function labelSessionStatus(status: string): string {
   if (!knownSessionStatuses.has(status)) return 'Unknown';
   return status.replaceAll('_', ' ');
 }
+
+/** One entry per status actually present, so an absent status states nothing. */
+export type SessionStatusCount = { status: string; label: string; count: number };
 
 function countOf<T>(resource: Availability<T[]>): CountValue {
   if (resource.state === 'unavailable') return { state: 'unavailable' };
@@ -131,19 +201,68 @@ function countOf<T>(resource: Availability<T[]>): CountValue {
   };
 }
 
+/**
+ * The context evidence one session reported.
+ *
+ * `not-observed` is not `0`: it means the contributions read succeeded and no
+ * contribution named this session, which is a different fact from a count of
+ * zero loaded sources and a different fact again from a failed read.
+ */
+export type SessionContextEvidence =
+  | { state: 'ready'; assigned: number; loaded: number; invoked: number }
+  | { state: 'not-observed' }
+  | { state: 'unavailable' };
+
 export function buildPulseSnapshot(input: PulseInput) {
   const projectById = new Map(
     input.projects.state === 'ready'
       ? input.projects.data.map((project) => [project.id, project] as const)
       : [],
   );
+  const agentById = new Map(
+    input.agents.state === 'ready'
+      ? input.agents.data.map((agent) => [agent.id, agent] as const)
+      : [],
+  );
+  const contributionsBySession = new Map<string, PulseContextContribution[]>();
+  if (input.context.state === 'ready') {
+    for (const contribution of input.context.data) {
+      if (contribution.sessionId === undefined) continue;
+      const bucket = contributionsBySession.get(contribution.sessionId);
+      if (bucket === undefined) contributionsBySession.set(contribution.sessionId, [contribution]);
+      else bucket.push(contribution);
+    }
+  }
+  const sessionContext = (sessionId: string): SessionContextEvidence => {
+    if (input.context.state === 'unavailable') return { state: 'unavailable' };
+    const rows = contributionsBySession.get(sessionId);
+    if (rows === undefined) return { state: 'not-observed' };
+    return {
+      state: 'ready',
+      assigned: rows.filter((row) => row.assigned === true).length,
+      loaded: rows.filter((row) => row.loaded === true).length,
+      invoked: rows.filter((row) => row.invoked === true).length,
+    };
+  };
   const sessions =
     input.sessions.state === 'ready'
-      ? input.sessions.data.map((session) => ({
-          ...session,
-          projectName: projectById.get(session.projectId)?.name ?? 'Unavailable',
-          statusLabel: labelSessionStatus(session.status),
-        }))
+      ? input.sessions.data.map((session) => {
+          const definition = agentById.get(session.agentId);
+          return {
+            ...session,
+            projectName: projectById.get(session.projectId)?.name ?? 'Unavailable',
+            statusLabel: labelSessionStatus(session.status),
+            /*
+             * The raw id is the fallback, and the view is told which it got.
+             * An opaque agent id must never be presented as though a definition
+             * stood behind it — including when the agent read itself failed,
+             * which is why this asks the map rather than the read's state.
+             */
+            agentName: definition?.displayName ?? session.agentId,
+            agentKnown: definition !== undefined,
+            context: sessionContext(session.id),
+          };
+        })
       : [];
   const activeSessions =
     input.sessions.state === 'ready'
@@ -173,13 +292,45 @@ export function buildPulseSnapshot(input: PulseInput) {
     const value = activeSessions.filter((session) => session.projectId === projectId).length;
     return { state: value === 0 ? 'empty' : 'ready', value };
   };
+  /*
+   * Distinct agents holding an active session here — not the project's agent
+   * bindings, which are a separately scoped read the Pulse batch does not make.
+   * The two are different claims and the view labels this one as what it is.
+   */
+  const perProjectActiveAgents = (projectId: string): CountValue => {
+    if (input.sessions.state === 'unavailable') return { state: 'unavailable' };
+    const value = new Set(
+      activeSessions
+        .filter((session) => session.projectId === projectId)
+        .map((session) => session.agentId),
+    ).size;
+    return { state: value === 0 ? 'empty' : 'ready', value };
+  };
   const projects =
     input.projects.state === 'ready'
       ? input.projects.data.map((project) => ({
           ...project,
           activeSessions: perProjectActiveSessions(project.id),
+          activeAgents: perProjectActiveAgents(project.id),
         }))
       : [];
+
+  const countActive = (matches: (status: string) => boolean): CountValue => {
+    if (input.sessions.state === 'unavailable') return { state: 'unavailable' };
+    const value = activeSessions.filter((session) => matches(session.status)).length;
+    return { state: value === 0 ? 'empty' : 'ready', value };
+  };
+  const statusBreakdown: SessionStatusCount[] = [];
+  for (const status of sessionStatusOrder) {
+    const count = activeSessions.filter((session) => session.status === status).length;
+    if (count > 0) statusBreakdown.push({ status, label: labelSessionStatus(status), count });
+  }
+  const unknownStatusCount = activeSessions.filter(
+    (session) => !knownSessionStatuses.has(session.status),
+  ).length;
+  if (unknownStatusCount > 0) {
+    statusBreakdown.push({ status: 'unknown', label: 'Unknown', count: unknownStatusCount });
+  }
 
   const usageSources = input.usage.state === 'ready' ? input.usage.data : [];
   const usage =
@@ -199,7 +350,38 @@ export function buildPulseSnapshot(input: PulseInput) {
         })
       : [];
 
+  const gitResource = input.git ?? { state: 'unavailable' as const };
+  const gitEntryByProject = new Map(
+    gitResource.state === 'ready'
+      ? gitResource.data.entries.map((entry) => [entry.projectId, entry.git] as const)
+      : [],
+  );
+  /*
+   * One row per registered project, joined to whatever the per-project Git
+   * read returned. A project past the fan-out cap has no entry and is shown
+   * as unavailable — with the truncation disclosed — never silently dropped.
+   */
+  const repositoryFacts = (input.projects.state === 'ready' ? input.projects.data : []).map(
+    (project) => ({
+      projectId: project.id,
+      name: project.name,
+      git: gitEntryByProject.get(project.id) ?? { state: 'unavailable' as const },
+    }),
+  );
+
   const contributions = input.context.state === 'ready' ? input.context.data : [];
+  /*
+   * The comp's two insight sentences, kept honest: a pair is counted only when
+   * both sides are observed booleans. `unknown` is never counted as unused —
+   * that is the ADR 0010 rule the Context route already renders.
+   */
+  const contextInsights = {
+    assignedNeverLoaded: contributions.filter(
+      (item) => item.assigned === true && item.loaded === false,
+    ).length,
+    loadedNotInvoked: contributions.filter((item) => item.loaded === true && item.invoked === false)
+      .length,
+  };
   const context = {
     assigned: contributions.filter((item) => item.assigned === true).length,
     effective: contributions.filter((item) => item.effective === true).length,
@@ -216,6 +398,9 @@ export function buildPulseSnapshot(input: PulseInput) {
     health: input.health,
     projectCount: countOf(input.projects),
     activeSessionCount,
+    statusBreakdown,
+    waitingCount: countActive((status) => waitingStatuses.has(status)),
+    blockedCount: countActive((status) => status === 'blocked'),
     agentCount: countOf(input.agents),
     agents:
       input.agents.state === 'ready'
@@ -231,7 +416,12 @@ export function buildPulseSnapshot(input: PulseInput) {
     usage,
     usageState: input.usage.state,
     context,
+    contextInsights,
     contextState: input.context.state,
+    runtime: input.runtime ?? { state: 'unavailable' as const },
+    repositoryFacts,
+    gitState: gitResource.state,
+    gitTruncated: gitResource.state === 'ready' ? gitResource.data.truncated : false,
     activityState: input.activity.state,
     activity: input.activity.state === 'ready' ? input.activity.data : [],
     findingCount: countOf(input.findings),
@@ -247,8 +437,74 @@ export function buildPulseSnapshot(input: PulseInput) {
       input.context,
       input.activity,
       input.findings,
+      // Absent means "not requested" (unit-test inputs); only an explicit
+      // failure marks the snapshot partial.
+      ...(input.runtime === undefined ? [] : [input.runtime]),
+      ...(input.git === undefined ? [] : [input.git]),
     ].some((resource) => resource.state === 'unavailable'),
   };
 }
 
 export type PulseSnapshot = ReturnType<typeof buildPulseSnapshot>;
+
+/**
+ * The mockup's scope switcher, applied client-side.
+ *
+ * Narrows the snapshot to one project: rows that carry a `projectId` are
+ * filtered, and every count over them is recomputed so the strip and the
+ * Active Work header describe the scope, not the runtime. Two rules keep it
+ * honest: a failed read stays failed — a scope never turns `unavailable` into
+ * an empty list — and an event without a `projectId` is not attributable to
+ * the scoped project, so a scoped view may not claim it. Reads that have no
+ * per-project shape (usage grades, the context counts, findings) pass through
+ * globally; their panels state runtime-wide evidence either way.
+ */
+export function scopePulseSnapshot(
+  snapshot: PulseSnapshot,
+  projectId: string | undefined,
+): PulseSnapshot {
+  if (projectId === undefined) return snapshot;
+
+  const sessions = snapshot.sessions.filter((session) => session.projectId === projectId);
+  const activeSessions = snapshot.activeSessions.filter(
+    (session) => session.projectId === projectId,
+  );
+  const projects = snapshot.projects.filter((project) => project.id === projectId);
+  const repositoryFacts = snapshot.repositoryFacts.filter((row) => row.projectId === projectId);
+  const activity = snapshot.activity.filter((event) => event.projectId === projectId);
+
+  const recount = (source: CountValue, value: number): CountValue =>
+    source.state === 'unavailable'
+      ? { state: 'unavailable' }
+      : { state: value === 0 ? 'empty' : 'ready', value };
+
+  const statusBreakdown: SessionStatusCount[] = [];
+  for (const entry of snapshot.statusBreakdown) {
+    const count = activeSessions.filter(
+      (session) =>
+        session.status === entry.status ||
+        (entry.status === 'unknown' && labelSessionStatus(session.status) === 'Unknown'),
+    ).length;
+    if (count > 0) statusBreakdown.push({ ...entry, count });
+  }
+
+  return {
+    ...snapshot,
+    sessions,
+    activeSessions,
+    projects,
+    repositoryFacts,
+    activity,
+    statusBreakdown,
+    projectCount: recount(snapshot.projectCount, projects.length),
+    activeSessionCount: recount(snapshot.activeSessionCount, activeSessions.length),
+    waitingCount: recount(
+      snapshot.waitingCount,
+      activeSessions.filter((session) => session.status.startsWith('waiting')).length,
+    ),
+    blockedCount: recount(
+      snapshot.blockedCount,
+      activeSessions.filter((session) => session.status === 'blocked').length,
+    ),
+  };
+}

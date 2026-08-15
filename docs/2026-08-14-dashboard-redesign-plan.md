@@ -109,9 +109,89 @@ a visual check needs `pnpm build` and a restart, and the owner lease needs ~15 s
 
 Phases 1 and 2 are committed at `09b152a`. Tokens, the rail (icons, counts, collapse), the 52 px top
 bar, the theme toggle and the status dual encoding are in; the inspector is docked as grid column
-three with its modal contract removed and its tests rewritten. **Phase 3 is the next work and has not
-started.** `pulse-view.tsx`, `pulse/model.ts` and `styles/pulse.css` are still the pre-redesign
-versions.
+three with its modal contract removed and its tests rewritten.
+
+## Status after phase 3
+
+Phase 3 is **built and verified, and not yet committed**. `pulse-view.tsx`, `pulse/model.ts` and
+`styles/pulse.css` carry the redesign; `pulse/retained-window.ts` and `pulse/pulse-view.test.tsx` are
+new. Rows 1 and 2 are the mockup's: a single dotted stat line with a client-side trace, Active Work
+as four dual-line columns whose row is the control, and Project Pulse with monogram tiles. Row 3 is
+untouched and belongs to phase 4.
+
+**One correction to the anatomy above.** The Task cell was specified as "no task domain exists, use
+the session's status sentence". `taskSummary` is on `agentSessionSchema`, so `GET /api/v1/sessions`
+has been serving one all along — it was simply not in the dashboard's browser schema. It is evidence
+the session reported about itself, not a task the runtime assigned and not task orchestration, so the
+row renders it and falls back to `No task reported` when the session reported none. The status
+sentence was not used as the fallback: the Status column already states it, so repeating it there
+would be duplication rather than a second piece of evidence.
+
+The rest of the honest replacements shipped as written: no `running` bucket anywhere, the header
+breakdown states the observed statuses (`1 thinking · 1 tool running · 1 waiting for input ·
+1 blocked`), a blocked row gets a rail and no stated cause, per-session context distinguishes
+`Not observed` from `Unavailable`, an unresolved agent id is set as an identifier rather than a name,
+and Project Pulse invents no status word and no lifecycle stage.
+
+## Status after phases 4-6 (2026-08-15, uncommitted)
+
+Everything visible in the mockup now has a counterpart, honest where the comp was not:
+
+- **Row 3 shipped** — Realtime Stream (time · source · type · object; family-tinted types over the
+  graph tokens, type text carries identity; the evidence-grade column stays dropped), Context
+  Efficiency (the five counts as independent bars plus the comp's two insight sentences, counted
+  only over observed boolean pairs), and Repository facts in the Release Readiness slot.
+- **`#/runtime` exists** (`GET /api/v1/runtime` joined the Pulse batch); the Runtime health panel
+  moved there from Pulse and the strip's runtime/latency/Redis stats link to it. The rewritten
+  `app.test` keeps the Function-library/Projection-health ban on the new route.
+- **The ⌘K palette shipped, navigate-only** as decided: routes + loaded projects/agents/sessions,
+  Ctrl/⌘K, arrows, Enter sets the hash, nothing else. The trigger reuses the command-shell slot and
+  keeps its `Current scope` name and count text.
+- **Per-project Git fan-out** (Decision 4, capped at 12, cap disclosed as truncation) feeds both the
+  Pulse Repository facts and a HEAD column in the Projects registry table, which also gained the
+  monogram + path cell of the comp. Stage and Release columns stay out — no such domains.
+- **The LUWI mark** replaced the letter tile, drawn as strokes in `currentColor` (the brand raster
+  is a 2700px PNG); panel padding collapsed onto `--panel-pad-x/y`.
+
+The comp's **project scope switcher shipped after all** (2026-08-15, owner request): a native
+select in the command bar drives `scopePulseSnapshot`, a client-side narrowing that filters every
+row carrying a `projectId` and recomputes the counts over them. Two rules keep it honest: a failed
+read stays failed under a scope, and an event without a `projectId` is not attributable to the
+scoped project, so a scoped view does not claim it. Usage grades, context counts and findings have
+no per-project read shape and stay runtime-wide.
+
+Deliberately still absent, with a reason: the top-bar **time-range chips** — no server read takes a
+time bound; the only honest filter is over the retained window, which Activity's own filters cover.
+Project registration and Git scans remain CLI/daemon operations — the dashboard's only permitted
+mutations are still the config plan chain.
+
+### What looking at it changed
+
+Three defects that every test passed through, found by capturing the fixture:
+
+- **The four-column row did not fit.** Measured at 1440 with the rail and the docked inspector, the
+  work panel is 511 px, and the row needs about 620 px; two columns clipped. A media query cannot
+  see this — the viewport says "wide" while the content column is 836 px. `.pulse-stack` is now a
+  container, and the row-2 pair goes side by side only above 1060 px of content, below which the two
+  panels stack and the work row takes the full width. The status track is a fixed 148 px because its
+  vocabulary is closed and "waiting for input" is its longest member.
+- **The project path rendered 4 px wide** against a 251 px string, because the trace sat beside both
+  lines as a third flex column. The trace moved onto the second line beside the path, and the counts
+  moved up beside the name.
+- **`--text-dim` on the blocked and selected rows** falls to roughly 4.35:1 in the light theme. Those
+  two rows now take `--text-muted`.
+
+Two capture traps, on top of the virtual-time one already recorded:
+
+- **`captureBeyondViewport: true` re-rasterises with the pre-click theme.** The light screenshot came
+  out dark three times while the page itself reported `data-theme=light` and
+  `background-color: rgb(247, 248, 251)`. Capture the light theme viewport-only.
+- **`Emulation.setEmulatedMedia` did not reach the app**; the in-page theme toggle does, and one
+  press takes `system` to `light`. Verify inside the page before trusting the PNG.
+
+The fixture's seeded sessions are all `disconnected`, so Active Work renders its empty state on a
+plain fixture. Presence expires after ~15 s, so a visual check needs sessions registered and
+heartbeated for the duration of the capture.
 
 ## Phase 3 — the panel anatomy, and what each field may honestly say
 
@@ -143,7 +223,7 @@ raised background.
 | Comp cell                        | Honest content                                                                                                                        |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | Agent name / project name        | `session.agentId` → `AgentDefinition.displayName`, **falling back to the raw id**; project name                                       |
-| Task title                       | **No task domain exists.** Use the session's own status sentence, not an invented task name                                           |
+| Task title                       | ~~No task domain exists; use the status sentence~~ — corrected below: `taskSummary` is observed                                       |
 | `3 files · branch feature/graph` | branch is on the session record; "3 files" is not observed — use the session's held lease paths, labelled as advisory claims, or omit |
 | `12 loaded · 4 invoked`          | real context counts, already in the snapshot                                                                                          |
 | `18.4k` magnitude chip           | per-session usage is **not** in the batched reads; either accept the fan-out (Decision 4) or omit                                     |

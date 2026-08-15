@@ -16,6 +16,8 @@ const resources = (): PulseResources => ({
   context: { state: 'ready', data: [] },
   activity: { state: 'ready', data: [] },
   findings: { state: 'ready', data: [] },
+  runtime: { state: 'unavailable' },
+  git: { state: 'unavailable' },
 });
 
 describe('Pulse refresh state', () => {

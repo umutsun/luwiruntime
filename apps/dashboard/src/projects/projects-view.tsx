@@ -16,13 +16,19 @@ import type {
   ProjectTechnology,
   ProjectWorktree,
 } from '../api/project-scope.js';
-import { abbreviatePath, abbreviateSha } from '../components/format.js';
+import {
+  abbreviatePath,
+  abbreviateSha,
+  monogramInitials,
+  paletteIndex,
+} from '../components/format.js';
 import {
   AttributionConfidenceChip,
   ConfidenceChip,
   Count,
   Panel,
   ResourcePanel,
+  Unavailable,
 } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
 import type { PulseSnapshot } from '../pulse/model.js';
@@ -554,27 +560,74 @@ export function ProjectsView({
               <thead>
                 <tr>
                   <th scope="col">Project</th>
+                  <th scope="col">Agents</th>
+                  {/*
+                   * The comp's Stage and Release columns are not here: no
+                   * lifecycle or release domain exists (section 21). HEAD is —
+                   * it comes from the bounded per-project Git read the Pulse
+                   * already pays for.
+                   */}
+                  <th scope="col">HEAD</th>
                   <th scope="col">Active sessions</th>
                 </tr>
               </thead>
               <tbody>
-                {snapshot.projects.map((project) => (
-                  <tr key={project.id} aria-selected={project.id === selectedProjectId}>
-                    <td>
-                      <button
-                        type="button"
-                        className="link-button"
-                        onClick={() => onSelectProject(project.id)}
-                      >
-                        {project.name}
-                      </button>
-                      <small title={project.localPath}>{abbreviatePath(project.localPath)}</small>
-                    </td>
-                    <td>
-                      <Count value={project.activeSessions} />
-                    </td>
-                  </tr>
-                ))}
+                {snapshot.projects.map((project) => {
+                  const facts = snapshot.repositoryFacts.find(
+                    (row) => row.projectId === project.id,
+                  );
+                  return (
+                    <tr key={project.id} aria-selected={project.id === selectedProjectId}>
+                      <td>
+                        <span className="project-cell">
+                          <span
+                            className={`project-monogram project-monogram--${String(
+                              paletteIndex(project.id, 5),
+                            )}`}
+                            aria-hidden="true"
+                          >
+                            {monogramInitials(project.name)}
+                          </span>
+                          <span className="project-cell__body">
+                            <button
+                              type="button"
+                              className="link-button"
+                              onClick={() => onSelectProject(project.id)}
+                            >
+                              {project.name}
+                            </button>
+                            <small title={project.localPath}>
+                              {abbreviatePath(project.localPath)}
+                            </small>
+                          </span>
+                        </span>
+                      </td>
+                      <td>
+                        {project.activeAgents.state === 'unavailable' ? (
+                          <Unavailable />
+                        ) : (
+                          `${String(project.activeAgents.value)}a`
+                        )}
+                      </td>
+                      <td>
+                        {facts === undefined || facts.git.state === 'unavailable' ? (
+                          <Unavailable />
+                        ) : facts.git.state === 'not-observed' ? (
+                          <span className="table-dim">not scanned</span>
+                        ) : facts.git.data.headSha === undefined ? (
+                          <span className="table-dim">no HEAD</span>
+                        ) : (
+                          <span title={facts.git.data.headSha}>
+                            {abbreviateSha(facts.git.data.headSha)}
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        <Count value={project.activeSessions} />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

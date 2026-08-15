@@ -18,6 +18,7 @@ const MAX_PROJECT_ID_LENGTH = 128;
  */
 export const SIMPLE_ROUTES = [
   'activity',
+  'runtime',
   'sessions',
   'agents',
   'messages',

@@ -93,6 +93,8 @@ export function resourcesOf(input: PulseInput): PulseResources {
     context: input.context,
     activity: input.activity,
     findings: input.findings,
+    runtime: input.runtime ?? { state: 'unavailable' },
+    git: input.git ?? { state: 'unavailable' },
   };
 }
 

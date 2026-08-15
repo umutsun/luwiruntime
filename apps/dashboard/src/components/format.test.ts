@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { abbreviateId, abbreviatePath, abbreviateSha, formatRelativeTime } from './format.js';
+import {
+  abbreviateId,
+  abbreviatePath,
+  abbreviateSha,
+  formatRelativeTime,
+  monogramInitials,
+  paletteIndex,
+} from './format.js';
 
 describe('abbreviatePath', () => {
   it('returns a short path unchanged', () => {
@@ -72,5 +79,45 @@ describe('formatRelativeTime', () => {
 
   it('reports an unparseable timestamp as unavailable rather than inventing one', () => {
     expect(formatRelativeTime('not-a-date', now)).toBe('unavailable');
+  });
+});
+
+describe('monogramInitials', () => {
+  it('takes the first letter of the first two words', () => {
+    expect(monogramInitials('LUWI Runtime')).toBe('LR');
+    expect(monogramInitials('fly by deniz')).toBe('FB');
+  });
+
+  it('takes two letters when there is only one word', () => {
+    expect(monogramInitials('Luwi')).toBe('LU');
+  });
+
+  it('never returns an empty mark, because a blank tile reads as a render fault', () => {
+    expect(monogramInitials('')).toBe('??');
+    expect(monogramInitials('   ')).toBe('??');
+  });
+
+  it('skips separators rather than turning them into initials', () => {
+    expect(monogramInitials('luwi-runtime_core')).toBe('LR');
+  });
+});
+
+describe('paletteIndex', () => {
+  it('is stable for the same identifier', () => {
+    expect(paletteIndex('project-1', 5)).toBe(paletteIndex('project-1', 5));
+  });
+
+  it('stays inside the palette', () => {
+    for (const id of ['a', 'project-1', 'x'.repeat(64), '']) {
+      const index = paletteIndex(id, 5);
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(index).toBeLessThan(5);
+    }
+  });
+
+  it('separates identifiers that differ only in their last character', () => {
+    // Ids here are sequential fixtures far more often than they are random, so
+    // a hash that ignores position would paint a whole registry one colour.
+    expect(paletteIndex('project-1', 5)).not.toBe(paletteIndex('project-2', 5));
   });
 });

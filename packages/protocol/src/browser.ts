@@ -36,4 +36,4 @@ export { projectCollectionResponseSchema } from './project.js';
  * browser bundle.
  */
 export { publicErrorResponseSchema } from './public-error.js';
-export { healthResponseSchema } from './runtime-http.js';
+export { healthResponseSchema, runtimeInfoResponseSchema } from './runtime-http.js';

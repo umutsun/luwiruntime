@@ -91,7 +91,7 @@ describe('loadPulseInput', () => {
       nowMs: vi.fn().mockReturnValueOnce(100).mockReturnValueOnce(124),
     });
 
-    expect(get).toHaveBeenCalledTimes(8);
+    expect(get).toHaveBeenCalledTimes(10);
     expect(input.measuredLatencyMs).toBe(24);
     expect(input.projects).toEqual({
       state: 'ready',
@@ -104,6 +104,161 @@ describe('loadPulseInput', () => {
       type: 'future.adapter.observed',
       payload: { safe: true },
     });
+  });
+
+  it('fetches runtime info and per-project git facts after the project list', async () => {
+    const responses = new Map<string, ResourceResult<unknown>>([
+      [
+        '/api/v1/runtime',
+        ready({
+          version: '0.1.0',
+          protocolVersion: 1,
+          runtimeState: 'ready',
+          runtimeInstanceId: 'r1',
+          workspaceId: 'local',
+          startedAt: '2026-08-05T08:00:00.000Z',
+          uptimeMs: 1000,
+          host: '127.0.0.1',
+          port: 4782,
+          redis: { connected: true, status: 'connected', latencyMs: 1 },
+          endpoints: { health: '/health', runtime: '/api/v1/runtime' },
+        }),
+      ],
+      ['/api/v1/projects', ready({ projects: [{ id: 'p1', name: 'LUWI', localPath: 'C:/luwi' }] })],
+      [
+        '/api/v1/projects/p1/git',
+        ready({
+          id: 'g1',
+          projectId: 'p1',
+          repositoryRoot: 'C:/luwi',
+          branch: 'main',
+          headSha: 'abc123def4567890abc123def4567890abc123de',
+          clean: false,
+          stagedCount: 0,
+          unstagedCount: 1,
+          untrackedCount: 3,
+          branches: ['main'],
+          tags: ['v1'],
+          worktrees: [],
+          observedAt: '2026-08-05T08:00:00.000Z',
+          metadata: {},
+        }),
+      ],
+    ]);
+    const get = vi.fn(async (path: string) => responses.get(path) ?? { state: 'unavailable' });
+
+    const input = await loadPulseInput({ get } as unknown as DaemonClient, {
+      now: () => new Date('2026-08-05T08:00:00.000Z'),
+      nowMs: () => 10,
+    });
+
+    expect(input.runtime).toMatchObject({
+      state: 'ready',
+      data: { workspaceId: 'local', runtimeState: 'ready', port: 4782 },
+    });
+    expect(input.git).toMatchObject({
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [
+          {
+            projectId: 'p1',
+            git: {
+              state: 'ready',
+              data: { branch: 'main', untrackedCount: 3, clean: false, tagCount: 1 },
+            },
+          },
+        ],
+      },
+    });
+  });
+
+  it('reports a 404 git read as not-observed, never as a fault', async () => {
+    const get = vi.fn(async (path: string) => {
+      if (path === '/api/v1/projects')
+        return ready({ projects: [{ id: 'p1', name: 'LUWI', localPath: 'C:/luwi' }] });
+      if (path === '/api/v1/projects/p1/git')
+        return { state: 'unavailable', httpStatus: 404 } as const;
+      return { state: 'unavailable' } as const;
+    });
+
+    const input = await loadPulseInput({ get } as unknown as DaemonClient, {
+      now: () => new Date('2026-08-05T08:00:00.000Z'),
+      nowMs: () => 10,
+    });
+
+    expect(input.git).toMatchObject({
+      state: 'ready',
+      data: { entries: [{ projectId: 'p1', git: { state: 'not-observed' } }] },
+    });
+  });
+
+  it('carries the session-reported task summary through, and omits it when absent', async () => {
+    // `taskSummary` is on `agentSessionSchema`, so it is observed evidence the
+    // session itself supplied — not a task the runtime assigned. Dropping it
+    // would have left the Active Work row inventing a title it already had.
+    const get = vi.fn(async (path: string) =>
+      path === '/api/v1/sessions'
+        ? ready({
+            sessions: [
+              {
+                id: 'session-1',
+                agentId: 'a1',
+                projectId: 'project-1',
+                status: 'thinking',
+                presence: 'online',
+                taskSummary: 'Rebuild the retention sweep',
+                branch: 'main',
+                workingDirectory: 'C:/luwi',
+                startedAt: '2026-08-05T07:00:00.000Z',
+                lastHeartbeatAt: '2026-08-05T08:00:00.000Z',
+                metadata: {},
+              },
+              {
+                id: 'session-2',
+                agentId: 'a1',
+                projectId: 'project-1',
+                status: 'idle',
+                presence: 'online',
+                workingDirectory: 'C:/luwi',
+                startedAt: '2026-08-05T07:00:00.000Z',
+                lastHeartbeatAt: '2026-08-05T08:00:00.000Z',
+                metadata: {},
+              },
+            ],
+          })
+        : ({ state: 'unavailable' } as const),
+    );
+
+    const result = await loadPulseResources({ get } as unknown as DaemonClient, ['sessions']);
+
+    const sessions = result.sessions?.state === 'ready' ? result.sessions.data : [];
+    expect(sessions[0]).toMatchObject({ taskSummary: 'Rebuild the retention sweep' });
+    expect(sessions[1]).not.toHaveProperty('taskSummary');
+  });
+
+  it('carries the contribution session id through so context can be attributed', async () => {
+    const get = vi.fn(async () =>
+      ready({
+        contributions: [
+          {
+            sessionId: 'session-1',
+            assigned: true,
+            effective: true,
+            loaded: true,
+            invoked: false,
+          },
+          { assigned: true, effective: true, loaded: 'unknown', invoked: 'unknown' },
+        ],
+        truncated: false,
+      }),
+    );
+
+    const result = await loadPulseResources({ get } as unknown as DaemonClient, ['context']);
+
+    const contributions = result.context?.state === 'ready' ? result.context.data : [];
+    expect(contributions[0]).toMatchObject({ sessionId: 'session-1' });
+    expect(contributions[1]).not.toHaveProperty('sessionId');
   });
 
   it('keeps each failed resource unavailable without discarding successful resources', async () => {

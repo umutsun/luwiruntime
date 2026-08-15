@@ -7,6 +7,8 @@ export const PULSE_RESOURCE_KEYS = [
   'context',
   'activity',
   'findings',
+  'runtime',
+  'git',
 ] as const;
 
 export type PulseResourceKey = (typeof PULSE_RESOURCE_KEYS)[number];
@@ -16,7 +18,8 @@ export function resourcesForEvent(eventType: string): PulseResourceKey[] {
   if (eventType.startsWith('project.agent.') || eventType.startsWith('agent.definition.')) {
     return ['agents'];
   }
-  if (eventType.startsWith('project.')) return ['projects'];
+  if (eventType.startsWith('project.')) return ['projects', 'git'];
+  if (eventType.startsWith('git.')) return ['git'];
   if (eventType.startsWith('session.')) return ['sessions'];
   if (eventType.startsWith('usage.')) return ['usage'];
   if (eventType.startsWith('context.')) return ['context'];

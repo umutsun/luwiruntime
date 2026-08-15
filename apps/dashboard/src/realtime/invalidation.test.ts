@@ -65,6 +65,8 @@ describe('realtime snapshot invalidation', () => {
       'context',
       'activity',
       'findings',
+      'runtime',
+      'git',
     ]);
   });
 
@@ -108,6 +110,8 @@ describe('realtime snapshot invalidation', () => {
       context: { state: 'ready', data: [] },
       activity: { state: 'ready', data: [] },
       findings: { state: 'ready', data: [] },
+      runtime: { state: 'unavailable' },
+      git: { state: 'unavailable' },
     };
     const onChange = vi.fn();
     const refreshController = createPulseRefreshController({
@@ -158,7 +162,9 @@ describe('realtime snapshot invalidation', () => {
     });
   });
   it.each<[string, PulseResourceKey[]]>([
-    ['project.registered', ['projects']],
+    // A project mutation also moves its repository read: registration and
+    // path changes are exactly when the per-project Git facts go stale.
+    ['project.registered', ['projects', 'git']],
     ['session.heartbeat', ['sessions']],
     ['agent.definition.updated', ['agents']],
     ['project.agent.bound', ['agents']],

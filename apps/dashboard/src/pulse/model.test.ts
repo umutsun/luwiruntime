@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildPulseSnapshot, labelSessionStatus, type PulseInput } from './model.js';
+import {
+  buildPulseSnapshot,
+  labelSessionStatus,
+  scopePulseSnapshot,
+  type PulseInput,
+} from './model.js';
 
 const baseInput = (): PulseInput => ({
   measuredLatencyMs: 42,
@@ -124,6 +129,96 @@ describe('Pulse snapshot mapping', () => {
     });
   });
 
+  it('derives the two efficiency insights only from certain observations', () => {
+    // "6 assigned sources were never loaded" in the comp. Honest version:
+    // count only rows where both sides are observed booleans — an `unknown`
+    // must never be counted as unused, per the ADR 0010 rule.
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      context: {
+        state: 'ready',
+        data: [
+          { assigned: true, effective: true, loaded: false, invoked: false },
+          { assigned: true, effective: true, loaded: false, invoked: false },
+          { assigned: true, effective: true, loaded: true, invoked: false },
+          { assigned: true, effective: true, loaded: 'unknown', invoked: 'unknown' },
+          { assigned: true, effective: true, loaded: true, invoked: true },
+        ],
+      },
+    });
+
+    expect(snapshot.contextInsights).toEqual({ assignedNeverLoaded: 2, loadedNotInvoked: 1 });
+  });
+
+  it('joins per-project git facts to projects and keeps failures apart', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      projects: {
+        state: 'ready',
+        data: [
+          { id: 'p1', name: 'LUWI', localPath: 'C:/luwi' },
+          { id: 'p2', name: 'Other', localPath: 'C:/other' },
+        ],
+      },
+      git: {
+        state: 'ready',
+        data: {
+          truncated: false,
+          entries: [
+            {
+              projectId: 'p1',
+              git: {
+                state: 'ready',
+                data: {
+                  branch: 'main',
+                  headSha: 'abc123def4567890abc123def4567890abc123de',
+                  clean: false,
+                  untrackedCount: 3,
+                  tagCount: 2,
+                  observedAt: '2026-08-05T08:00:00.000Z',
+                },
+              },
+            },
+            { projectId: 'p2', git: { state: 'not-observed' } },
+          ],
+        },
+      },
+    });
+
+    expect(snapshot.repositoryFacts[0]).toMatchObject({
+      projectId: 'p1',
+      name: 'LUWI',
+      git: { state: 'ready', data: { branch: 'main', untrackedCount: 3 } },
+    });
+    expect(snapshot.repositoryFacts[1]).toMatchObject({
+      projectId: 'p2',
+      git: { state: 'not-observed' },
+    });
+    expect(snapshot.gitState).toBe('ready');
+  });
+
+  it('passes the runtime info through untouched', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      runtime: {
+        state: 'ready',
+        data: {
+          workspaceId: 'local',
+          version: '0.1.0',
+          protocolVersion: 1,
+          runtimeState: 'ready',
+          runtimeInstanceId: 'r1',
+          startedAt: '2026-08-05T08:00:00.000Z',
+          uptimeMs: 1000,
+          host: '127.0.0.1',
+          port: 4782,
+        },
+      },
+    });
+
+    expect(snapshot.runtime.state).toBe('ready');
+  });
+
   it('tolerates a future session status in presentation code', () => {
     expect(labelSessionStatus('handoff_pending')).toBe('Unknown');
   });
@@ -155,6 +250,234 @@ describe('Pulse snapshot mapping', () => {
     });
 
     expect(empty.projects[0]?.activeSessions).toEqual({ state: 'empty', value: 0 });
+  });
+
+  it('resolves an agent display name and falls back to the raw id', () => {
+    // An opaque agent id must never imply a definition: the fallback is the id
+    // itself, and the row is told which of the two it got so it can present an
+    // unresolved id as an identifier rather than as a name.
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      agents: {
+        state: 'ready',
+        data: [
+          {
+            id: 'a1',
+            kind: 'other',
+            displayName: 'Primary Runner',
+            adapterId: 'x',
+            enabled: true,
+            updatedAt: '2026-08-05T08:00:00.000Z',
+          },
+        ],
+      },
+      sessions: {
+        state: 'ready',
+        data: [
+          {
+            id: 's1',
+            agentId: 'a1',
+            projectId: 'p1',
+            status: 'thinking',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+          },
+          {
+            id: 's2',
+            agentId: 'a-unregistered',
+            projectId: 'p1',
+            status: 'idle',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+          },
+        ],
+      },
+    });
+
+    expect(snapshot.activeSessions[0]).toMatchObject({
+      agentName: 'Primary Runner',
+      agentKnown: true,
+    });
+    expect(snapshot.activeSessions[1]).toMatchObject({
+      agentName: 'a-unregistered',
+      agentKnown: false,
+    });
+  });
+
+  it('leaves every agent name a fallback when the agent read failed', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      agents: { state: 'unavailable' },
+      sessions: {
+        state: 'ready',
+        data: [
+          {
+            id: 's1',
+            agentId: 'a1',
+            projectId: 'p1',
+            status: 'thinking',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+          },
+        ],
+      },
+    });
+
+    expect(snapshot.activeSessions[0]).toMatchObject({ agentName: 'a1', agentKnown: false });
+  });
+
+  it('scopes context evidence to the session that reported it', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      sessions: {
+        state: 'ready',
+        data: [
+          {
+            id: 's1',
+            agentId: 'a1',
+            projectId: 'p1',
+            status: 'thinking',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+          },
+          {
+            id: 's2',
+            agentId: 'a1',
+            projectId: 'p1',
+            status: 'idle',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+          },
+        ],
+      },
+      context: {
+        state: 'ready',
+        data: [
+          { sessionId: 's1', assigned: true, effective: true, loaded: true, invoked: true },
+          { sessionId: 's1', assigned: true, effective: true, loaded: true, invoked: false },
+          { sessionId: 's1', assigned: true, effective: true, loaded: 'unknown', invoked: false },
+          { assigned: true, effective: true, loaded: true, invoked: true },
+        ],
+      },
+    });
+
+    expect(snapshot.activeSessions[0]?.context).toEqual({
+      state: 'ready',
+      assigned: 3,
+      loaded: 2,
+      invoked: 1,
+    });
+    // A contribution with no sessionId belongs to no session, so it may not be
+    // borrowed by one that reported nothing.
+    expect(snapshot.activeSessions[1]?.context).toEqual({ state: 'not-observed' });
+  });
+
+  it('never reports per-session context as zero when the context read failed', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      sessions: {
+        state: 'ready',
+        data: [
+          {
+            id: 's1',
+            agentId: 'a1',
+            projectId: 'p1',
+            status: 'thinking',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+          },
+        ],
+      },
+      context: { state: 'unavailable' },
+    });
+
+    expect(snapshot.activeSessions[0]?.context).toEqual({ state: 'unavailable' });
+  });
+
+  it('breaks active sessions down by their real status vocabulary', () => {
+    const session = (id: string, status: string) => ({
+      id,
+      agentId: 'a1',
+      projectId: 'p1',
+      status,
+      presence: 'online' as const,
+      startedAt: '2026-08-05T07:00:00.000Z',
+      lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+    });
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      sessions: {
+        state: 'ready',
+        data: [
+          session('s1', 'thinking'),
+          session('s2', 'tool_running'),
+          session('s3', 'waiting_for_input'),
+          session('s4', 'waiting_for_agent'),
+          session('s5', 'blocked'),
+          session('s6', 'idle'),
+          session('s7', 'handoff_pending'),
+        ],
+      },
+    });
+
+    // No "running" bucket: it is not one of the nine observed statuses, and
+    // merging thinking with tool_running would invent it.
+    expect(snapshot.statusBreakdown).toEqual([
+      { status: 'idle', label: 'idle', count: 1 },
+      { status: 'thinking', label: 'thinking', count: 1 },
+      { status: 'tool_running', label: 'tool running', count: 1 },
+      { status: 'waiting_for_input', label: 'waiting for input', count: 1 },
+      { status: 'waiting_for_agent', label: 'waiting for agent', count: 1 },
+      { status: 'blocked', label: 'blocked', count: 1 },
+      { status: 'unknown', label: 'Unknown', count: 1 },
+    ]);
+    expect(snapshot.waitingCount).toEqual({ state: 'ready', value: 2 });
+    expect(snapshot.blockedCount).toEqual({ state: 'ready', value: 1 });
+  });
+
+  it('reports waiting and blocked as unavailable rather than zero when sessions failed', () => {
+    const snapshot = buildPulseSnapshot({ ...baseInput(), sessions: { state: 'unavailable' } });
+
+    expect(snapshot.statusBreakdown).toEqual([]);
+    expect(snapshot.waitingCount).toEqual({ state: 'unavailable' });
+    expect(snapshot.blockedCount).toEqual({ state: 'unavailable' });
+  });
+
+  it('counts the distinct agents observed in a project rather than its bindings', () => {
+    // Project-agent bindings are a separate scoped read. What the snapshot can
+    // support is the number of distinct agents holding an active session here,
+    // which is a different claim and is labelled as one.
+    const session = (id: string, agentId: string) => ({
+      id,
+      agentId,
+      projectId: 'p1',
+      status: 'thinking',
+      presence: 'online' as const,
+      startedAt: '2026-08-05T07:00:00.000Z',
+      lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+    });
+    const ready = buildPulseSnapshot({
+      ...baseInput(),
+      projects: { state: 'ready', data: [{ id: 'p1', name: 'LUWI', localPath: 'C:/luwi' }] },
+      sessions: {
+        state: 'ready',
+        data: [session('s1', 'a1'), session('s2', 'a1'), session('s3', 'a2')],
+      },
+    });
+    const unavailable = buildPulseSnapshot({
+      ...baseInput(),
+      projects: { state: 'ready', data: [{ id: 'p1', name: 'LUWI', localPath: 'C:/luwi' }] },
+      sessions: { state: 'unavailable' },
+    });
+
+    expect(ready.projects[0]?.activeAgents).toEqual({ state: 'ready', value: 2 });
+    expect(unavailable.projects[0]?.activeAgents).toEqual({ state: 'unavailable' });
   });
 
   it('counts sessions per agent only when the read succeeded', () => {
@@ -208,5 +531,102 @@ describe('Pulse snapshot mapping', () => {
 
     expect(ready.agents[0]?.sessionCount).toEqual({ state: 'ready', value: 1 });
     expect(unavailable.agents[0]?.sessionCount).toEqual({ state: 'unavailable' });
+  });
+});
+
+describe('scoped snapshot', () => {
+  const twoProjects = (): PulseInput => ({
+    ...baseInput(),
+    projects: {
+      state: 'ready',
+      data: [
+        { id: 'p1', name: 'Alpha', localPath: 'C:/a' },
+        { id: 'p2', name: 'Beta', localPath: 'C:/b' },
+      ],
+    },
+    sessions: {
+      state: 'ready',
+      data: [
+        {
+          id: 's1',
+          agentId: 'a1',
+          projectId: 'p1',
+          status: 'thinking',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+        },
+        {
+          id: 's2',
+          agentId: 'a1',
+          projectId: 'p2',
+          status: 'blocked',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+        },
+      ],
+    },
+    activity: {
+      state: 'ready',
+      data: [
+        {
+          streamId: '1-0',
+          id: 'e1',
+          type: 'session.registered',
+          occurredAt: '2026-08-05T07:00:00.000Z',
+          workspaceId: 'w',
+          projectId: 'p1',
+          payload: {},
+        },
+        {
+          streamId: '2-0',
+          id: 'e2',
+          type: 'runtime.started',
+          occurredAt: '2026-08-05T07:00:01.000Z',
+          workspaceId: 'w',
+          payload: {},
+        },
+      ] as never,
+    },
+    git: {
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [
+          { projectId: 'p1', git: { state: 'not-observed' } },
+          { projectId: 'p2', git: { state: 'not-observed' } },
+        ],
+      },
+    },
+  });
+
+  it('narrows rows and recomputes counts for one project', () => {
+    const scoped = scopePulseSnapshot(buildPulseSnapshot(twoProjects()), 'p1');
+
+    expect(scoped.projects.map((project) => project.id)).toEqual(['p1']);
+    expect(scoped.activeSessions.map((session) => session.id)).toEqual(['s1']);
+    expect(scoped.projectCount).toEqual({ state: 'ready', value: 1 });
+    expect(scoped.activeSessionCount).toEqual({ state: 'ready', value: 1 });
+    expect(scoped.blockedCount).toEqual({ state: 'empty', value: 0 });
+    expect(scoped.statusBreakdown).toEqual([{ status: 'thinking', label: 'thinking', count: 1 }]);
+    expect(scoped.repositoryFacts.map((row) => row.projectId)).toEqual(['p1']);
+    // A runtime-level event carries no projectId and is not attributable to
+    // the scoped project, so a scoped view may not claim it.
+    expect(scoped.activity.map((event) => event.id)).toEqual(['e1']);
+  });
+
+  it('keeps failed reads failed instead of turning them into empty scopes', () => {
+    const value = twoProjects();
+    value.sessions = { state: 'unavailable' };
+    const scoped = scopePulseSnapshot(buildPulseSnapshot(value), 'p1');
+
+    expect(scoped.activeSessionCount).toEqual({ state: 'unavailable' });
+    expect(scoped.waitingCount).toEqual({ state: 'unavailable' });
+  });
+
+  it('returns the snapshot untouched without a scope', () => {
+    const snapshot = buildPulseSnapshot(twoProjects());
+    expect(scopePulseSnapshot(snapshot, undefined)).toBe(snapshot);
   });
 });
