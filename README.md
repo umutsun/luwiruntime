@@ -187,11 +187,14 @@ is never removed, whatever the count. Attributing transcript token records to se
 solved, native transcript ingestion has not begun, and a record falling inside a trimmed interval
 stays unbound rather than being assigned to the nearest session.
 
-`config/reconcile`, optimization accept/reject/evaluate, graph rebuild, Git mutation, lease release,
-lifecycle/release scoring, release readiness, unified search, GitHub integration, prompt injection,
-task orchestration, a semantic knowledge graph, memory federation, cloud accounts, and
-authentication are not implemented. Work leases exist but are not renewed automatically, do not
-notify when a held path frees, and are not correlated with the commits made under them.
+Automatic drift reconciliation, Git mutation, lifecycle/release scoring, release readiness,
+unified search, GitHub integration, prompt injection, task orchestration, a semantic knowledge
+graph, memory federation, cloud accounts, and authentication are not implemented. Optimization
+accept/reject/evaluate, graph rebuild, lease release and `config/reconcile` (interrupted-apply
+recovery, run at daemon start) exist on the HTTP API and CLI but are deliberately not dashboard
+mutations — the dashboard's only writes remain the config plan chain. Work leases exist but are
+not renewed automatically, do not notify when a held path frees, and are not correlated with the
+commits made under them.
 
 ## Architecture and security
 
@@ -363,6 +366,11 @@ pnpm --filter @luwi/cli dev message respond <correlationId> --session <targetSes
 
 pnpm --filter @luwi/cli dev session bridge simulate --session <targetSessionId> --bridge-instance gemini-bridge --mode status-responder
 
+pnpm --filter @luwi/cli dev lease acquire --project <projectId> --session <sessionId> --path src/app.ts --reason "editing the shell"
+pnpm --filter @luwi/cli dev lease list --project <projectId>
+pnpm --filter @luwi/cli dev lease renew <leaseId> --session <sessionId>
+pnpm --filter @luwi/cli dev lease release <leaseId> --session <sessionId>
+
 pnpm --filter @luwi/cli dev events list --limit 100
 pnpm --filter @luwi/cli dev events watch
 
@@ -427,6 +435,45 @@ stdio test.
 Every tool advertises and validates an output schema. Successful results use MCP
 `structuredContent` plus a concise bounded text summary; project and session discovery
 results are capped at 100 entries and explicitly report truncation.
+
+The inventory is 36 tools: 25 read and 11 write coordination state (the seven messaging
+transitions, a bounded optimization-analysis request, and three of the four work-lease
+tools). Control-plane writes — config approval and apply, rollback, graph rebuild, Git
+mutation — are never exposed. The graph surface carries the two rooted reads (neighbors
+and path); the whole-runtime summary and subgraph reads stay on the HTTP API and CLI.
+
+To register the server with Claude Code, build first (`pnpm build`), have the daemon
+running and a session registered, then either use the CLI:
+
+```text
+claude mcp add --scope local luwi-runtime \
+  --env LUWI_DAEMON_URL=http://127.0.0.1:4782 \
+  --env LUWI_SESSION_ID=<registered-online-session-id> \
+  -- node <repo>/apps/mcp-server/dist/main.js
+```
+
+or, on a machine without the `claude` CLI, hand-edit the local scope in `~/.claude.json`
+— the entry lives under `projects.<absolute repo path>.mcpServers`:
+
+```json
+{
+  "luwi-runtime": {
+    "type": "stdio",
+    "command": "node",
+    "args": ["<repo>/apps/mcp-server/dist/main.js"],
+    "env": {
+      "LUWI_DAEMON_URL": "http://127.0.0.1:4782",
+      "LUWI_SESSION_ID": "<registered-online-session-id>"
+    }
+  }
+}
+```
+
+Two facts make a naive registration fail. A session id is runtime identity, not
+configuration: it goes stale on every daemon restart, so the env value must name a
+currently online session. And the server verifies that binding before connecting the
+transport, so with a missing or terminal session it exits 1 without ever speaking MCP —
+which a client reports as a startup failure, not a tool error.
 
 ## HTTP and WebSocket API
 

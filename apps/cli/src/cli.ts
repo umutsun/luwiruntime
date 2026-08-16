@@ -4,6 +4,8 @@ import {
   eventListResponseSchema,
   heartbeatResponseSchema,
   inboxClaimResponseSchema,
+  leaseAcquireResponseSchema,
+  leaseCollectionSchema,
   LUWI_RUNTIME_VERSION,
   messageCollectionResponseSchema,
   messageCreateResponseSchema,
@@ -18,6 +20,7 @@ import {
   sessionCollectionResponseSchema,
   sessionResponseSchema,
   sessionStatusTargetSchema,
+  workLeaseSchema,
   type AgentMessage,
   type InboxEnvelope,
   type RealtimeEventMessage,
@@ -1174,6 +1177,121 @@ export function createCli(dependencies: CliDependencies): Command {
         );
       },
     );
+
+  const leases = program.command('lease').description('Hold and inspect advisory work leases');
+  leases
+    .command('acquire')
+    .requiredOption('--project <projectId>', 'Project ID')
+    .requiredOption('--session <sessionId>', 'Holding session ID')
+    .requiredOption('--path <path>', 'Project-relative path to claim')
+    .requiredOption('--reason <reason>', 'Why the path is held')
+    .option('--duration-ms <milliseconds>', 'Lease duration in milliseconds')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        project: string;
+        session: string;
+        path: string;
+        reason: string;
+        durationMs?: string;
+        url: string;
+      }) => {
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            '/api/v1/leases',
+            leaseAcquireResponseSchema,
+            jsonBody({
+              projectId: options.project,
+              sessionId: options.session,
+              path: options.path,
+              reason: options.reason,
+              ...(options.durationMs === undefined
+                ? {}
+                : { durationMs: Number(options.durationMs) }),
+            }),
+          ),
+        );
+      },
+    );
+  leases
+    .command('renew <leaseId>')
+    .requiredOption('--session <sessionId>', 'Holding session ID')
+    .option('--duration-ms <milliseconds>', 'Lease duration in milliseconds')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (leaseId: string, options: { session: string; durationMs?: string; url: string }) => {
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            `/api/v1/leases/${encodeURIComponent(leaseId)}/renew`,
+            workLeaseSchema,
+            jsonBody({
+              sessionId: options.session,
+              ...(options.durationMs === undefined
+                ? {}
+                : { durationMs: Number(options.durationMs) }),
+            }),
+          ),
+        );
+      },
+    );
+  leases
+    .command('release <leaseId>')
+    .requiredOption('--session <sessionId>', 'Holding session ID')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (leaseId: string, options: { session: string; url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/leases/${encodeURIComponent(leaseId)}/release`,
+          workLeaseSchema,
+          jsonBody({ sessionId: options.session }),
+        ),
+      );
+    });
+  leases
+    .command('list')
+    .option('--project <projectId>', 'Filter by project')
+    .option('--session <sessionId>', 'Filter by holding session')
+    .option('--limit <count>', 'Maximum result count', '100')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (options: { project?: string; session?: string; limit: string; url: string }) => {
+      const query = new URLSearchParams({
+        limit: options.limit,
+        ...(options.project === undefined ? {} : { projectId: options.project }),
+        ...(options.session === undefined ? {} : { sessionId: options.session }),
+      });
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/leases?${query.toString()}`,
+          leaseCollectionSchema,
+        ),
+      );
+    });
+  leases
+    .command('get <leaseId>')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (leaseId: string, options: { url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/leases/${encodeURIComponent(leaseId)}`,
+          workLeaseSchema,
+        ),
+      );
+    });
 
   const events = program.command('events').description('Inspect Runtime events');
   events

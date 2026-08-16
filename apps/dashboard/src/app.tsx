@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { ActivityView } from './activity/activity-view.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
@@ -184,6 +184,57 @@ function connectionLabel(state: WebSocketState): string {
   if (state === 'reconnecting') return 'Realtime reconnecting';
   if (state === 'unavailable') return 'Realtime unavailable';
   return 'Realtime disconnected';
+}
+
+/**
+ * The drawer shares the inspector's column and therefore its contract
+ * (inspector-panel.tsx): Escape closes, focus returns to what opened it,
+ * and there is no focus trap because nothing behind the pane is inert.
+ */
+function ProjectEvidenceDrawer({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const closeButton = useRef<HTMLButtonElement | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  const close = useCallback(() => {
+    const target = returnFocus.current;
+    onClose();
+    queueMicrotask(() => target?.focus());
+  }, [onClose]);
+  useEffect(() => {
+    closeButton.current?.focus();
+  }, []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      close();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [close]);
+  return (
+    <aside className="inspector inspector--drawer" aria-label="Project evidence">
+      <header>
+        <div>
+          <p className="eyebrow">Scoped evidence</p>
+          <h2>{title}</h2>
+        </div>
+        <button ref={closeButton} type="button" aria-label="Close project evidence" onClick={close}>
+          ×
+        </button>
+      </header>
+      <div className="inspector__body">{children}</div>
+    </aside>
+  );
 }
 
 export function DashboardApp({
@@ -621,46 +672,35 @@ export function DashboardApp({
           that appears and disappears was a different contract, and the empty
           state is what a docked pane needs instead. */}
       {selection === undefined && route.name === 'projects' && route.projectId !== undefined ? (
-        <aside className="inspector inspector--drawer" aria-label="Project evidence">
-          <header>
-            <div>
-              <p className="eyebrow">Scoped evidence</p>
-              <h2>
-                {snapshot.projects.find((project) => project.id === route.projectId)?.name ??
-                  'Project evidence'}
-              </h2>
-            </div>
-            <button
-              type="button"
-              aria-label="Close project evidence"
-              onClick={() => {
-                window.location.hash = routeHref({ name: 'projects' });
-              }}
-            >
-              ×
-            </button>
-          </header>
-          <div className="inspector__body">
-            <ProjectDetail
-              snapshot={snapshot}
-              selectedProjectId={route.projectId}
-              {...(route.agentId === undefined ? {} : { selectedAgentId: route.agentId })}
-              resources={projectResources}
-              scopeLoading={projectScopeLoading}
-              agentPairResources={agentPairResources}
-              agentPairLoading={agentPairLoading}
-              leaseResources={leaseResources}
-              onSelectAgent={(agentId) => {
-                if (route.projectId === undefined) return;
-                window.location.hash = routeHref({
-                  name: 'projects',
-                  projectId: route.projectId,
-                  ...(agentId === undefined ? {} : { agentId }),
-                });
-              }}
-            />
-          </div>
-        </aside>
+        <ProjectEvidenceDrawer
+          key={route.projectId}
+          title={
+            snapshot.projects.find((project) => project.id === route.projectId)?.name ??
+            'Project evidence'
+          }
+          onClose={() => {
+            window.location.hash = routeHref({ name: 'projects' });
+          }}
+        >
+          <ProjectDetail
+            snapshot={snapshot}
+            selectedProjectId={route.projectId}
+            {...(route.agentId === undefined ? {} : { selectedAgentId: route.agentId })}
+            resources={projectResources}
+            scopeLoading={projectScopeLoading}
+            agentPairResources={agentPairResources}
+            agentPairLoading={agentPairLoading}
+            leaseResources={leaseResources}
+            onSelectAgent={(agentId) => {
+              if (route.projectId === undefined) return;
+              window.location.hash = routeHref({
+                name: 'projects',
+                projectId: route.projectId,
+                ...(agentId === undefined ? {} : { agentId }),
+              });
+            }}
+          />
+        </ProjectEvidenceDrawer>
       ) : selection === undefined ? (
         <InspectorEmpty />
       ) : (

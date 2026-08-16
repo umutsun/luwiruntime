@@ -153,10 +153,11 @@ projection-input defects. ADR 0017 added commit attribution as a fifth project-s
 rendered the branch, tag, and worktree evidence the Git observation was already delivering.
 `README.md` "Current status" is accurate and maintained.
 
-Not implemented, and per §21 still explicitly out of scope without approval: `config/reconcile`,
-lifecycle/release scoring, task orchestration, semantic or vector knowledge graph, memory
-federation, GitHub integration, prompt injection, cloud accounts, authentication, remote
-control-plane work.
+Not implemented, and per §21 still explicitly out of scope without approval: automatic drift
+reconciliation (distinct from the implemented `POST /api/v1/config/reconcile`, which recovers
+interrupted apply operations at daemon start), lifecycle/release scoring, task orchestration,
+semantic or vector knowledge graph, memory federation, GitHub integration, prompt injection,
+cloud accounts, authentication, remote control-plane work.
 
 ADR 0018 then removed the reason those domains were deferred. `pnpm seed` populates an isolated
 fixture runtime, and three of them were built on it: `#/messages`, effective agent configuration,

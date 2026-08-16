@@ -663,3 +663,219 @@ describe('LUWI CLI', () => {
     expect(requested.some(({ url }) => url.endsWith('/respond'))).toBe(true);
   });
 });
+
+describe('lease commands', () => {
+  const heldLease = {
+    id: 'lease-1',
+    projectId: 'p1',
+    sessionId: 's1',
+    agentId: 'codex-main',
+    path: 'src/app.ts',
+    matchPath: 'src/app.ts/',
+    reason: 'editing the shell',
+    state: 'held',
+    acquiredAt: '2026-08-16T08:00:00.000Z',
+    expiresAt: '2026-08-16T08:05:00.000Z',
+  };
+
+  it('acquires a lease through the daemon and prints the grant', async () => {
+    let requestedUrl = '';
+    let requestedBody: unknown;
+    let output = '';
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url, init) => {
+        requestedUrl = url;
+        requestedBody = JSON.parse(init?.body ?? '{}');
+        return response({ status: 'granted', lease: heldLease }, { status: 201 });
+      },
+      stdout: {
+        write: (text) => {
+          output += text;
+        },
+      },
+    };
+
+    await runCli(
+      [
+        'lease',
+        'acquire',
+        '--project',
+        'p1',
+        '--session',
+        's1',
+        '--path',
+        'src/app.ts',
+        '--reason',
+        'editing the shell',
+      ],
+      dependencies,
+    );
+
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/leases');
+    expect(requestedBody).toEqual({
+      projectId: 'p1',
+      sessionId: 's1',
+      path: 'src/app.ts',
+      reason: 'editing the shell',
+    });
+    expect(JSON.parse(output)).toEqual({ status: 'granted', lease: heldLease });
+  });
+
+  it('prints a denial as a successful answer, with the holder named', async () => {
+    let output = '';
+    const denied = {
+      status: 'denied',
+      conflict: {
+        leaseId: 'lease-9',
+        sessionId: 's2',
+        agentId: 'claude-main',
+        path: 'src',
+        reason: 'refactoring the tree',
+        expiresAt: '2026-08-16T08:10:00.000Z',
+      },
+    };
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async () => response(denied),
+      stdout: {
+        write: (text) => {
+          output += text;
+        },
+      },
+    };
+
+    await runCli(
+      [
+        'lease',
+        'acquire',
+        '--project',
+        'p1',
+        '--session',
+        's1',
+        '--path',
+        'src/app.ts',
+        '--reason',
+        'edit',
+      ],
+      dependencies,
+    );
+
+    expect(JSON.parse(output)).toEqual(denied);
+  });
+
+  it('passes an explicit duration through to the daemon', async () => {
+    let requestedBody: unknown;
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url, init) => {
+        requestedBody = JSON.parse(init?.body ?? '{}');
+        return response({ status: 'granted', lease: heldLease }, { status: 201 });
+      },
+      stdout: { write: () => undefined },
+    };
+
+    await runCli(
+      [
+        'lease',
+        'acquire',
+        '--project',
+        'p1',
+        '--session',
+        's1',
+        '--path',
+        'src/app.ts',
+        '--reason',
+        'edit',
+        '--duration-ms',
+        '60000',
+      ],
+      dependencies,
+    );
+
+    expect(requestedBody).toMatchObject({ durationMs: 60000 });
+  });
+
+  it('renews a lease for its holding session', async () => {
+    let requestedUrl = '';
+    let requestedBody: unknown;
+    let output = '';
+    const renewed = { ...heldLease, renewedAt: '2026-08-16T08:04:00.000Z' };
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url, init) => {
+        requestedUrl = url;
+        requestedBody = JSON.parse(init?.body ?? '{}');
+        return response(renewed);
+      },
+      stdout: {
+        write: (text) => {
+          output += text;
+        },
+      },
+    };
+
+    await runCli(['lease', 'renew', 'lease-1', '--session', 's1'], dependencies);
+
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/leases/lease-1/renew');
+    expect(requestedBody).toEqual({ sessionId: 's1' });
+    expect(JSON.parse(output)).toEqual(renewed);
+  });
+
+  it('releases a lease for its holding session', async () => {
+    let requestedUrl = '';
+    let requestedBody: unknown;
+    const released = {
+      ...heldLease,
+      state: 'released',
+      releasedAt: '2026-08-16T08:04:30.000Z',
+    };
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url, init) => {
+        requestedUrl = url;
+        requestedBody = JSON.parse(init?.body ?? '{}');
+        return response(released);
+      },
+      stdout: { write: () => undefined },
+    };
+
+    await runCli(['lease', 'release', 'lease-1', '--session', 's1'], dependencies);
+
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/leases/lease-1/release');
+    expect(requestedBody).toEqual({ sessionId: 's1' });
+  });
+
+  it('lists leases with filters as query parameters', async () => {
+    let requestedUrl = '';
+    let output = '';
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url) => {
+        requestedUrl = url;
+        return response({ leases: [heldLease], truncated: false });
+      },
+      stdout: {
+        write: (text) => {
+          output += text;
+        },
+      },
+    };
+
+    await runCli(['lease', 'list', '--project', 'p1', '--session', 's1'], dependencies);
+
+    expect(requestedUrl).toBe(
+      'http://127.0.0.1:4782/api/v1/leases?limit=100&projectId=p1&sessionId=s1',
+    );
+    expect(JSON.parse(output)).toEqual({ leases: [heldLease], truncated: false });
+  });
+
+  it('gets one lease by id', async () => {
+    let requestedUrl = '';
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url) => {
+        requestedUrl = url;
+        return response(heldLease);
+      },
+      stdout: { write: () => undefined },
+    };
+
+    await runCli(['lease', 'get', 'lease-1'], dependencies);
+
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/leases/lease-1');
+  });
+});

@@ -1080,8 +1080,10 @@ alone with its `<= inputTokens` invariant and two new additive fields are added 
 discovered is executed and no conversation content is ever stored or logged. Automatic lease renewal
 and autostart — the two items that follow ingestion in the sequence — remain unapproved.
 
-**Every other prohibition below still stands.** Do not begin `config/reconcile`, lifecycle/release
-scoring, task orchestration, a semantic or vector knowledge graph, memory federation, GitHub
+**Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
+unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers
+`POST /api/v1/config/reconcile`), lifecycle/release scoring, task orchestration, a semantic or
+vector knowledge graph, memory federation, GitHub
 integration, prompt injection, automatic optimization apply, cloud accounts, authentication, or
 remote control-plane work until that specific scope is explicitly approved. Shipping one phase does
 not authorize the rest.

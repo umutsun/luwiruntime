@@ -879,4 +879,74 @@ describe('project evidence drawer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Close project evidence' }));
     expect(window.location.hash).toBe('#/projects');
   });
+
+  // The drawer shares the inspector's column, so it shares the inspector's
+  // contract: Escape closes, and focus returns to whatever opened it. jsdom
+  // does not fire hashchange synchronously on a location.hash write, so the
+  // tests dispatch it the way the browser would.
+  it('closes on Escape and returns focus to the row that opened it', async () => {
+    window.location.hash = '#/projects';
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'Drawer Project', localPath: 'C:/work/drawer' }],
+    };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    const opener = screen.getByRole('button', { name: 'Drawer Project' });
+    // A real click focuses the button before the handler runs; fireEvent does
+    // not, and the drawer's focus-return contract depends on that order.
+    opener.focus();
+    fireEvent.click(opener);
+    expect(window.location.hash).toBe('#/projects/p1');
+    fireEvent(window, new Event('hashchange'));
+    expect(screen.getByRole('complementary', { name: 'Project evidence' })).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(window.location.hash).toBe('#/projects');
+    fireEvent(window, new Event('hashchange'));
+    expect(screen.queryByRole('complementary', { name: 'Project evidence' })).toBeNull();
+    await vi.waitFor(() => {
+      expect(document.activeElement).toBe(opener);
+    });
+  });
+
+  // Selection is global and survives navigation, so the real contention path
+  // is: inspect a session on Pulse, navigate to a project, close the
+  // inspector — the drawer must be what remains.
+  it('restores the drawer when the inspector that displaced it closes', () => {
+    window.location.hash = '#/pulse';
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'Drawer Project', localPath: 'C:/work/drawer' }],
+    };
+    value.sessions = {
+      state: 'ready',
+      data: [
+        {
+          id: 's1',
+          agentId: 'codex-main',
+          projectId: 'p1',
+          status: 'thinking',
+          presence: 'online',
+          startedAt: '2026-08-16T08:00:00.000Z',
+          lastHeartbeatAt: '2026-08-16T08:00:05.000Z',
+        },
+      ],
+    };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect session s1' }));
+    window.location.hash = '#/projects/p1';
+    fireEvent(window, new Event('hashchange'));
+    expect(screen.queryByRole('complementary', { name: 'Project evidence' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close inspector' }));
+    expect(screen.getByRole('complementary', { name: 'Project evidence' })).toBeTruthy();
+  });
 });
