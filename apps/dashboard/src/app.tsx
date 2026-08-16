@@ -17,7 +17,7 @@ import {
   type InspectorSelection,
 } from './inspectors/inspector-panel.js';
 import type { GraphSeed } from './routes/graph-explorer-view.js';
-import { ProjectsView } from './projects/projects-view.js';
+import { ProjectDetail, ProjectsView } from './projects/projects-view.js';
 import { AgentsView } from './routes/agents-view.js';
 import { ContextView } from './routes/context-view.js';
 import { GraphView } from './routes/graph-view.js';
@@ -579,6 +579,7 @@ export function DashboardApp({
               agentPairResources={agentPairResources}
               agentPairLoading={agentPairLoading}
               leaseResources={leaseResources}
+              renderDetailInline={false}
               onSelectProject={(projectId) => {
                 window.location.hash = routeHref({ name: 'projects', projectId });
               }}
@@ -619,7 +620,48 @@ export function DashboardApp({
           its accessible name whether or not anything is selected — an overlay
           that appears and disappears was a different contract, and the empty
           state is what a docked pane needs instead. */}
-      {selection === undefined ? (
+      {selection === undefined && route.name === 'projects' && route.projectId !== undefined ? (
+        <aside className="inspector inspector--drawer" aria-label="Project evidence">
+          <header>
+            <div>
+              <p className="eyebrow">Scoped evidence</p>
+              <h2>
+                {snapshot.projects.find((project) => project.id === route.projectId)?.name ??
+                  'Project evidence'}
+              </h2>
+            </div>
+            <button
+              type="button"
+              aria-label="Close project evidence"
+              onClick={() => {
+                window.location.hash = routeHref({ name: 'projects' });
+              }}
+            >
+              ×
+            </button>
+          </header>
+          <div className="inspector__body">
+            <ProjectDetail
+              snapshot={snapshot}
+              selectedProjectId={route.projectId}
+              {...(route.agentId === undefined ? {} : { selectedAgentId: route.agentId })}
+              resources={projectResources}
+              scopeLoading={projectScopeLoading}
+              agentPairResources={agentPairResources}
+              agentPairLoading={agentPairLoading}
+              leaseResources={leaseResources}
+              onSelectAgent={(agentId) => {
+                if (route.projectId === undefined) return;
+                window.location.hash = routeHref({
+                  name: 'projects',
+                  projectId: route.projectId,
+                  ...(agentId === undefined ? {} : { agentId }),
+                });
+              }}
+            />
+          </div>
+        </aside>
+      ) : selection === undefined ? (
         <InspectorEmpty />
       ) : (
         <InspectorPanel

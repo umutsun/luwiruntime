@@ -256,3 +256,22 @@
     display: none;
   }
 }
+/*
+ * The project-evidence drawer in the third column. Wider than the inspector
+ * — its panels carry tables — and its long tables scroll inside themselves:
+ * the owner's read of the running product was that page-length cards made
+ * the UI feel chaotic. The width override rides the same token the shell
+ * grid track reads, so pane and gutter cannot drift apart.
+ */
+.app-shell:has(.inspector--drawer) {
+  --inspector-width: 520px;
+}
+.inspector--drawer .project-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-3);
+}
+.inspector--drawer .table-wrap {
+  max-height: 260px;
+  overflow-y: auto;
+}

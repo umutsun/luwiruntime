@@ -521,6 +521,7 @@ export function ProjectsView({
   nowMs,
   onSelectProject,
   onSelectAgent,
+  renderDetailInline = true,
 }: {
   snapshot: PulseSnapshot;
   selectedProjectId?: string | undefined;
@@ -534,12 +535,10 @@ export function ProjectsView({
   nowMs?: number;
   onSelectProject: (projectId: string) => void;
   onSelectAgent?: (agentId: string | undefined) => void;
+  /** The shell passes false and docks <ProjectDetail/> into the drawer itself. */
+  renderDetailInline?: boolean;
 }) {
   const projectsAvailable = snapshot.projectCount.state !== 'unavailable';
-  const selected = snapshot.projects.find((project) => project.id === selectedProjectId);
-  const projectSessions = snapshot.sessions.filter(
-    (session) => session.projectId === selectedProjectId,
-  );
 
   return (
     <div className="projects-stack">
@@ -636,262 +635,311 @@ export function ProjectsView({
 
       {selectedProjectId === undefined ? (
         <p className="empty-state">Select a project to load its scoped evidence.</p>
-      ) : selected === undefined ? (
-        <p className="empty-state">Project not found in the current snapshot.</p>
-      ) : scopeLoading ? (
-        <p className="empty-state">Loading project evidence…</p>
-      ) : (
-        <div className="project-detail">
-          <ResourcePanel<ProjectGit>
-            title="Repository"
-            resource={resources.git}
-            notObservedMessage="Not observed — no Git scan has been recorded for this project."
-            emptyMessage="No repository detail"
-            isEmpty={() => false}
-          >
-            {(git) => <RepositoryBody git={git} />}
-          </ResourcePanel>
+      ) : renderDetailInline ? (
+        <ProjectDetail
+          snapshot={snapshot}
+          selectedProjectId={selectedProjectId}
+          {...(selectedAgentId === undefined ? {} : { selectedAgentId })}
+          resources={resources}
+          scopeLoading={scopeLoading}
+          agentPairResources={agentPairResources}
+          agentPairLoading={agentPairLoading}
+          leaseResources={leaseResources}
+          {...(nowMs === undefined ? {} : { nowMs })}
+          {...(onSelectAgent === undefined ? {} : { onSelectAgent })}
+        />
+      ) : null}
+    </div>
+  );
+}
 
-          <ResourcePanel<Bounded<ProjectAttribution>>
-            title="Commit attribution"
-            resource={resources.attributions}
-            emptyMessage="No commit attribution recorded"
-            isEmpty={(value) => value.items.length === 0}
-          >
-            {(value) => (
-              <>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th scope="col">Commit</th>
-                        <th scope="col">Attributed to</th>
-                        <th scope="col">Confidence</th>
-                        <th scope="col">Reasons</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {value.items.map((record) => (
-                        <tr key={record.id}>
-                          <td>
-                            <code title={record.commitSha}>{abbreviateSha(record.commitSha)}</code>
-                          </td>
-                          <td>
-                            {record.agentId === undefined && record.sessionId === undefined ? (
-                              <span className="unavailable">Unattributed</span>
-                            ) : (
-                              <>
-                                {record.agentId ?? (
-                                  <span className="unavailable">Unknown agent</span>
-                                )}
-                                {record.sessionId === undefined ? null : (
-                                  <small title={record.sessionId}>{record.sessionId}</small>
-                                )}
-                              </>
+/**
+ * The scoped evidence for one selected project.
+ *
+ * Extracted from the registry so the shell can dock it into the third
+ * column as a drawer — the owner's read of the running product was that
+ * evidence opening *below* the registry left the docked column empty and
+ * the page long. The registry keeps rendering it inline by default so its
+ * own tests and any embedder without a drawer still get the full view.
+ */
+export function ProjectDetail({
+  snapshot,
+  selectedProjectId,
+  selectedAgentId,
+  resources,
+  scopeLoading,
+  agentPairResources = {},
+  agentPairLoading = false,
+  leaseResources = {},
+  nowMs,
+  onSelectAgent,
+}: {
+  snapshot: PulseSnapshot;
+  selectedProjectId: string;
+  selectedAgentId?: string | undefined;
+  resources: Partial<ProjectScopeResources>;
+  scopeLoading: boolean;
+  agentPairResources?: Partial<AgentPairResources>;
+  agentPairLoading?: boolean;
+  leaseResources?: Partial<LeaseResources>;
+  nowMs?: number;
+  onSelectAgent?: (agentId: string | undefined) => void;
+}) {
+  const selected = snapshot.projects.find((project) => project.id === selectedProjectId);
+  const projectSessions = snapshot.sessions.filter(
+    (session) => session.projectId === selectedProjectId,
+  );
+
+  return selected === undefined ? (
+    <p className="empty-state">Project not found in the current snapshot.</p>
+  ) : scopeLoading ? (
+    <p className="empty-state">Loading project evidence…</p>
+  ) : (
+    <div className="project-detail">
+      <ResourcePanel<ProjectGit>
+        title="Repository"
+        resource={resources.git}
+        notObservedMessage="Not observed — no Git scan has been recorded for this project."
+        emptyMessage="No repository detail"
+        isEmpty={() => false}
+      >
+        {(git) => <RepositoryBody git={git} />}
+      </ResourcePanel>
+
+      <ResourcePanel<Bounded<ProjectAttribution>>
+        title="Commit attribution"
+        resource={resources.attributions}
+        emptyMessage="No commit attribution recorded"
+        isEmpty={(value) => value.items.length === 0}
+      >
+        {(value) => (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Commit</th>
+                    <th scope="col">Attributed to</th>
+                    <th scope="col">Confidence</th>
+                    <th scope="col">Reasons</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {value.items.map((record) => (
+                    <tr key={record.id}>
+                      <td>
+                        <code title={record.commitSha}>{abbreviateSha(record.commitSha)}</code>
+                      </td>
+                      <td>
+                        {record.agentId === undefined && record.sessionId === undefined ? (
+                          <span className="unavailable">Unattributed</span>
+                        ) : (
+                          <>
+                            {record.agentId ?? <span className="unavailable">Unknown agent</span>}
+                            {record.sessionId === undefined ? null : (
+                              <small title={record.sessionId}>{record.sessionId}</small>
                             )}
-                          </td>
-                          <td>
-                            <AttributionConfidenceChip confidence={record.confidence} />
-                          </td>
-                          <td>
-                            {record.reasons.length === 0 ? (
-                              <span className="unavailable">No reason recorded</span>
-                            ) : (
-                              <small>{record.reasons.join(', ')}</small>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <p className="bounded-note">
-                  Attribution is observed, not asserted. A commit the runtime could not tie to a
-                  session stays unattributed rather than being assigned a guess, and the reason
-                  column says why it could not.
-                </p>
-                <TruncationNote truncated={value.truncated} noun="attributions" />
-              </>
-            )}
-          </ResourcePanel>
-
-          <LeasePanel
-            leases={leaseResources.leases}
-            loading={scopeLoading}
-            nowMs={nowMs ?? Date.now()}
-          />
-
-          <ResourcePanel<ProjectBinding[]>
-            title="Bound agents"
-            resource={resources.bindings}
-            emptyMessage="No agents bound to this project"
-            isEmpty={(bindings) => bindings.length === 0}
-          >
-            {(bindings) => (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th scope="col">Agent</th>
-                      <th scope="col">State</th>
-                      <th scope="col">Profiles</th>
-                      <th scope="col">Capabilities</th>
+                          </>
+                        )}
+                      </td>
+                      <td>
+                        <AttributionConfidenceChip confidence={record.confidence} />
+                      </td>
+                      <td>
+                        {record.reasons.length === 0 ? (
+                          <span className="unavailable">No reason recorded</span>
+                        ) : (
+                          <small>{record.reasons.join(', ')}</small>
+                        )}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {bindings.map((binding) => (
-                      <tr key={binding.id} aria-selected={binding.agentId === selectedAgentId}>
-                        <td>
-                          <button
-                            type="button"
-                            className="link-button"
-                            onClick={() =>
-                              onSelectAgent?.(
-                                binding.agentId === selectedAgentId ? undefined : binding.agentId,
-                              )
-                            }
-                          >
-                            {binding.agentId}
-                          </button>
-                        </td>
-                        <td>
-                          <StatusChip tone={binding.enabled ? 'success' : 'unknown'}>
-                            {binding.enabled ? 'Enabled' : 'Disabled'}
-                          </StatusChip>
-                        </td>
-                        <td>{binding.profileCount}</td>
-                        <td>{binding.capabilityCount}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </ResourcePanel>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="bounded-note">
+              Attribution is observed, not asserted. A commit the runtime could not tie to a session
+              stays unattributed rather than being assigned a guess, and the reason column says why
+              it could not.
+            </p>
+            <TruncationNote truncated={value.truncated} noun="attributions" />
+          </>
+        )}
+      </ResourcePanel>
 
-          <ResourcePanel<Bounded<ProjectPackage>>
-            title="Packages"
-            resource={resources.packages}
-            emptyMessage="No package inventory recorded"
-            isEmpty={(value) => value.items.length === 0}
-          >
-            {(value) => (
-              <>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th scope="col">Package</th>
-                        <th scope="col">Ecosystem</th>
-                        <th scope="col">Version</th>
-                        <th scope="col">Dependency</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {value.items.map((record) => (
-                        <tr key={record.id}>
-                          <td>
-                            {record.packageName}
-                            <small title={record.workspaceLocation}>
-                              {abbreviatePath(record.workspaceLocation)}
-                            </small>
-                          </td>
-                          <td>{record.ecosystem}</td>
-                          <td>
-                            {record.declaredVersion ?? (
-                              <span className="unavailable">Undeclared</span>
-                            )}
-                          </td>
-                          <td>{record.dependencyType}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <TruncationNote truncated={value.truncated} noun="packages" />
-              </>
-            )}
-          </ResourcePanel>
+      <LeasePanel
+        leases={leaseResources.leases}
+        loading={scopeLoading}
+        nowMs={nowMs ?? Date.now()}
+      />
 
-          <ResourcePanel<Bounded<ProjectTechnology>>
-            title="Technologies"
-            resource={resources.technologies}
-            emptyMessage="No technologies detected"
-            isEmpty={(value) => value.items.length === 0}
-          >
-            {(value) => (
-              <>
-                <div className="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th scope="col">Technology</th>
-                        <th scope="col">Category</th>
-                        <th scope="col">Confidence</th>
-                        <th scope="col">Evidence</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {value.items.map((record) => (
-                        <tr key={record.id}>
-                          <td>{record.name}</td>
-                          <td>{record.category}</td>
-                          <td>
-                            <ConfidenceChip confidence={record.confidence} />
-                          </td>
-                          <td>{record.evidenceCount}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <TruncationNote truncated={value.truncated} noun="technologies" />
-              </>
-            )}
-          </ResourcePanel>
+      <ResourcePanel<ProjectBinding[]>
+        title="Bound agents"
+        resource={resources.bindings}
+        emptyMessage="No agents bound to this project"
+        isEmpty={(bindings) => bindings.length === 0}
+      >
+        {(bindings) => (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Agent</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Profiles</th>
+                  <th scope="col">Capabilities</th>
+                </tr>
+              </thead>
+              <tbody>
+                {bindings.map((binding) => (
+                  <tr key={binding.id} aria-selected={binding.agentId === selectedAgentId}>
+                    <td>
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={() =>
+                          onSelectAgent?.(
+                            binding.agentId === selectedAgentId ? undefined : binding.agentId,
+                          )
+                        }
+                      >
+                        {binding.agentId}
+                      </button>
+                    </td>
+                    <td>
+                      <StatusChip tone={binding.enabled ? 'success' : 'unknown'}>
+                        {binding.enabled ? 'Enabled' : 'Disabled'}
+                      </StatusChip>
+                    </td>
+                    <td>{binding.profileCount}</td>
+                    <td>{binding.capabilityCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ResourcePanel>
 
-          {selectedAgentId === undefined ? null : (
-            <AgentPairPanels
-              agentId={selectedAgentId}
-              resources={agentPairResources}
-              loading={agentPairLoading}
-            />
-          )}
-
-          <Panel title="Sessions">
-            {projectSessions.length === 0 ? (
-              <p className="empty-state">No sessions recorded for this project</p>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th scope="col">Session</th>
-                      <th scope="col">Status</th>
-                      <th scope="col">Presence</th>
+      <ResourcePanel<Bounded<ProjectPackage>>
+        title="Packages"
+        resource={resources.packages}
+        emptyMessage="No package inventory recorded"
+        isEmpty={(value) => value.items.length === 0}
+      >
+        {(value) => (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Package</th>
+                    <th scope="col">Ecosystem</th>
+                    <th scope="col">Version</th>
+                    <th scope="col">Dependency</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {value.items.map((record) => (
+                    <tr key={record.id}>
+                      <td>
+                        {record.packageName}
+                        <small title={record.workspaceLocation}>
+                          {abbreviatePath(record.workspaceLocation)}
+                        </small>
+                      </td>
+                      <td>{record.ecosystem}</td>
+                      <td>
+                        {record.declaredVersion ?? <span className="unavailable">Undeclared</span>}
+                      </td>
+                      <td>{record.dependencyType}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {projectSessions.map((session) => (
-                      <tr key={session.id}>
-                        <td>
-                          <code>{session.id}</code>
-                        </td>
-                        <td>{session.statusLabel}</td>
-                        <td>
-                          <StatusChip tone={session.presence === 'online' ? 'success' : 'unknown'}>
-                            {session.presence === 'online' ? 'Online' : 'Offline'}
-                          </StatusChip>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Panel>
-        </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TruncationNote truncated={value.truncated} noun="packages" />
+          </>
+        )}
+      </ResourcePanel>
+
+      <ResourcePanel<Bounded<ProjectTechnology>>
+        title="Technologies"
+        resource={resources.technologies}
+        emptyMessage="No technologies detected"
+        isEmpty={(value) => value.items.length === 0}
+      >
+        {(value) => (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Technology</th>
+                    <th scope="col">Category</th>
+                    <th scope="col">Confidence</th>
+                    <th scope="col">Evidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {value.items.map((record) => (
+                    <tr key={record.id}>
+                      <td>{record.name}</td>
+                      <td>{record.category}</td>
+                      <td>
+                        <ConfidenceChip confidence={record.confidence} />
+                      </td>
+                      <td>{record.evidenceCount}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TruncationNote truncated={value.truncated} noun="technologies" />
+          </>
+        )}
+      </ResourcePanel>
+
+      {selectedAgentId === undefined ? null : (
+        <AgentPairPanels
+          agentId={selectedAgentId}
+          resources={agentPairResources}
+          loading={agentPairLoading}
+        />
       )}
+
+      <Panel title="Sessions">
+        {projectSessions.length === 0 ? (
+          <p className="empty-state">No sessions recorded for this project</p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Session</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Presence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {projectSessions.map((session) => (
+                  <tr key={session.id}>
+                    <td>
+                      <code>{session.id}</code>
+                    </td>
+                    <td>{session.statusLabel}</td>
+                    <td>
+                      <StatusChip tone={session.presence === 'online' ? 'success' : 'unknown'}>
+                        {session.presence === 'online' ? 'Online' : 'Offline'}
+                      </StatusChip>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }

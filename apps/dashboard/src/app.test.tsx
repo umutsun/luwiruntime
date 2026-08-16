@@ -842,3 +842,41 @@ describe('project scope switcher', () => {
     expect(screen.getByRole('button', { name: 'Inspect session s2' })).toBeTruthy();
   });
 });
+
+describe('project evidence drawer', () => {
+  // The owner's read of the running product: scoped evidence opening *below*
+  // the registry left the docked third column empty and the page long. The
+  // detail now docks into that column as a drawer; the registry stays put.
+  it('shows the selected project evidence in the right drawer, not below the table', () => {
+    window.location.hash = '#/projects/p1';
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'Drawer Project', localPath: 'C:/work/drawer' }],
+    };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    const drawer = screen.getByRole('complementary', { name: 'Project evidence' });
+    expect(within(drawer).getByRole('region', { name: /repository/i })).toBeTruthy();
+    // The registry panel must not also render the detail beneath itself.
+    const registry = screen.getByRole('region', { name: /registered projects/i });
+    expect(within(registry).queryByRole('region', { name: /repository/i })).toBeNull();
+  });
+
+  it('closes back to the registry and returns the empty inspector', () => {
+    window.location.hash = '#/projects/p1';
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'Drawer Project', localPath: 'C:/work/drawer' }],
+    };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close project evidence' }));
+    expect(window.location.hash).toBe('#/projects');
+  });
+});

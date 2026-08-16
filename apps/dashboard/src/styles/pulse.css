@@ -830,3 +830,15 @@ td small {
   gap: var(--space-4);
   min-width: 0;
 }
+/*
+ * Long lists scroll inside their card, page height stays fixed. This
+ * supersedes the 2026-08-05 audit's "panels never scroll" rule at the
+ * owner's request: with eleven registered projects the cards grew to page
+ * length, which was the worse outcome. The stream already worked this way.
+ */
+.work-list,
+.project-list,
+.repo-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
