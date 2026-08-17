@@ -23,6 +23,12 @@ export type {
   NativeDeclarationObservation,
   NativeOpenLinkObservation,
 } from './native-session-policy.js';
+export { createSessionBootstrap, DEFAULT_HEARTBEAT_INTERVAL_MS } from './session-bootstrap.js';
+export type {
+  SessionBootstrap,
+  SessionBootstrapClient,
+  SessionBootstrapOptions,
+} from './session-bootstrap.js';
 export { attributeObservation } from './native-attribution.js';
 export type { NativeAttribution, NativeAttributionObservation } from './native-attribution.js';
 export { createRuntimeReadiness } from './runtime-readiness.js';

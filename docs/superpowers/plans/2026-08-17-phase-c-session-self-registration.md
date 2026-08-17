@@ -121,7 +121,7 @@ to be required, stop and record why — that would mean the phase is larger than
 
 ## Task 0: The ADR
 
-- [ ] Write `docs/decisions/0024-session-self-registration.md` — context (C1/C2: agents run, none
+- [x] Write `docs/decisions/0024-session-self-registration.md` — context (C1/C2: agents run, none
       visible), decision (C-D1 through C-D7), consequences. **This phase is not started until the
       ADR is accepted**, per §21's rule that shipping one phase does not authorise the next.
 
@@ -129,15 +129,15 @@ to be required, stop and record why — that would mean the phase is larger than
 
 **Files:** `packages/adapters/src/native-identity.ts`, `packages/adapters/src/native-identity.test.ts`
 
-- [ ] `resolveNativeIdentity(kind, env)` returning `NativeSessionRef | undefined`, pure, with the
+- [x] `resolveNativeIdentity(kind, env)` returning `NativeSessionRef | undefined`, pure, with the
       environment injected — never read from `process.env` inside the function.
-- [ ] Claude: `CLAUDE_CODE_SESSION_ID` → `{ adapterId: 'claude-code', nativeSessionId }` (C3). When
+- [x] Claude: `CLAUDE_CODE_SESSION_ID` → `{ adapterId: 'claude-code', nativeSessionId }` (C3). When
       `CLAUDE_CODE_CHILD_SESSION=1` is also set, the process is a subagent of that session; record it
       as `nativeSubagentId` rather than inventing a second main session.
-- [ ] Codex and Gemini: return `undefined` for now and **say so in the code**, because C4 and C5
+- [x] Codex and Gemini: return `undefined` for now and **say so in the code**, because C4 and C5
       show their identity lives in a file layout rather than the environment, and a resolver that
       guessed would produce a binding that never matches a transcript.
-- [ ] Tests: a Claude environment resolves; a child session resolves with a subagent id; an empty
+- [x] Tests: a Claude environment resolves; a child session resolves with a subagent id; an empty
       environment resolves to `undefined`; a malformed id (not matching `nativeIdSchema`) resolves to
       `undefined` rather than throwing, because a bad environment must not break an agent's startup.
 
@@ -145,14 +145,14 @@ to be required, stop and record why — that would mean the phase is larger than
 
 **Files:** `packages/runtime/src/session-bootstrap.ts`, `packages/runtime/src/session-bootstrap.test.ts`
 
-- [ ] `createSessionBootstrap({ client, identity, projectId, agentId, workingDirectory, heartbeatIntervalMs, now, setInterval, clearInterval })`
+- [x] `createSessionBootstrap({ client, identity, projectId, agentId, workingDirectory, heartbeatIntervalMs, now, setInterval, clearInterval })`
       with `start()` and `stop()`. Timer functions are injected, following `daemon-ownership.ts`'s
       precedent, so the tests drive it without real time.
-- [ ] `start()` registers once, then heartbeats on an interval **well inside** the 15 s TTL (C8).
-- [ ] A failed registration logs once and leaves the bootstrap inert (C-D7). A failed heartbeat is
+- [x] `start()` registers once, then heartbeats on an interval **well inside** the 15 s TTL (C8).
+- [x] A failed registration logs once and leaves the bootstrap inert (C-D7). A failed heartbeat is
       retried on the next tick rather than ending the session.
-- [ ] `stop()` closes the session; a crash is left to presence expiry (C-D4).
-- [ ] Tests: registration happens exactly once; heartbeats continue on the injected clock; a
+- [x] `stop()` closes the session; a crash is left to presence expiry (C-D4).
+- [x] Tests: registration happens exactly once; heartbeats continue on the injected clock; a
       registration failure does not throw to the caller; a heartbeat failure does not stop later
       beats; `stop()` closes; `stop()` before `start()` is a no-op.
 

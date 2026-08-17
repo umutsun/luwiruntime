@@ -5,6 +5,8 @@ export {
   createGeminiCliAdapter,
   createKimiAdapter,
 } from './adapter.js';
+export { resolveNativeIdentity } from './native-identity.js';
+export type { NativeIdentityEnvironment } from './native-identity.js';
 export { createTranscriptReader } from './transcript-reader.js';
 export type {
   TranscriptReader,
