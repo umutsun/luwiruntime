@@ -10,15 +10,15 @@
  */
 .pulse-stack {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2h);
   min-width: 0;
   container: pulse / inline-size;
 }
 .state-banner {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: baseline;
-  padding: 10px var(--panel-pad-x);
+  padding: var(--space-2h) var(--panel-pad-x);
   border: 1px solid currentColor;
   border-radius: var(--radius-sm);
   background: var(--surface-1);
@@ -51,7 +51,7 @@
   display: flex;
   align-items: baseline;
   gap: var(--space-1);
-  padding: 3px var(--space-3);
+  padding: var(--space-1) var(--space-3);
   border-right: 1px solid var(--border);
   color: inherit;
   text-decoration: none;
@@ -113,7 +113,7 @@ a.stat:focus-visible {
   align-items: center;
   gap: var(--space-2);
   margin-left: auto;
-  padding: 3px var(--space-2) 3px var(--space-3);
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
 }
 /*
  * The retained-event trace. Bars, not a polyline, because a line interpolates
@@ -133,7 +133,7 @@ a.stat:focus-visible {
 .pulse-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  gap: var(--space-2h);
   min-width: 0;
   align-items: start;
 }
@@ -179,7 +179,7 @@ a.stat:focus-visible {
   min-height: 52px;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
   padding: var(--panel-pad-y) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
 }
@@ -193,16 +193,73 @@ a.stat:focus-visible {
 }
 .empty-state {
   margin: 0;
-  padding: 24px var(--panel-pad-x);
+  padding: var(--space-6) var(--panel-pad-x);
   color: var(--text-muted);
 }
 .unavailable {
   color: var(--unknown);
   font-weight: 500;
 }
+/*
+ * The fold control fills the header's leading edge so the whole title row is
+ * the hit target, not a small chevron beside it. It carries no background of
+ * its own: the affordance is the caret and the pointer, because a button
+ * chrome here would compete with the panel's own border.
+ */
+.panel__toggle {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.panel__toggle:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+.panel__toggle-icon {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: rotate(45deg);
+  transition: transform 120ms ease;
+}
+.panel--collapsed .panel__toggle-icon {
+  transform: rotate(-45deg);
+}
+.panel__toggle:hover .panel__toggle-icon {
+  border-color: var(--text);
+}
+/* A folded panel is just its header, so it must not keep a dangling rule. */
+.panel--collapsed .panel__header {
+  border-bottom: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel__toggle-icon {
+    transition: none;
+  }
+}
 .table-wrap {
   width: 100%;
   overflow-x: auto;
+}
+/*
+ * Long tables scroll inside their own card rather than lengthening the page.
+ * Without this a single evidence table pushes every panel below it out of
+ * reach, which is what made stacked routes feel unusable.
+ */
+.table-wrap--tall {
+  max-height: 420px;
+  overflow-y: auto;
 }
 table {
   width: 100%;
@@ -252,7 +309,7 @@ td small {
   min-width: 0;
 }
 .work-columns {
-  padding: 7px var(--panel-pad-x);
+  padding: var(--space-2) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
   color: var(--text-dim);
   font: var(--font-size-2xs) var(--font-mono);
@@ -380,8 +437,8 @@ td small {
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 10px var(--panel-pad-x);
+  gap: var(--space-2h);
+  padding: var(--space-2h) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
 }
 .evidence-list li:last-child {
@@ -528,7 +585,7 @@ td small {
 .context-path {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  padding: 14px var(--panel-pad-x) 18px;
+  padding: var(--space-3h) var(--panel-pad-x) var(--space-5);
 }
 .context-path li {
   position: relative;
@@ -558,14 +615,14 @@ td small {
 }
 .health-list {
   margin: 0;
-  padding: 4px var(--panel-pad-x);
+  padding: var(--space-1) var(--panel-pad-x);
 }
 .health-list div {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 0;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
   border-bottom: 1px solid var(--border);
 }
 .health-list div:last-child {
@@ -587,7 +644,7 @@ td small {
 .activity-list li {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 0.7fr) auto auto;
-  gap: 12px;
+  gap: var(--space-3);
   padding: var(--panel-pad-y) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
   font: 12px var(--font-mono);
@@ -646,7 +703,7 @@ td small {
 .pulse-grid--tertiary {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  gap: var(--space-2h);
   min-width: 0;
   align-items: start;
 }
@@ -681,7 +738,7 @@ td small {
   gap: var(--space-2);
   width: 100%;
   align-items: baseline;
-  padding: 6px var(--panel-pad-x);
+  padding: var(--space-1h) var(--panel-pad-x);
   border: 0;
   background: none;
   color: inherit;
@@ -737,13 +794,13 @@ td small {
 }
 .context-stages {
   display: grid;
-  gap: 9px;
-  padding: 13px var(--panel-pad-x) 16px;
+  gap: var(--space-2h);
+  padding: var(--space-3h) var(--panel-pad-x) var(--space-4);
 }
 .context-stage {
   display: grid;
   grid-template-columns: 64px minmax(0, 1fr) 28px;
-  gap: 10px;
+  gap: var(--space-2h);
   align-items: center;
 }
 .context-stage__label {
@@ -788,7 +845,7 @@ td small {
 .repo-row {
   display: grid;
   gap: var(--space-0);
-  padding: 10px var(--panel-pad-x);
+  padding: var(--space-2h) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
 }
 .repo-row:last-child {

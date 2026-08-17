@@ -52,6 +52,39 @@ describe('read-only inspectors', () => {
     payload: {},
   });
 
+  /**
+   * The event inspector stacks a detail list, a payload block and a navigation
+   * block, and every one of them was always open. On a real event that is a
+   * column of evidence you scroll past to reach the part you wanted, so the
+   * blocks below the identity list fold — and the payload, which is the tallest
+   * and the least often needed, starts folded.
+   */
+  it('folds the payload and related entities in the event inspector', () => {
+    const selected: InspectorSelection = { kind: 'event', streamId: '3-0' };
+    render(
+      <InspectorPanel
+        selection={selected}
+        activity={[event(3, { projectId: 'p1', sessionId: 's1' })]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    // The identity rows stay visible: they are what names the event.
+    expect(screen.getByText('Event type')).toBeTruthy();
+
+    const payload = screen.getByRole('button', { name: /payload/i });
+    expect(payload.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(payload);
+    expect(payload.getAttribute('aria-expanded')).toBe('true');
+
+    const related = screen.getByRole('button', { name: /related entities/i });
+    expect(related.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(related);
+    expect(related.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('button', { name: /open project inspector/i })).toBeNull();
+  });
+
   it('formats bounded safe JSON without rendering markup', () => {
     const rendered = formatSafeJson({
       markup: '<img src=x onerror=alert(1)>',
@@ -115,6 +148,11 @@ describe('read-only inspectors', () => {
 
     expect(screen.getByText('1-0')).toBeTruthy();
     expect(screen.getByText('future.signal')).toBeTruthy();
+    // The payload now starts folded, so open it before asserting on its text.
+    // The claim under test is unchanged: the markup is rendered as text and
+    // never becomes a live element.
+    expect(document.querySelector('script')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /payload/i }));
     expect(document.querySelector('script')).toBeNull();
     expect(screen.getByText(/<script>unsafe/)).toBeTruthy();
   });

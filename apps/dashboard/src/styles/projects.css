@@ -25,11 +25,20 @@
   min-width: 0;
 }
 
+/*
+ * Carries the panel's own horizontal padding.
+ *
+ * Without it the labels and values inside a detail panel sit flush against the
+ * card border, which reads as a rendering fault rather than a dense layout —
+ * the owner reported exactly that on the project drawer. The bottom padding
+ * matters for the same reason: the last row must not touch the lower edge.
+ */
 .project-detail__body {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
+  padding: var(--panel-pad-y) var(--panel-pad-x) var(--space-3);
 }
 
 .projects-stack .link-button {
@@ -119,6 +128,11 @@
   text-transform: uppercase;
 }
 
+/* The body already pads its top edge; a leading label must not add to it. */
+.project-detail__body > .group-label:first-child {
+  margin-top: 0;
+}
+
 .group-label__count {
   padding: 0 var(--space-1);
   border-radius: var(--radius-sm);
@@ -146,7 +160,7 @@
 }
 
 .name-list li {
-  padding: 2px var(--space-2);
+  padding: var(--space-0) var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--surface-2);
@@ -268,7 +282,7 @@
   overflow-wrap: anywhere;
 }
 .id-badge__copy {
-  padding: 2px 6px;
+  padding: var(--space-0) var(--space-1h);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text-dim);
@@ -306,7 +320,7 @@
   text-transform: uppercase;
 }
 .table-filters select {
-  padding: 5px 8px;
+  padding: var(--space-1h) var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text);
@@ -535,7 +549,7 @@ tr[data-selected='true'] {
 .project-cell {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--space-2h);
   min-width: 0;
 }
 .project-cell__body {

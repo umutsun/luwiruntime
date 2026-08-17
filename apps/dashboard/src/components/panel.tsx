@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import { StatusChip, type StatusTone } from './status-chip.js';
 
@@ -74,20 +74,69 @@ function panelId(title: string): string {
 export function Panel({
   title,
   meta,
+  collapsible = false,
+  defaultCollapsed = false,
   children,
 }: {
   title: string;
   meta?: ReactNode;
+  /**
+   * Lets the reader fold this panel away.
+   *
+   * Routes that stack many evidence cards become a page of full-height blocks,
+   * and reaching the one you want means scrolling past the ones you do not.
+   * Opt-in rather than automatic: a panel carrying one short block would only
+   * gain noise from a control.
+   */
+  collapsible?: boolean;
+  /** Starts folded, for evidence that is secondary to the panel above it. */
+  defaultCollapsed?: boolean;
   children: ReactNode;
 }) {
   const id = panelId(title);
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const bodyId = `${id}-body`;
+
+  if (!collapsible) {
+    return (
+      <section className="panel" aria-labelledby={id}>
+        <header className="panel__header">
+          <h2 id={id}>{title}</h2>
+          {meta === undefined ? null : <span className="panel__meta">{meta}</span>}
+        </header>
+        {children}
+      </section>
+    );
+  }
+
   return (
-    <section className="panel" aria-labelledby={id}>
+    <section
+      className={`panel panel--collapsible${collapsed ? ' panel--collapsed' : ''}`}
+      aria-labelledby={id}
+    >
       <header className="panel__header">
-        <h2 id={id}>{title}</h2>
+        {/*
+         * The heading is inside the control rather than beside it, so the
+         * accessible name of the button is the panel's own title and a screen
+         * reader announces which card is folding.
+         */}
+        <button
+          type="button"
+          className="panel__toggle"
+          aria-expanded={!collapsed}
+          aria-controls={bodyId}
+          onClick={() => {
+            setCollapsed((value) => !value);
+          }}
+        >
+          <span className="panel__toggle-icon" aria-hidden="true" />
+          <h2 id={id}>{title}</h2>
+        </button>
         {meta === undefined ? null : <span className="panel__meta">{meta}</span>}
       </header>
-      {children}
+      <div id={bodyId} hidden={collapsed}>
+        {collapsed ? null : children}
+      </div>
     </section>
   );
 }
@@ -104,6 +153,8 @@ export function ResourcePanel<T>({
   notObservedMessage,
   emptyMessage,
   loading = false,
+  collapsible = false,
+  defaultCollapsed = false,
   isEmpty,
   children,
 }: {
@@ -118,12 +169,16 @@ export function ResourcePanel<T>({
    * paint claimed a fault that had not happened.
    */
   loading?: boolean;
+  /** Passed through to `Panel`; see its note on why this is opt-in. */
+  collapsible?: boolean;
+  defaultCollapsed?: boolean;
   isEmpty: (data: T) => boolean;
   children: (data: T) => ReactNode;
 }) {
+  const fold = { collapsible, defaultCollapsed };
   if (resource === undefined && loading) {
     return (
-      <Panel title={title} {...(meta === undefined ? {} : { meta })}>
+      <Panel title={title} {...fold} {...(meta === undefined ? {} : { meta })}>
         <p className="empty-state" aria-busy="true">
           Loading
         </p>
@@ -133,7 +188,7 @@ export function ResourcePanel<T>({
   const state = resource ?? { state: 'unavailable' as const };
 
   return (
-    <Panel title={title} {...(meta === undefined ? {} : { meta })}>
+    <Panel title={title} {...fold} {...(meta === undefined ? {} : { meta })}>
       {state.state === 'not-observed' ? (
         <p className="empty-state">{notObservedMessage ?? 'Not observed'}</p>
       ) : state.state === 'unavailable' ? (
@@ -167,9 +222,25 @@ export function Count({
   return value.state === 'unavailable' ? <Unavailable /> : <>{value.value}</>;
 }
 
-export function TableWrap({ caption, children }: { caption?: string; children: ReactNode }) {
+export function TableWrap({
+  caption,
+  tall = false,
+  children,
+}: {
+  caption?: string;
+  /**
+   * Scrolls inside the card instead of lengthening the page.
+   *
+   * For a collection whose length the reader does not control — every session,
+   * every node kind — a full-height table pushes the panels below it out of
+   * reach. Opt-in, because a table of four rows in a scroll box is worse than
+   * one that simply ends.
+   */
+  tall?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <div className="table-wrap">
+    <div className={`table-wrap${tall ? ' table-wrap--tall' : ''}`}>
       <table>
         {caption === undefined ? null : <caption className="visually-hidden">{caption}</caption>}
         {children}

@@ -119,3 +119,31 @@ describe('colour literals outside tokens.css', () => {
     expect(offenders, 'move these into tokens.css and reference them').toEqual([]);
   });
 });
+
+/**
+ * Spacing drifted the way colour once did.
+ *
+ * The scale in tokens.css runs 2px through 32px, but 45 declarations carried
+ * raw pixels instead — `9px`, `11px 12px`, `8px 9px`, `8px 10px` — so nothing
+ * lined up with anything else and the owner's read of the running product was
+ * that labels sat against borders and table cells had no room to breathe. A
+ * scale that is not referenced is not a scale.
+ */
+describe('spacing literals outside tokens.css', () => {
+  const spacingProperty = /(padding|gap|row-gap|column-gap)\s*:\s*([^;]+);/gu;
+
+  it.each(STYLESHEETS)('%s uses tokens for every non-zero spacing value', (file) => {
+    const sheet = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    const offenders: string[] = [];
+
+    for (const [, property, rawValue] of sheet.matchAll(spacingProperty)) {
+      const value = (rawValue ?? '').trim();
+      // A pixel length is the drift this guards; 0, percentages, and the
+      // intrinsic keywords carry no scale to drift from.
+      if (!/\b\d+px\b/u.test(value)) continue;
+      offenders.push(`${property!}: ${value}`);
+    }
+
+    expect(offenders, 'use a --space-* token instead of a raw pixel length').toEqual([]);
+  });
+});

@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AttributionConfidenceChip, ResourcePanel } from './panel.js';
+import { AttributionConfidenceChip, Panel, ResourcePanel } from './panel.js';
 
 afterEach(cleanup);
 
@@ -112,5 +112,70 @@ describe('AttributionConfidenceChip', () => {
     render(<AttributionConfidenceChip confidence="unknown" />);
 
     expect(screen.getByText('Unknown').className).not.toBe(exact);
+  });
+});
+
+/**
+ * Long routes stack many panels, and the owner's read of the running product
+ * was that a page of full-height cards is hard to work with: you scroll past
+ * evidence you are not looking at to reach the one you are. A panel can now be
+ * folded, and the fold is a real control rather than a CSS-only affordance, so
+ * assistive technology reports the same state the eye sees.
+ */
+describe('collapsible Panel', () => {
+  it('renders its content expanded by default', () => {
+    render(
+      <Panel title="Nodes by kind" collapsible>
+        <p>rows</p>
+      </Panel>,
+    );
+
+    expect(screen.getByText('rows')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: /nodes by kind/i }).getAttribute('aria-expanded'),
+    ).toBe('true');
+  });
+
+  it('folds and unfolds when the header control is used', () => {
+    render(
+      <Panel title="Nodes by kind" collapsible>
+        <p>rows</p>
+      </Panel>,
+    );
+    const toggle = screen.getByRole('button', { name: /nodes by kind/i });
+
+    fireEvent.click(toggle);
+    expect(screen.queryByText('rows')).toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(toggle);
+    expect(screen.getByText('rows')).toBeTruthy();
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('can start folded for panels that are secondary evidence', () => {
+    render(
+      <Panel title="Nodes by kind" collapsible defaultCollapsed>
+        <p>rows</p>
+      </Panel>,
+    );
+
+    expect(screen.queryByText('rows')).toBeNull();
+    expect(
+      screen.getByRole('button', { name: /nodes by kind/i }).getAttribute('aria-expanded'),
+    ).toBe('false');
+  });
+
+  it('stays a plain section when it is not collapsible', () => {
+    // The default must not grow a control: most panels carry one short block
+    // and a fold would be noise.
+    render(
+      <Panel title="Projection">
+        <p>rows</p>
+      </Panel>,
+    );
+
+    expect(screen.getByText('rows')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /projection/i })).toBeNull();
   });
 });

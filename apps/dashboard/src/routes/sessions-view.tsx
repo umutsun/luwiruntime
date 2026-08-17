@@ -152,7 +152,7 @@ export function SessionsView({
               {sorted.length === 0 ? (
                 <p className="empty-state">No sessions match the current filters</p>
               ) : (
-                <TableWrap caption="Observed sessions">
+                <TableWrap caption="Observed sessions" tall>
                   <thead>
                     <tr>
                       <th scope="col">Session</th>

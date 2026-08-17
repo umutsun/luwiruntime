@@ -30,7 +30,7 @@ export function UsageView({ snapshot }: { snapshot: PulseSnapshot }) {
       >
         {(rows) => (
           <>
-            <TableWrap caption="Usage records by observation source">
+            <TableWrap caption="Usage records by observation source" tall>
               <thead>
                 <tr>
                   <th scope="col">Source</th>

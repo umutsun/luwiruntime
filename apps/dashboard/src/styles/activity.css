@@ -1,14 +1,14 @@
 .activity-workspace {
   display: grid;
   min-width: 0;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .activity-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 20px;
-  padding: 16px;
+  gap: var(--space-5);
+  padding: var(--space-4);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: linear-gradient(135deg, var(--surface-1), rgba(99, 102, 241, 0.08));
@@ -31,15 +31,15 @@
 .activity-filters {
   display: grid;
   grid-template-columns: repeat(3, minmax(150px, 0.7fr)) minmax(220px, 1fr);
-  gap: 10px;
-  padding: 12px;
+  gap: var(--space-2h);
+  padding: var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface-1);
 }
 .activity-filters label {
   display: grid;
-  gap: 5px;
+  gap: var(--space-1h);
   color: var(--text-dim);
   font: 12px var(--font-mono);
 }
@@ -47,7 +47,7 @@
 .activity-filters input {
   width: 100%;
   min-width: 0;
-  padding: 8px 9px;
+  padding: var(--space-2) var(--space-2h);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
@@ -80,9 +80,9 @@
   display: grid;
   width: 100%;
   grid-template-columns: minmax(190px, 1.1fr) minmax(140px, 0.8fr) minmax(140px, 0.8fr) auto auto;
-  gap: 14px;
+  gap: var(--space-3h);
   align-items: center;
-  padding: 11px 12px;
+  padding: var(--space-3) var(--space-3);
   border: 0;
   color: var(--text-muted);
   background: transparent;
@@ -138,7 +138,12 @@
   justify-content: space-between;
   gap: var(--space-4);
   min-height: var(--topbar-height);
-  padding: 0 var(--space-4);
+  /*
+   * Vertical padding, not just horizontal: with `0` the eyebrow sat against the
+   * pane's top edge, which the owner read as a rendering fault. `min-height`
+   * centres a short header, so this only takes effect when the title wraps.
+   */
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
 }
@@ -171,8 +176,8 @@
 .inspector-details div {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);
-  gap: 16px;
-  padding: 9px 0;
+  gap: var(--space-4);
+  padding: var(--space-2h) 0;
   border-bottom: 1px solid var(--border);
 }
 .inspector-details dt {
@@ -189,7 +194,7 @@
 .inspector-json {
   max-height: 360px;
   overflow: auto;
-  padding: 12px;
+  padding: var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
@@ -211,8 +216,8 @@
 .inspector-related li {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: 10px;
-  padding: 8px 0;
+  gap: var(--space-2h);
+  padding: var(--space-2) 0;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   font: 11px var(--font-mono);
@@ -226,7 +231,7 @@
   display: block;
   width: 100%;
   margin-top: 8px;
-  padding: 8px 10px;
+  padding: var(--space-2) var(--space-2h);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
@@ -236,7 +241,7 @@
   font: 12px var(--font-mono);
 }
 .inspect-button {
-  padding: 4px 7px;
+  padding: var(--space-1) var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text-muted);
@@ -264,14 +269,56 @@
  * grid track reads, so pane and gutter cannot drift apart.
  */
 .app-shell:has(.inspector--drawer) {
-  --inspector-width: 520px;
+  /*
+   * Widened from 520px after the owner reported cards and tables overflowing
+   * it. It is a clamp rather than a fixed width so the drawer takes a share of
+   * a wide display without starving the main column on a narrow one.
+   */
+  --inspector-width: clamp(520px, 34vw, 760px);
 }
 .inspector--drawer .project-detail {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
 }
+/*
+ * Taller than the old 260px: that cut most tables to three or four rows, so
+ * the reader scrolled inside a box *and* down the drawer to see one table.
+ */
 .inspector--drawer .table-wrap {
-  max-height: 260px;
+  max-height: 340px;
   overflow-y: auto;
+}
+/*
+ * The drawer is a column of cards; it scrolls as one, and its tables never
+ * push it sideways. `min-width: 0` is what actually lets a wide table shrink
+ * inside a grid item rather than forcing the pane wider than its track.
+ */
+.inspector--drawer > * {
+  min-width: 0;
+}
+.inspector--drawer table {
+  table-layout: auto;
+}
+/*
+ * The inspector's foldable section headings. Shares the panel caret so the two
+ * fold affordances in the product read as one idea rather than two.
+ */
+.inspector-section__toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.inspector-section__toggle:focus-visible {
+  outline: none;
+  border-radius: var(--radius-xs);
+  box-shadow: var(--focus);
 }

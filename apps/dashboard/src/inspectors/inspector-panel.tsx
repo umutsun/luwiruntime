@@ -30,6 +30,53 @@ export function formatSafeJson(value: unknown): string {
     : `${formatted.slice(0, MAX_JSON_CHARACTERS)}…`;
 }
 
+/**
+ * A foldable block inside an inspector.
+ *
+ * The event inspector stacks an identity list, a payload and a navigation
+ * block, and all of them were always open — so a real event became a column
+ * you scroll past to reach what you wanted. The identity list stays open
+ * because it is what names the record; everything below it folds, and the
+ * payload starts folded because it is the tallest and the least often needed.
+ */
+function InspectorSection({
+  title,
+  className,
+  defaultCollapsed = false,
+  children,
+}: {
+  title: string;
+  className?: string;
+  defaultCollapsed?: boolean;
+  children: ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  const id = `inspector-section-${title.toLowerCase().replaceAll(' ', '-')}`;
+
+  return (
+    <section className={className} aria-labelledby={id}>
+      <h3>
+        <button
+          type="button"
+          className="inspector-section__toggle"
+          aria-expanded={!collapsed}
+          aria-controls={`${id}-body`}
+          id={id}
+          onClick={() => {
+            setCollapsed((value) => !value);
+          }}
+        >
+          <span className="panel__toggle-icon" aria-hidden="true" />
+          {title}
+        </button>
+      </h3>
+      <div id={`${id}-body`} hidden={collapsed}>
+        {collapsed ? null : children}
+      </div>
+    </section>
+  );
+}
+
 function DetailList({ rows }: { rows: ReadonlyArray<readonly [string, ReactNode]> }) {
   return (
     <dl className="inspector-details">
@@ -298,14 +345,14 @@ export function InspectorPanel({
                 ['Causation ID', selectedEvent.causationId],
               ]}
             />
-            <h3>Payload</h3>
-            <pre className="inspector-json">
-              <code>{formatSafeJson(selectedEvent.payload)}</code>
-            </pre>
+            <InspectorSection title="Payload" defaultCollapsed>
+              <pre className="inspector-json">
+                <code>{formatSafeJson(selectedEvent.payload)}</code>
+              </pre>
+            </InspectorSection>
             {selectedEvent.projectId === undefined &&
             selectedEvent.sessionId === undefined ? null : (
-              <section className="inspector-navigation" aria-labelledby="related-entities-title">
-                <h3 id="related-entities-title">Related entities</h3>
+              <InspectorSection title="Related entities" className="inspector-navigation">
                 {selectedEvent.projectId === undefined
                   ? null
                   : (() => {
@@ -338,7 +385,7 @@ export function InspectorPanel({
                     Open session inspector
                   </button>
                 )}
-              </section>
+              </InspectorSection>
             )}
           </>
         )}

@@ -62,10 +62,22 @@
   --info: #65bff3;
   --font-ui: Inter, system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  /*
+   * A 4px scale with the odd half-steps it actually needs.
+   *
+   * The half-steps exist because dense controls — chips, pills, table cells —
+   * genuinely sit between two rungs, and without them the stylesheets grew 39
+   * distinct raw pixel values instead. A scale nothing references is not a
+   * scale, so `tokens.test.ts` fails on a raw pixel length in any spacing
+   * property.
+   */
   --space-0: 2px;
   --space-1: 4px;
+  --space-1h: 6px;
   --space-2: 8px;
+  --space-2h: 10px;
   --space-3: 12px;
+  --space-3h: 14px;
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
@@ -113,8 +125,13 @@
    * 14px matches the design system; the vertical value is the row, and headers
    * take a little more.
    */
-  --panel-pad-x: 14px;
-  --panel-pad-y: 9px;
+  /*
+   * Panel and cell padding. `--panel-pad-y` was 9px, which is off the scale and
+   * too tight: a table of 97 rows read as a wall of text with the status and
+   * presence cells touching their own borders.
+   */
+  --panel-pad-x: var(--space-3h);
+  --panel-pad-y: var(--space-3);
   --focus: 0 0 0 3px rgba(129, 140, 248, 0.45);
   --z-sidebar: 20;
   --z-skip: 100;

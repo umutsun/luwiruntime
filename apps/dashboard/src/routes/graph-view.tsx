@@ -112,6 +112,7 @@ export function GraphView({
 
       <ResourcePanel<KindCount[]>
         title="Nodes by kind"
+        collapsible
         {...(generation === undefined ? {} : { meta: generation })}
         resource={
           summary?.state === 'ready'
@@ -130,6 +131,7 @@ export function GraphView({
 
       <ResourcePanel<KindCount[]>
         title="Edges by kind"
+        collapsible
         resource={
           summary?.state === 'ready'
             ? perKind(summary.data, summary.data.edgeCountsByKind)
@@ -172,7 +174,7 @@ function KindTable({
   const largest = Math.max(...ordered.map((row) => row.count), 0);
 
   return (
-    <TableWrap caption={caption}>
+    <TableWrap caption={caption} tall>
       <thead>
         <tr>
           <th scope="col">{heading}</th>

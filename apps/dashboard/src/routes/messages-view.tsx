@@ -131,7 +131,7 @@ export function MessagesView({
             {filtered.length === 0 ? (
               <p className="empty-state">No messages match this filter</p>
             ) : (
-              <TableWrap caption="Inter-agent messages">
+              <TableWrap caption="Inter-agent messages" tall>
                 <thead>
                   <tr>
                     <th scope="col">From</th>
