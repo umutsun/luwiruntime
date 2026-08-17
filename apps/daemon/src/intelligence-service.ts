@@ -1164,6 +1164,8 @@ export function createIntelligenceService(
               'outputTokens',
               'cachedInputTokens',
               'cachedOutputTokens',
+              'cacheCreationInputTokens',
+              'cacheReadInputTokens',
               'reasoningTokens',
               'totalTokens',
               'contextWindowTokens',

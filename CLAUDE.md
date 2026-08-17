@@ -182,10 +182,10 @@ time-bounded link per LUWI session. Identity carries no presence, project or age
 refused rather than evicted; a conflict writes nothing; missing evidence is
 `NATIVE_BINDING_INCONSISTENT`. Policy is a pure `@luwi/runtime` function and Lua only validates a
 CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no inbox stream.
-`luwi_v1` is at **v11**.
+`luwi_v1` is at **v12** (B1 moved it; see below).
 
 ADR 0023 then approved the next item in the sequence — **native transcript ingestion** — and
-specified it as B0 / B1 / B2. **B0 is built; B1 and B2 are not started.**
+specified it as B0 / B1 / B2. **B0 and B1 are built; B2 is not started.**
 
 The fact that ordered the phase: at approval there were **zero native bindings in either Redis
 database**, against nine sessions. A declaration rode only on `POST /api/v1/sessions` and nothing
@@ -197,8 +197,24 @@ first and it attributes nothing. B0 added `POST /api/v1/sessions/:sessionId/nati
 `--native-*` options on `session register`/`session simulate`, and one seeded declaration so the
 fixture holds a binding and a real attribution interval. The link starts open and may be closed by
 the normal presence sweeper when the seeded session expires; the live B0 fixture exercised both
-transitions. `evaluateNativeDeclaration` is unchanged; `unchanged` is a 200, not an error. B1 is
-the reader; B2 fills `SESSION_CHANGED_FILE`, which is in the edge enum with no producer.
+transitions. `evaluateNativeDeclaration` is unchanged; `unchanged` is a 200, not an error.
+
+**B1 then built the reader, so `usage.sessionId` is answerable** — for declaring sessions only. The
+reader lives in `@luwi/adapters` behind its own `TranscriptFileSystem` seam (`listDirectory`, `stat`,
+a bounded `readLines`; **not** two more methods on `AdapterFileSystem`, which nothing else would
+call). It **enumerates** the projects root rather than deriving a directory name from a project path:
+the drive-letter case varies on this machine (`C--xampp-…` beside `c--xampp-…`), and since the join
+key is the in-record `sessionId`, the path was never identity. `attributeObservation` in
+`@luwi/runtime` decides containment against `findNativeLinkAt(bindingId, atMs)`, a
+`ZRANGE … BYSCORE REV LIMIT 0 1` over the links zset — which was already scored by `linkedAt` in
+epoch ms, so no new index was needed. Four unbound cases are counted apart and never resolved to a
+nearby session. The daemon runs a sixth timer on `LUWI_TRANSCRIPT_SCAN_INTERVAL_MS` (default 300000,
+min 60000; `LUWI_TRANSCRIPT_MAX_FILE_BYTES` and `LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN` bound it), and
+a `runtime.test.ts` guard now asserts **every** timer is cleared on both teardown paths.
+`USAGE_RECORD_DUPLICATE` is counted, not thrown, because re-reading a transcript is the steady state.
+`luwi_v1` went to **v12**: the usage record gained `cacheCreationInputTokens` and
+`cacheReadInputTokens`, and per the registry's own rule the version moves only on a record-shape
+change. B2 fills `SESSION_CHANGED_FILE`, which is in the edge enum with no producer.
 
 Two measured traps for anyone touching this. `subagents/` directories exist at
 `<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` and hold 11.3% of distinct requests,

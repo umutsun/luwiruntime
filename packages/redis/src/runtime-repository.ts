@@ -287,6 +287,13 @@ export interface RuntimeRepository {
   listSessionNativeBindingIds(sessionIds: readonly string[]): Promise<string[]>;
   getNativeRetentionState(bindingId: string): Promise<NativeRetentionState | null>;
   listOldestNativeLinks(bindingId: string, limit: number): Promise<NativeSessionLink[]>;
+  /**
+   * The link whose half-open interval `[linkedAt, unlinkedAt)` contains `atMs`,
+   * or `null` when no interval does. Attribution is containment: a caller that
+   * gets `null` has evidence no session can claim, and must never fall back to
+   * the nearest link.
+   */
+  findNativeLinkAt(bindingId: string, atMs: number): Promise<NativeSessionLink | null>;
   trimNativeLinks(input: NativeLinkTrimInput): Promise<NativeLinkTrimResult>;
   getSession(sessionId: string): Promise<SessionView | null>;
   listSessions(projectId?: string): Promise<SessionView[]>;
@@ -1100,6 +1107,41 @@ export function createRuntimeRepository(options: {
       // A member whose hash is gone is not a trim candidate; it is a record the
       // caller cannot declare, so it is left for inspection rather than guessed at.
       return links.filter((link): link is NativeSessionLink => link !== null);
+    },
+
+    async findNativeLinkAt(bindingId, atMs) {
+      // The links zset is scored by linkedAt in epoch milliseconds, so the
+      // candidate is the greatest score at or below the instant. Only one link
+      // can contain it: intervals on a binding never overlap.
+      const candidates = stringArray(
+        await client.sendCommand([
+          'ZRANGE',
+          keys.nativeSessionLinks(bindingId),
+          String(atMs),
+          '-inf',
+          'BYSCORE',
+          'REV',
+          'LIMIT',
+          '0',
+          '1',
+        ]),
+        'native session link',
+      );
+      const [linkId] = candidates;
+      if (linkId === undefined) {
+        return null;
+      }
+      const link = parseNativeLinkHash(
+        await client.sendCommand(['HGETALL', keys.nativeSessionLink(linkId)]),
+      );
+      if (link === null) {
+        return null;
+      }
+      // Half-open: the closing instant belongs to the next interval, not this one.
+      if (link.unlinkedAt !== undefined && Date.parse(link.unlinkedAt) <= atMs) {
+        return null;
+      }
+      return link;
     },
 
     async trimNativeLinks(input) {

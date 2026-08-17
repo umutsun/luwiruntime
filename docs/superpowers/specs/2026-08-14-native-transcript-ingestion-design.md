@@ -11,8 +11,8 @@ Phase B of the sequence `native identity binding → transcript ingestion → au
 
 | Increment | Scope                                                 | Plan                   |
 | --------- | ----------------------------------------------------- | ---------------------- |
-| **B0**    | Declaration surface for an already-registered session | written, see §8        |
-| **B1**    | Transcript reader, usage attribution                  | written when B1 starts |
+| **B0**    | Declaration surface for an already-registered session | built, see §8          |
+| **B1**    | Transcript reader, usage attribution                  | built, see §10         |
 | **B2**    | Tool and file observation into the operational graph  | written when B2 starts |
 
 The A1/A2 precedent applies: a plan is written at the start of its increment.
@@ -69,15 +69,23 @@ so the ordering constraint that shaped A1 does not apply here.
 arbitrary session id, on the same principle that makes the MCP lease tools take the holder from the
 bound session and never from input.
 
-## 3. B1 — the reader (specified, not planned)
+## 3. B1 — the reader (built; plan at §10)
 
 Lives in `@luwi/adapters`, driven by a daemon timer on its own `LUWI_TRANSCRIPT_SCAN_INTERVAL_MS`
-(default 300000). `AdapterFileSystem` gains **`listDirectory` and `stat` only** — no offset read. The
-per-file cursor is `mtime + size` and exists solely to skip unchanged files; correctness comes from
-the dedupe guard of M6, never from the cursor.
+(default 300000). The read surface is **a separate `TranscriptFileSystem` interface** carrying
+`listDirectory`, `stat` and a bounded `readLines` — no offset read. This corrects what this section
+said before it was built ("`AdapterFileSystem` gains `listDirectory` and `stat` only"): widening the
+shared interface would have forced every adapter and both daemon config services to satisfy two
+operations none of them invoke, for no gain. The intent — two read operations, no byte offsets — is
+unchanged; only the interface it lands on is. The per-file cursor is `mtime + size` and exists solely
+to skip unchanged files; correctness comes from the dedupe guard of M6, never from the cursor.
 
-Discovery walks the project transcript directory **and its nested `subagents/` tree** (M9). Every
-`.jsonl` file is a candidate regardless of name, because M11 makes names meaningless as identity.
+Discovery **enumerates the projects root** rather than deriving a directory name from a project path.
+Nothing encodes that mapping today, and deriving it is fragile in a measured way: on this machine the
+same encoding appears with both a capital and a lowercase drive letter, and worktree paths produce
+doubled separators. Since the join key is the in-record `sessionId` (M11), the path was never
+identity and enumerating costs nothing. Each project directory is walked recursively, **including its
+nested `subagents/` tree** (M9). Every `.jsonl` file is a candidate regardless of name.
 
 Parsing is line-oriented and tolerant per line: a malformed line is skipped and counted, never fails
 the file, because a transcript being appended to while it is read presents a partial final line. A
@@ -134,3 +142,14 @@ B0 is done under §19 when format, lint, typecheck, test and build pass; the rou
 `evaluateNativeDeclaration` outcome including the live-holder refusal and the conflict that writes
 nothing; a Redis integration test proves the CAS refusal leaves no partial write; and a test proves a
 caller cannot declare for a session other than its own bound one.
+
+B1 adds: the reader joins on the in-record `sessionId` for a subagent file whose stem is an agent id;
+one request spanning records with differing `output_tokens` yields a single observation carrying the
+greatest; attribution binds at `linkedAt` and refuses at `unlinkedAt`; an unattributable observation
+is counted and **never assigned to the nearest session**; a re-read counts a duplicate instead of
+throwing; and the ingested record leaves `cachedInputTokens` and `totalTokens` unset so neither
+existing invariant can fire.
+
+## 10. B1 plan
+
+`docs/superpowers/plans/2026-08-17-transcript-ingestion-b1-reader.md`.

@@ -419,3 +419,105 @@ describe('runtime repository native declaration boundary', () => {
     });
   });
 });
+
+class ScriptedCommandClient implements RedisCommandClient {
+  readonly commands: string[][] = [];
+  #replies: unknown[];
+
+  constructor(replies: readonly unknown[]) {
+    this.#replies = [...replies];
+  }
+
+  async sendCommand(arguments_: readonly string[]): Promise<unknown> {
+    this.commands.push([...arguments_]);
+    return this.#replies.shift();
+  }
+}
+
+function linkHash(fields: Record<string, string>): string[] {
+  return Object.entries(fields).flat();
+}
+
+describe('native link point-in-time lookup', () => {
+  const bindingId = 'b'.repeat(64);
+  const linkId = 'c'.repeat(64);
+  const closed = {
+    id: linkId,
+    bindingId,
+    sessionId: 'session-1',
+    linkedAt: '2026-08-17T08:13:17.184Z',
+    unlinkedAt: '2026-08-17T08:13:32.752Z',
+  };
+  const linkedMs = Date.parse(closed.linkedAt);
+  const unlinkedMs = Date.parse(closed.unlinkedAt);
+
+  function repositoryFor(replies: readonly unknown[]): {
+    repository: ReturnType<typeof createRuntimeRepository>;
+    client: ScriptedCommandClient;
+  } {
+    const client = new ScriptedCommandClient(replies);
+    return {
+      client,
+      repository: createRuntimeRepository({
+        client,
+        keys: createRedisKeys(),
+        functions: createFunctionRegistry(),
+      }),
+    };
+  }
+
+  it('reads the greatest linkedAt at or before the instant and resolves containment', async () => {
+    const { repository, client } = repositoryFor([[linkId], linkHash(closed)]);
+
+    await expect(repository.findNativeLinkAt(bindingId, linkedMs + 1_000)).resolves.toEqual(closed);
+    expect(client.commands[0]).toEqual([
+      'ZRANGE',
+      createRedisKeys().nativeSessionLinks(bindingId),
+      String(linkedMs + 1_000),
+      '-inf',
+      'BYSCORE',
+      'REV',
+      'LIMIT',
+      '0',
+      '1',
+    ]);
+  });
+
+  it('includes the linkedAt instant and excludes the unlinkedAt instant', async () => {
+    // The interval is half-open: [linkedAt, unlinkedAt).
+    const atStart = repositoryFor([[linkId], linkHash(closed)]);
+    await expect(atStart.repository.findNativeLinkAt(bindingId, linkedMs)).resolves.toEqual(closed);
+
+    const atEnd = repositoryFor([[linkId], linkHash(closed)]);
+    await expect(atEnd.repository.findNativeLinkAt(bindingId, unlinkedMs)).resolves.toBeNull();
+  });
+
+  it('returns null when no link starts at or before the instant', async () => {
+    const { repository, client } = repositoryFor([[]]);
+
+    await expect(repository.findNativeLinkAt(bindingId, linkedMs - 1)).resolves.toBeNull();
+    expect(client.commands).toHaveLength(1);
+  });
+
+  it('matches an open link at any instant at or after it was linked', async () => {
+    const open = {
+      id: linkId,
+      bindingId,
+      sessionId: 'session-1',
+      linkedAt: closed.linkedAt,
+    };
+    const { repository } = repositoryFor([[linkId], linkHash(open)]);
+
+    await expect(repository.findNativeLinkAt(bindingId, linkedMs + 86_400_000)).resolves.toEqual(
+      open,
+    );
+  });
+
+  it('returns null when the indexed link record is gone', async () => {
+    // A member whose hash is gone is a record the caller cannot declare, not a
+    // reason to guess — the precedent listOldestNativeLinks already sets.
+    const { repository } = repositoryFor([[linkId], []]);
+
+    await expect(repository.findNativeLinkAt(bindingId, linkedMs + 1)).resolves.toBeNull();
+  });
+});

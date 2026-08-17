@@ -23,6 +23,8 @@ export type {
   NativeDeclarationObservation,
   NativeOpenLinkObservation,
 } from './native-session-policy.js';
+export { attributeObservation } from './native-attribution.js';
+export type { NativeAttribution, NativeAttributionObservation } from './native-attribution.js';
 export { createRuntimeReadiness } from './runtime-readiness.js';
 export type { MutationSlot, RuntimeReadiness } from './runtime-readiness.js';
 export { createPresenceSweeper } from './presence-sweeper.js';

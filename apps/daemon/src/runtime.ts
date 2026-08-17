@@ -41,6 +41,7 @@ import {
   type NativeLinkRetentionRepository,
   type PresenceSweeperRepository,
 } from '@luwi/runtime';
+import { createTranscriptReader, NodeTranscriptFileSystem } from '@luwi/adapters';
 
 import { buildDaemon, type BuildDaemonOptions, type DaemonApp } from './app.js';
 import {
@@ -60,6 +61,7 @@ import { createGitObserver } from './git-observer.js';
 import { createProjectService } from './project-service.js';
 import { createRealtimeRelay } from './realtime-relay.js';
 import { createSessionService, isVersionConflict } from './session-service.js';
+import { createTranscriptIngestService } from './transcript-ingest-service.js';
 import {
   installGracefulShutdown,
   type GracefulShutdownController,
@@ -277,6 +279,9 @@ const defaults = {
   reconnectMaxMs: 5_000,
   gitCommandTimeoutMs: 5_000,
   gitScanIntervalMs: 300_000,
+  transcriptScanIntervalMs: 300_000,
+  transcriptMaxFileBytes: 16_777_216,
+  transcriptMaxFilesPerScan: 2_000,
   usageRetentionDays: 30,
   gitObservationRetentionCount: 100,
   graphGenerationRetentionCount: 2,
@@ -428,11 +433,13 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let leaseExpiryTimer: NodeJS.Timeout | undefined;
   let retentionTimer: NodeJS.Timeout | undefined;
   let gitScanTimer: NodeJS.Timeout | undefined;
+  let transcriptScanTimer: NodeJS.Timeout | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let recoveryPromise: Promise<void> | undefined;
   let sweeping = false;
   let sweepingMessageTimeouts = false;
   let sweepingLeaseExpiry = false;
+  let ingestingTranscripts = false;
   let retaining = false;
   const backgroundWork = createBackgroundWorkTracker();
   const projectRefreshes = new Set<string>();
@@ -679,6 +686,34 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     repository: createNativeLinkRetentionRepository({ repository }),
     retentionMax: setting(config, 'nativeLinkRetentionMax'),
   });
+  // Reads the developer's native transcripts and attributes each request's
+  // tokens to the session that held the native session at that instant. The
+  // root follows nativeHome so a fixture run stays isolated from the real
+  // ~/.claude tree.
+  const transcriptIngestService = createTranscriptIngestService({
+    reader: createTranscriptReader({
+      fileSystem: new NodeTranscriptFileSystem(),
+      maxFileBytes: setting(config, 'transcriptMaxFileBytes'),
+      maxFilesPerScan: setting(config, 'transcriptMaxFilesPerScan'),
+    }),
+    repository: {
+      getNativeBinding: (bindingId) => repository.getNativeBinding(bindingId),
+      findNativeLinkAt: (bindingId, atMs) => repository.findNativeLinkAt(bindingId, atMs),
+    },
+    sessions: {
+      get: async (sessionId) => {
+        const session = await repository.getSession(sessionId);
+        return session === null
+          ? null
+          : { id: session.id, projectId: session.projectId, agentId: session.agentId };
+      },
+    },
+    intelligence: {
+      ingestUsage: async (input) => intelligenceService.ingestUsage(input),
+    },
+    transcriptRoot: join(config.nativeHome ?? homedir(), '.claude', 'projects'),
+    adapterId: 'claude-code',
+  });
   const messageTimeoutSweeper = createMessageTimeoutSweeper({
     now: Date.now,
     batchSize: setting(config, 'messageTimeoutBatchSize'),
@@ -768,6 +803,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       }
       if (gitScanTimer !== undefined) {
         clearInterval(gitScanTimer);
+      }
+      if (transcriptScanTimer !== undefined) {
+        clearInterval(transcriptScanTimer);
       }
       const inFlightDrained = await readiness.waitForInFlight(Math.max(0, deadline - Date.now()));
       const backgroundDrained = await backgroundWork.waitForIdle(
@@ -1016,6 +1054,30 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     );
     gitScanTimer.unref?.();
 
+    transcriptScanTimer = setInterval(
+      () => {
+        if (ingestingTranscripts || readiness.state !== 'ready') return;
+        ingestingTranscripts = true;
+        const scheduled = backgroundWork.run(
+          async () => {
+            try {
+              const summary = await transcriptIngestService.ingestOnce();
+              // Counters only — no session id, no native id, no content.
+              app?.log.debug(summary, 'Transcript ingestion completed');
+            } finally {
+              ingestingTranscripts = false;
+            }
+          },
+          (error) => app?.log.error({ err: error }, 'Transcript ingestion failed'),
+        );
+        if (!scheduled) {
+          ingestingTranscripts = false;
+        }
+      },
+      setting(config, 'transcriptScanIntervalMs'),
+    );
+    transcriptScanTimer.unref?.();
+
     readiness.transitionTo('ready');
     await app.listen({ host: config.host, port: config.port });
   } catch (error) {
@@ -1037,6 +1099,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     }
     if (gitScanTimer !== undefined) {
       clearInterval(gitScanTimer);
+    }
+    if (transcriptScanTimer !== undefined) {
+      clearInterval(transcriptScanTimer);
     }
     await backgroundWork.waitForIdle(setting(config, 'drainTimeoutMs'));
     await relay.stop().catch(() => undefined);

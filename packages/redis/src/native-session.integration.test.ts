@@ -866,6 +866,65 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
     });
 
     /**
+     * B1's attribution read against real data. Two intervals on one binding —
+     * one closed by the arriving session, one still open — and a point-in-time
+     * lookup must land in exactly one of them, or in neither.
+     */
+    it('resolves which session held a binding at a given instant', async () => {
+      const holder = nextCase();
+      await register(holder.sessionId, firstDeclaration(holder));
+      const staleLinkId = deriveNativeLinkId(holder.bindingId, holder.sessionId);
+
+      const arriving = `${holder.sessionId}-successor`;
+      await register(arriving);
+      const linkId = deriveNativeLinkId(holder.bindingId, arriving);
+      await repository.declareNativeSession({
+        sessionId: arriving,
+        projectId: 'project-1',
+        workspaceId: 'local',
+        native: {
+          bindingId: holder.bindingId,
+          linkId,
+          staleLinkId,
+          linkedEventId: `event-linked-${arriving}`,
+          unlinkedEventId: `event-unlinked-${arriving}`,
+          payload: {
+            bindingId: holder.bindingId,
+            expectedVersion: 1,
+            expectedOpenLinkId: staleLinkId,
+            staleLinkId,
+            link: { id: linkId, sessionId: arriving },
+          },
+        },
+      });
+
+      const closed = await repository.getNativeLink(staleLinkId);
+      const open = await repository.getNativeLink(linkId);
+      const closedFrom = Date.parse(closed?.linkedAt ?? '');
+      const closedTo = Date.parse(closed?.unlinkedAt ?? '');
+      const openFrom = Date.parse(open?.linkedAt ?? '');
+
+      // Inside the closed interval the first session held it.
+      await expect(
+        repository.findNativeLinkAt(holder.bindingId, closedFrom),
+      ).resolves.toMatchObject({ sessionId: holder.sessionId });
+
+      // The closing instant belongs to the next interval, never this one.
+      const atClose = await repository.findNativeLinkAt(holder.bindingId, closedTo);
+      expect(atClose?.sessionId).not.toBe(holder.sessionId);
+
+      // Long after the handover the open link still answers.
+      await expect(
+        repository.findNativeLinkAt(holder.bindingId, openFrom + 86_400_000),
+      ).resolves.toMatchObject({ sessionId: arriving });
+
+      // Before the binding existed nothing can be attributed.
+      await expect(
+        repository.findNativeLinkAt(holder.bindingId, closedFrom - 1),
+      ).resolves.toBeNull();
+    });
+
+    /**
      * The boundary a single `stream_appendable` check passes and a real second
      * append fails: room for exactly one more entry, but two events to write.
      */

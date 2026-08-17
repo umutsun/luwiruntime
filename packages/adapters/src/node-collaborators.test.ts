@@ -6,7 +6,11 @@ import { spawn } from 'node:child_process';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SpawnCommandRunner, resolveTrustedWindowsUtilities } from './node-collaborators.js';
+import {
+  NodeTranscriptFileSystem,
+  SpawnCommandRunner,
+  resolveTrustedWindowsUtilities,
+} from './node-collaborators.js';
 import {
   NodeWindowsProcessTreeIo,
   WindowsOwnedProcessTreeCleaner,
@@ -148,6 +152,21 @@ afterEach(async () => {
   );
   vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+describe('NodeTranscriptFileSystem', () => {
+  it('applies its read limit in bytes and drops a partial final line', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-transcript-read-'));
+    temporaryDirectories.push(directory);
+    const transcript = join(directory, 'session.jsonl');
+    // Each accented character is two UTF-8 bytes. Four bytes include both
+    // characters but not the newline, so no complete line is available.
+    await writeFile(transcript, 'éé\nsecond\n', 'utf8');
+
+    const result = await new NodeTranscriptFileSystem().readLines(transcript, 4);
+
+    expect(result).toEqual({ lines: [], truncated: true });
+  });
 });
 
 describe('SpawnCommandRunner', () => {
@@ -341,6 +360,12 @@ describe('SpawnCommandRunner', () => {
     ['stderr', 'process.stderr.write("x".repeat(2048));setInterval(()=>{},1000)', 'stderr_limit'],
   ] as const)(
     'terminates excessive %s without retaining the output',
+    // Same worst case as the hanging-executable test above: the limit breach is
+    // detected quickly, but the Windows owned-tree cleanup that follows spends a
+    // PowerShell startup and an `Add-Type` C# compile, which under a saturated
+    // suite run exceeds vitest's 5s default. The explicit bound only guards
+    // against a genuine hang.
+    { timeout: 20_000 },
     async (_stream, script, failure) => {
       let cleanupEvidence: WindowsProcessCleanupResult | undefined;
       const cleaner = new WindowsOwnedProcessTreeCleaner(new NodeWindowsProcessTreeIo(spawn));

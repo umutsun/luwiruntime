@@ -108,6 +108,19 @@ const environmentSchema = z.object({
   LUWI_CONFIG_SNAPSHOT_RETENTION_COUNT: z.coerce.number().int().min(1).max(10_000).default(50),
   LUWI_GIT_COMMAND_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(5_000),
   LUWI_GIT_SCAN_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(300_000),
+  LUWI_TRANSCRIPT_SCAN_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(60_000)
+    .max(86_400_000)
+    .default(300_000),
+  LUWI_TRANSCRIPT_MAX_FILE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1_024)
+    .max(268_435_456)
+    .default(16_777_216),
+  LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN: z.coerce.number().int().min(1).max(100_000).default(2_000),
   LUWI_USAGE_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
   LUWI_GIT_OBSERVATION_RETENTION_COUNT: z.coerce.number().int().min(1).max(10_000).default(100),
   LUWI_GRAPH_GENERATION_RETENTION_COUNT: z.coerce.number().int().min(2).max(100).default(2),
@@ -171,6 +184,9 @@ export type DaemonConfig = {
   configSnapshotRetentionCount?: number;
   gitCommandTimeoutMs?: number;
   gitScanIntervalMs?: number;
+  transcriptScanIntervalMs?: number;
+  transcriptMaxFileBytes?: number;
+  transcriptMaxFilesPerScan?: number;
   usageRetentionDays?: number;
   gitObservationRetentionCount?: number;
   graphGenerationRetentionCount?: number;
@@ -269,6 +285,9 @@ export function loadDaemonConfig(
     configSnapshotRetentionCount: parsed.LUWI_CONFIG_SNAPSHOT_RETENTION_COUNT,
     gitCommandTimeoutMs: parsed.LUWI_GIT_COMMAND_TIMEOUT_MS,
     gitScanIntervalMs: parsed.LUWI_GIT_SCAN_INTERVAL_MS,
+    transcriptScanIntervalMs: parsed.LUWI_TRANSCRIPT_SCAN_INTERVAL_MS,
+    transcriptMaxFileBytes: parsed.LUWI_TRANSCRIPT_MAX_FILE_BYTES,
+    transcriptMaxFilesPerScan: parsed.LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN,
     usageRetentionDays: parsed.LUWI_USAGE_RETENTION_DAYS,
     gitObservationRetentionCount: parsed.LUWI_GIT_OBSERVATION_RETENTION_COUNT,
     graphGenerationRetentionCount: parsed.LUWI_GRAPH_GENERATION_RETENTION_COUNT,

@@ -96,6 +96,15 @@ const usageFields = {
   outputTokens: tokenValueSchema.optional(),
   cachedInputTokens: tokenValueSchema.optional(),
   cachedOutputTokens: tokenValueSchema.optional(),
+  /**
+   * Claude's cache counters are additive, not a subset of `inputTokens`: a real
+   * record carries `input_tokens: 2` beside `cache_read_input_tokens: 23020`.
+   * They live in their own fields precisely because `cachedInputTokens` enforces
+   * `<= inputTokens`, and overloading it would propagate that contradiction.
+   * Deliberately unconstrained against `inputTokens` for the same reason.
+   */
+  cacheCreationInputTokens: tokenValueSchema.optional(),
+  cacheReadInputTokens: tokenValueSchema.optional(),
   reasoningTokens: tokenValueSchema.optional(),
   totalTokens: tokenValueSchema.optional(),
   contextWindowTokens: tokenValueSchema.optional(),
@@ -243,6 +252,8 @@ export const usageSourceCompositionSchema = z.strictObject({
   outputTokens: tokenValueSchema.optional(),
   cachedInputTokens: tokenValueSchema.optional(),
   cachedOutputTokens: tokenValueSchema.optional(),
+  cacheCreationInputTokens: tokenValueSchema.optional(),
+  cacheReadInputTokens: tokenValueSchema.optional(),
   reasoningTokens: tokenValueSchema.optional(),
   totalTokens: tokenValueSchema.optional(),
   contextUsedTokens: tokenValueSchema.optional(),

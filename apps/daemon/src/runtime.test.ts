@@ -420,13 +420,33 @@ describe('native link retention repository', () => {
     const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
     const timerNames = [...source.matchAll(/(\w+Timer) = setInterval\(/g)].map((match) => match[1]);
 
+    // Native link retention is absent from this list on purpose: it rides the
+    // retention tick. The transcript scan is a timer because it reads the
+    // filesystem on its own cadence, the way the git scan does.
     expect(timerNames).toEqual([
       'sweepTimer',
       'messageTimeoutTimer',
       'leaseExpiryTimer',
       'retentionTimer',
       'gitScanTimer',
+      'transcriptScanTimer',
     ]);
+    expect(timerNames).not.toContain('nativeLinkRetentionTimer');
     expect(source).toContain('nativeLinkRetentionSweeper.stop()');
+  });
+
+  /**
+   * A timer cleared on only one of the two teardown paths leaks past shutdown
+   * whenever the other path runs, which is exactly the failure the retention
+   * sweeper avoided by not having a timer at all.
+   */
+  it('clears every timer on both teardown paths', () => {
+    const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
+    const timerNames = [...source.matchAll(/(\w+Timer) = setInterval\(/g)].map((match) => match[1]);
+
+    for (const name of timerNames) {
+      const cleared = [...source.matchAll(new RegExp(`clearInterval\\(${name}\\)`, 'g'))];
+      expect(cleared, `${name} must be cleared on both teardown paths`).toHaveLength(2);
+    }
   });
 });

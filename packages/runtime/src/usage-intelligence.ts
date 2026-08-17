@@ -43,6 +43,8 @@ const numericFields = [
   'outputTokens',
   'cachedInputTokens',
   'cachedOutputTokens',
+  'cacheCreationInputTokens',
+  'cacheReadInputTokens',
   'reasoningTokens',
   'totalTokens',
   'contextUsedTokens',

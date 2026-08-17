@@ -39,7 +39,7 @@ describe('Redis Function registry', () => {
     const registry = createFunctionRegistry();
 
     expect(registry.libraryName).toBe('luwi_v1');
-    expect(registry.version).toBe(11);
+    expect(registry.version).toBe(12);
     expect(Object.values(registry.functions)).toEqual(productionFunctionNames);
   });
 

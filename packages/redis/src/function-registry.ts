@@ -1,12 +1,14 @@
 export type RedisFunctionRegistry = {
   libraryName: string;
   /**
-   * Still 11 with `native_declare` added (B0). The version moves only when a
-   * record shape changes: `isCompatible` hashes the source and compares the
-   * function-name list, so a new function already forces a reload on its own,
-   * and no stored record changed shape in this increment.
+   * 12 since B1. The version moves only when a **record shape** changes, which
+   * is why B0 stayed at 11 despite adding `native_declare`: `isCompatible`
+   * hashes the source and compares the function-name list, so a new function
+   * already forces a reload on its own. B1 adds `cacheCreationInputTokens` and
+   * `cacheReadInputTokens` to the stored usage record, and that is a shape
+   * change, so the version moves with it.
    */
-  version: 11;
+  version: 12;
   functions: {
     projectRegister: string;
     sessionRegister: string;
@@ -76,7 +78,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
   if (testSuffix === undefined) {
     return {
       libraryName: 'luwi_v1',
-      version: 11,
+      version: 12,
       functions: { ...productionFunctions },
     };
   }
@@ -87,7 +89,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
 
   return {
     libraryName: `luwi_test_${testSuffix}_v1`,
-    version: 11,
+    version: 12,
     functions: Object.fromEntries(
       Object.entries(productionFunctions).map(([key, value]) => [key, `${value}_${testSuffix}`]),
     ) as RedisFunctionRegistry['functions'],

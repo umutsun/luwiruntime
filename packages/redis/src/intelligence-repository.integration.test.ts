@@ -145,6 +145,55 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       });
     });
 
+    it('aggregates transcript cache counters and refuses a re-read of the same request', async () => {
+      // The shape B1 actually writes: Claude's additive counters in their own
+      // fields, with cachedInputTokens and totalTokens deliberately unset so
+      // neither the subset invariant nor the total invariant can fire.
+      const usage: UsageRecord = {
+        id: 'usage-transcript-integration-1',
+        projectId: 'project-1',
+        agentId: 'claude-code',
+        sessionId: 'session-1',
+        model: 'claude-opus-5',
+        inputTokens: 2,
+        outputTokens: 738,
+        cacheCreationInputTokens: 18549,
+        cacheReadInputTokens: 22728,
+        source: 'adapter-extracted',
+        confidence: 'reported',
+        observedAt: timestamp,
+        sourceEventId: 'claude-code:fixture-claude-session-0001:req_transcript_1',
+        createdAt: timestamp,
+        metadata: {},
+      };
+
+      await expect(
+        repository.ingestUsage(usage, event('event-usage-transcript-1', 'usage.reported')),
+      ).resolves.toMatchObject({ status: 'created', usage });
+
+      // Re-reading a whole transcript is the steady state, so a repeated
+      // request must write nothing rather than double the aggregates.
+      await expect(
+        repository.ingestUsage(
+          { ...usage, id: 'usage-transcript-integration-2' },
+          event('event-usage-transcript-duplicate', 'usage.reported'),
+        ),
+      ).resolves.toEqual({ status: 'duplicate', existingUsageId: usage.id });
+
+      await expect(
+        commandClient.sendCommand([
+          'HGETALL',
+          keys.usageMetric('session:session-1', 'adapter-extracted'),
+        ]),
+      ).resolves.toMatchObject({
+        recordCount: '1',
+        inputTokens: '2',
+        outputTokens: '738',
+        cacheCreationInputTokens: '18549',
+        cacheReadInputTokens: '22728',
+      });
+    });
+
     it('projects Git, package, technology, and attribution records without source content', async () => {
       const git: GitObservation = {
         id: 'git-integration-1',

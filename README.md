@@ -194,10 +194,23 @@ identity returns `unchanged` and writes nothing, so declaring on a timer or at s
 CLI's `session register` and `session simulate` accept `--native-adapter`, `--native-session` and
 `--native-subagent`, and the seed declares for one seeded session so the fixture holds a binding
 and a real attribution interval. The link starts open and may be closed by the normal presence
-sweeper when the seeded session expires. The transcript reader (B1) and tool/file observation (B2)
-are specified and not started: attributing transcript token records to sessions is still not
-solved, and a record falling inside a trimmed interval stays unbound rather than being assigned to
-the nearest session.
+sweeper when the seeded session expires.
+
+**The transcript reader (B1) is built, so token usage is attributed to sessions.** A background scan
+on `LUWI_TRANSCRIPT_SCAN_INTERVAL_MS` (default five minutes) reads Claude Code's native transcripts —
+each project tree including its nested `subagents/` directories — and records **one usage entry per
+request**, not per record. Each entry is attributed to the LUWI session whose native link interval
+contains the moment the request was observed. Claude's additive cache counters are recorded in their
+own `cacheCreationInputTokens` and `cacheReadInputTokens` fields. Only counters and identifiers leave
+the reader; **no prompt or response text is ever stored or logged**, and nothing found beside a
+transcript is executed. Evidence that no interval covers stays **unbound** and is counted rather than assigned
+to the nearest session — including a record inside an interval that link retention has trimmed. A
+session that never declares its native identity stays unattributed, which is the honest outcome
+rather than a defect. Each scan reads at most 2000 changed files and 16 MiB per file by default;
+files skipped by the scan cap, byte-truncated files, malformed lines, and files stopped by the
+100-malformed-line safety cap are reported separately. These bounds are configurable through
+`LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN` and `LUWI_TRANSCRIPT_MAX_FILE_BYTES`; the malformed-line cap is
+currently fixed. Tool and file observation (B2) is specified and not started.
 
 Automatic drift reconciliation, Git mutation, lifecycle/release scoring, release readiness,
 unified search, GitHub integration, prompt injection, task orchestration, a semantic knowledge

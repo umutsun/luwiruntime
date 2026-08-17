@@ -1043,7 +1043,8 @@ never evicted; a conflict writes nothing and creates no session; missing evidenc
 validation runs before `XGROUP CREATE`, so a refused declaration leaves no inbox stream; append
 capacity is proven per append; all three terminal paths — `close`, `status → completed` and the
 sweeper's `disconnect` — close the link, and resolution is fail-closed. Every timestamp comes from
-one Redis transition clock. `luwi_v1` is at **v11**.
+one Redis transition clock. A landed with `luwi_v1` at **v11**; B1 later moved the current library
+to **v12** for the expanded usage-record shape.
 
 **A2 landed, so A is accepted.** Link retention bounds a binding at 1000 retained closed links
 through `LUWI_NATIVE_LINK_RETENTION_MAX`. `native_link_trim` takes `2 + 2N` keys, removes at most 32
@@ -1055,10 +1056,10 @@ another session, a duplicate, an empty batch — is refused with nothing written
 bindings through `index:session:{sessionId}:native`, which keeps `session_register` at 14 keys at the
 cost of being O(sessions) per pass.
 
-`usage.sessionId` is still not solved, MCP self-registration is still not included, and a trimmed
-interval is never evidence for attribution.
+MCP self-registration is still not included, and a trimmed interval is never evidence for
+attribution.
 
-**Built: the transcript-ingestion declaration surface (B0, ADR 0023).** The design is
+**Built: transcript ingestion through B1 (ADR 0023).** The design is
 `docs/superpowers/specs/2026-08-14-native-transcript-ingestion-design.md`, split B0 / B1 / B2.
 
 **B0 was a declaration surface, not a reader,** because at approval there were **zero native
@@ -1077,9 +1078,28 @@ reload without a version bump, and no stored record changed shape. The CLI's `se
 `session simulate` take `--native-adapter` / `--native-session` / `--native-subagent`, and the seed
 declares for one seeded session, so the fixture holds a binding and a real attribution interval.
 That link starts open and may be closed by the normal presence sweeper when the seeded session
-expires; B0 was verified live through both transitions. **B1 is the reader and usage attribution;
-B2 fills `SESSION_CHANGED_FILE`, which sits in the edge enum with no producer. Both are specified
-and not started**, and `usage.sessionId` stays unattributed until B1.
+expires; B0 was verified live through both transitions.
+
+**B1 is built: `usage.sessionId` is answerable, and only for sessions that declare.** A reader in
+`@luwi/adapters` enumerates the transcript projects root — it derives no directory name from a
+project path, because the drive-letter case varies on this machine and a wrong guess would read zero
+files while looking like a clean scan — walks each project tree including `subagents/`, and emits one
+observation per `requestId`. Its read surface is a separate `TranscriptFileSystem` (`listDirectory`,
+`stat`, a bounded `readLines`, no offset read) rather than two more methods on `AdapterFileSystem`,
+which no adapter and neither config service would ever call. `attributeObservation` in
+`@luwi/runtime` decides attribution by half-open interval containment against
+`findNativeLinkAt(bindingId, atMs)`, a `ZRANGE ... BYSCORE REV LIMIT 0 1` over the links zset that was
+already scored by `linkedAt`. **Nothing falls back to the nearest session**: the four unbound cases —
+no binding, outside every interval, trimmed, and a link whose session cannot be read — are counted
+separately and reported. `projectId` and `agentId` come from the session record, never from the
+transcript, which knows neither. The daemon owns a sixth timer on
+`LUWI_TRANSCRIPT_SCAN_INTERVAL_MS` (default 300000, min 60000), cleared on both teardown paths. A
+re-read is the steady state, so `USAGE_RECORD_DUPLICATE` is counted rather than thrown, and the
+ingested record leaves `cachedInputTokens` and `totalTokens` unset so neither existing invariant can
+fire. `luwi_v1` moves to **v12** — the usage record gained `cacheCreationInputTokens` and
+`cacheReadInputTokens`, and a record-shape change is exactly what the version is for. **B2 fills
+`SESSION_CHANGED_FILE`, which sits in the edge enum with no producer; it is specified and not
+started.**
 
 Measurement corrected two earlier conclusions. `subagents/` directories **do** exist — 71 of them,
 oldest 2026-06-18, at `<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` — and hold

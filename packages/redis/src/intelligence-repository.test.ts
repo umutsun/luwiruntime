@@ -144,6 +144,10 @@ describe('Redis intelligence repository', () => {
         '125',
         'inputTokens',
         '1000',
+        'cacheCreationInputTokens',
+        '18549',
+        'cacheReadInputTokens',
+        '22728',
         'observedFrom',
         timestamp,
         'observedTo',
@@ -160,7 +164,15 @@ describe('Redis intelligence repository', () => {
     ).resolves.toMatchObject({
       projectId: 'project-1',
       recordCount: 125,
-      sources: [{ source: 'agent-exact', recordCount: 125, inputTokens: 1000 }],
+      sources: [
+        {
+          source: 'agent-exact',
+          recordCount: 125,
+          inputTokens: 1000,
+          cacheCreationInputTokens: 18549,
+          cacheReadInputTokens: 22728,
+        },
+      ],
     });
     expect(client.commands[0]).toEqual([
       'HGETALL',

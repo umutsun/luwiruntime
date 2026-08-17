@@ -1,4 +1,4 @@
-import { access, readFile, realpath, stat } from 'node:fs/promises';
+import { access, open, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative } from 'node:path';
 import { spawn } from 'node:child_process';
 
@@ -7,6 +7,9 @@ import type {
   AdapterCommandRunner,
   AdapterExecutableResolver,
   AdapterFileSystem,
+  TranscriptDirectoryEntry,
+  TranscriptFileStat,
+  TranscriptFileSystem,
 } from './types.js';
 import {
   NodeWindowsProcessTreeIo,
@@ -189,6 +192,85 @@ export class NodeAdapterFileSystem implements AdapterFileSystem {
         return undefined;
       }
       throw error;
+    }
+  }
+}
+
+function isMissingOrForbidden(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error.code === 'ENOENT' || error.code === 'EACCES' || error.code === 'EPERM')
+  );
+}
+
+/**
+ * Real filesystem access for the transcript reader.
+ *
+ * Follows `NodeAdapterFileSystem`'s convention exactly: a missing or unreadable
+ * path is `undefined`, and anything else rethrows. A developer's transcript tree
+ * routinely contains directories the daemon may not read, and that is an absence
+ * of evidence rather than a fault.
+ */
+export class NodeTranscriptFileSystem implements TranscriptFileSystem {
+  async listDirectory(path: string): Promise<TranscriptDirectoryEntry[] | undefined> {
+    try {
+      const entries = await readdir(path, { withFileTypes: true });
+      return entries.map((entry) => ({
+        name: entry.name,
+        isDirectory: entry.isDirectory(),
+      }));
+    } catch (error) {
+      if (
+        isMissingOrForbidden(error) ||
+        (error instanceof Error && 'code' in error && error.code === 'ENOTDIR')
+      ) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  async stat(path: string): Promise<TranscriptFileStat | undefined> {
+    try {
+      const stats = await stat(path);
+      return { modifiedAtMs: stats.mtimeMs, sizeBytes: stats.size };
+    } catch (error) {
+      if (isMissingOrForbidden(error)) return undefined;
+      throw error;
+    }
+  }
+
+  async readLines(
+    path: string,
+    maxBytes: number,
+  ): Promise<{ lines: string[]; truncated: boolean } | undefined> {
+    let file: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      file = await open(path, 'r');
+      const stats = await file.stat();
+      const bytesToRead = Math.min(stats.size, maxBytes);
+      const buffer = Buffer.alloc(bytesToRead);
+      let offset = 0;
+      while (offset < buffer.length) {
+        const { bytesRead } = await file.read(buffer, offset, buffer.length - offset, offset);
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+      }
+
+      const truncated = stats.size > maxBytes;
+      const content = buffer.subarray(0, offset).toString('utf8');
+      const lines = content.split('\n');
+      if (truncated) {
+        // The final line of a byte-bounded read may be partial by construction.
+        lines.pop();
+      }
+      return { lines, truncated };
+    } catch (error) {
+      if (isMissingOrForbidden(error)) return undefined;
+      throw error;
+    } finally {
+      await file?.close();
     }
   }
 }

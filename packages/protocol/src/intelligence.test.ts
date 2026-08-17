@@ -53,6 +53,54 @@ describe('Phase 4 intelligence protocol', () => {
     expect(result.totalTokens).toBeUndefined();
   });
 
+  it('carries Claude additive cache counters without touching cachedInputTokens', () => {
+    // The real shape measured in a native transcript: input_tokens is tiny while
+    // cache_read_input_tokens dwarfs it, because Claude's counters are additive
+    // rather than a subset of the input. B1 records them in their own fields and
+    // leaves cachedInputTokens and totalTokens unset, so neither the subset
+    // invariant nor the total invariant can fire.
+    const result = usageRecordSchema.parse({
+      id: 'usage-transcript-1',
+      projectId: 'project-1',
+      agentId: 'claude-code',
+      sessionId: 'session-1',
+      source: 'adapter-extracted',
+      confidence: 'reported',
+      inputTokens: 2,
+      outputTokens: 738,
+      cacheCreationInputTokens: 18549,
+      cacheReadInputTokens: 22728,
+      observedAt: timestamp,
+      createdAt: timestamp,
+      metadata: {},
+    });
+
+    expect(result.cacheCreationInputTokens).toBe(18549);
+    expect(result.cacheReadInputTokens).toBe(22728);
+    expect(result.cachedInputTokens).toBeUndefined();
+    expect(result.totalTokens).toBeUndefined();
+  });
+
+  it('leaves the cachedInputTokens subset invariant in force', () => {
+    // The new fields must not weaken the old one: cachedInputTokens keeps its
+    // meaning, so a value above inputTokens is still a rejection.
+    expect(() =>
+      usageRecordSchema.parse({
+        id: 'usage-transcript-2',
+        projectId: 'project-1',
+        agentId: 'claude-code',
+        sessionId: 'session-1',
+        source: 'adapter-extracted',
+        confidence: 'reported',
+        inputTokens: 2,
+        cachedInputTokens: 22728,
+        observedAt: timestamp,
+        createdAt: timestamp,
+        metadata: {},
+      }),
+    ).toThrow();
+  });
+
   it('accepts consistent optional token fields and rejects inconsistent totals', () => {
     expect(
       usageIngestRequestSchema.parse({
