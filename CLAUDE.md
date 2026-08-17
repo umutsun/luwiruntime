@@ -66,6 +66,10 @@ History is short and every commit is a large checkpoint:
 | `98daefc` | The phase 3 panel anatomy written into the redesign plan       |
 | `4404b1a` | Redesign phases 3–6: pulse rows, runtime route, palette, scope |
 | `9b6e351` | scp-style git remotes admitted; detected-remote write guard    |
+| `3d2a679` | Redesign completion and remote-schema fix recorded             |
+| `62d5a54` | Project evidence docked into the inspector column              |
+| `ddc1d02` | CLI lease family, MCP registration docs, drawer UX contract    |
+| `5f1bd98` | ADR 0023 B0: post-registration native session declaration      |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
