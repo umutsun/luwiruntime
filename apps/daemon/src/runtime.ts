@@ -61,7 +61,10 @@ import { createGitObserver } from './git-observer.js';
 import { createProjectService } from './project-service.js';
 import { createRealtimeRelay } from './realtime-relay.js';
 import { createSessionService, isVersionConflict } from './session-service.js';
-import { createTranscriptIngestService } from './transcript-ingest-service.js';
+import {
+  createTranscriptIngestService,
+  createTranscriptIngestTick,
+} from './transcript-ingest-service.js';
 import {
   installGracefulShutdown,
   type GracefulShutdownController,
@@ -439,7 +442,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let sweeping = false;
   let sweepingMessageTimeouts = false;
   let sweepingLeaseExpiry = false;
-  let ingestingTranscripts = false;
   let retaining = false;
   const backgroundWork = createBackgroundWorkTracker();
   const projectRefreshes = new Set<string>();
@@ -713,6 +715,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     },
     transcriptRoot: join(config.nativeHome ?? homedir(), '.claude', 'projects'),
     adapterId: 'claude-code',
+  });
+  const transcriptIngestTick = createTranscriptIngestTick({
+    runtimeState: () => readiness.state,
+    schedule: (work, onError) => backgroundWork.run(work, onError),
+    ingestOnce: () => transcriptIngestService.ingestOnce(),
+    // Counters only — no session id, no native id, no content.
+    onComplete: (summary) => app?.log.debug(summary, 'Transcript ingestion completed'),
+    onError: (error) => app?.log.error({ err: error }, 'Transcript ingestion failed'),
   });
   const messageTimeoutSweeper = createMessageTimeoutSweeper({
     now: Date.now,
@@ -1055,25 +1065,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     gitScanTimer.unref?.();
 
     transcriptScanTimer = setInterval(
-      () => {
-        if (ingestingTranscripts || readiness.state !== 'ready') return;
-        ingestingTranscripts = true;
-        const scheduled = backgroundWork.run(
-          async () => {
-            try {
-              const summary = await transcriptIngestService.ingestOnce();
-              // Counters only — no session id, no native id, no content.
-              app?.log.debug(summary, 'Transcript ingestion completed');
-            } finally {
-              ingestingTranscripts = false;
-            }
-          },
-          (error) => app?.log.error({ err: error }, 'Transcript ingestion failed'),
-        );
-        if (!scheduled) {
-          ingestingTranscripts = false;
-        }
-      },
+      transcriptIngestTick,
       setting(config, 'transcriptScanIntervalMs'),
     );
     transcriptScanTimer.unref?.();

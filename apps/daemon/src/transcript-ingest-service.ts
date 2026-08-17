@@ -3,7 +3,12 @@ import type {
   TranscriptScanCursor,
   TranscriptUsageObservation,
 } from '@luwi/adapters';
-import type { NativeSessionBinding, NativeSessionLink, UsageIngestRequest } from '@luwi/protocol';
+import type {
+  NativeSessionBinding,
+  NativeSessionLink,
+  RuntimeStateName,
+  UsageIngestRequest,
+} from '@luwi/protocol';
 import {
   ApplicationError,
   attributeObservation,
@@ -59,6 +64,34 @@ export type TranscriptIngestDependencies = {
 
 export interface TranscriptIngestService {
   ingestOnce(): Promise<TranscriptIngestSummary>;
+}
+
+export type TranscriptIngestTickDependencies = {
+  runtimeState: () => RuntimeStateName;
+  schedule: (work: () => Promise<void>, onError: (error: unknown) => void) => boolean;
+  ingestOnce: () => Promise<TranscriptIngestSummary>;
+  onComplete: (summary: TranscriptIngestSummary) => void;
+  onError: (error: unknown) => void;
+};
+
+/** A re-entrancy-safe timer callback that refuses new work outside ready state. */
+export function createTranscriptIngestTick(
+  dependencies: TranscriptIngestTickDependencies,
+): () => void {
+  let ingesting = false;
+
+  return () => {
+    if (ingesting || dependencies.runtimeState() !== 'ready') return;
+    ingesting = true;
+    const scheduled = dependencies.schedule(async () => {
+      try {
+        dependencies.onComplete(await dependencies.ingestOnce());
+      } finally {
+        ingesting = false;
+      }
+    }, dependencies.onError);
+    if (!scheduled) ingesting = false;
+  };
 }
 
 function emptySummary(): TranscriptIngestSummary {

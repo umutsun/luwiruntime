@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ApplicationError } from '@luwi/runtime';
 import {
+  createTranscriptIngestTick,
   createTranscriptIngestService,
   type TranscriptIngestDependencies,
 } from './transcript-ingest-service.js';
@@ -320,5 +321,75 @@ describe('transcript ingest service', () => {
     expect(serialized).not.toContain('session-1');
     expect(serialized).not.toContain('fixture-claude-session-0001');
     expect(serialized).not.toContain('req_1');
+  });
+});
+
+describe('transcript ingest scheduler tick', () => {
+  const emptySummary = {
+    filesScanned: 0,
+    filesSkippedUnchanged: 0,
+    requestsObserved: 0,
+    ingested: 0,
+    skippedDuplicate: 0,
+    skippedNoBinding: 0,
+    skippedOutsideInterval: 0,
+    skippedTrimmed: 0,
+    skippedSessionMissing: 0,
+    malformedLines: 0,
+    filesStoppedMalformedCap: 0,
+    truncatedFiles: 0,
+    filesSkippedOverCap: 0,
+  };
+
+  it('does not schedule a scan while the runtime is draining', () => {
+    const schedule = vi.fn(() => true);
+    const tick = createTranscriptIngestTick({
+      runtimeState: () => 'draining',
+      schedule,
+      ingestOnce: vi.fn(async () => emptySummary),
+      onComplete: vi.fn(),
+      onError: vi.fn(),
+    });
+
+    tick();
+
+    expect(schedule).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed scan and permits the next timer tick', async () => {
+    const failure = new Error('scan failed');
+    const ingestOnce = vi
+      .fn<() => Promise<typeof emptySummary>>()
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(emptySummary);
+    const onComplete = vi.fn();
+    const onError = vi.fn();
+    const pending: Array<() => Promise<void>> = [];
+    const schedule = vi.fn((work: () => Promise<void>, report: (error: unknown) => void) => {
+      pending.push(async () => {
+        try {
+          await work();
+        } catch (error) {
+          report(error);
+        }
+      });
+      return true;
+    });
+    const tick = createTranscriptIngestTick({
+      runtimeState: () => 'ready',
+      schedule,
+      ingestOnce,
+      onComplete,
+      onError,
+    });
+
+    tick();
+    await pending.shift()?.();
+    tick();
+    await pending.shift()?.();
+
+    expect(onError).toHaveBeenCalledWith(failure);
+    expect(ingestOnce).toHaveBeenCalledTimes(2);
+    expect(onComplete).toHaveBeenCalledWith(emptySummary);
   });
 });
