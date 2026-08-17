@@ -1,4 +1,5 @@
 import {
+  agentKindSchema,
   agentMessageResponseSchema,
   evidenceTypeSchema,
   eventListResponseSchema,
@@ -27,7 +28,8 @@ import {
   type NativeSessionRef,
   type RealtimeEventMessage,
 } from '@luwi/protocol';
-import { ApplicationError } from '@luwi/runtime';
+import { resolveNativeIdentity } from '@luwi/adapters';
+import { ApplicationError, createSessionBootstrap } from '@luwi/runtime';
 import { Command } from 'commander';
 import { createInterface } from 'node:readline/promises';
 
@@ -74,12 +76,19 @@ export type CliDependencies = {
   clearInterval: (timer: NodeJS.Timeout) => void;
   wait: (milliseconds: number) => Promise<void>;
   confirm: (prompt: string) => Promise<boolean>;
+  /**
+   * The process environment, injected so `session attach` can resolve a native
+   * identity without a test passing merely because it runs inside an agent
+   * session.
+   */
+  environment: Readonly<Record<string, string | undefined>>;
 };
 
 const defaultDependencies: CliDependencies = {
   fetch: (url, init) => fetch(url, init as RequestInit),
   createWebSocket: (url) => new WebSocket(url) as unknown as CliWebSocket,
   signals: process,
+  environment: process.env,
   stdout: process.stdout,
   stderr: process.stderr,
   setInterval,
@@ -910,6 +919,104 @@ export function createCli(dependencies: CliDependencies): Command {
         ),
       );
     });
+  /**
+   * Attaches the *calling* process to LUWI: it resolves this session's own
+   * native identity from the environment, registers, heartbeats while it runs,
+   * and closes on SIGINT or SIGTERM.
+   *
+   * This is the surface that turns a running agent into a visible one. It
+   * differs from `session simulate` in that it declares nothing it was not
+   * given: an identity that cannot be resolved registers with no native block
+   * rather than a fabricated one.
+   */
+  sessions
+    .command('attach')
+    .requiredOption('--project <projectId>', 'Registered project ID')
+    .requiredOption('--agent <agentId>', 'Opaque agent ID')
+    .option('--working-directory <path>', 'Working directory', process.cwd())
+    .option('--agent-kind <kind>', 'Vendor whose identity to resolve', 'claude-code')
+    .option('--heartbeat-ms <milliseconds>', 'Heartbeat interval', '5000')
+    .option('--dry-run', 'Print what would be declared and exit without registering')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        project: string;
+        agent: string;
+        workingDirectory: string;
+        agentKind: string;
+        heartbeatMs: string;
+        dryRun?: boolean;
+        url: string;
+      }) => {
+        const kind = agentKindSchema.parse(options.agentKind);
+        const native = resolveNativeIdentity(kind, dependencies.environment);
+        const request_ = {
+          projectId: options.project,
+          agentId: options.agent,
+          workingDirectory: options.workingDirectory,
+          ...(native === undefined ? {} : { native }),
+        };
+
+        if (options.dryRun === true) {
+          printJson(dependencies, request_);
+          return;
+        }
+
+        const bootstrap = createSessionBootstrap({
+          client: {
+            register: async (input) =>
+              request(
+                dependencies,
+                options.url,
+                '/api/v1/sessions',
+                sessionResponseSchema,
+                jsonBody(input),
+              ),
+            heartbeat: async (sessionId) => {
+              await request(
+                dependencies,
+                options.url,
+                `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+                sessionResponseSchema,
+                jsonBody({}),
+              );
+            },
+            close: async (sessionId) => {
+              await request(
+                dependencies,
+                options.url,
+                `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
+                sessionResponseSchema,
+                jsonBody({}),
+              );
+            },
+          },
+          ...request_,
+          heartbeatIntervalMs: Number.parseInt(options.heartbeatMs, 10),
+          onError: (error: unknown) => {
+            // Reported, never thrown: LUWI must not stop the tool it coordinates.
+            dependencies.stderr.write(`${String(error)}\n`);
+          },
+          setInterval: dependencies.setInterval,
+          clearInterval: dependencies.clearInterval,
+        });
+
+        await bootstrap.start();
+        if (bootstrap.sessionId === undefined) return;
+        printJson(dependencies, { attached: bootstrap.sessionId, ...request_ });
+
+        await new Promise<void>((resolve) => {
+          const stop = (): void => {
+            dependencies.signals.off('SIGINT', stop);
+            dependencies.signals.off('SIGTERM', stop);
+            resolve();
+          };
+          dependencies.signals.once('SIGINT', stop);
+          dependencies.signals.once('SIGTERM', stop);
+        });
+        await bootstrap.stop();
+      },
+    );
   sessions
     .command('simulate')
     .requiredOption('--project <projectId>', 'Registered project ID')

@@ -160,12 +160,12 @@ to be required, stop and record why — that would mean the phase is larger than
 
 **Files:** `apps/cli/src/session-cli.ts`, `apps/cli/src/cli.test.ts`
 
-- [ ] `luwi session attach --project <id> --agent <id>` — resolves identity from the environment,
+- [x] `luwi session attach --project <id> --agent <id>` — resolves identity from the environment,
       registers, heartbeats, and closes on `SIGINT`/`SIGTERM`. This is the surface a developer or a
       shell hook can call, and it is the one thing that turns C2's nine processes into live sessions.
-- [ ] `--dry-run` prints what it would register and exits, so an owner can verify the identity
+- [x] `--dry-run` prints what it would register and exits, so an owner can verify the identity
       before anything is written.
-- [ ] Tests: attach registers with the resolved native ref; attach without a resolvable identity
+- [x] Tests: attach registers with the resolved native ref; attach without a resolvable identity
       still registers, with no native block (C-D2); a daemon that is down exits non-zero **with a
       clear message** and never hangs.
 

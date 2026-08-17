@@ -35,6 +35,9 @@ importers:
 
   apps/cli:
     dependencies:
+      '@luwi/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
       '@luwi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

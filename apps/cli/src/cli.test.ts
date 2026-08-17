@@ -787,6 +787,148 @@ describe('LUWI CLI', () => {
   });
 });
 
+describe('session attach', () => {
+  const registered = {
+    id: 'session-attached',
+    agentId: 'claude-code',
+    projectId: 'project-1',
+    status: 'starting',
+    workingDirectory: 'C:/work',
+    startedAt: '2026-08-17T12:00:00.000Z',
+    lastHeartbeatAt: '2026-08-17T12:00:00.000Z',
+    metadata: {},
+    presence: 'online',
+  };
+
+  it('declares the identity the environment carries, then heartbeats', async () => {
+    const bodies: unknown[] = [];
+    const urls: string[] = [];
+    const timers: Array<() => void> = [];
+    let signalListener: (() => void) | undefined;
+    const dependencies: Partial<CliDependencies> = {
+      environment: {
+        CLAUDECODE: '1',
+        CLAUDE_CODE_SESSION_ID: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      },
+      fetch: async (url, init) => {
+        urls.push(url);
+        if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
+        return response(registered);
+      },
+      setInterval: ((callback: () => void) => {
+        timers.push(callback);
+        return timers.length as unknown as NodeJS.Timeout;
+      }) as never,
+      clearInterval: (() => undefined) as never,
+      signals: {
+        once: (_signal: string, listener: () => void) => {
+          signalListener = listener;
+          return undefined;
+        },
+        off: () => undefined,
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    };
+
+    const run = runCli(
+      ['session', 'attach', '--project', 'project-1', '--agent', 'claude-code'],
+      dependencies,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    // Registration carried the native reference resolved from the environment.
+    expect(bodies[0]).toMatchObject({
+      projectId: 'project-1',
+      agentId: 'claude-code',
+      native: {
+        adapterId: 'claude-code',
+        nativeSessionId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      },
+    });
+
+    // A beat goes to the registered session, not a guessed id.
+    timers[0]?.();
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(urls.some((url) => url.endsWith('/api/v1/sessions/session-attached/heartbeat'))).toBe(
+      true,
+    );
+
+    signalListener?.();
+    await run;
+    expect(urls.some((url) => url.endsWith('/api/v1/sessions/session-attached/close'))).toBe(true);
+  });
+
+  it('registers without a native block when the environment carries no identity', async () => {
+    // Honest: the session is visible but unattributed, rather than bound to a
+    // reference that was invented for it.
+    const bodies: unknown[] = [];
+    let signalListener: (() => void) | undefined;
+    const dependencies: Partial<CliDependencies> = {
+      environment: {},
+      fetch: async (_url, init) => {
+        if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
+        return response(registered);
+      },
+      setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+      clearInterval: (() => undefined) as never,
+      signals: {
+        once: (_signal: string, listener: () => void) => {
+          signalListener = listener;
+          return undefined;
+        },
+        off: () => undefined,
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    };
+
+    const run = runCli(
+      ['session', 'attach', '--project', 'project-1', '--agent', 'codex'],
+      dependencies,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    signalListener?.();
+    await run;
+
+    expect(bodies[0]).toMatchObject({ projectId: 'project-1', agentId: 'codex' });
+    expect((bodies[0] as Record<string, unknown>)['native']).toBeUndefined();
+  });
+
+  it('prints what it would declare and exits under --dry-run', async () => {
+    let output = '';
+    let called = false;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { CLAUDE_CODE_SESSION_ID: 'abc-123' },
+      fetch: async () => {
+        called = true;
+        return response(registered);
+      },
+      stdout: {
+        write: (text) => {
+          output += text;
+        },
+      },
+    };
+
+    await runCli(
+      ['session', 'attach', '--project', 'project-1', '--agent', 'claude-code', '--dry-run'],
+      dependencies,
+    );
+
+    expect(called).toBe(false);
+    expect(JSON.parse(output)).toMatchObject({
+      native: { adapterId: 'claude-code', nativeSessionId: 'abc-123' },
+    });
+  });
+});
+
 describe('lease commands', () => {
   const heldLease = {
     id: 'lease-1',

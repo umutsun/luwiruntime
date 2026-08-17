@@ -125,6 +125,32 @@ describe('session bootstrap', () => {
     expect(errors.length).toBeGreaterThan(0);
   });
 
+  it('does not unref the heartbeat timer, which is what keeps an attached process alive', () => {
+    // `unref` is right for a daemon, where other work holds the event loop
+    // open, and fatal for `session attach`, where the heartbeat *is* the only
+    // thing keeping the process alive. Unreffed, the CLI exited immediately
+    // after registering and the session lapsed to `disconnected` 15 s later —
+    // observed on the first live run.
+    const unref = vi.fn();
+    const timer = { unref } as unknown as NodeJS.Timeout;
+    const bootstrap = createSessionBootstrap({
+      client: {
+        register: vi.fn(async () => ({ id: 'session-1' })),
+        heartbeat: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+      },
+      projectId: 'project-1',
+      agentId: 'claude-code',
+      workingDirectory: 'C:/work',
+      setInterval: (() => timer) as never,
+      clearInterval: (() => undefined) as never,
+    });
+
+    return bootstrap.start().then(() => {
+      expect(unref).not.toHaveBeenCalled();
+    });
+  });
+
   it('closes the session on stop', async () => {
     const { bootstrap, client } = harness();
 

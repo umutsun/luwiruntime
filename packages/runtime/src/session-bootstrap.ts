@@ -93,6 +93,15 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
         starting = false;
       }
 
+      /**
+       * Deliberately **not** unreffed.
+       *
+       * A daemon has other work holding its event loop open, so unreffing its
+       * timers is right. Here the heartbeat is the only thing keeping an
+       * attached process alive: unreffed, `session attach` registered and then
+       * exited immediately, and the session it had just created lapsed to
+       * `disconnected` fifteen seconds later. Observed on the first live run.
+       */
       timer = arm(() => {
         const current = sessionId;
         if (current === undefined) return;
@@ -100,7 +109,6 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
         // session: one blip must not become a permanent `disconnected`.
         void options.client.heartbeat(current).catch(report);
       }, intervalMs);
-      timer.unref?.();
     },
 
     async stop() {
