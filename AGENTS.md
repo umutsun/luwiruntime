@@ -1097,9 +1097,21 @@ transcript, which knows neither. The daemon owns a sixth timer on
 re-read is the steady state, so `USAGE_RECORD_DUPLICATE` is counted rather than thrown, and the
 ingested record leaves `cachedInputTokens` and `totalTokens` unset so neither existing invariant can
 fire. `luwi_v1` moves to **v12** — the usage record gained `cacheCreationInputTokens` and
-`cacheReadInputTokens`, and a record-shape change is exactly what the version is for. **B2 fills
-`SESSION_CHANGED_FILE`, which sits in the edge enum with no producer; it is specified and not
-started.**
+`cacheReadInputTokens`, and a record-shape change is exactly what the version is for.
+
+**B1 was verified end to end on the fixture on 2026-08-17**, which required fixing a P0 first: every
+intelligence mutation ended in an awaited full graph reprojection — a TypeScript rescan of the whole
+project plus one `HGET` per node and per edge of the active generation — so
+`POST /api/v1/context/contributions` logged `incoming request`, never logged `request completed`, and
+the seed died at step 14. The reprojection is best-effort by construction, so it now runs on the
+daemon's `backgroundWork` tracker through an injected `deferProjection` seam rather than inside the
+response; the request answers in ~47 ms and startup dropped from 42 s to ~1 s, with the projection
+still completing and still reporting `projectionHealth healthy` afterwards. With that fixed the seed
+completed all 20 steps, and a scan over synthesised fixture transcripts ingested 2 of 3 observed
+requests, held the third as `skippedOutsideInterval`, counted the partial final line as
+`malformedLines`, joined a subagent file on its in-record `sessionId`, and on a second pass reported
+`skippedDuplicate 1` with `ingested 0`. **B2 fills `SESSION_CHANGED_FILE`, which sits in the edge
+enum with no producer; it is specified and not started.**
 
 Measurement corrected two earlier conclusions. `subagents/` directories **do** exist — 71 of them,
 oldest 2026-06-18, at `<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` — and hold

@@ -280,13 +280,109 @@ Pure, no Redis, mirroring how `evaluateNativeDeclaration` isolates policy.
 
 - [x] `pnpm format`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`
 - [x] `/redis-it` for the integration leg.
-- [ ] Exercise it live against the fixture runtime (`REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME`,
+- [x] Exercise it live against the fixture runtime (`REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME`,
       `WORKSPACE_ID=fixture-…` **together**), whose seeded binding holds a real closed interval, and
-      report the ingestion summary honestly — including how many observations were unbound.
-      Deferred because the fixture seed currently hangs indefinitely at
-      `POST /api/v1/context/contributions`; B1's unit and Redis integration legs do not use that
-      route, and this unchecked item must not imply a live E2E run happened.
+      report the ingestion summary honestly — including how many observations were unbound. Evidence
+      is in "Live fixture evidence" below.
 - [x] Report per §19: what ran, what passed, and what is still unattributed.
+
+### Live fixture evidence
+
+Ran 2026-08-17 against `redis://127.0.0.1:6379/15` with `WORKSPACE_ID=fixture-p0`. The blocker that
+deferred this — `POST /api/v1/context/contributions` never completing — was root-caused and fixed
+first; see Task 10. The seed then completed all 20 steps, including step 13 (3 context sources) and
+step 14 (3 contributions).
+
+Transcripts were **synthesised** into the fixture's `LUWI_NATIVE_HOME` per §7, never copied: one
+top-level file and one `subagents/workflows/wf-1/agent-zzz.jsonl`, carrying a request inside the
+seeded interval `[11:20:20.213Z, 11:20:36.234Z)`, one outside it, a `sessionId`-less bookkeeping
+record, and a partial final line.
+
+First scan:
+
+```json
+{
+  "filesScanned": 2,
+  "filesSkippedUnchanged": 0,
+  "requestsObserved": 3,
+  "ingested": 2,
+  "skippedDuplicate": 0,
+  "skippedNoBinding": 0,
+  "skippedOutsideInterval": 1,
+  "skippedTrimmed": 0,
+  "skippedSessionMissing": 0,
+  "malformedLines": 1,
+  "filesStoppedMalformedCap": 0,
+  "truncatedFiles": 0,
+  "filesSkippedOverCap": 0
+}
+```
+
+Second scan, after touching only the top-level file:
+
+```json
+{
+  "filesScanned": 1,
+  "filesSkippedUnchanged": 1,
+  "requestsObserved": 2,
+  "ingested": 0,
+  "skippedDuplicate": 1,
+  "skippedOutsideInterval": 1,
+  "malformedLines": 1
+}
+```
+
+The written record carries `sessionId d2c4f5c6-…`, `projectId 87b15875-…` and `agentId seed-claude`
+— all three from the session record, none from the transcript — with `outputTokens 738` (the
+greatest of the request's three disagreeing records) and `observedAt` taken from that same record.
+`cacheCreationInputTokens 18549` and `cacheReadInputTokens 22728` are populated; `totalTokens` and
+`cachedInputTokens` are both unset, so neither existing invariant fired. The subagent request
+attributed to the same session despite its `agent-zzz` filename stem, and the session's usage index
+stayed at 4 members across both scans, so the duplicate really did write nothing. `FCALL
+luwi_function_version_v1` on the live server returned `{"version":12,"libraryName":"luwi_v1"}` with
+30 functions, so the loader really did install v12.
+
+## Task 10: The P0 that blocked the live run
+
+Not part of B1's design; found while closing Task 9's live item and fixed first, because the seed
+could not reach the transcript scan without it.
+
+**Symptom.** `POST /api/v1/context/contributions` logged `incoming request` and never logged
+`request completed`. The seed died at step 14 with `TypeError: fetch failed`. Reproduced on the
+fixture at HTTP 000 after **300 s**, while `POST /api/v1/sessions` on the same daemon answered in
+**20 ms** — so the daemon and Redis were both healthy and the cost was specific to this path.
+
+**Root cause.** Every mutation ended in `await projectIncrementally(...)`, which despite its name is
+a **full reprojection** held inside the request:
+
+1. `projectGraphSnapshot` rescans the whole project with the TypeScript compiler API on every call —
+   `observeCodeStructure` sits in its body, not on the rebuild path alone.
+2. `replaceGraphSnapshot` then calls `readGraphGeneration(100_001, 100_001)`, which reads the active
+   generation one `HGET` per node and per edge. The fixture generation held **15 093 nodes + 25 409
+   edges = 40 502 sequential reads**; measured live at 111 reads/s under a working daemon, that is
+   **~361 s for a single pass**.
+3. Because the snapshot produces no `file` nodes while the generation held 13 786 of them, the diff
+   turned into tens of thousands of deletes, encoded through an `operationKeys.indexOf(...)` lookup
+   that is O(n²) — 1.4 s of synchronous work at fixture scale on top of the round-trips.
+
+**Fix.** The reprojection is best-effort by construction: it swallows every failure into a
+projection-failure record and returns `void`, so awaiting it gives the caller nothing it can act on.
+It is now handed to an injected `deferProjection` seam, which the daemon wires to its existing
+`backgroundWork` tracker — still tracked, still logged, still drained at shutdown. The default runs
+inline, so no existing test changed behaviour. **No timeout was added and no bound was loosened**;
+the work still happens, just not inside the response.
+
+- [x] Failing test first: `answers a context observation without waiting for the graph projection`
+      blocks the projection at its first Redis call and asserts the mutation still returns. Verified
+      red (15 s timeout) with the `await` restored, green without it.
+- [x] `deferProjection` on `IntelligenceServiceOptions`; six `await projectIncrementally(...)` call
+      sites become fire-and-forget.
+- [x] `runtime.ts` passes `backgroundWork.run`, logging a failed projection at `error` and a
+      drain-time skip at `debug`.
+- [x] Live result: the same request now answers **HTTP 201 in 47 ms**, daemon startup dropped from
+      **42 s to 1 s**, and `GET /api/v1/graph/summary` afterwards reports `projectionHealth healthy`
+      with a _larger_ generation (15 809 nodes / 26 432 edges) — the projection still ran to
+      completion in the background, so this is deferral and not a silent drop.
 
 ## Regression coverage map
 
@@ -303,3 +399,4 @@ Pure, no Redis, mirroring how `evaluateNativeDeclaration` isolates policy.
 | Conversation content reaching Redis or the log             | Task 5 summary carries counters only    |
 | A silent truncation reading as complete coverage           | Task 5 explicit bound counters          |
 | A leaked timer past shutdown                               | Task 6 both-teardown-paths test         |
+| A mutation held open by the graph reprojection             | Task 10 deferred-projection test        |

@@ -255,7 +255,22 @@ Two consequences to know before touching the daemon or the dashboard:
 To look at any of it, start a fixture daemon — `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and
 `WORKSPACE_ID=fixture-…` **together**, because Redis alone is not isolation: per ADR 0007 agent
 definitions, capabilities and profiles are filesystem-canonical and land in the real `~/.luwi`
-otherwise. `scripts/seed-runtime.ts` refuses to run unless the daemon reports a `fixture` workspace.
+otherwise. `scripts/seed-runtime.ts` refuses to run unless the daemon reports a `fixture` workspace,
+and also wants `LUWI_SEED_CONFIRM=1`. Point `LUWI_HOME` at the **same** directory a previous seed
+used: db15 keeps capability projections whose manifests live on disk, so a fresh home against an old
+database makes `POST /api/v1/context/scan` fail `ENOENT` and answer 500 — the same
+filesystem-canonical rule seen from the other side.
+
+**A mutation no longer waits for the operational graph.** Every intelligence mutation used to end in
+`await projectIncrementally(...)`, which despite its name rescans the whole project with the
+TypeScript compiler API and then reads the active generation one `HGET` per node and per edge. On a
+fixture holding 15 093 nodes and 25 409 edges that was ~40 500 sequential reads for a single request:
+`POST /api/v1/context/contributions` logged `incoming request`, never logged `request completed`, and
+the seed died at step 14 with `TypeError: fetch failed`. The reprojection now goes to the daemon's
+`backgroundWork` tracker through the injected `deferProjection` seam — still tracked, still logged,
+still drained at shutdown — and the same request answers in ~47 ms while daemon startup dropped from
+42 s to about 1 s. It is best-effort by construction (it swallows failures into a projection-failure
+record and returns `void`), so awaiting it never told the caller anything.
 
 Two capture traps worth knowing. `chrome --virtual-time-budget` accelerates timers while the
 network stays real, so the dashboard's reconnect timer aborts every on-demand read and the panels
