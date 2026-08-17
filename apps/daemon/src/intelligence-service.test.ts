@@ -365,6 +365,60 @@ describe('daemon intelligence service', () => {
     ).rejects.toMatchObject({ code: 'CONTEXT_OBSERVATION_INVALID' });
   });
 
+  it('answers a context observation without waiting for the graph projection', async () => {
+    // The projection is best-effort by construction: projectIncrementally
+    // swallows every error and returns void, so awaiting it inside the request
+    // buys the caller nothing and costs it a full reprojection — a TypeScript
+    // scan of the whole project plus a read of every node and edge in the
+    // active generation. On a real fixture that is minutes, and the response
+    // never arrives.
+    const values = dependencies();
+    let releaseProjection: (() => void) | undefined;
+    // Blocks the projection at its very first Redis call, which is the step a
+    // real reprojection reaches before it starts rescanning and rewriting.
+    let resolveStarted: (() => void) | undefined;
+    const projectionStarted = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    values.repository.getActiveGraphGeneration = vi.fn(async () => {
+      resolveStarted?.();
+      await new Promise<void>((resolveHeld) => {
+        releaseProjection = resolveHeld;
+      });
+      return 'active';
+    });
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      createId: () => 'observation-slow-projection',
+      now: () => new Date(timestamp),
+    });
+
+    const observed = await service.observeContextContribution({
+      projectId: project.id,
+      agentId: 'codex',
+      sessionId: session.id,
+      contextSourceId: contextSource.id,
+      loadingMode: 'always',
+      loaded: true,
+      invoked: false,
+      source: 'session-reported',
+      confidence: 'medium',
+      observedAt: timestamp,
+      evidenceIds: ['bridge-event-slow'],
+      metadata: {},
+    });
+
+    // The observation is durable before the projection is even attempted.
+    expect(observed.id).toBe('observation-slow-projection');
+    expect(values.repository.putContextContribution).toHaveBeenCalled();
+
+    // And the projection really was started, so this is deferral rather than
+    // a silent drop.
+    await projectionStarted;
+    releaseProjection?.();
+  }, 15_000);
+
   it('creates findings, accepts without applying, then delegates a plan to Phase 3', async () => {
     const values = dependencies();
     const service = createIntelligenceService({

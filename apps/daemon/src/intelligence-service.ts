@@ -104,6 +104,20 @@ export type IntelligenceServiceOptions = {
   optimizationMaximumProposals?: number;
   oversizedContextTokens?: number;
   readRebuildEvents?: () => Promise<RealtimeEventMessage[]>;
+  /**
+   * Runs the operational-graph reprojection that follows a mutation.
+   *
+   * The reprojection rescans the project's TypeScript and rewrites the active
+   * generation, which is minutes of work on a real repository — far too much to
+   * hold an HTTP response open for. It is also best-effort by construction: it
+   * swallows every failure into a projection-failure record and returns
+   * nothing, so a caller that awaits it learns nothing it could act on.
+   *
+   * The daemon passes its background-work tracker here, so the projection is
+   * still tracked, still logged, and still drained at shutdown. The default
+   * runs inline, which keeps every existing test deterministic.
+   */
+  deferProjection?: (run: () => Promise<void>) => void;
 };
 
 export type ContextIntelligence = {
@@ -1096,7 +1110,7 @@ export function createIntelligenceService(
     return { nodes: [...nodeMap.values()], edges: [...edgeMap.values()] };
   };
 
-  const projectIncrementally = async (operation: string, evidenceId: string): Promise<void> => {
+  const runProjection = async (operation: string, evidenceId: string): Promise<void> => {
     try {
       const generation =
         (await options.repository.getActiveGraphGeneration()) ??
@@ -1127,6 +1141,22 @@ export function createIntelligenceService(
         evidenceId,
       });
     }
+  };
+
+  /**
+   * Hands the reprojection to the caller-supplied runner and returns.
+   *
+   * A mutation's durable state is already written by the time this is reached,
+   * and the projection reports its own failures, so the response does not wait
+   * on it. Defaults to running inline.
+   */
+  const projectIncrementally = (operation: string, evidenceId: string): void => {
+    const defer = options.deferProjection;
+    if (defer === undefined) {
+      void runProjection(operation, evidenceId);
+      return;
+    }
+    defer(() => runProjection(operation, evidenceId));
   };
 
   return {
@@ -1182,7 +1212,7 @@ export function createIntelligenceService(
           { existingUsageId: persisted.existingUsageId },
         );
       }
-      await projectIncrementally('usage-ingest', record.id);
+      projectIncrementally('usage-ingest', record.id);
       return persisted.usage;
     },
     listUsage: (query) => options.repository.listUsage(query),
@@ -1312,7 +1342,7 @@ export function createIntelligenceService(
           ),
         );
       }
-      await projectIncrementally('context-observation', contribution.id);
+      projectIncrementally('context-observation', contribution.id);
       return contribution;
     },
     async contextSummary(projectId, agentId) {
@@ -1366,7 +1396,7 @@ export function createIntelligenceService(
         oversizedTokenThreshold: oversizedContextTokens,
         maximumFindings,
       });
-      await projectIncrementally('context-analysis', `${projectId}:${agentId}`);
+      projectIncrementally('context-analysis', `${projectId}:${agentId}`);
       return { summary, contributions: mergedContributions, findings };
     },
     async getContextIntelligence(projectId, agentId) {
@@ -1448,7 +1478,7 @@ export function createIntelligenceService(
           ),
         );
       }
-      await projectIncrementally('git-scan', observation.id);
+      projectIncrementally('git-scan', observation.id);
       return observation;
     },
     async getGit(projectId) {
@@ -1501,7 +1531,7 @@ export function createIntelligenceService(
             },
           ),
         );
-        await projectIncrementally('package-scan', projectId);
+        projectIncrementally('package-scan', projectId);
         return {
           packages: result.packages,
           technologies: result.technologies,
@@ -1880,7 +1910,7 @@ export function createIntelligenceService(
           },
         ),
       );
-      await projectIncrementally('optimization-analysis', input.projectId);
+      projectIncrementally('optimization-analysis', input.projectId);
       return { findings, proposals, analyzedAt };
     },
     listFindings: (projectId, limit) =>

@@ -593,6 +593,18 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         deadLetterMaxLength: setting(config, 'deadLetterStreamMaxLength'),
         limit: setting(config, 'globalStreamMaxLength'),
       }),
+    // The post-mutation reprojection rescans the project's TypeScript and
+    // rewrites the active generation. Held inside the request it kept a
+    // response open for minutes on a real repository; tracked here it is still
+    // logged and still drained at shutdown, and the mutation answers at once.
+    deferProjection: (run) => {
+      const scheduled = backgroundWork.run(run, (error) =>
+        app?.log.error({ err: error }, 'Operational graph projection failed'),
+      );
+      if (!scheduled) {
+        app?.log.debug('Operational graph projection skipped during drain');
+      }
+    },
   });
   intelligenceServiceReference.current = intelligenceService;
   const ensureIntelligenceHealthy = async (): Promise<void> => {
