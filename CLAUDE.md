@@ -70,6 +70,7 @@ History is short and every commit is a large checkpoint:
 | `62d5a54` | Project evidence docked into the inspector column              |
 | `ddc1d02` | CLI lease family, MCP registration docs, drawer UX contract    |
 | `5f1bd98` | ADR 0023 B0: post-registration native session declaration      |
+| `0411b53` | ADR 0023 B1: transcript reader and usage session attribution   |
 
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
