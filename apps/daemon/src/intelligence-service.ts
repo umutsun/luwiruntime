@@ -118,6 +118,19 @@ export type IntelligenceServiceOptions = {
    * runs inline, which keeps every existing test deterministic.
    */
   deferProjection?: (run: () => Promise<void>) => void;
+  /**
+   * Reports that the runtime is shutting down, so no further reprojection is
+   * started.
+   *
+   * A reprojection is minutes of Redis work while shutdown drains for seconds.
+   * Without this the drain gives up, the connection closes, and the projection
+   * still in flight logs `REDIS_UNAVAILABLE` against a Redis that is perfectly
+   * healthy — a fault-shaped message on every clean shutdown. This cancels the
+   * follow-up run; the one already in flight is left to finish or fail on its
+   * own, because interrupting it mid-write is not something this seam can do
+   * safely.
+   */
+  projectionStopped?: () => boolean;
 };
 
 export type ContextIntelligence = {
@@ -1166,6 +1179,10 @@ export function createIntelligenceService(
     try {
       let next: { operation: string; evidenceId: string } | undefined = { operation, evidenceId };
       while (next !== undefined) {
+        if (options.projectionStopped?.() === true) {
+          projectionPending = undefined;
+          return;
+        }
         await runProjection(next.operation, next.evidenceId);
         next = projectionPending;
         projectionPending = undefined;
@@ -1176,6 +1193,7 @@ export function createIntelligenceService(
   };
 
   const projectIncrementally = (operation: string, evidenceId: string): void => {
+    if (options.projectionStopped?.() === true) return;
     if (projectionRunning) {
       // The newest evidence id wins: it is the one a reader would look for,
       // and the run it triggers covers every change that preceded it.

@@ -597,6 +597,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     // rewrites the active generation. Held inside the request it kept a
     // response open for minutes on a real repository; tracked here it is still
     // logged and still drained at shutdown, and the mutation answers at once.
+    // Readiness leaves `ready` the moment shutdown begins, so this is the same
+    // signal every background tick already gates on.
+    projectionStopped: () => readiness.state !== 'ready',
     deferProjection: (run) => {
       const scheduled = backgroundWork.run(run, (error) =>
         app?.log.error({ err: error }, 'Operational graph projection failed'),

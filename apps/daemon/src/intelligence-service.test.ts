@@ -475,6 +475,58 @@ describe('daemon intelligence service', () => {
     for (const resolve of [...started]) resolve();
   });
 
+  it('stops projecting once the runtime says it is shutting down', async () => {
+    // A reprojection is minutes of Redis work, and shutdown drains for five
+    // seconds. Without a stop signal the drain gives up, the connection closes,
+    // and the still-running projection logs REDIS_UNAVAILABLE against a Redis
+    // that is perfectly healthy — noise that reads like a fault on every clean
+    // shutdown. The follow-up run is what this actually cancels: the one in
+    // flight is left to finish or fail on its own.
+    const values = dependencies();
+    let draining = false;
+    let runs = 0;
+    values.repository.getActiveGraphGeneration = vi.fn(async () => {
+      runs += 1;
+      return 'active';
+    });
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      now: () => new Date(timestamp),
+      projectionStopped: () => draining,
+    });
+
+    const observe = (id: string) =>
+      service.observeContextContribution({
+        projectId: project.id,
+        agentId: 'codex',
+        sessionId: session.id,
+        contextSourceId: contextSource.id,
+        loadingMode: 'always',
+        loaded: true,
+        invoked: false,
+        source: 'session-reported',
+        confidence: 'medium',
+        observedAt: timestamp,
+        evidenceIds: [id],
+        metadata: {},
+      });
+
+    await observe('a');
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    const before = runs;
+
+    draining = true;
+    await observe('b');
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    expect(runs).toBe(before);
+  });
+
   it('creates findings, accepts without applying, then delegates a plan to Phase 3', async () => {
     const values = dependencies();
     const service = createIntelligenceService({
