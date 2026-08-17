@@ -1149,14 +1149,45 @@ export function createIntelligenceService(
    * A mutation's durable state is already written by the time this is reached,
    * and the projection reports its own failures, so the response does not wait
    * on it. Defaults to running inline.
+   *
+   * **Coalesced, not queued.** Each run rebuilds the whole projection from
+   * current state, so N runs for N mutations all compute the same answer at
+   * N times the cost — and because each one rescans the project and reads every
+   * node and edge, letting them stack exhausted Redis and killed the daemon
+   * once a busy fixture produced 61 at once. At most one runs; anything that
+   * arrives while it runs sets a single follow-up, which then sees all of that
+   * work at once.
    */
+  let projectionRunning = false;
+  let projectionPending: { operation: string; evidenceId: string } | undefined;
+
+  const drainProjections = async (operation: string, evidenceId: string): Promise<void> => {
+    projectionRunning = true;
+    try {
+      let next: { operation: string; evidenceId: string } | undefined = { operation, evidenceId };
+      while (next !== undefined) {
+        await runProjection(next.operation, next.evidenceId);
+        next = projectionPending;
+        projectionPending = undefined;
+      }
+    } finally {
+      projectionRunning = false;
+    }
+  };
+
   const projectIncrementally = (operation: string, evidenceId: string): void => {
-    const defer = options.deferProjection;
-    if (defer === undefined) {
-      void runProjection(operation, evidenceId);
+    if (projectionRunning) {
+      // The newest evidence id wins: it is the one a reader would look for,
+      // and the run it triggers covers every change that preceded it.
+      projectionPending = { operation, evidenceId };
       return;
     }
-    defer(() => runProjection(operation, evidenceId));
+    const defer = options.deferProjection;
+    if (defer === undefined) {
+      void drainProjections(operation, evidenceId);
+      return;
+    }
+    defer(() => drainProjections(operation, evidenceId));
   };
 
   return {

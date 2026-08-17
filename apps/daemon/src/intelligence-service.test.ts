@@ -419,6 +419,62 @@ describe('daemon intelligence service', () => {
     releaseProjection?.();
   }, 15_000);
 
+  it('coalesces concurrent projections instead of stacking one per mutation', async () => {
+    // Deferring the projection freed the request, but nothing bounded how many
+    // could then run at once: on the live fixture 61 reprojections ran in
+    // parallel, each rescanning the project and reading the whole generation,
+    // until Redis gave out and the daemon died. One runs at a time, and work
+    // arriving while it runs collapses into a single follow-up, because the
+    // projection rebuilds from current state — a queue of them would all
+    // produce the same answer.
+    const values = dependencies();
+    let active = 0;
+    let peak = 0;
+    const started: Array<() => void> = [];
+    // Blocks at the projection's first Redis call, which every run reaches
+    // before the snapshot work that a bare fake would fail on.
+    values.repository.getActiveGraphGeneration = vi.fn(async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise<void>((resolve) => {
+        started.push(resolve);
+      });
+      active -= 1;
+      return 'active';
+    });
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      now: () => new Date(timestamp),
+    });
+
+    const observe = (id: string) =>
+      service.observeContextContribution({
+        projectId: project.id,
+        agentId: 'codex',
+        sessionId: session.id,
+        contextSourceId: contextSource.id,
+        loadingMode: 'always',
+        loaded: true,
+        invoked: false,
+        source: 'session-reported',
+        confidence: 'medium',
+        observedAt: timestamp,
+        evidenceIds: [id],
+        metadata: {},
+      });
+
+    await observe('a');
+    await observe('b');
+    await observe('c');
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+
+    expect(peak).toBe(1);
+    for (const resolve of [...started]) resolve();
+  });
+
   it('creates findings, accepts without applying, then delegates a plan to Phase 3', async () => {
     const values = dependencies();
     const service = createIntelligenceService({
