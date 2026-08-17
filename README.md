@@ -183,9 +183,21 @@ close the link, and every timestamp comes from one Redis clock.
 Link retention bounds a binding at 1000 retained closed links, configurable through
 `LUWI_NATIVE_LINK_RETENTION_MAX`. A periodic sweep removes the oldest closed links — at most 32 per
 call — taking the index entry, the link record and the session reverse index together; an open link
-is never removed, whatever the count. Attributing transcript token records to sessions is still not
-solved, native transcript ingestion has not begun, and a record falling inside a trimmed interval
-stays unbound rather than being assigned to the nearest session.
+is never removed, whatever the count.
+
+ADR 0023 approved native transcript ingestion and its first increment is built: **an
+already-registered, live session can declare its native identity after the fact** through
+`POST /api/v1/sessions/:sessionId/native` (B0). The route takes the same `native` block registration
+takes and, by strict schema, nothing else — a body cannot redirect the declaration at another
+session. The same policy that decides at registration decides here, unchanged; re-declaring the same
+identity returns `unchanged` and writes nothing, so declaring on a timer or at startup is safe. The
+CLI's `session register` and `session simulate` accept `--native-adapter`, `--native-session` and
+`--native-subagent`, and the seed declares for one seeded session so the fixture holds a binding
+and a real attribution interval. The link starts open and may be closed by the normal presence
+sweeper when the seeded session expires. The transcript reader (B1) and tool/file observation (B2)
+are specified and not started: attributing transcript token records to sessions is still not
+solved, and a record falling inside a trimmed interval stays unbound rather than being assigned to
+the nearest session.
 
 Automatic drift reconciliation, Git mutation, lifecycle/release scoring, release readiness,
 unified search, GitHub integration, prompt injection, task orchestration, a semantic knowledge
@@ -488,6 +500,7 @@ GET  /api/v1/projects/:projectId
 GET  /api/v1/sessions
 POST /api/v1/sessions
 GET  /api/v1/sessions/:sessionId
+POST /api/v1/sessions/:sessionId/native
 POST /api/v1/sessions/:sessionId/heartbeat
 POST /api/v1/sessions/:sessionId/status
 POST /api/v1/sessions/:sessionId/close

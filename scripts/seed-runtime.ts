@@ -420,6 +420,24 @@ async function main(): Promise<void> {
   const claudeSession = sessions['seed-claude'] ?? '';
 
   /**
+   * B0: one seeded session declares its native identity through the
+   * post-registration route, so the fixture holds a real NativeSessionBinding
+   * and an interval B1's transcript reader can attribute into. The link starts
+   * open and the normal presence sweeper may close it when this seeded session
+   * expires. On a re-run whose previous holder is still live the declaration
+   * is refused with a 409, which is the correct production behaviour; the
+   * binding from the earlier run already exists, so the fixture still holds
+   * one.
+   */
+  await call(
+    'POST',
+    `/api/v1/sessions/${claudeSession}/native`,
+    { native: { adapterId: 'claude-code', nativeSessionId: 'fixture-claude-session-0001' } },
+    { tolerateConflict: true },
+  );
+  step('1 native declaration');
+
+  /**
    * Drives one message from requested to a terminal state.
    *
    * A message is not acknowledgeable until it has been delivered, and delivery

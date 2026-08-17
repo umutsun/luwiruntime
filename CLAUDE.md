@@ -107,7 +107,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (23 functions) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (29 functions) is already loaded on the server.
 
 ## Tools and shells
 
@@ -181,14 +181,20 @@ CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no 
 `luwi_v1` is at **v11**.
 
 ADR 0023 then approved the next item in the sequence — **native transcript ingestion** — and
-specified it as B0 / B1 / B2, with only B0 planned. **Nothing of it is built.**
+specified it as B0 / B1 / B2. **B0 is built; B1 and B2 are not started.**
 
-The fact that orders the phase: there are **zero native bindings in either Redis database**, against
-nine sessions. A declaration rides only on `POST /api/v1/sessions` and nothing that registers a
-session sends one — not the CLI, not the seed — so an already-registered session can never declare.
-That is why **B0 is a declaration surface, not a reader**: build the reader first and it attributes
-nothing. B1 is the reader; B2 fills `SESSION_CHANGED_FILE`, which is in the edge enum with no
-producer.
+The fact that ordered the phase: at approval there were **zero native bindings in either Redis
+database**, against nine sessions. A declaration rode only on `POST /api/v1/sessions` and nothing
+that registers a session sent one — not the CLI, not the seed — so an already-registered session
+could never declare. That is why **B0 was a declaration surface, not a reader**: build the reader
+first and it attributes nothing. B0 added `POST /api/v1/sessions/:sessionId/native` (the same
+`native` block registration takes, strict, so a body cannot name another session), the
+`native_declare` Function (library still v11 — a new function forces a reload without a bump),
+`--native-*` options on `session register`/`session simulate`, and one seeded declaration so the
+fixture holds a binding and a real attribution interval. The link starts open and may be closed by
+the normal presence sweeper when the seeded session expires; the live B0 fixture exercised both
+transitions. `evaluateNativeDeclaration` is unchanged; `unchanged` is a 200, not an error. B1 is
+the reader; B2 fills `SESSION_CHANGED_FILE`, which is in the edge enum with no producer.
 
 Two measured traps for anyone touching this. `subagents/` directories exist at
 `<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` and hold 11.3% of distinct requests,

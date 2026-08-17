@@ -68,6 +68,8 @@ import {
   messageWaitQuerySchema,
   nativeConfigInspectRequestSchema,
   nativeConfigInspectionSchema,
+  nativeDeclarationRequestSchema,
+  nativeDeclarationResponseSchema,
   type HealthResponse,
   projectCollectionResponseSchema,
   projectRegistrationRequestSchema,
@@ -441,6 +443,19 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         throw new ApplicationError('SESSION_NOT_FOUND', 'The session was not found.', 404);
       }
       return sessionResponseSchema.parse(session);
+    });
+    /**
+     * B0 (ADR 0023): an already-registered, live session declares its native
+     * identity. The body carries the same `native` block registration takes
+     * and, by strict schema, nothing else — the declaration applies to the
+     * session the path names and a body cannot redirect it.
+     */
+    app.post('/api/v1/sessions/:sessionId/native', async (request) => {
+      const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
+      const body = parseRequestInput(nativeDeclarationRequestSchema, request.body);
+      return nativeDeclarationResponseSchema.parse(
+        await withMutation(() => services.sessions.declareNative(sessionId, body.native)),
+      );
     });
     app.post('/api/v1/sessions/:sessionId/heartbeat', async (request) => {
       const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);

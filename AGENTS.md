@@ -1058,16 +1058,28 @@ cost of being O(sessions) per pass.
 `usage.sessionId` is still not solved, MCP self-registration is still not included, and a trimmed
 interval is never evidence for attribution.
 
-**Approved and specified, not built: native transcript ingestion (ADR 0023).** The design is
-`docs/superpowers/specs/2026-08-14-native-transcript-ingestion-design.md`, split B0 / B1 / B2, with
-only B0 planned so far.
+**Built: the transcript-ingestion declaration surface (B0, ADR 0023).** The design is
+`docs/superpowers/specs/2026-08-14-native-transcript-ingestion-design.md`, split B0 / B1 / B2.
 
-**B0 is a declaration surface, not a reader,** because there are **zero native bindings in either
-database** against nine sessions: a declaration rides only on `POST /api/v1/sessions` and nothing
-that registers a session sends one, so an already-registered session can never declare and no
-interval has ever existed. A reader built first would attribute nothing. B0 reuses
-`evaluateNativeDeclaration` unchanged. B1 is the reader and usage attribution; B2 fills
-`SESSION_CHANGED_FILE`, which sits in the edge enum with no producer.
+**B0 was a declaration surface, not a reader,** because at approval there were **zero native
+bindings in either database** against nine sessions: a declaration rode only on
+`POST /api/v1/sessions` and nothing that registers a session sent one, so an already-registered
+session could never declare and no interval had ever existed. A reader built first would have
+attributed nothing. B0 is now built: an already-registered, live, non-terminal session declares
+through `POST /api/v1/sessions/:sessionId/native`, which takes the same `native` block registration
+takes and, by strict schema, nothing else — a body cannot redirect a declaration at another
+session. It reuses `evaluateNativeDeclaration` unchanged; `unchanged` is returned rather than
+refused, so declaring on a timer or at startup is safe and writes nothing. The Redis Function
+`native_declare` follows A1's contract — Lua validates a CAS and derives no key name, every key
+arrives paired with the identity it must hold, a refusal writes nothing — and `luwi_v1` stays at
+**v11**: `isCompatible` compares the source hash and function list, so a new function forces a
+reload without a version bump, and no stored record changed shape. The CLI's `session register` and
+`session simulate` take `--native-adapter` / `--native-session` / `--native-subagent`, and the seed
+declares for one seeded session, so the fixture holds a binding and a real attribution interval.
+That link starts open and may be closed by the normal presence sweeper when the seeded session
+expires; B0 was verified live through both transitions. **B1 is the reader and usage attribution;
+B2 fills `SESSION_CHANGED_FILE`, which sits in the edge enum with no producer. Both are specified
+and not started**, and `usage.sessionId` stays unattributed until B1.
 
 Measurement corrected two earlier conclusions. `subagents/` directories **do** exist — 71 of them,
 oldest 2026-06-18, at `<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` — and hold

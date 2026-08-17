@@ -272,3 +272,150 @@ describe('runtime repository session boundary', () => {
     ]);
   });
 });
+
+describe('runtime repository native declaration boundary', () => {
+  const timestamp = '2026-08-17T00:00:00.000Z';
+  const declareInput = {
+    sessionId: 'session-1',
+    projectId: 'project-1',
+    workspaceId: 'local',
+    native: {
+      bindingId: 'binding-1',
+      linkId: 'link-1',
+      linkedEventId: 'event-linked-1',
+      payload: {
+        bindingId: 'binding-1',
+        expectedVersion: 0,
+        link: { id: 'link-1', sessionId: 'session-1' },
+        binding: {
+          id: 'binding-1',
+          adapterId: 'claude-code-native-v1',
+          nativeSessionId: 'fcc53779-5974-4794-8b47-f5515ea3a34c',
+          kind: 'main' as const,
+        },
+      },
+    },
+  };
+
+  it('declares through the dedicated Function with only centrally constructed keys', async () => {
+    const client = new FakeCommandClient();
+    client.reply = JSON.stringify({
+      status: 'declared',
+      native: {
+        transition: 'created',
+        binding: {
+          id: 'binding-1',
+          adapterId: 'claude-code-native-v1',
+          nativeSessionId: 'fcc53779-5974-4794-8b47-f5515ea3a34c',
+          kind: 'main',
+          openLinkId: 'link-1',
+          version: '1',
+          linkCount: '1',
+          trimmedLinkCount: '0',
+          firstLinkedAt: timestamp,
+          lastLinkedAt: timestamp,
+        },
+        link: {
+          id: 'link-1',
+          bindingId: 'binding-1',
+          sessionId: 'session-1',
+          linkedAt: timestamp,
+        },
+      },
+      events: [
+        {
+          event: {
+            id: 'event-linked-1',
+            version: 1,
+            type: 'session.native.linked',
+            occurredAt: timestamp,
+            workspaceId: 'local',
+            projectId: 'project-1',
+            agentId: 'codex-sim',
+            sessionId: 'session-1',
+            payload: { bindingId: 'binding-1', linkId: 'link-1' },
+          },
+          globalStreamId: '5-0',
+          projectStreamId: '5-1',
+        },
+      ],
+    });
+    const keys = createRedisKeys();
+    const functions = createFunctionRegistry();
+    const repository = createRuntimeRepository({ client, keys, functions });
+
+    await expect(repository.declareNativeSession(declareInput)).resolves.toMatchObject({
+      status: 'declared',
+      native: {
+        transition: 'created',
+        binding: { id: 'binding-1', openLinkId: 'link-1', version: 1 },
+        link: { id: 'link-1', sessionId: 'session-1' },
+      },
+    });
+    expect(client.commands).toHaveLength(1);
+    expect(client.commands[0]?.slice(0, 11)).toEqual([
+      'FCALL',
+      functions.functions.nativeDeclare,
+      '8',
+      keys.session('session-1'),
+      keys.nativeSessionBinding('binding-1'),
+      keys.nativeSessionLink('link-1'),
+      keys.nativeSessionLinks('binding-1'),
+      keys.sessionNativeBinding('session-1'),
+      // No stale link: the slot repeats the binding key, declared but unwritten.
+      keys.nativeSessionBinding('binding-1'),
+      keys.globalEvents,
+      keys.projectEvents('project-1'),
+    ]);
+  });
+
+  it('surfaces a Function refusal as a coded error and writes nothing else', async () => {
+    const client = new FakeCommandClient();
+    client.reply = JSON.stringify({ status: 'error', code: 'VERSION_CONFLICT' });
+    const repository = createRuntimeRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.declareNativeSession(declareInput)).rejects.toMatchObject({
+      code: 'VERSION_CONFLICT',
+    });
+    expect(client.commands).toHaveLength(1);
+  });
+
+  it('returns not_found and terminal as structured results, never as throws', async () => {
+    const client = new FakeCommandClient();
+    const repository = createRuntimeRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    client.reply = JSON.stringify({ status: 'not_found', entity: 'session' });
+    await expect(repository.declareNativeSession(declareInput)).resolves.toEqual({
+      status: 'not_found',
+      entity: 'session',
+    });
+
+    client.reply = JSON.stringify({ status: 'terminal', currentStatus: 'completed' });
+    await expect(repository.declareNativeSession(declareInput)).resolves.toEqual({
+      status: 'terminal',
+      currentStatus: 'completed',
+    });
+  });
+
+  it('validates the declaration result instead of trusting Redis data', async () => {
+    const client = new FakeCommandClient();
+    client.reply = JSON.stringify({ status: 'declared', native: { transition: 'created' } });
+    const repository = createRuntimeRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.declareNativeSession(declareInput)).rejects.toMatchObject({
+      code: 'REDIS_DATA_INVALID',
+    });
+  });
+});

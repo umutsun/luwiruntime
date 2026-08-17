@@ -603,6 +603,269 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
     });
 
     /**
+     * B0: the declaration surface for an already-registered session. The
+     * session below registers with the unchanged 9-key shape — the state every
+     * existing session is in — and declares afterwards through native_declare.
+     */
+    it('declares a binding for an already-registered session', async () => {
+      const current = nextCase();
+      await register(current.sessionId);
+      const linkId = deriveNativeLinkId(current.bindingId, current.sessionId);
+
+      const result = await repository.declareNativeSession({
+        sessionId: current.sessionId,
+        projectId: 'project-1',
+        workspaceId: 'local',
+        native: firstDeclaration(current),
+      });
+
+      expect(result.status).toBe('declared');
+      if (result.status !== 'declared') return;
+      expect(result.native.transition).toBe('created');
+      const binding = await repository.getNativeBinding(current.bindingId);
+      expect(binding).toMatchObject({
+        id: current.bindingId,
+        kind: 'main',
+        version: 1,
+        linkCount: 1,
+        openLinkId: linkId,
+      });
+      const link = await repository.getNativeLink(linkId);
+      expect(link).toMatchObject({ bindingId: current.bindingId, sessionId: current.sessionId });
+      expect(link?.unlinkedAt).toBeUndefined();
+      expect(link?.linkedAt).toBe(binding?.firstLinkedAt);
+      expect(await repository.getSessionNativeBindingId(current.sessionId)).toBe(current.bindingId);
+      // Exactly one event: the link that came into being, and nothing else.
+      expect(result.events.map((entry) => entry.event.type)).toEqual(['session.native.linked']);
+      expect(result.events[0]?.event).toMatchObject({
+        id: `event-linked-${current.sessionId}`,
+        projectId: 'project-1',
+        agentId: 'codex-sim',
+        sessionId: current.sessionId,
+      });
+    });
+
+    /**
+     * D3's deepest defense: the service returns `unchanged` without calling
+     * the Function, and if a stale observation reaches the Function anyway,
+     * the CAS refuses it — so `version` cannot be incremented twice for one
+     * identity either way.
+     */
+    it('refuses a repeated declaration through the Function without incrementing version', async () => {
+      const current = nextCase();
+      await register(current.sessionId);
+      const declare = (native: NativeRegistrationInput) =>
+        repository.declareNativeSession({
+          sessionId: current.sessionId,
+          projectId: 'project-1',
+          workspaceId: 'local',
+          native,
+        });
+      await declare(firstDeclaration(current));
+
+      // As if a second caller still believed the binding was unclaimed.
+      await expect(declare(firstDeclaration(current))).rejects.toMatchObject({
+        code: 'VERSION_CONFLICT',
+      });
+
+      expect((await repository.getNativeBinding(current.bindingId))?.version).toBe(1);
+      expect((await repository.getNativeBinding(current.bindingId))?.linkCount).toBe(1);
+    });
+
+    it('leaves no partial write behind a refused declaration', async () => {
+      const current = nextCase();
+      await register(current.sessionId);
+      const linkId = deriveNativeLinkId(current.bindingId, current.sessionId);
+      const globalBefore = await commandClient.sendCommand(['XLEN', keys.globalEvents]);
+
+      await expect(
+        repository.declareNativeSession({
+          sessionId: current.sessionId,
+          projectId: 'project-1',
+          workspaceId: 'local',
+          native: {
+            bindingId: current.bindingId,
+            linkId,
+            linkedEventId: `event-linked-${current.sessionId}`,
+            payload: {
+              bindingId: current.bindingId,
+              expectedVersion: 9999,
+              expectedOpenLinkId: 'nope',
+              link: { id: linkId, sessionId: current.sessionId },
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+
+      // No binding, no link, no reverse index, no event.
+      expect(await repository.getNativeBinding(current.bindingId)).toBeNull();
+      expect(await repository.getNativeLink(linkId)).toBeNull();
+      expect(await repository.getSessionNativeBindingId(current.sessionId)).toBeNull();
+      expect(await commandClient.sendCommand(['XLEN', keys.globalEvents])).toBe(globalBefore);
+    });
+
+    /**
+     * A held identity cannot be taken by pretending it is free: a declaration
+     * that does not name the exact open link it replaces loses the CAS. The
+     * holder keeps its link, its session and its status.
+     */
+    it('refuses to take a held identity and leaves the live holder untouched', async () => {
+      const holder = nextCase();
+      const holderLinkId = deriveNativeLinkId(holder.bindingId, holder.sessionId);
+      await register(holder.sessionId, firstDeclaration(holder));
+      const arriving = `${holder.sessionId}-arriving`;
+      await register(arriving);
+      const arrivingLinkId = deriveNativeLinkId(holder.bindingId, arriving);
+      const bindingBefore = await repository.getNativeBinding(holder.bindingId);
+
+      await expect(
+        repository.declareNativeSession({
+          sessionId: arriving,
+          projectId: 'project-1',
+          workspaceId: 'local',
+          native: {
+            bindingId: holder.bindingId,
+            linkId: arrivingLinkId,
+            linkedEventId: `event-linked-${arriving}`,
+            payload: {
+              bindingId: holder.bindingId,
+              expectedVersion: 1,
+              link: { id: arrivingLinkId, sessionId: arriving },
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'VERSION_CONFLICT' });
+
+      expect(await repository.getNativeBinding(holder.bindingId)).toEqual(bindingBefore);
+      expect((await repository.getNativeLink(holderLinkId))?.unlinkedAt).toBeUndefined();
+      expect(await repository.getSession(holder.sessionId)).toMatchObject({ status: 'starting' });
+      expect(await repository.getNativeLink(arrivingLinkId)).toBeNull();
+      expect(await repository.getSessionNativeBindingId(arriving)).toBeNull();
+    });
+
+    it('refuses a declaration for a terminal session and writes nothing', async () => {
+      const current = nextCase();
+      await register(current.sessionId);
+      await repository.closeSession({
+        sessionId: current.sessionId,
+        projectId: 'project-1',
+        workspaceId: 'local',
+        eventId: `event-close-${current.sessionId}`,
+      });
+
+      const result = await repository.declareNativeSession({
+        sessionId: current.sessionId,
+        projectId: 'project-1',
+        workspaceId: 'local',
+        native: firstDeclaration(current),
+      });
+
+      expect(result).toEqual({ status: 'terminal', currentStatus: 'completed' });
+      expect(await repository.getNativeBinding(current.bindingId)).toBeNull();
+      expect(await repository.getSessionNativeBindingId(current.sessionId)).toBeNull();
+    });
+
+    /**
+     * The bound-session rule at the deepest layer: the link inside the payload
+     * must name the session whose key was declared, so a declaration cannot be
+     * redirected at another session no matter what the caller sends.
+     */
+    it('refuses a declaration whose payload names another session', async () => {
+      const current = nextCase();
+      await register(current.sessionId);
+      const other = `${current.sessionId}-other`;
+      const linkId = deriveNativeLinkId(current.bindingId, current.sessionId);
+
+      await expect(
+        repository.declareNativeSession({
+          sessionId: current.sessionId,
+          projectId: 'project-1',
+          workspaceId: 'local',
+          native: {
+            bindingId: current.bindingId,
+            linkId,
+            linkedEventId: `event-linked-${current.sessionId}`,
+            payload: {
+              bindingId: current.bindingId,
+              expectedVersion: 0,
+              link: { id: linkId, sessionId: other },
+              binding: {
+                id: current.bindingId,
+                adapterId: current.adapterId,
+                nativeSessionId: current.nativeSessionId,
+                kind: 'main',
+              },
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'REDIS_ARGUMENT_INVALID' });
+
+      expect(await repository.getNativeBinding(current.bindingId)).toBeNull();
+      expect(await repository.getNativeLink(linkId)).toBeNull();
+    });
+
+    /**
+     * The stale case through the declaration surface: the previous holder went
+     * terminal down the 5-key path, so its link was left open. The arriving
+     * declaration closes it and opens its own in one transition, unlinked
+     * before linked.
+     */
+    it('closes a stale link and opens the new one in one declaration', async () => {
+      const holder = nextCase();
+      const staleLinkId = deriveNativeLinkId(holder.bindingId, holder.sessionId);
+      await register(holder.sessionId, firstDeclaration(holder));
+      await repository.updateSessionStatus({
+        sessionId: holder.sessionId,
+        projectId: 'project-1',
+        targetStatus: 'completed',
+        workspaceId: 'local',
+        eventId: `event-status-${holder.sessionId}`,
+      });
+      const arriving = `${holder.sessionId}-arriving`;
+      await register(arriving);
+      const linkId = deriveNativeLinkId(holder.bindingId, arriving);
+
+      const result = await repository.declareNativeSession({
+        sessionId: arriving,
+        projectId: 'project-1',
+        workspaceId: 'local',
+        native: {
+          bindingId: holder.bindingId,
+          linkId,
+          staleLinkId,
+          linkedEventId: `event-linked-${arriving}`,
+          unlinkedEventId: `event-unlinked-${arriving}`,
+          payload: {
+            bindingId: holder.bindingId,
+            expectedVersion: 1,
+            expectedOpenLinkId: staleLinkId,
+            staleLinkId,
+            link: { id: linkId, sessionId: arriving },
+          },
+        },
+      });
+
+      expect(result.status).toBe('declared');
+      if (result.status !== 'declared') return;
+      expect(result.native.transition).toBe('linked');
+      expect(result.native.staleLink?.unlinkedAt).toBeDefined();
+      const binding = await repository.getNativeBinding(holder.bindingId);
+      expect(binding?.openLinkId).toBe(linkId);
+      expect(binding?.version).toBe(2);
+      expect(binding?.linkCount).toBe(2);
+      expect((await repository.getNativeLink(staleLinkId))?.unlinkedAt).toBeDefined();
+      expect((await repository.getNativeLink(linkId))?.unlinkedAt).toBeUndefined();
+      expect(result.events.map((entry) => entry.event.type)).toEqual([
+        'session.native.unlinked',
+        'session.native.linked',
+      ]);
+      expect(result.events.map((entry) => entry.event.id)).toEqual([
+        `event-unlinked-${arriving}`,
+        `event-linked-${arriving}`,
+      ]);
+    });
+
+    /**
      * The boundary a single `stream_appendable` check passes and a real second
      * append fails: room for exactly one more entry, but two events to write.
      */

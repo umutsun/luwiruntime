@@ -47,10 +47,30 @@ const session: SessionView = {
   presence: 'online',
 };
 
+const declaredBinding = {
+  id: 'b'.repeat(64),
+  adapterId: 'claude-code',
+  nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+  kind: 'main' as const,
+  openLinkId: 'l'.repeat(64),
+  version: 1,
+  linkCount: 1,
+  trimmedLinkCount: 0,
+  firstLinkedAt: '2026-08-17T00:00:00.000Z',
+  lastLinkedAt: '2026-08-17T00:00:00.000Z',
+};
+const declaredLink = {
+  id: 'l'.repeat(64),
+  bindingId: 'b'.repeat(64),
+  sessionId: 'session-1',
+  linkedAt: '2026-08-17T00:00:00.000Z',
+};
+
 function services(overrides?: {
   projectRegister?: ProjectService['register'];
   projectList?: ProjectService['list'];
   sessionRegister?: SessionService['register'];
+  sessionDeclareNative?: SessionService['declareNative'];
 }): { projects: ProjectService; sessions: SessionService } {
   return {
     projects: {
@@ -60,6 +80,9 @@ function services(overrides?: {
     },
     sessions: {
       register: overrides?.sessionRegister ?? (async () => session),
+      declareNative:
+        overrides?.sessionDeclareNative ??
+        (async () => ({ outcome: 'created', binding: declaredBinding, link: declaredLink })),
       get: async (sessionId) => (sessionId === session.id ? session : null),
       list: async (projectId) =>
         projectId === undefined || projectId === project.id ? [session] : [],
@@ -161,6 +184,128 @@ describe('Phase 1 HTTP routes', () => {
         details: { existingProjectId: 'project-existing' },
       },
     });
+  });
+
+  it('declares a native identity for exactly the session the path names', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const declareNative = vi.fn(
+      async (): Promise<Awaited<ReturnType<SessionService['declareNative']>>> => ({
+        outcome: 'created',
+        binding: declaredBinding,
+        link: declaredLink,
+      }),
+    );
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services({ sessionDeclareNative: declareNative }),
+        listEvents: async () => [],
+      },
+    });
+
+    const declared = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/session-1/native',
+      payload: {
+        native: {
+          adapterId: 'claude-code',
+          nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+        },
+      },
+    });
+    expect(declared.statusCode).toBe(200);
+    expect(declared.json()).toEqual({
+      outcome: 'created',
+      binding: declaredBinding,
+      link: declaredLink,
+    });
+    expect(declareNative).toHaveBeenCalledWith('session-1', {
+      adapterId: 'claude-code',
+      nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+    });
+  });
+
+  it('rejects a declaration that names a session in its body', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const declareNative = vi.fn(
+      async (): Promise<Awaited<ReturnType<SessionService['declareNative']>>> => ({
+        outcome: 'created',
+        binding: declaredBinding,
+        link: declaredLink,
+      }),
+    );
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services({ sessionDeclareNative: declareNative }),
+        listEvents: async () => [],
+      },
+    });
+
+    // The body may carry the native reference and nothing else. A sessionId in
+    // the body would be a declaration for someone else's session; the strict
+    // schema refuses it before the service is ever consulted.
+    const impersonating = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/session-1/native',
+      payload: {
+        native: {
+          adapterId: 'claude-code',
+          nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+        },
+        sessionId: 'session-2',
+      },
+    });
+    expect(impersonating.statusCode).toBe(400);
+    expect(impersonating.json()).toMatchObject({ error: { code: 'REQUEST_VALIDATION_FAILED' } });
+    expect(declareNative).not.toHaveBeenCalled();
+  });
+
+  it('maps a declaration refusal to its safe application error', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services({
+          sessionDeclareNative: async () => {
+            throw new ApplicationError(
+              'NATIVE_SESSION_CONFLICT',
+              'Another live session already holds this native session reference.',
+              409,
+            );
+          },
+        }),
+        listEvents: async () => [],
+      },
+    });
+
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/session-1/native',
+      payload: {
+        native: {
+          adapterId: 'claude-code',
+          nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+        },
+      },
+    });
+    expect(refused.statusCode).toBe(409);
+    expect(refused.json()).toMatchObject({ error: { code: 'NATIVE_SESSION_CONFLICT' } });
   });
 
   it('rejects invalid protocol input and mutations while not ready', async () => {

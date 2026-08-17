@@ -12,6 +12,7 @@ import {
   messageKindSchema,
   messageResponseSchema,
   messageStateSchema,
+  nativeSessionRefSchema,
   projectCollectionResponseSchema,
   projectResponseSchema,
   publicErrorResponseSchema,
@@ -23,6 +24,7 @@ import {
   workLeaseSchema,
   type AgentMessage,
   type InboxEnvelope,
+  type NativeSessionRef,
   type RealtimeEventMessage,
 } from '@luwi/protocol';
 import { ApplicationError } from '@luwi/runtime';
@@ -172,6 +174,40 @@ function parseJsonArray(value: string, option: string): unknown[] {
   }
 }
 
+/**
+ * The optional native reference for `session register` and `session simulate`
+ * (B0). Adapter and session id only mean anything together, so a half-supplied
+ * pair is refused before any request leaves the process.
+ */
+function parseNativeRef(options: {
+  nativeAdapter?: string;
+  nativeSession?: string;
+  nativeSubagent?: string;
+}): NativeSessionRef | undefined {
+  if (options.nativeAdapter === undefined && options.nativeSession === undefined) {
+    if (options.nativeSubagent !== undefined) {
+      throw new ApplicationError(
+        'CLI_OPTION_INVALID',
+        '--native-subagent requires --native-adapter and --native-session.',
+        400,
+      );
+    }
+    return undefined;
+  }
+  if (options.nativeAdapter === undefined || options.nativeSession === undefined) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      '--native-adapter and --native-session must be supplied together.',
+      400,
+    );
+  }
+  return nativeSessionRefSchema.parse({
+    adapterId: options.nativeAdapter,
+    nativeSessionId: options.nativeSession,
+    ...(options.nativeSubagent === undefined ? {} : { nativeSubagentId: options.nativeSubagent }),
+  });
+}
+
 function parseEvidenceRequirements(value: string | undefined): string[] {
   if (value === undefined || value.trim() === '') {
     return [];
@@ -189,6 +225,7 @@ async function runSimulation(
     heartbeatMs: number;
     status?: string;
     ungraceful?: boolean;
+    native?: NativeSessionRef;
   },
 ): Promise<void> {
   const registered = await request(
@@ -201,6 +238,7 @@ async function runSimulation(
       agentId: options.agent,
       workingDirectory: options.workingDirectory,
       metadata: { simulation: true },
+      ...(options.native === undefined ? {} : { native: options.native }),
     }),
   );
   printJson(dependencies, registered);
@@ -744,6 +782,9 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--branch <branch>', 'Current branch')
     .option('--worktree-path <path>', 'Worktree path')
     .option('--metadata <json>', 'Bounded metadata JSON object', '{}')
+    .option('--native-adapter <adapterId>', 'Adapter namespace of the native session reference')
+    .option('--native-session <nativeSessionId>', 'Vendor-native session identifier')
+    .option('--native-subagent <nativeSubagentId>', 'Vendor-native subagent identifier')
     .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
     .action(
       async (options: {
@@ -754,8 +795,12 @@ export function createCli(dependencies: CliDependencies): Command {
         branch?: string;
         worktreePath?: string;
         metadata: string;
+        nativeAdapter?: string;
+        nativeSession?: string;
+        nativeSubagent?: string;
         url: string;
       }) => {
+        const native = parseNativeRef(options);
         printJson(
           dependencies,
           await request(
@@ -771,6 +816,7 @@ export function createCli(dependencies: CliDependencies): Command {
               ...(options.taskSummary === undefined ? {} : { taskSummary: options.taskSummary }),
               ...(options.branch === undefined ? {} : { branch: options.branch }),
               ...(options.worktreePath === undefined ? {} : { worktreePath: options.worktreePath }),
+              ...(native === undefined ? {} : { native }),
             }),
           ),
         );
@@ -872,6 +918,9 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--heartbeat-ms <milliseconds>', 'Heartbeat interval', '5000')
     .option('--status <status>', 'Initial status after registration')
     .option('--ungraceful', 'Stop without closing the session')
+    .option('--native-adapter <adapterId>', 'Adapter namespace of the native session reference')
+    .option('--native-session <nativeSessionId>', 'Vendor-native session identifier')
+    .option('--native-subagent <nativeSubagentId>', 'Vendor-native subagent identifier')
     .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
     .action(
       async (options: {
@@ -881,12 +930,18 @@ export function createCli(dependencies: CliDependencies): Command {
         heartbeatMs: string;
         status?: string;
         ungraceful?: boolean;
+        nativeAdapter?: string;
+        nativeSession?: string;
+        nativeSubagent?: string;
         url: string;
-      }) =>
-        runSimulation(dependencies, {
+      }) => {
+        const native = parseNativeRef(options);
+        return runSimulation(dependencies, {
           ...options,
           heartbeatMs: Number(options.heartbeatMs),
-        }),
+          ...(native === undefined ? {} : { native }),
+        });
+      },
     );
   const sessionBridge = sessions
     .command('bridge')

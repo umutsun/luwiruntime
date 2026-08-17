@@ -1,8 +1,10 @@
+import { nativeDeclarationResponseSchema } from '@luwi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
   evaluateNativeDeclaration,
   NATIVE_DECLARATION_MAX_ATTEMPTS,
+  type NativeDeclarationDecision,
 } from './native-session-policy.js';
 
 const timestamp = '2026-08-11T00:00:00.000Z';
@@ -105,5 +107,27 @@ describe('native declaration policy', () => {
 
   it('bounds contention retries', () => {
     expect(NATIVE_DECLARATION_MAX_ATTEMPTS).toBe(3);
+  });
+
+  /**
+   * The declaration surface must account for every outcome this policy can
+   * produce: the declarable ones in its response enum, the rest as refusals.
+   * The Record below stops compiling when the decision union changes, and the
+   * assertion fails when the protocol enum drifts, so the two cannot separate
+   * silently.
+   */
+  it('is surfaced completely by the protocol declaration outcome enum', () => {
+    const surfaced: Record<NativeDeclarationDecision['outcome'], 'response' | 'refusal'> = {
+      created: 'response',
+      linked: 'response',
+      unchanged: 'response',
+      conflict: 'refusal',
+      inconsistent: 'refusal',
+    };
+    const responses = Object.entries(surfaced)
+      .filter(([, surface]) => surface === 'response')
+      .map(([outcome]) => outcome)
+      .sort();
+    expect([...nativeDeclarationResponseSchema.shape.outcome.options].sort()).toEqual(responses);
   });
 });

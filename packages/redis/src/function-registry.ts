@@ -1,5 +1,11 @@
 export type RedisFunctionRegistry = {
   libraryName: string;
+  /**
+   * Still 11 with `native_declare` added (B0). The version moves only when a
+   * record shape changes: `isCompatible` hashes the source and compares the
+   * function-name list, so a new function already forces a reload on its own,
+   * and no stored record changed shape in this increment.
+   */
   version: 11;
   functions: {
     projectRegister: string;
@@ -9,6 +15,7 @@ export type RedisFunctionRegistry = {
     sessionClose: string;
     sessionDisconnect: string;
     nativeLinkTrim: string;
+    nativeDeclare: string;
     messageRequest: string;
     messageDelivered: string;
     messageAcknowledge: string;
@@ -41,6 +48,7 @@ const productionFunctions = {
   sessionClose: 'luwi_session_close_v1',
   sessionDisconnect: 'luwi_session_disconnect_v1',
   nativeLinkTrim: 'luwi_native_link_trim_v1',
+  nativeDeclare: 'luwi_native_declare_v1',
   messageRequest: 'luwi_message_request_v1',
   messageDelivered: 'luwi_message_delivered_v1',
   messageAcknowledge: 'luwi_message_acknowledge_v1',

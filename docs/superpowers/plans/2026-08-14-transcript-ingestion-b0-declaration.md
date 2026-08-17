@@ -74,69 +74,69 @@ apps/daemon/src/app.ts                      the route
 
 ## Task 1: The protocol shapes
 
-- [ ] Add the declaration request shape, reusing the existing `nativeSessionRefSchema` rather than
+- [x] Add the declaration request shape, reusing the existing `nativeSessionRefSchema` rather than
       restating it.
-- [ ] Add the response shape carrying the outcome, the binding and the link.
-- [ ] Tests: a valid declaration parses; an unknown key is rejected (strict object); the outcome enum
+- [x] Add the response shape carrying the outcome, the binding and the link.
+- [x] Tests: a valid declaration parses; an unknown key is rejected (strict object); the outcome enum
       matches `evaluateNativeDeclaration`'s six results exactly, asserted against the runtime type so
       the two cannot drift.
 
 ## Task 2: The `native_declare` Redis Function
 
-- [ ] Write `native_declare` taking the binding hash, the links zset, the link hash, the session
+- [x] Write `native_declare` taking the binding hash, the links zset, the link hash, the session
       reverse index and the session hash — each declared with the identity it must hold.
-- [ ] CAS on the binding's monotonic `version`; on mismatch return a version conflict and **write
+- [x] CAS on the binding's monotonic `version`; on mismatch return a version conflict and **write
       nothing**.
-- [ ] Refuse when the declared session is terminal, when a live holder exists, and when any declared
+- [x] Refuse when the declared session is terminal, when a live holder exists, and when any declared
       key does not hold the declared identity.
-- [ ] Increment `version` exactly once on success.
-- [ ] Register it and record the D2 reasoning next to the version.
+- [x] Increment `version` exactly once on success.
+- [x] Register it and record the D2 reasoning next to the version.
 
 ## Task 3: Repository and service
 
-- [ ] Add the repository call that reads current state, runs `evaluateNativeDeclaration`, and applies
+- [x] Add the repository call that reads current state, runs `evaluateNativeDeclaration`, and applies
       the result through `native_declare`.
-- [ ] Bound contention at 3 attempts and surface `409 NATIVE_BINDING_CONTENDED`, matching A1's caller
+- [x] Bound contention at 3 attempts and surface `409 NATIVE_BINDING_CONTENDED`, matching A1's caller
       paths.
-- [ ] Emit `session.native.linked` on a new link, and nothing at all on `unchanged` — an event that
+- [x] Emit `session.native.linked` on a new link, and nothing at all on `unchanged` — an event that
       records no change would be noise in the Activity feed.
 
 ## Task 4: The route
 
-- [ ] Add the declaration route under the session's own path.
-- [ ] Reject a declaration naming a session other than the caller's bound one.
-- [ ] Map every outcome to its status: created/linked/unchanged → 200, conflict → 409, inconsistent →
+- [x] Add the declaration route under the session's own path.
+- [x] Reject a declaration naming a session other than the caller's bound one.
+- [x] Map every outcome to its status: created/linked/unchanged → 200, conflict → 409, inconsistent →
       `NATIVE_BINDING_INCONSISTENT`, contended → 409.
-- [ ] Per ADR 0021's rule, an `Origin`-less POST must carry `content-type: application/json`; the
+- [x] Per ADR 0021's rule, an `Origin`-less POST must carry `content-type: application/json`; the
       route's tests must pass a body so Fastify's `inject` sets it.
 
 ## Task 5: Integration coverage
 
-- [ ] Redis integration test: a refused declaration leaves **no** partial write — no binding, no link,
+- [x] Redis integration test: a refused declaration leaves **no** partial write — no binding, no link,
       no reverse index.
-- [ ] A live holder is reported and the holding session stays untouched and non-terminal.
-- [ ] A second declaration of the same identity returns `unchanged` and does not increment `version`
+- [x] A live holder is reported and the holding session stays untouched and non-terminal.
+- [x] A second declaration of the same identity returns `unchanged` and does not increment `version`
       a second time, per D3.
-- [ ] Run through `/redis-it`, never against `db0`.
+- [x] Run through `/redis-it`, never against `db0`.
 
 ## Task 6: Make something declare
 
-- [ ] `luwi session simulate` and `luwi session register` gain an optional native reference, so the
+- [x] `luwi session simulate` and `luwi session register` gain an optional native reference, so the
       fixture can produce a binding at all.
-- [ ] `scripts/seed-runtime.ts` declares for at least one seeded session, so `#/sessions` shows a
+- [x] `scripts/seed-runtime.ts` declares for at least one seeded session, so `#/sessions` shows a
       bound one and B1 has an interval to attribute into.
 
 ## Task 7: Documentation
 
-- [ ] `README.md`, `AGENTS.md` §21 — B0 built; B1 and B2 specified and not started;
+- [x] `README.md`, `AGENTS.md` §21 — B0 built; B1 and B2 specified and not started;
       `usage.sessionId` still unattributed.
-- [ ] `CLAUDE.md` — add the commit to the repository-state table when the owner commits.
+- [x] `CLAUDE.md` — add the commit to the repository-state table when the owner commits.
 
 ## Task 8: Full verification
 
-- [ ] `pnpm format`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`
-- [ ] `/redis-it` for the integration leg.
-- [ ] Report honestly per §19: `usage.sessionId` remains unattributed until B1.
+- [x] `pnpm format`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`
+- [x] `/redis-it` for the integration leg.
+- [x] Report honestly per §19: `usage.sessionId` remains unattributed until B1.
 
 ## Regression coverage map
 

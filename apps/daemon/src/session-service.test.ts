@@ -9,6 +9,8 @@ import type {
 import {
   RedisRepositoryError,
   type CloseSessionInput,
+  type DeclareNativeSessionInput,
+  type DeclareNativeSessionResult,
   type RegisterSessionInput,
   type RegisterSessionResult,
   type RuntimeRepository,
@@ -277,32 +279,39 @@ function nativeHarness(config: {
   binding?: NativeSessionBinding;
   link?: NativeSessionLink;
   linkedSession?: SessionView;
+  /** What getSession returns for `session-1`; the online starting view otherwise. */
+  caller?: SessionView | null;
   reverseBindingId?: string;
   registerConflicts?: number;
   statusConflicts?: number;
   closeConflicts?: number;
+  declareConflicts?: number;
+  declareResult?: DeclareNativeSessionResult;
   ids?: string[];
 }): {
   service: ReturnType<typeof createSessionService>;
   registrations: RegisterSessionInput[];
   statusUpdates: UpdateSessionStatusInput[];
   closes: CloseSessionInput[];
+  declares: DeclareNativeSessionInput[];
   bindingReads: string[];
 } {
   const registrations: RegisterSessionInput[] = [];
   const statusUpdates: UpdateSessionStatusInput[] = [];
   const closes: CloseSessionInput[] = [];
+  const declares: DeclareNativeSessionInput[] = [];
   const bindingReads: string[] = [];
   let registerConflicts = config.registerConflicts ?? 0;
   let statusConflicts = config.statusConflicts ?? 0;
   let closeConflicts = config.closeConflicts ?? 0;
+  let declareConflicts = config.declareConflicts ?? 0;
   const backing = repository();
 
   const service = createSessionService({
     repository: {
       ...backing,
       getSession: async (sessionId) => {
-        if (sessionId === 'session-1') return view;
+        if (sessionId === 'session-1') return config.caller === undefined ? view : config.caller;
         return config.linkedSession?.id === sessionId ? config.linkedSession : null;
       },
       getNativeBinding: async (id) => {
@@ -318,6 +327,24 @@ function nativeHarness(config: {
           throw versionConflict();
         }
         return backing.registerSession(input);
+      },
+      declareNativeSession: async (input) => {
+        declares.push(input);
+        if (declareConflicts > 0) {
+          declareConflicts -= 1;
+          throw versionConflict();
+        }
+        return (
+          config.declareResult ?? {
+            status: 'declared',
+            native: {
+              transition: 'created',
+              binding: nativeBinding({ openLinkId: linkId, version: 1 }),
+              link: nativeLink(),
+            },
+            events: [],
+          }
+        );
       },
       updateSessionStatus: async (input) => {
         statusUpdates.push(input);
@@ -349,7 +376,7 @@ function nativeHarness(config: {
     }),
   });
 
-  return { service, registrations, statusUpdates, closes, bindingReads };
+  return { service, registrations, statusUpdates, closes, declares, bindingReads };
 }
 
 const declaration: SessionRegistrationRequest = {
@@ -508,6 +535,179 @@ describe('native session declaration', () => {
     ).resolves.toEqual(view);
     expect(harness.registrations[0]?.native).toBeUndefined();
     expect(harness.bindingReads).toHaveLength(0);
+  });
+});
+
+describe('native declaration for a registered session', () => {
+  const declareIds = ['linked-event', 'unlinked-event'];
+
+  it('creates the binding for a live session and returns the created outcome', async () => {
+    const harness = nativeHarness({ ids: declareIds });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).resolves.toEqual({
+      outcome: 'created',
+      binding: nativeBinding({ openLinkId: linkId, version: 1 }),
+      link: nativeLink(),
+    });
+    expect(harness.declares).toHaveLength(1);
+    expect(harness.declares[0]).toEqual({
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      workspaceId: 'local',
+      native: {
+        bindingId,
+        linkId,
+        linkedEventId: 'linked-event',
+        payload: {
+          bindingId,
+          expectedVersion: 0,
+          link: { id: linkId, sessionId: 'session-1' },
+          binding: {
+            id: bindingId,
+            adapterId: 'claude-code',
+            nativeSessionId: nativeRef.nativeSessionId,
+            kind: 'main',
+          },
+        },
+      },
+    });
+  });
+
+  /** D3: re-declaration is the steady state, not an error — and not a write. */
+  it('returns unchanged without writing when the open link already names this session', async () => {
+    const binding = nativeBinding({ openLinkId: linkId });
+    const link = nativeLink();
+    const harness = nativeHarness({ binding, link, ids: declareIds });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).resolves.toEqual({
+      outcome: 'unchanged',
+      binding,
+      link,
+    });
+    expect(harness.declares).toHaveLength(0);
+  });
+
+  it('refuses a live holder with NATIVE_SESSION_CONFLICT and writes nothing', async () => {
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: foreignLinkId }),
+      link: nativeLink({ id: foreignLinkId, sessionId: 'session-2' }),
+      linkedSession: holder,
+      ids: declareIds,
+    });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).rejects.toMatchObject({
+      code: 'NATIVE_SESSION_CONFLICT',
+      statusCode: 409,
+    });
+    expect(harness.declares).toHaveLength(0);
+  });
+
+  it('refuses with NATIVE_BINDING_INCONSISTENT when the open link cannot be read', async () => {
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: foreignLinkId }),
+      ids: declareIds,
+    });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_INCONSISTENT',
+      statusCode: 409,
+    });
+    expect(harness.declares).toHaveLength(0);
+  });
+
+  it('refuses a terminal session before reading the binding at all', async () => {
+    const harness = nativeHarness({
+      caller: { ...view, status: 'completed', presence: 'offline' },
+      ids: declareIds,
+    });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).rejects.toMatchObject({
+      code: 'SESSION_TERMINAL',
+      statusCode: 409,
+    });
+    expect(harness.declares).toHaveLength(0);
+    expect(harness.bindingReads).toHaveLength(0);
+  });
+
+  it('rejects an unknown session with SESSION_NOT_FOUND', async () => {
+    const harness = nativeHarness({ caller: null, ids: declareIds });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).rejects.toMatchObject({
+      code: 'SESSION_NOT_FOUND',
+      statusCode: 404,
+    });
+    expect(harness.declares).toHaveLength(0);
+  });
+
+  it('links over a stale holder and reports the closed link', async () => {
+    const staleLink = nativeLink({
+      id: foreignLinkId,
+      sessionId: 'session-2',
+      unlinkedAt: '2026-08-17T00:00:00.000Z',
+    });
+    const harness = nativeHarness({
+      binding: nativeBinding({ openLinkId: foreignLinkId }),
+      link: nativeLink({ id: foreignLinkId, sessionId: 'session-2' }),
+      linkedSession: terminalHolder,
+      declareResult: {
+        status: 'declared',
+        native: {
+          transition: 'linked',
+          binding: nativeBinding({ openLinkId: linkId, version: 6, linkCount: 2 }),
+          link: nativeLink(),
+          staleLink,
+        },
+        events: [],
+      },
+      ids: declareIds,
+    });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).resolves.toEqual({
+      outcome: 'linked',
+      binding: nativeBinding({ openLinkId: linkId, version: 6, linkCount: 2 }),
+      link: nativeLink(),
+      staleLink,
+    });
+    expect(harness.declares[0]?.native.payload).toMatchObject({
+      expectedVersion: 4,
+      expectedOpenLinkId: foreignLinkId,
+      staleLinkId: foreignLinkId,
+    });
+    expect(harness.declares[0]?.native.unlinkedEventId).toBe('unlinked-event');
+  });
+
+  it('retries contention with stable ids and gives up as NATIVE_BINDING_CONTENDED', async () => {
+    const harness = nativeHarness({
+      declareConflicts: NATIVE_DECLARATION_MAX_ATTEMPTS,
+      ids: declareIds,
+    });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).rejects.toMatchObject({
+      code: 'NATIVE_BINDING_CONTENDED',
+      statusCode: 409,
+    });
+    expect(harness.declares).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+    // The binding is re-read on every attempt, and the minted identities never
+    // change: a retry that minted fresh ids could link twice.
+    expect(harness.bindingReads).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+    const identities = harness.declares.map((input) => ({
+      linkId: input.native.linkId,
+      linkedEventId: input.native.linkedEventId,
+    }));
+    expect(identities).toEqual([identities[0], identities[0], identities[0]]);
+    expect(identities[0]).toEqual({ linkId, linkedEventId: 'linked-event' });
+  });
+
+  it('maps a repository terminal race to SESSION_TERMINAL', async () => {
+    const harness = nativeHarness({
+      declareResult: { status: 'terminal', currentStatus: 'completed' },
+      ids: declareIds,
+    });
+
+    await expect(harness.service.declareNative('session-1', nativeRef)).rejects.toMatchObject({
+      code: 'SESSION_TERMINAL',
+      statusCode: 409,
+    });
   });
 });
 

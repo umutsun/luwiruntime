@@ -66,7 +66,37 @@ export const nativeSessionLinkSchema = z.strictObject({
   unlinkedAt: timestampSchema.optional(),
 });
 
+/**
+ * A live session declaring its native identity after registration. The same
+ * `native` block session registration takes, and deliberately nothing else:
+ * the session is named by the route path, so a body cannot declare for anyone
+ * but the caller's own session, and project and agent still come from the
+ * session rather than being accepted a second time here.
+ */
+export const nativeDeclarationRequestSchema = z.strictObject({
+  native: nativeSessionRefSchema,
+});
+
+/**
+ * The outcomes a declaration can return. `conflict`, `inconsistent` and
+ * `contended` are refusals carried as error codes, never as a response; a test
+ * in `@luwi/runtime` holds this enum against the policy's decision union so
+ * the two cannot drift apart.
+ */
+export const nativeDeclarationOutcomeSchema = z.enum(['created', 'linked', 'unchanged']);
+
+export const nativeDeclarationResponseSchema = z.strictObject({
+  outcome: nativeDeclarationOutcomeSchema,
+  binding: nativeSessionBindingSchema,
+  link: nativeSessionLinkSchema,
+  /** Present only when the same declaration closed a stale open link. */
+  staleLink: nativeSessionLinkSchema.optional(),
+});
+
 export type NativeSessionRef = z.infer<typeof nativeSessionRefSchema>;
 export type NativeSessionKind = z.infer<typeof nativeSessionKindSchema>;
 export type NativeSessionBinding = z.infer<typeof nativeSessionBindingSchema>;
 export type NativeSessionLink = z.infer<typeof nativeSessionLinkSchema>;
+export type NativeDeclarationRequest = z.infer<typeof nativeDeclarationRequestSchema>;
+export type NativeDeclarationOutcome = z.infer<typeof nativeDeclarationOutcomeSchema>;
+export type NativeDeclarationResponse = z.infer<typeof nativeDeclarationResponseSchema>;

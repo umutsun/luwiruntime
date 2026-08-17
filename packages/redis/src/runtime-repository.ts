@@ -114,6 +114,23 @@ export type NativeUnlinkInput = {
   unlinkedEventId: string;
 };
 
+/**
+ * B0's declaration for an already-registered session. It reuses the exact
+ * registration-time `native` shape: the same policy planned it, and the same
+ * Lua validation applies it.
+ */
+export type DeclareNativeSessionInput = {
+  sessionId: string;
+  projectId: string;
+  workspaceId: string;
+  native: NativeRegistrationInput;
+};
+
+export type DeclareNativeSessionResult =
+  | { status: 'declared'; native: NativeTransitionResult; events: AppendedEvent[] }
+  | { status: 'not_found'; entity: 'session' }
+  | { status: 'terminal'; currentStatus: 'completed' | 'disconnected' };
+
 /** What retention needs to decide, read in one place so policy stays pure. */
 export type NativeRetentionState = {
   binding: NativeSessionBinding;
@@ -263,6 +280,7 @@ export interface RuntimeRepository {
   getProject(projectId: string): Promise<Project | null>;
   listProjects(): Promise<Project[]>;
   registerSession(input: RegisterSessionInput): Promise<RegisterSessionResult>;
+  declareNativeSession(input: DeclareNativeSessionInput): Promise<DeclareNativeSessionResult>;
   getNativeBinding(bindingId: string): Promise<NativeSessionBinding | null>;
   getNativeLink(linkId: string): Promise<NativeSessionLink | null>;
   getSessionNativeBindingId(sessionId: string): Promise<string | null>;
@@ -405,6 +423,38 @@ function parseRegisterSessionResult(value: unknown): RegisterSessionResult {
   throw new RedisRepositoryError(
     'REDIS_DATA_INVALID',
     'Redis returned an incompatible session registration result.',
+  );
+}
+
+function parseDeclareNativeSessionResult(value: unknown): DeclareNativeSessionResult {
+  if (!isRecord(value)) {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis returned an incompatible native declaration result.',
+    );
+  }
+  if (value.status === 'error' && typeof value.code === 'string' && value.code !== '') {
+    throw new RedisRepositoryError(value.code, 'Redis rejected the native declaration.');
+  }
+  if (value.status === 'not_found' && value.entity === 'session') {
+    return { status: 'not_found', entity: 'session' };
+  }
+  if (
+    value.status === 'terminal' &&
+    (value.currentStatus === 'completed' || value.currentStatus === 'disconnected')
+  ) {
+    return { status: 'terminal', currentStatus: value.currentStatus };
+  }
+  if (value.status === 'declared') {
+    return {
+      status: 'declared',
+      native: parseNativeTransition(value.native),
+      events: parseAppendedEvents(value.events),
+    };
+  }
+  throw new RedisRepositoryError(
+    'REDIS_DATA_INVALID',
+    'Redis returned an incompatible native declaration result.',
   );
 }
 
@@ -913,6 +963,49 @@ export function createRuntimeRepository(options: {
         ...commandArgs,
       ]);
       return parseRegisterSessionResult(decodeJsonReply(reply));
+    },
+
+    async declareNativeSession(input) {
+      const native = input.native;
+      const commandKeys = [
+        keys.session(input.sessionId),
+        keys.nativeSessionBinding(native.bindingId),
+        keys.nativeSessionLink(native.linkId),
+        keys.nativeSessionLinks(native.bindingId),
+        keys.sessionNativeBinding(input.sessionId),
+        // Declared but never written when there is no stale link.
+        native.staleLinkId === undefined
+          ? keys.nativeSessionBinding(native.bindingId)
+          : keys.nativeSessionLink(native.staleLinkId),
+        keys.globalEvents,
+        keys.projectEvents(input.projectId),
+      ];
+      // The identifiers the keys above were built from, declared separately
+      // from the payload so the Function can prove the two agree. A Function
+      // may not derive a key name, so it cannot recover them any other way.
+      const commandArgs = [
+        JSON.stringify(native.payload),
+        JSON.stringify({
+          sessionId: input.sessionId,
+          projectId: input.projectId,
+          bindingId: native.bindingId,
+          linkId: native.linkId,
+          ...(native.staleLinkId === undefined ? {} : { staleLinkId: native.staleLinkId }),
+        }),
+        input.workspaceId,
+        native.linkedEventId,
+      ];
+      if (native.unlinkedEventId !== undefined) {
+        commandArgs.push(native.unlinkedEventId);
+      }
+      const reply = await client.sendCommand([
+        'FCALL',
+        functions.functions.nativeDeclare,
+        String(commandKeys.length),
+        ...commandKeys,
+        ...commandArgs,
+      ]);
+      return parseDeclareNativeSessionResult(decodeJsonReply(reply));
     },
 
     async getNativeBinding(bindingId) {

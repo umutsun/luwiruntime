@@ -59,12 +59,18 @@ export type {
 } from './session.js';
 export {
   NATIVE_LINK_TRIM_MAX_PER_CALL,
+  nativeDeclarationOutcomeSchema,
+  nativeDeclarationRequestSchema,
+  nativeDeclarationResponseSchema,
   nativeSessionBindingSchema,
   nativeSessionKindSchema,
   nativeSessionLinkSchema,
   nativeSessionRefSchema,
 } from './native-session.js';
 export type {
+  NativeDeclarationOutcome,
+  NativeDeclarationRequest,
+  NativeDeclarationResponse,
   NativeSessionBinding,
   NativeSessionKind,
   NativeSessionLink,

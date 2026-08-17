@@ -271,6 +271,118 @@ describe('LUWI CLI', () => {
     ]);
   });
 
+  it('sends an optional native reference with session registration', async () => {
+    let body: unknown;
+    let output = '';
+    const session = {
+      id: 'session-1',
+      agentId: 'claude-sim',
+      projectId: 'project-1',
+      status: 'starting',
+      workingDirectory: 'C:/workspace/luwi',
+      startedAt: '2026-07-28T12:00:00.000Z',
+      lastHeartbeatAt: '2026-07-28T12:00:00.000Z',
+      metadata: {},
+      presence: 'online',
+    };
+
+    await runCli(
+      [
+        'session',
+        'register',
+        '--project',
+        'project-1',
+        '--agent',
+        'claude-sim',
+        '--working-directory',
+        'C:/workspace/luwi',
+        '--native-adapter',
+        'claude-code',
+        '--native-session',
+        '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+      ],
+      {
+        fetch: async (_url, init) => {
+          body = init?.body === undefined ? undefined : JSON.parse(init.body);
+          return response(session, { status: 201 });
+        },
+        stdout: { write: (text) => (output += text) },
+      },
+    );
+
+    expect(body).toMatchObject({
+      projectId: 'project-1',
+      native: {
+        adapterId: 'claude-code',
+        nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+      },
+    });
+    expect(JSON.parse(output).id).toBe('session-1');
+  });
+
+  it('registers without a native block when no native option is given', async () => {
+    let body: Record<string, unknown> | undefined;
+
+    await runCli(
+      [
+        'session',
+        'register',
+        '--project',
+        'project-1',
+        '--agent',
+        'claude-sim',
+        '--working-directory',
+        'C:/workspace/luwi',
+      ],
+      {
+        fetch: async (_url, init) => {
+          body = init?.body === undefined ? undefined : JSON.parse(init.body);
+          return response(
+            {
+              id: 'session-1',
+              agentId: 'claude-sim',
+              projectId: 'project-1',
+              status: 'starting',
+              workingDirectory: 'C:/workspace/luwi',
+              startedAt: '2026-07-28T12:00:00.000Z',
+              lastHeartbeatAt: '2026-07-28T12:00:00.000Z',
+              metadata: {},
+              presence: 'online',
+            },
+            { status: 201 },
+          );
+        },
+        stdout: { write: () => undefined },
+      },
+    );
+
+    expect(body).toBeDefined();
+    expect(body?.native).toBeUndefined();
+  });
+
+  it('refuses a half-supplied native reference before any request is made', async () => {
+    const fetch = vi.fn();
+
+    await expect(
+      runCli(
+        [
+          'session',
+          'register',
+          '--project',
+          'project-1',
+          '--agent',
+          'claude-sim',
+          '--working-directory',
+          'C:/workspace/luwi',
+          '--native-adapter',
+          'claude-code',
+        ],
+        { fetch, stdout: { write: () => undefined } },
+      ),
+    ).rejects.toMatchObject({ code: 'CLI_OPTION_INVALID' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('simulation heartbeats and sends exactly one graceful close across repeated signals', async () => {
     const listeners = new Map<string, () => void>();
     const unref = vi.fn();
@@ -297,6 +409,10 @@ describe('LUWI CLI', () => {
         'codex-sim',
         '--working-directory',
         'C:/workspace/luwi',
+        '--native-adapter',
+        'claude-code',
+        '--native-session',
+        '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
       ],
       {
         fetch: async (url, init) => {
@@ -335,6 +451,13 @@ describe('LUWI CLI', () => {
     await simulation;
 
     expect(requests.filter(({ url }) => url.endsWith('/close'))).toHaveLength(1);
+    const registration = requests.find(({ url }) => url.endsWith('/sessions'));
+    expect(registration?.body).toMatchObject({
+      native: {
+        adapterId: 'claude-code',
+        nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+      },
+    });
   });
 
   it('buffers realtime events until snapshots, sorts them, and deduplicates live delivery', async () => {

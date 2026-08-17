@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  nativeDeclarationRequestSchema,
+  nativeDeclarationResponseSchema,
   nativeSessionBindingSchema,
   nativeSessionLinkSchema,
   nativeSessionRefSchema,
@@ -82,6 +84,98 @@ describe('native session binding', () => {
     expect(nativeSessionBindingSchema.safeParse({ ...binding, linkCount: 1.5 }).success).toBe(
       false,
     );
+  });
+});
+
+describe('native declaration request', () => {
+  it('takes the same native block session registration takes, and nothing else', () => {
+    expect(
+      nativeDeclarationRequestSchema.parse({
+        native: {
+          adapterId: 'claude-code-native-v1',
+          nativeSessionId: 'fcc53779-5974-4794-8b47-f5515ea3a34c',
+        },
+      }).native.adapterId,
+    ).toBe('claude-code-native-v1');
+  });
+
+  /**
+   * The declaration applies to the session named by the route path and to no
+   * other. A body that names a session is the request this surface must not
+   * accept, so the strict object refuses it rather than ignoring it.
+   */
+  it('rejects a request naming a session of its own', () => {
+    expect(
+      nativeDeclarationRequestSchema.safeParse({
+        native: {
+          adapterId: 'claude-code-native-v1',
+          nativeSessionId: 'fcc53779-5974-4794-8b47-f5515ea3a34c',
+        },
+        sessionId: 'someone-elses-session',
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an absent native block and an unknown key', () => {
+    expect(nativeDeclarationRequestSchema.safeParse({}).success).toBe(false);
+    expect(
+      nativeDeclarationRequestSchema.safeParse({
+        native: {
+          adapterId: 'claude-code-native-v1',
+          nativeSessionId: 'fcc53779-5974-4794-8b47-f5515ea3a34c',
+        },
+        force: true,
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('native declaration response', () => {
+  const timestamped = '2026-08-17T00:00:00.000Z';
+  const binding = {
+    id: 'b'.repeat(64),
+    adapterId: 'claude-code-native-v1',
+    nativeSessionId: 'fcc53779-5974-4794-8b47-f5515ea3a34c',
+    kind: 'main' as const,
+    openLinkId: 'l'.repeat(64),
+    version: 1,
+    linkCount: 1,
+    trimmedLinkCount: 0,
+    firstLinkedAt: timestamped,
+    lastLinkedAt: timestamped,
+  };
+  const link = {
+    id: 'l'.repeat(64),
+    bindingId: 'b'.repeat(64),
+    sessionId: 'session-1',
+    linkedAt: timestamped,
+  };
+
+  it('carries each declarable outcome with the binding and the link', () => {
+    for (const outcome of ['created', 'linked', 'unchanged'] as const) {
+      expect(nativeDeclarationResponseSchema.parse({ outcome, binding, link }).outcome).toBe(
+        outcome,
+      );
+    }
+  });
+
+  it('carries the stale link the same declaration closed', () => {
+    expect(
+      nativeDeclarationResponseSchema.parse({
+        outcome: 'linked',
+        binding,
+        link,
+        staleLink: { ...link, id: 's'.repeat(64), unlinkedAt: timestamped },
+      }).staleLink?.unlinkedAt,
+    ).toBe(timestamped);
+  });
+
+  it('rejects the outcomes this surface refuses instead of returning', () => {
+    for (const outcome of ['conflict', 'inconsistent', 'contended']) {
+      expect(nativeDeclarationResponseSchema.safeParse({ outcome, binding, link }).success).toBe(
+        false,
+      );
+    }
   });
 });
 

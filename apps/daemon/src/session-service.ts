@@ -4,6 +4,9 @@ import {
   canonicalJsonStringify,
   type HeartbeatRequest,
   type HeartbeatResponse,
+  type NativeDeclarationResponse,
+  type NativeSessionBinding,
+  type NativeSessionLink,
   type NativeSessionRef,
   type SessionRegistrationRequest,
   type SessionStatusTarget,
@@ -20,6 +23,7 @@ import {
   evaluateNativeDeclaration,
   NATIVE_DECLARATION_MAX_ATTEMPTS,
   type CanonicalPath,
+  type NativeDeclarationDecision,
   type NativeOpenLinkObservation,
 } from '@luwi/runtime';
 
@@ -36,20 +40,43 @@ export function isVersionConflict(error: unknown): boolean {
   );
 }
 
+function nativeConflict(): ApplicationError {
+  return new ApplicationError(
+    'NATIVE_SESSION_CONFLICT',
+    'Another live session already holds this native session reference.',
+    409,
+  );
+}
+
+function nativeInconsistent(): ApplicationError {
+  return new ApplicationError(
+    'NATIVE_BINDING_INCONSISTENT',
+    'The native session binding names an open link that cannot be read.',
+    409,
+  );
+}
+
+type NativeBindingObservation = {
+  bindingId: string;
+  binding: NativeSessionBinding | undefined;
+  /** The validated record behind `binding.openLinkId`, when one could be read. */
+  openLinkRecord: NativeSessionLink | undefined;
+  openLink: NativeOpenLinkObservation | undefined;
+};
+
 /**
  * The binding and its open link are read here rather than inside Lua, because a
  * Redis Function may not derive another session's key name. The pure policy in
- * `@luwi/runtime` turns that observation into one outcome; this only shapes the
- * payload the Function will verify.
+ * `@luwi/runtime` turns this observation into one outcome; the Function only
+ * verifies the observation still holds.
  */
-async function planNativeDeclaration(
+async function observeNativeBinding(
   repository: RuntimeRepository,
   ref: NativeSessionRef,
-  sessionId: string,
-  eventIds: { linked: string; unlinked: string },
-): Promise<NativeRegistrationInput> {
+): Promise<NativeBindingObservation> {
   const bindingId = deriveNativeBindingId(ref);
   const binding = (await repository.getNativeBinding(bindingId)) ?? undefined;
+  let openLinkRecord: NativeSessionLink | undefined;
   let openLink: NativeOpenLinkObservation | undefined;
   if (binding?.openLinkId !== undefined) {
     const link = await repository.getNativeLink(binding.openLinkId);
@@ -67,39 +94,22 @@ async function planNativeDeclaration(
     ) {
       const linked = await repository.getSession(link.sessionId);
       if (linked !== null) {
+        openLinkRecord = link;
         openLink = { id: link.id, sessionId: link.sessionId, sessionStatus: linked.status };
       }
     }
   }
+  return { bindingId, binding, openLinkRecord, openLink };
+}
 
-  const decision = evaluateNativeDeclaration({ binding, openLink, sessionId });
-  if (decision.outcome === 'conflict') {
-    throw new ApplicationError(
-      'NATIVE_SESSION_CONFLICT',
-      'Another live session already holds this native session reference.',
-      409,
-    );
-  }
-  if (decision.outcome === 'inconsistent') {
-    throw new ApplicationError(
-      'NATIVE_BINDING_INCONSISTENT',
-      'The native session binding names an open link that cannot be read.',
-      409,
-    );
-  }
-  /**
-   * Unreachable during registration, because the session id is new and no open
-   * link can already name it. Refused rather than ignored, so a future
-   * declaration surface cannot silently fall through to an unbound session.
-   */
-  if (decision.outcome === 'unchanged') {
-    throw new ApplicationError(
-      'NATIVE_BINDING_INCONSISTENT',
-      'The native session binding already names this session.',
-      409,
-    );
-  }
-
+/** Shapes the payload the Function will verify, for a decision that writes. */
+function buildNativeDeclaration(
+  decision: Extract<NativeDeclarationDecision, { outcome: 'created' | 'linked' }>,
+  ref: NativeSessionRef,
+  bindingId: string,
+  sessionId: string,
+  eventIds: { linked: string; unlinked: string },
+): NativeRegistrationInput {
   const linkId = deriveNativeLinkId(bindingId, sessionId);
   const parentRef = deriveParentRef(ref);
   return {
@@ -132,6 +142,39 @@ async function planNativeDeclaration(
         : {}),
     },
   };
+}
+
+async function planNativeDeclaration(
+  repository: RuntimeRepository,
+  ref: NativeSessionRef,
+  sessionId: string,
+  eventIds: { linked: string; unlinked: string },
+): Promise<NativeRegistrationInput> {
+  const observed = await observeNativeBinding(repository, ref);
+  const decision = evaluateNativeDeclaration({
+    binding: observed.binding,
+    openLink: observed.openLink,
+    sessionId,
+  });
+  if (decision.outcome === 'conflict') {
+    throw nativeConflict();
+  }
+  if (decision.outcome === 'inconsistent') {
+    throw nativeInconsistent();
+  }
+  /**
+   * Unreachable during registration, because the session id is new and no open
+   * link can already name it. Refused rather than ignored, so the declaration
+   * surface below stays the only path that treats it as a result.
+   */
+  if (decision.outcome === 'unchanged') {
+    throw new ApplicationError(
+      'NATIVE_BINDING_INCONSISTENT',
+      'The native session binding already names this session.',
+      409,
+    );
+  }
+  return buildNativeDeclaration(decision, ref, observed.bindingId, sessionId, eventIds);
 }
 
 /**
@@ -183,6 +226,7 @@ async function resolveNativeUnlink(
 
 export type SessionService = {
   register(request: SessionRegistrationRequest): Promise<SessionView>;
+  declareNative(sessionId: string, ref: NativeSessionRef): Promise<NativeDeclarationResponse>;
   get(sessionId: string): Promise<SessionView | null>;
   list(projectId?: string): Promise<SessionView[]>;
   updateStatus(sessionId: string, targetStatus: SessionStatusTarget): Promise<SessionView>;
@@ -277,6 +321,90 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         } catch (error) {
           // A third VERSION_CONFLICT must not escape as a raw repository error,
           // which a caller would see as a 500 for what is a refusal.
+          if (!isVersionConflict(error)) throw error;
+        }
+      }
+
+      throw new ApplicationError(
+        'NATIVE_BINDING_CONTENDED',
+        'The native session binding changed while it was being declared.',
+        409,
+      );
+    },
+
+    /**
+     * B0's declaration surface for an already-registered, live session. The
+     * same policy that decides at registration decides here, unchanged;
+     * `unchanged` is the one outcome this surface returns instead of refusing,
+     * because re-declaration is the steady state for anything that declares at
+     * startup or on a timer.
+     */
+    async declareNative(sessionId, ref) {
+      const session = await requireSession(options.repository, sessionId);
+      if (session.status === 'completed' || session.status === 'disconnected') {
+        throw new ApplicationError(
+          'SESSION_TERMINAL',
+          'The session is already in a terminal state.',
+          409,
+        );
+      }
+      // Minted once and reused on every attempt, so a retry after an
+      // unobserved success cannot link a second time.
+      const linkedEventId = createId();
+      const unlinkedEventId = createId();
+
+      for (let attempt = 1; attempt <= NATIVE_DECLARATION_MAX_ATTEMPTS; attempt += 1) {
+        const observed = await observeNativeBinding(options.repository, ref);
+        const decision = evaluateNativeDeclaration({
+          binding: observed.binding,
+          openLink: observed.openLink,
+          sessionId,
+        });
+        if (decision.outcome === 'conflict') {
+          throw nativeConflict();
+        }
+        if (decision.outcome === 'inconsistent') {
+          throw nativeInconsistent();
+        }
+        if (decision.outcome === 'unchanged') {
+          // Defined whenever the policy says unchanged; refusing the
+          // impossible alternative keeps this fail-closed rather than assumed.
+          if (observed.binding === undefined || observed.openLinkRecord === undefined) {
+            throw nativeInconsistent();
+          }
+          return { outcome: 'unchanged', binding: observed.binding, link: observed.openLinkRecord };
+        }
+
+        const native = buildNativeDeclaration(decision, ref, observed.bindingId, sessionId, {
+          linked: linkedEventId,
+          unlinked: unlinkedEventId,
+        });
+        try {
+          const result = await options.repository.declareNativeSession({
+            sessionId,
+            projectId: session.projectId,
+            workspaceId: options.workspaceId,
+            native,
+          });
+          if (result.status === 'not_found') {
+            throw sessionNotFound();
+          }
+          if (result.status === 'terminal') {
+            throw new ApplicationError(
+              'SESSION_TERMINAL',
+              'The session is already in a terminal state.',
+              409,
+            );
+          }
+          return {
+            outcome: result.native.transition,
+            binding: result.native.binding,
+            link: result.native.link,
+            ...(result.native.staleLink === undefined
+              ? {}
+              : { staleLink: result.native.staleLink }),
+          };
+        } catch (error) {
           if (!isVersionConflict(error)) throw error;
         }
       }

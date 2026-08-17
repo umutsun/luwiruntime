@@ -40,6 +40,8 @@ export type {
   RegisterProjectResult,
   RegisterSessionInput,
   RegisterSessionResult,
+  DeclareNativeSessionInput,
+  DeclareNativeSessionResult,
   NativeLinkTrimInput,
   NativeLinkTrimResult,
   NativeRegistrationInput,
