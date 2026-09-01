@@ -87,6 +87,8 @@ export interface RedisKeys {
   sessionCommits(sessionId: string): string;
   attribution(attributionId: string): string;
   projectAttributions(projectId: string): string;
+  sessionFileChange(observationId: string): string;
+  projectSessionFileChanges(projectId: string): string;
   package(projectId: string, ecosystem: string, packageId: string): string;
   projectPackages(projectId: string): string;
   technology(projectId: string, technologyId: string): string;
@@ -233,6 +235,9 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     attribution: (attributionId) => `${prefix}:attribution:${keyPart(attributionId)}`,
     projectAttributions: (projectId) =>
       `${prefix}:index:project:${keyPart(projectId)}:attributions`,
+    sessionFileChange: (observationId) => `${prefix}:session-file-change:${keyPart(observationId)}`,
+    projectSessionFileChanges: (projectId) =>
+      `${prefix}:index:project:${keyPart(projectId)}:session-file-changes`,
     package: (projectId, ecosystem, packageId) =>
       `${prefix}:package:${keyPart(projectId)}:${keyPart(ecosystem)}:${keyPart(packageId)}`,
     projectPackages: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:packages`,

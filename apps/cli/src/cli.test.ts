@@ -116,7 +116,30 @@ describe('LUWI CLI', () => {
     expect(JSON.parse(output)).toMatchObject({ ready: true });
     output = '';
     await runCli(['setup', '--yes', '--print-hooks'], dependencies);
-    expect(lifecycle.setup).toHaveBeenCalledWith({ approved: true, printHooks: true });
+    // No autostart flag: neither enable nor disable is requested, so setup just
+    // reports the current state (ADR 0027 — autostart is never silently changed).
+    expect(lifecycle.setup).toHaveBeenCalledWith({
+      approved: true,
+      printHooks: true,
+      autostart: false,
+      noAutostart: false,
+    });
+    (lifecycle.setup as ReturnType<typeof vi.fn>).mockClear();
+    await runCli(['setup', '--yes', '--autostart'], dependencies);
+    expect(lifecycle.setup).toHaveBeenCalledWith({
+      approved: true,
+      printHooks: false,
+      autostart: true,
+      noAutostart: false,
+    });
+    (lifecycle.setup as ReturnType<typeof vi.fn>).mockClear();
+    await runCli(['setup', '--yes', '--no-autostart'], dependencies);
+    expect(lifecycle.setup).toHaveBeenCalledWith({
+      approved: true,
+      printHooks: false,
+      autostart: false,
+      noAutostart: true,
+    });
     output = '';
     await runCli(['start'], dependencies);
     expect(lifecycle.start).toHaveBeenCalledWith({});
@@ -1337,6 +1360,47 @@ describe('LUWI CLI', () => {
   });
 });
 
+/** A minimal in-memory Codex rollout tree for the disk-fallback attach tests. */
+function rolloutFileSystem(
+  files: Record<string, { content: string; modifiedAtMs: number }>,
+): CliDependencies['transcriptFileSystem'] {
+  const norm = (path: string): string => path.replace(/\\/gu, '/').replace(/\/+$/u, '');
+  const map = new Map(Object.entries(files).map(([path, file]) => [norm(path), file]));
+  return {
+    async listDirectory(path) {
+      const prefix = `${norm(path)}/`;
+      const children = new Map<string, boolean>();
+      let exists = false;
+      for (const filePath of map.keys()) {
+        if (!filePath.startsWith(prefix)) continue;
+        exists = true;
+        const rest = filePath.slice(prefix.length);
+        const slash = rest.indexOf('/');
+        if (slash === -1) children.set(rest, false);
+        else children.set(rest.slice(0, slash), true);
+      }
+      return exists
+        ? [...children.entries()].map(([name, isDirectory]) => ({ name, isDirectory }))
+        : undefined;
+    },
+    async stat(path) {
+      const file = map.get(norm(path));
+      return file === undefined
+        ? undefined
+        : { modifiedAtMs: file.modifiedAtMs, sizeBytes: Buffer.byteLength(file.content, 'utf8') };
+    },
+    async readLines(path) {
+      const file = map.get(norm(path));
+      return file === undefined ? undefined : { lines: file.content.split('\n'), truncated: false };
+    },
+  };
+}
+
+function codexRollout(sessionId: string, cwd: string): string {
+  const meta = { type: 'session_meta', payload: { session_id: sessionId, id: sessionId, cwd } };
+  return `${JSON.stringify(meta)}\n${JSON.stringify({ type: 'response_item', payload: {} })}\n`;
+}
+
 describe('session attach', () => {
   const registered = {
     id: 'session-attached',
@@ -1448,6 +1512,256 @@ describe('session attach', () => {
     await run;
 
     expect(bodies[0]).toMatchObject({ projectId: 'project-1', agentId: 'codex' });
+    expect((bodies[0] as Record<string, unknown>)['native']).toBeUndefined();
+  });
+
+  const CODEX_NOW = 1_756_000_000_000;
+
+  it('recovers a Codex identity from the rollout tree when the environment carries none', async () => {
+    // Codex Desktop and the VSCode extension export no session-id variable, so the
+    // environment resolver finds nothing and the disk fallback (ADR 0028) recovers
+    // the id from a fresh, cwd-matching rollout.
+    const bodies: unknown[] = [];
+    let signalListener: (() => void) | undefined;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { USERPROFILE: 'C:\\Users\\umuts' },
+      platform: 'win32',
+      now: () => new Date(CODEX_NOW),
+      canonicalizePath: async (path: string) => path,
+      transcriptFileSystem: rolloutFileSystem({
+        'C:/Users/umuts/.codex/sessions/2026/09/01/rollout-x.jsonl': {
+          content: codexRollout('01a05c7d-d90a-7a62-8856-ebd3bf43f1c7', 'C:\\work'),
+          modifiedAtMs: CODEX_NOW - 1_000,
+        },
+      }),
+      fetch: async (_url, init) => {
+        if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
+        return response(registered);
+      },
+      setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+      clearInterval: (() => undefined) as never,
+      signals: {
+        once: (_signal: string, listener: () => void) => {
+          signalListener = listener;
+          return undefined;
+        },
+        off: () => undefined,
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    };
+
+    const run = runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'codex-agent',
+        '--agent-kind',
+        'codex',
+        '--working-directory',
+        'C:/work',
+      ],
+      dependencies,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    signalListener?.();
+    await run;
+
+    expect(bodies[0]).toMatchObject({
+      projectId: 'project-1',
+      agentId: 'codex-agent',
+      native: { adapterId: 'codex', nativeSessionId: '01a05c7d-d90a-7a62-8856-ebd3bf43f1c7' },
+    });
+  });
+
+  it('lets the environment win over a disk rollout and never reads disk when CODEX_SESSION_ID is set', async () => {
+    // ADR 0028 guard #1: the environment resolver is deterministic and preferred,
+    // so a present CODEX_SESSION_ID is declared and the rollout tree is never read.
+    const bodies: unknown[] = [];
+    let signalListener: (() => void) | undefined;
+    const diskCalls: string[] = [];
+    const recordingFileSystem: CliDependencies['transcriptFileSystem'] = {
+      listDirectory: async (path) => {
+        diskCalls.push(`listDirectory:${path}`);
+        return undefined;
+      },
+      stat: async (path) => {
+        diskCalls.push(`stat:${path}`);
+        return undefined;
+      },
+      readLines: async (path) => {
+        diskCalls.push(`readLines:${path}`);
+        return undefined;
+      },
+    };
+    const dependencies: Partial<CliDependencies> = {
+      environment: { CODEX_SESSION_ID: 'env-session-uuid', USERPROFILE: 'C:\\Users\\umuts' },
+      platform: 'win32',
+      now: () => new Date(CODEX_NOW),
+      canonicalizePath: async (path: string) => path,
+      transcriptFileSystem: recordingFileSystem,
+      fetch: async (_url, init) => {
+        if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
+        return response(registered);
+      },
+      setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+      clearInterval: (() => undefined) as never,
+      signals: {
+        once: (_signal: string, listener: () => void) => {
+          signalListener = listener;
+          return undefined;
+        },
+        off: () => undefined,
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    };
+
+    const run = runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'codex-agent',
+        '--agent-kind',
+        'codex',
+        '--working-directory',
+        'C:/work',
+      ],
+      dependencies,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    signalListener?.();
+    await run;
+
+    expect(bodies[0]).toMatchObject({
+      native: { adapterId: 'codex', nativeSessionId: 'env-session-uuid' },
+    });
+    expect(diskCalls).toEqual([]);
+  });
+
+  it('canonicalizes an aliased working directory before the Codex cwd-match', async () => {
+    // A junction/subst alias (P:\\luwi) resolves to the path the rollout recorded,
+    // so attach must canonicalize before comparing or it would lose attribution.
+    const bodies: unknown[] = [];
+    let signalListener: (() => void) | undefined;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { USERPROFILE: 'C:\\Users\\umuts' },
+      platform: 'win32',
+      now: () => new Date(CODEX_NOW),
+      canonicalizePath: async (path: string) => (path === 'P:/luwi' ? 'C:/work' : path),
+      transcriptFileSystem: rolloutFileSystem({
+        'C:/Users/umuts/.codex/sessions/2026/09/01/rollout-x.jsonl': {
+          content: codexRollout('aliased-session', 'C:\\work'),
+          modifiedAtMs: CODEX_NOW - 1_000,
+        },
+      }),
+      fetch: async (_url, init) => {
+        if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
+        return response(registered);
+      },
+      setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+      clearInterval: (() => undefined) as never,
+      signals: {
+        once: (_signal: string, listener: () => void) => {
+          signalListener = listener;
+          return undefined;
+        },
+        off: () => undefined,
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    };
+
+    const run = runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'codex-agent',
+        '--agent-kind',
+        'codex',
+        '--working-directory',
+        'P:/luwi',
+      ],
+      dependencies,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    signalListener?.();
+    await run;
+
+    expect(bodies[0]).toMatchObject({
+      native: { adapterId: 'codex', nativeSessionId: 'aliased-session' },
+    });
+  });
+
+  it('declares no native block when the only Codex rollout is stale', async () => {
+    // A dead session in the same directory must not be bound: absence over a wrong id.
+    const bodies: unknown[] = [];
+    let signalListener: (() => void) | undefined;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { USERPROFILE: 'C:\\Users\\umuts' },
+      platform: 'win32',
+      now: () => new Date(CODEX_NOW),
+      canonicalizePath: async (path: string) => path,
+      transcriptFileSystem: rolloutFileSystem({
+        'C:/Users/umuts/.codex/sessions/2026/09/01/rollout-old.jsonl': {
+          content: codexRollout('dead-session', 'C:\\work'),
+          modifiedAtMs: CODEX_NOW - 900_001,
+        },
+      }),
+      fetch: async (_url, init) => {
+        if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
+        return response(registered);
+      },
+      setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+      clearInterval: (() => undefined) as never,
+      signals: {
+        once: (_signal: string, listener: () => void) => {
+          signalListener = listener;
+          return undefined;
+        },
+        off: () => undefined,
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    };
+
+    const run = runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'codex-agent',
+        '--agent-kind',
+        'codex',
+        '--working-directory',
+        'C:/work',
+      ],
+      dependencies,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    signalListener?.();
+    await run;
+
+    expect(bodies[0]).toMatchObject({ projectId: 'project-1', agentId: 'codex-agent' });
     expect((bodies[0] as Record<string, unknown>)['native']).toBeUndefined();
   });
 

@@ -8,6 +8,7 @@ import type {
   SessionView,
   UsageRecord,
 } from '@luwi/protocol';
+import { graphEdgeKindSchema, graphNodeKindSchema } from '@luwi/protocol';
 import type { IntelligenceRepository } from '@luwi/redis';
 
 import type { ConfigControlService } from './config-control-service.js';
@@ -58,6 +59,7 @@ const contextSource: ContextSource = {
 function dependencies() {
   const usage = new Map<string, UsageRecord>();
   const proposals = new Map<string, OptimizationProposal>();
+  const sessionFileChanges = new Map<string, Record<string, unknown>>();
   const contributions: Awaited<ReturnType<IntelligenceRepository['listContextContributions']>> = [];
   const repository = {
     ingestUsage: vi.fn(async (record: UsageRecord) => {
@@ -105,6 +107,13 @@ function dependencies() {
     recordGraphProjectionFailure: vi.fn(async () => undefined),
     readGraphGeneration: vi.fn(async () => ({ generation: 'active', nodes: [], edges: [] })),
     appendEvent: vi.fn(async () => undefined),
+    getSessionFileChange: vi.fn(async (id: string) => sessionFileChanges.get(id) ?? null),
+    putSessionFileChange: vi.fn(async (record: Record<string, unknown>) => {
+      sessionFileChanges.set(record['id'] as string, record);
+    }),
+    listSessionFileChanges: vi.fn(async (projectId: string) =>
+      [...sessionFileChanges.values()].filter((record) => record['projectId'] === projectId),
+    ),
   } as unknown as IntelligenceRepository;
   const projects = {
     get: vi.fn(async (id: string) => (id === project.id ? project : null)),
@@ -608,5 +617,95 @@ describe('daemon intelligence service', () => {
 
     await expect(service.scanGit(project.id)).resolves.toEqual(current);
     expect(values.repository.putGitObservation).not.toHaveBeenCalled();
+  });
+});
+
+describe('daemon intelligence service — session file changes (B2)', () => {
+  const change = (observedAt: string) => ({
+    projectId: project.id,
+    sessionId: session.id,
+    relativePath: 'apps/daemon/src/app.ts',
+    toolName: 'Edit',
+    observedAt,
+  });
+
+  const build = () => {
+    const values = dependencies();
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      now: () => new Date(timestamp),
+      // Persist without running the whole-graph reprojection in the unit test;
+      // the real edge write is covered by the Redis integration test.
+      deferProjection: () => {},
+    });
+    return { values, service };
+  };
+
+  it('persists one aggregate per session file change and reports it projected', async () => {
+    const { values, service } = build();
+
+    const projected = await service.projectSessionFileChanges([change('2026-07-30T00:00:01.000Z')]);
+
+    expect(projected).toBe(1);
+    const stored = await values.repository.listSessionFileChanges(project.id);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      projectId: project.id,
+      sessionId: session.id,
+      relativePath: 'apps/daemon/src/app.ts',
+      toolName: 'Edit',
+      changeCount: 1,
+    });
+  });
+
+  it('aggregates repeated changes to one file as a single relationship (E5)', async () => {
+    const { values, service } = build();
+
+    await service.projectSessionFileChanges([
+      change('2026-07-30T00:00:01.000Z'),
+      change('2026-07-30T00:00:03.000Z'),
+      change('2026-07-30T00:00:02.000Z'),
+    ]);
+
+    const stored = await values.repository.listSessionFileChanges(project.id);
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({
+      changeCount: 3,
+      observedAt: '2026-07-30T00:00:03.000Z',
+      firstObservedAt: '2026-07-30T00:00:01.000Z',
+    });
+  });
+
+  it('re-projecting an unchanged observation writes nothing and re-counts nothing (E7)', async () => {
+    const { values, service } = build();
+
+    const first = await service.projectSessionFileChanges([change('2026-07-30T00:00:01.000Z')]);
+    const again = await service.projectSessionFileChanges([change('2026-07-30T00:00:01.000Z')]);
+
+    expect(first).toBe(1);
+    expect(again).toBe(0);
+    expect(values.repository.putSessionFileChange).toHaveBeenCalledTimes(1);
+    const stored = await values.repository.listSessionFileChanges(project.id);
+    expect(stored[0]).toMatchObject({ changeCount: 1 });
+  });
+
+  it('advances the count only on a strictly newer observation', async () => {
+    const { values, service } = build();
+
+    await service.projectSessionFileChanges([change('2026-07-30T00:00:01.000Z')]);
+    await service.projectSessionFileChanges([change('2026-07-30T00:00:05.000Z')]);
+
+    const stored = await values.repository.listSessionFileChanges(project.id);
+    expect(stored[0]).toMatchObject({
+      changeCount: 2,
+      observedAt: '2026-07-30T00:00:05.000Z',
+      firstObservedAt: '2026-07-30T00:00:01.000Z',
+    });
+  });
+
+  it('reuses the existing SESSION_CHANGED_FILE edge kind and file node kind, adding none', () => {
+    expect(graphEdgeKindSchema.options).toContain('SESSION_CHANGED_FILE');
+    expect(graphNodeKindSchema.options).toContain('file');
   });
 });

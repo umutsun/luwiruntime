@@ -1,13 +1,10 @@
-import type {
-  TranscriptReader,
-  TranscriptScanCursor,
-  TranscriptUsageObservation,
-} from '@luwi/adapters';
-import type {
-  NativeSessionBinding,
-  NativeSessionLink,
-  RuntimeStateName,
-  UsageIngestRequest,
+import type { TranscriptReader, TranscriptScanCursor } from '@luwi/adapters';
+import {
+  normalizeLeasePath,
+  type NativeSessionBinding,
+  type NativeSessionLink,
+  type RuntimeStateName,
+  type UsageIngestRequest,
 } from '@luwi/protocol';
 import {
   ApplicationError,
@@ -15,6 +12,8 @@ import {
   deriveNativeBindingId,
   type NativeAttribution,
 } from '@luwi/runtime';
+
+import type { SessionFileChangeInput } from './intelligence-service.js';
 
 /**
  * Turns native transcript observations into usage records.
@@ -43,6 +42,20 @@ export type TranscriptIngestSummary = {
   filesStoppedMalformedCap: number;
   truncatedFiles: number;
   filesSkippedOverCap: number;
+  /** Allowlisted mutating tool calls the reader observed (B2). */
+  fileChangesObserved: number;
+  /** Session-file-change aggregates written and re-projected as graph edges. */
+  fileEdgesProjected: number;
+  /** File changes whose path resolved inside no registered project. */
+  skippedOutsideProject: number;
+  /** Mutating tool calls whose paired result never arrived. */
+  skippedUnresolved: number;
+  /** Path-carrying tool calls outside the mutating allowlist (e.g. Read). */
+  skippedUnknownTool: number;
+  fileSkippedNoBinding: number;
+  fileSkippedOutsideInterval: number;
+  fileSkippedTrimmed: number;
+  fileSkippedSessionMissing: number;
 };
 
 export type TranscriptIngestDependencies = {
@@ -54,8 +67,12 @@ export type TranscriptIngestDependencies = {
   sessions: {
     get(sessionId: string): Promise<{ id: string; projectId: string; agentId: string } | null>;
   };
+  projects: {
+    list(): Promise<Array<{ id: string; canonicalPath: string }>>;
+  };
   intelligence: {
     ingestUsage(input: UsageIngestRequest): Promise<{ id: string }>;
+    projectSessionFileChanges(changes: SessionFileChangeInput[]): Promise<number>;
   };
   transcriptRoot: string;
   /** The adapter half of the binding identity and of `sourceEventId`. */
@@ -109,6 +126,15 @@ function emptySummary(): TranscriptIngestSummary {
     filesStoppedMalformedCap: 0,
     truncatedFiles: 0,
     filesSkippedOverCap: 0,
+    fileChangesObserved: 0,
+    fileEdgesProjected: 0,
+    skippedOutsideProject: 0,
+    skippedUnresolved: 0,
+    skippedUnknownTool: 0,
+    fileSkippedNoBinding: 0,
+    fileSkippedOutsideInterval: 0,
+    fileSkippedTrimmed: 0,
+    fileSkippedSessionMissing: 0,
   };
 }
 
@@ -117,6 +143,52 @@ function countUnbound(summary: TranscriptIngestSummary, attribution: NativeAttri
   if (attribution.reason === 'no-binding') summary.skippedNoBinding += 1;
   else if (attribution.reason === 'trimmed') summary.skippedTrimmed += 1;
   else summary.skippedOutsideInterval += 1;
+}
+
+function countFileUnbound(summary: TranscriptIngestSummary, attribution: NativeAttribution): void {
+  if (attribution.outcome !== 'unbound') return;
+  if (attribution.reason === 'no-binding') summary.fileSkippedNoBinding += 1;
+  else if (attribution.reason === 'trimmed') summary.fileSkippedTrimmed += 1;
+  else summary.fileSkippedOutsideInterval += 1;
+}
+
+/**
+ * Resolves an absolute transcript path to the registered project that contains
+ * it and the project-relative path within it — longest canonical prefix wins,
+ * matched case-insensitively on the drive letter (E3). A path inside no project,
+ * or the project root itself, resolves to `null`.
+ *
+ * The absolute prefix match is done here because `normalizeLeasePath` refuses an
+ * absolute path; only the stripped relative remainder is handed to it, so the
+ * lease domain's normalisation is reused rather than duplicated.
+ */
+function resolveProjectFile(
+  absolutePath: string,
+  projects: ReadonlyArray<{ id: string; canonicalPath: string }>,
+): { projectId: string; relativePath: string } | null {
+  const target = absolutePath.replaceAll('\\', '/');
+  const targetLower = target.toLowerCase();
+  let best: { id: string; rootLength: number } | null = null;
+  for (const project of projects) {
+    const root = project.canonicalPath.replaceAll('\\', '/').replace(/\/+$/, '');
+    const rootLower = root.toLowerCase();
+    if (targetLower === rootLower || targetLower.startsWith(`${rootLower}/`)) {
+      if (best === null || root.length > best.rootLength) {
+        best = { id: project.id, rootLength: root.length };
+      }
+    }
+  }
+  if (best === null) return null;
+  const remainder = target.slice(best.rootLength).replace(/^\/+/, '');
+  if (remainder === '') return null;
+  let relativePath: string;
+  try {
+    relativePath = normalizeLeasePath(remainder).path;
+  } catch {
+    return null;
+  }
+  if (relativePath === '.' || relativePath === '') return null;
+  return { projectId: best.id, relativePath };
 }
 
 export function createTranscriptIngestService(
@@ -143,7 +215,10 @@ export function createTranscriptIngestService(
     return { bindingId, binding: bindings.get(bindingId) ?? null };
   }
 
-  async function attribute(observation: TranscriptUsageObservation): Promise<NativeAttribution> {
+  async function attribute(observation: {
+    nativeSessionId: string;
+    observedAt: string;
+  }): Promise<NativeAttribution> {
     const { bindingId, binding } = await resolveBinding(observation.nativeSessionId);
     if (binding === null) {
       return attributeObservation({ observedAt: observation.observedAt, binding, link: null });
@@ -179,6 +254,9 @@ export function createTranscriptIngestService(
       summary.truncatedFiles = scan.truncatedFiles;
       summary.filesSkippedOverCap = scan.filesSkippedOverCap;
       summary.requestsObserved = scan.observations.length;
+      summary.fileChangesObserved = scan.fileChangesObserved;
+      summary.skippedUnresolved = scan.skippedUnresolved;
+      summary.skippedUnknownTool = scan.skippedUnknownTool;
 
       for (const observation of scan.observations) {
         const attribution = await attribute(observation);
@@ -226,6 +304,46 @@ export function createTranscriptIngestService(
           }
           throw error;
         }
+      }
+
+      // The second extraction: attribute each file change the same way usage is
+      // attributed (E4), scope it to a registered project (E3), and project the
+      // aggregates as SESSION_CHANGED_FILE edges.
+      const projects = await dependencies.projects.list();
+      const changes: SessionFileChangeInput[] = [];
+      for (const observation of scan.fileObservations) {
+        const scoped = resolveProjectFile(observation.absolutePath, projects);
+        if (scoped === null) {
+          summary.skippedOutsideProject += 1;
+          continue;
+        }
+        const attribution = await attribute(observation);
+        if (attribution.outcome !== 'bound') {
+          countFileUnbound(summary, attribution);
+          continue;
+        }
+        const session = await dependencies.sessions.get(attribution.sessionId);
+        if (session === null) {
+          summary.fileSkippedSessionMissing += 1;
+          continue;
+        }
+        // The path resolved to a project and the session names one; a change to a
+        // file outside the session's own project is not attributed to it.
+        if (session.projectId !== scoped.projectId) {
+          summary.skippedOutsideProject += 1;
+          continue;
+        }
+        changes.push({
+          projectId: scoped.projectId,
+          sessionId: session.id,
+          relativePath: scoped.relativePath,
+          toolName: observation.toolName,
+          observedAt: observation.observedAt,
+        });
+      }
+      if (changes.length > 0) {
+        summary.fileEdgesProjected =
+          await dependencies.intelligence.projectSessionFileChanges(changes);
       }
 
       return summary;

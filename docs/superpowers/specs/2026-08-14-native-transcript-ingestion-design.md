@@ -116,14 +116,34 @@ exclude cache tokens and mislead exactly where honesty is the point.
 Existing usage records were written without the distinction and are not retroactively assigned one.
 What was never observed stays unobserved — ADR 0017's rule.
 
-## 6. B2 — tool and file observation (specified, not planned)
+## 6. B2 — tool and file observation (built 2026-09-01)
 
-Fills `SESSION_CHANGED_FILE`, which exists in the edge enum with no producer (M8). B2 adds **no new
-node or edge kind**; it fills existing ones with a distinct provenance, as ADR 0012 did. Attribution
-follows ADR 0022 unchanged: a record outside every interval, or inside a trimmed one, stays
-**unbound** and is never assigned to the nearest session. Unbound counts are reported
-(`skippedUnbound`, `skippedOutsideInterval`, `skippedAmbiguous`), never silently dropped — a domain
-that hides what it cannot attribute misrepresents how complete it is.
+Fills `SESSION_CHANGED_FILE`, which existed in the edge enum with no producer (M8). B2 adds **no new
+node or edge kind**; it fills existing ones with a distinct `transcript-observer@1` provenance, as
+ADR 0012 did. The reader gained a second extraction over the same one file read: it pairs `tool_use`
+with `tool_result` within a file and emits a file observation only for an allowlisted mutating tool
+(`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) whose paired result is present and not an error,
+reading only the path (`file_path`, falling back to `notebook_path`) out of the tool input. A `Read`
+that carries a path is counted apart (`skippedUnknownTool`) and never a change; a `tool_use` with no
+result is `skippedUnresolved`.
+
+The daemon attributes each change through the same `attributeObservation` and native-link interval
+usage uses (unchanged), scopes the absolute path to a registered project (longest `canonicalPath`
+prefix, drive-letter case-insensitive, the relative remainder normalised through the lease domain's
+`normalizeLeasePath`), and counts a path inside no project as `skippedOutsideProject`. A record
+outside every interval, or inside a trimmed one, stays **unbound** and is never assigned to the
+nearest session; the unbound counts mirror B1's.
+
+**Correction to the original plan (recorded in the B2 plan, owner-approved 2026-09-01):** the
+operational graph is a full-rebuild projection — `projectGraphSnapshot` derives every edge from
+persisted sources it reads per project, and `replaceGraphSnapshot` replaces the whole active
+generation — so an edge written only incrementally is wiped by the next mutation's reprojection. A
+`SESSION_CHANGED_FILE` edge therefore needs a persisted source, exactly like a git observation. B2
+adds a bounded per-(session, file) aggregate store (`sessionFileChangeObservationSchema` in
+`@luwi/protocol`, a plain HSET+SADD `put`/`list` in `@luwi/redis` — no Lua Function, no `luwi_v1`
+bump, no stream) whose `changeCount` advances only on a strictly newer `observedAt`, so re-reading a
+transcript is idempotent. The store has no retention: a project past `GRAPH_REBUILD_MAX_INPUTS`
+distinct records fails its rebuild loudly rather than dropping edges.
 
 ## 7. Non-goals
 

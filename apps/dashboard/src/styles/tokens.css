@@ -89,6 +89,17 @@
   --radius-lg: 12px;
   --radius-pill: 999px;
   /*
+   * Motion. Two durations and one easing curve, named rather than repeated at
+   * the drawer and the pulse trace. The elevation/shadow half of the mockup's
+   * depth layer is deliberately NOT adopted (gate G2, 2026-09-01): the console is
+   * flat by design, and an overlay is already lifted off the page by its backdrop
+   * scrim, raised background, and border, not a shadow. See
+   * docs/2026-08-14-dashboard-redesign-plan.md for the recorded decision.
+   */
+  --dur-1: 120ms;
+  --dur-2: 160ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  /*
    * A named type scale. The design system's density comes from deliberate small
    * sizes, and without tokens each one gets hardcoded at its use site — which is
    * how the old stylesheets ended up with `font: 12px var(--font-mono)` repeated

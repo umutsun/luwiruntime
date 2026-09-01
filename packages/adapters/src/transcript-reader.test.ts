@@ -97,6 +97,56 @@ function assistantLine(fields: {
   });
 }
 
+/**
+ * An assistant record carrying one `tool_use` content block. The tool input may
+ * carry prose (`old_string`, `new_string`) exactly as a real transcript does —
+ * the reader must read the path out of it and nothing else.
+ */
+function toolUseLine(fields: {
+  sessionId?: string;
+  timestamp: string;
+  toolUseId: string;
+  toolName: string;
+  filePath?: string;
+  notebookPath?: string;
+  extraInput?: Record<string, unknown>;
+}): string {
+  const input: Record<string, unknown> = { ...(fields.extraInput ?? {}) };
+  if (fields.filePath !== undefined) input.file_path = fields.filePath;
+  if (fields.notebookPath !== undefined) input.notebook_path = fields.notebookPath;
+  return JSON.stringify({
+    type: 'assistant',
+    ...(fields.sessionId === undefined ? {} : { sessionId: fields.sessionId }),
+    timestamp: fields.timestamp,
+    message: {
+      content: [{ type: 'tool_use', id: fields.toolUseId, name: fields.toolName, input }],
+    },
+  });
+}
+
+/** A user record carrying one `tool_result` content block paired by `tool_use_id`. */
+function toolResultLine(fields: {
+  sessionId?: string;
+  timestamp: string;
+  toolUseId: string;
+  isError?: boolean;
+}): string {
+  return JSON.stringify({
+    type: 'user',
+    ...(fields.sessionId === undefined ? {} : { sessionId: fields.sessionId }),
+    timestamp: fields.timestamp,
+    message: {
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: fields.toolUseId,
+          ...(fields.isError === true ? { is_error: true } : {}),
+        },
+      ],
+    },
+  });
+}
+
 const root = '/fake/home/.claude/projects';
 
 describe('native transcript reader', () => {
@@ -482,5 +532,257 @@ describe('native transcript reader', () => {
 
     expect(result.observations).toEqual([]);
     expect(result.filesScanned).toBe(0);
+  });
+});
+
+describe('native transcript reader — file observations (B2)', () => {
+  const path = 'C:/xampp/htdocs/luwiruntime/apps/daemon/src/app.ts';
+
+  it('emits one file observation for an allowlisted edit with a successful result', async () => {
+    const fileSystem = new MemoryTranscriptFileSystem({
+      [`${root}/c--proj/session-aaa.jsonl`]: {
+        lines: [
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:20.000Z',
+            toolUseId: 'tu-1',
+            toolName: 'Edit',
+            filePath: path,
+          }),
+          toolResultLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:21.000Z',
+            toolUseId: 'tu-1',
+          }),
+        ],
+      },
+    });
+    const reader = createTranscriptReader({ fileSystem });
+
+    const result = await reader.scan({ root });
+
+    expect(result.fileObservations).toEqual([
+      {
+        nativeSessionId: 'session-aaa',
+        toolName: 'Edit',
+        absolutePath: path,
+        observedAt: '2026-08-17T08:13:20.000Z',
+      },
+    ]);
+    expect(result.fileChangesObserved).toBe(1);
+  });
+
+  it('records a Write and a MultiEdit, the rest of the mutating allowlist', async () => {
+    const fileSystem = new MemoryTranscriptFileSystem({
+      [`${root}/c--proj/session-aaa.jsonl`]: {
+        lines: [
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:20.000Z',
+            toolUseId: 'tu-w',
+            toolName: 'Write',
+            filePath: path,
+          }),
+          toolResultLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:21.000Z',
+            toolUseId: 'tu-w',
+          }),
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:22.000Z',
+            toolUseId: 'tu-m',
+            toolName: 'MultiEdit',
+            filePath: path,
+          }),
+          toolResultLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:23.000Z',
+            toolUseId: 'tu-m',
+          }),
+        ],
+      },
+    });
+    const reader = createTranscriptReader({ fileSystem });
+
+    const result = await reader.scan({ root });
+
+    expect(result.fileObservations.map((observation) => observation.toolName).sort()).toEqual([
+      'MultiEdit',
+      'Write',
+    ]);
+    expect(result.fileChangesObserved).toBe(2);
+  });
+
+  it('reads NotebookEdit from notebook_path', async () => {
+    const notebookPath = 'C:/xampp/htdocs/luwiruntime/analysis.ipynb';
+    const fileSystem = new MemoryTranscriptFileSystem({
+      [`${root}/c--proj/session-aaa.jsonl`]: {
+        lines: [
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:20.000Z',
+            toolUseId: 'tu-nb',
+            toolName: 'NotebookEdit',
+            notebookPath,
+          }),
+          toolResultLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:21.000Z',
+            toolUseId: 'tu-nb',
+          }),
+        ],
+      },
+    });
+    const reader = createTranscriptReader({ fileSystem });
+
+    const result = await reader.scan({ root });
+
+    expect(result.fileObservations).toHaveLength(1);
+    expect(result.fileObservations[0]?.absolutePath).toBe(notebookPath);
+    expect(result.fileObservations[0]?.toolName).toBe('NotebookEdit');
+  });
+
+  it('emits nothing for a Read that carries a path, and counts it apart', async () => {
+    const fileSystem = new MemoryTranscriptFileSystem({
+      [`${root}/c--proj/session-aaa.jsonl`]: {
+        lines: [
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:20.000Z',
+            toolUseId: 'tu-r',
+            toolName: 'Read',
+            filePath: path,
+          }),
+          toolResultLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:21.000Z',
+            toolUseId: 'tu-r',
+          }),
+        ],
+      },
+    });
+    const reader = createTranscriptReader({ fileSystem });
+
+    const result = await reader.scan({ root });
+
+    expect(result.fileObservations).toEqual([]);
+    expect(result.fileChangesObserved).toBe(0);
+    expect(result.skippedUnknownTool).toBe(1);
+  });
+
+  it('emits nothing for an edit whose result is an error, and does not count it as a change', async () => {
+    const fileSystem = new MemoryTranscriptFileSystem({
+      [`${root}/c--proj/session-aaa.jsonl`]: {
+        lines: [
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:20.000Z',
+            toolUseId: 'tu-1',
+            toolName: 'Edit',
+            filePath: path,
+          }),
+          toolResultLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:21.000Z',
+            toolUseId: 'tu-1',
+            isError: true,
+          }),
+        ],
+      },
+    });
+    const reader = createTranscriptReader({ fileSystem });
+
+    const result = await reader.scan({ root });
+
+    expect(result.fileObservations).toEqual([]);
+    expect(result.fileChangesObserved).toBe(0);
+    expect(result.skippedUnresolved).toBe(0);
+  });
+
+  it('counts an edit with no paired result as unresolved rather than assuming either way', async () => {
+    const fileSystem = new MemoryTranscriptFileSystem({
+      [`${root}/c--proj/session-aaa.jsonl`]: {
+        lines: [
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:20.000Z',
+            toolUseId: 'tu-cut',
+            toolName: 'Edit',
+            filePath: path,
+          }),
+          // The transcript was read mid-turn: the result never arrived.
+        ],
+      },
+    });
+    const reader = createTranscriptReader({ fileSystem });
+
+    const result = await reader.scan({ root });
+
+    expect(result.fileObservations).toEqual([]);
+    expect(result.skippedUnresolved).toBe(1);
+    expect(result.fileChangesObserved).toBe(0);
+  });
+
+  it('emits no field from the tool input other than the path', async () => {
+    const fileSystem = new MemoryTranscriptFileSystem({
+      [`${root}/c--proj/session-aaa.jsonl`]: {
+        lines: [
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:20.000Z',
+            toolUseId: 'tu-1',
+            toolName: 'Edit',
+            filePath: path,
+            extraInput: { old_string: '<fixture prose>', new_string: '<fixture prose>' },
+          }),
+          toolResultLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:21.000Z',
+            toolUseId: 'tu-1',
+          }),
+        ],
+      },
+    });
+    const reader = createTranscriptReader({ fileSystem });
+
+    const result = await reader.scan({ root });
+
+    expect(result.fileObservations).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain('<fixture prose>');
+  });
+
+  it('produces usage and file observations from one file read (a single pass)', async () => {
+    const filePath = `${root}/c--proj/session-aaa.jsonl`;
+    const fileSystem = new MemoryTranscriptFileSystem({
+      [filePath]: {
+        lines: [
+          assistantLine({
+            sessionId: 'session-aaa',
+            requestId: 'req-1',
+            timestamp: '2026-08-17T08:13:19.000Z',
+          }),
+          toolUseLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:20.000Z',
+            toolUseId: 'tu-1',
+            toolName: 'Edit',
+            filePath: path,
+          }),
+          toolResultLine({
+            sessionId: 'session-aaa',
+            timestamp: '2026-08-17T08:13:21.000Z',
+            toolUseId: 'tu-1',
+          }),
+        ],
+      },
+    });
+    const reader = createTranscriptReader({ fileSystem });
+
+    const result = await reader.scan({ root });
+
+    expect(result.observations).toHaveLength(1);
+    expect(result.fileObservations).toHaveLength(1);
+    expect(fileSystem.reads.filter((read) => read === filePath)).toHaveLength(1);
   });
 });

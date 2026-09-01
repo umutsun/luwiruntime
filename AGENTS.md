@@ -1112,8 +1112,16 @@ still completing and still reporting `projectionHealth healthy` afterwards. With
 completed all 20 steps, and a scan over synthesised fixture transcripts ingested 2 of 3 observed
 requests, held the third as `skippedOutsideInterval`, counted the partial final line as
 `malformedLines`, joined a subagent file on its in-record `sessionId`, and on a second pass reported
-`skippedDuplicate 1` with `ingested 0`. **B2 fills `SESSION_CHANGED_FILE`, which sits in the edge
-enum with no producer; it is specified and not started.**
+`skippedDuplicate 1` with `ingested 0`. **B2 then built the `SESSION_CHANGED_FILE` producer
+(2026-09-01):** the reader's second extraction pairs `tool_use` with `tool_result` and emits a change
+only for an allowlisted mutating tool (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`) with a present,
+non-error result, reading only the path; the daemon attributes it through the same
+`attributeObservation`, scopes the path to a registered project, and persists a per-(session, file)
+aggregate that `projectGraphSnapshot` reads to project the edge onto the **existing** `file` node —
+no new node or edge kind. Because the graph is a full-rebuild projection from persisted sources, B2
+added a bounded observation store (a protocol record plus a plain HSET+SADD `put`/`list` — no Lua
+Function, no `luwi_v1` bump, no stream), recorded in the B2 plan; the store has no retention and a
+project past `GRAPH_REBUILD_MAX_INPUTS` distinct (session, file) records fails its rebuild loudly.
 
 Measurement corrected two earlier conclusions. `subagents/` directories **do** exist — 71 of them,
 oldest 2026-06-18, at `<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` — and hold
@@ -1124,7 +1132,9 @@ disagree, so the design fixes an explicit resolution rule. Usage is per `request
 never the filename**, which is a stem only for top-level transcripts. `cachedInputTokens` is left
 alone with its `<= inputTokens` invariant and two new additive fields are added beside it. Nothing
 discovered is executed and no conversation content is ever stored or logged. Automatic lease renewal
-and autostart — the two items that follow ingestion in the sequence — remain unapproved.
+is now **built under ADR 0026 (2026-09-01)**, and **autostart under ADR 0027 (2026-09-01)** — the two
+items that followed ingestion in the sequence are both built, so nothing in the completion program's
+sequence remains unapproved.
 
 **Built since, under ADR 0025 (committed 2026-09-01):** the CLI-first lifecycle surface
 (`luwi start`, `stop`, `status`, `doctor`, `setup`, `reset`) with the token-gated
@@ -1132,7 +1142,44 @@ and autostart — the two items that follow ingestion in the sequence — remain
 dry-run-first project discovery; read-only capability-root observation feeding a real
 `capabilities/scan` mutation; the dashboard detail drawer with the bounded Ask flow behind the
 second dashboard write module; and the experimental DeepSeek Harness ACP bridge as a CLI edge
-adapter. Automatic lease renewal and autostart remain unapproved by that ADR.
+adapter. Autostart is not part of that ADR — it landed separately under ADR 0027, as automatic lease
+renewal did under ADR 0026.
+
+**Built under ADR 0026 (2026-09-01): automatic, holder-side work-lease renewal.** The session
+bootstrap gained a second timer beside the heartbeat, disarmed with it, that renews every lease the
+current session holds at half the default lease TTL. It lists the held-only session-lease index each
+tick and re-reads the bound session id, so a session rotation never renews a dead session's lease; a
+clean exit stops renewing and lets the leases lapse (crash-consistent); a failed renewal is surfaced
+once, never retried forever. It reuses the existing renew endpoint and the `lease_renew` Function
+unchanged — no record-shape change, no `luwi_v1` bump — so it is a client setting (`--lease-renew-ms`
+on `agent run` and `session attach`), not a daemon or protocol change. The two neighbouring gaps —
+notification when a held path frees, and lease↔commit correlation — are deferred with reasons in
+ADR 0026.
+
+**Built under ADR 0027 (2026-09-01): opt-in Windows autostart.** `luwi setup --autostart` registers a
+per-user logon Scheduled Task (`schtasks /SC ONLOGON`) named `LUWI Runtime` that runs the same
+idempotent `luwi start`; `--no-autostart` removes it, and `luwi setup` with neither reports the current
+state without changing it — autostart is never a side effect. It is a task, not a service or a
+supervisor: no elevation, no detached session, no persistent LUWI process, and no change to the daemon,
+its owner lease, or the datastore. `schtasks` is a fixed, known system command spawned through the
+existing `runCommand` seam with a constant task name and the resolved node executable plus the CLI
+entry derived from `installationRoot`, so no user-controlled string reaches the scheduler (§12/§18). It
+is Windows-only and reports `unsupported` elsewhere rather than pretending to succeed.
+
+**Built under ADR 0028 (2026-09-01): Codex native identity from the rollout tree.** The Phase 3
+resolver registry (`packages/adapters/src/native-identity.ts`) resolves a vendor whose session id is
+in the environment; Codex's is not on this machine (it is Codex Desktop / VSCode-launched, exporting
+no session-id variable), so with the owner's approval a strict filesystem fallback
+(`native-identity-disk.ts`) recovers Codex's `session_id` from `~/.codex/sessions/…/rollout-*.jsonl`.
+It is tried only after the environment resolver returns nothing (env stays deterministic and
+preferred), matches a rollout by `cwd`, gates it by a freshness window
+(`LUWI_CODEX_SESSION_FRESHNESS_MS`, default 15 min), reads only the first `session_meta` line (never
+conversation content, §12/§18), and binds nothing when the match is stale, absent, or in another
+project — the one residual, owner-accepted risk being two live Codex sessions in one working
+directory. **Gemini has no per-session identity to resolve** (its history is project-scoped, git-backed,
+with no session id), so it stays honestly unbound; binding a project as a session was rejected because
+it would collide and refuse a normal second session. No daemon, protocol, datastore or `luwi_v1`
+change — a client-side resolver plus two injected `session attach` dependencies.
 
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers

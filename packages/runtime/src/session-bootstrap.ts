@@ -1,4 +1,9 @@
-import type { NativeSessionRef } from '@luwi/protocol';
+import {
+  LEASE_DEFAULT_DURATION_MS,
+  LEASE_MAX_DURATION_MS,
+  LEASE_MIN_DURATION_MS,
+  type NativeSessionRef,
+} from '@luwi/protocol';
 
 /**
  * Registers a session for the process it runs in, then keeps it alive.
@@ -30,6 +35,26 @@ export type SessionBootstrapClient = {
   close(sessionId: string): Promise<void>;
 };
 
+/** The fields of a held lease the renewal loop needs — no path or reason. */
+export type WorkLeaseSummary = {
+  id: string;
+  acquiredAt: string;
+  expiresAt: string;
+  renewedAt?: string;
+};
+
+/**
+ * The optional lease surface that turns on automatic renewal (ADR 0026).
+ *
+ * When present, the bootstrap renews every lease the current session holds on a
+ * second timer, keeping a live holder's claims alive without the agent renewing
+ * by hand. Absent, the bootstrap is presence-only, exactly as before.
+ */
+export type SessionBootstrapLeaseClient = {
+  listSessionLeases(sessionId: string): Promise<WorkLeaseSummary[]>;
+  renewLease(leaseId: string, sessionId: string, durationMs: number): Promise<void>;
+};
+
 export type SessionBootstrapOptions = {
   client: SessionBootstrapClient;
   projectId: string;
@@ -47,6 +72,13 @@ export type SessionBootstrapOptions = {
   heartbeatIntervalMs?: number;
   /** Caps exponential retry delay. Must be at least the heartbeat interval. */
   maxRetryBackoffMs?: number;
+  /**
+   * When present, held leases are renewed automatically (ADR 0026). Absent, the
+   * bootstrap keeps presence only and touches no lease.
+   */
+  leaseClient?: SessionBootstrapLeaseClient;
+  /** How often held leases are renewed. Defaults to half the default lease TTL. */
+  leaseRenewIntervalMs?: number;
   onError?: (error: unknown) => void;
   onSessionChanged?: (change: SessionBootstrapChange) => void;
   now?: () => number;
@@ -69,6 +101,8 @@ export interface SessionBootstrap {
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
 /** Bounds degraded retry traffic while still probing often enough to recover. */
 export const DEFAULT_MAX_RETRY_BACKOFF_MS = 30_000;
+/** Half the default lease TTL, so a lease is renewed well before its deadline. */
+export const DEFAULT_LEASE_RENEW_INTERVAL_MS = LEASE_DEFAULT_DURATION_MS / 2;
 
 const LOST_SESSION_CODES = new Set(['SESSION_NOT_FOUND', 'SESSION_TERMINAL']);
 
@@ -90,10 +124,14 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
   const intervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   const maxRetryBackoffMs = options.maxRetryBackoffMs ?? DEFAULT_MAX_RETRY_BACKOFF_MS;
   const now = options.now ?? Date.now;
+  const leaseRenewIntervalMs = options.leaseRenewIntervalMs ?? DEFAULT_LEASE_RENEW_INTERVAL_MS;
   requirePositiveInteger(intervalMs, 'heartbeatIntervalMs');
   requirePositiveInteger(maxRetryBackoffMs, 'maxRetryBackoffMs');
   if (maxRetryBackoffMs < intervalMs) {
     throw new TypeError('maxRetryBackoffMs must be at least heartbeatIntervalMs.');
+  }
+  if (options.leaseClient !== undefined) {
+    requirePositiveInteger(leaseRenewIntervalMs, 'leaseRenewIntervalMs');
   }
 
   const report = (error: unknown): void => {
@@ -122,6 +160,8 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
   let consecutiveFailures = 0;
   let nextAttemptAt = 0;
   let recoverySessionId: string | undefined;
+  let renewalTimer: NodeJS.Timeout | undefined;
+  let renewalOperation: Promise<void> | undefined;
 
   const resetBackoff = (): void => {
     consecutiveFailures = 0;
@@ -200,6 +240,57 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
     }
   };
 
+  /** The lease's own duration, so a renewal preserves rather than extends it. */
+  const deriveLeaseDurationMs = (lease: WorkLeaseSummary): number => {
+    const base = Date.parse(lease.renewedAt ?? lease.acquiredAt);
+    const duration = Date.parse(lease.expiresAt) - base;
+    if (!Number.isFinite(duration) || duration <= 0) return LEASE_DEFAULT_DURATION_MS;
+    return Math.min(LEASE_MAX_DURATION_MS, Math.max(LEASE_MIN_DURATION_MS, duration));
+  };
+
+  const renewLeases = async (generation: number): Promise<void> => {
+    const leaseClient = options.leaseClient;
+    if (
+      leaseClient === undefined ||
+      !active ||
+      generation !== lifecycle ||
+      renewalOperation !== undefined
+    ) {
+      return;
+    }
+    const current = sessionId;
+    if (current === undefined) return;
+
+    const pending = (async (): Promise<void> => {
+      let leases: WorkLeaseSummary[];
+      try {
+        leases = await leaseClient.listSessionLeases(current);
+      } catch (error) {
+        // Surfaced once; the next tick re-reads the held-only index, so a lease
+        // that vanished is simply absent rather than retried forever.
+        report(error);
+        return;
+      }
+      for (const lease of leases) {
+        // Re-read the bound session each iteration: a rotation must not renew a
+        // dead session's lease, which would be refused against the wrong holder.
+        if (!active || generation !== lifecycle || sessionId !== current) return;
+        try {
+          await leaseClient.renewLease(lease.id, current, deriveLeaseDurationMs(lease));
+        } catch (error) {
+          report(error);
+        }
+      }
+    })();
+
+    renewalOperation = pending;
+    try {
+      await pending;
+    } finally {
+      if (renewalOperation === pending) renewalOperation = undefined;
+    }
+  };
+
   return {
     get sessionId() {
       return sessionId;
@@ -226,6 +317,15 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
       timer = arm(() => {
         void attempt(lifecycle);
       }, intervalMs);
+
+      // A second timer, armed alongside the heartbeat and disarmed with it, keeps
+      // the session's held leases alive on their own cadence (ADR 0026). It
+      // inherits the heartbeat's not-unreffed lifetime through the same seam.
+      if (options.leaseClient !== undefined) {
+        renewalTimer = arm(() => {
+          void renewLeases(lifecycle);
+        }, leaseRenewIntervalMs);
+      }
     },
 
     async stop() {
@@ -240,6 +340,10 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
       if (timer !== undefined) {
         disarm(timer);
         timer = undefined;
+      }
+      if (renewalTimer !== undefined) {
+        disarm(renewalTimer);
+        renewalTimer = undefined;
       }
       if (current === undefined) return;
       await closeQuietly(current);

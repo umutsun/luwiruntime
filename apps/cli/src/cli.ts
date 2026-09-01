@@ -32,7 +32,12 @@ import {
   type NativeSessionRef,
   type RealtimeEventMessage,
 } from '@luwi/protocol';
-import { resolveNativeIdentity } from '@luwi/adapters';
+import {
+  NodeTranscriptFileSystem,
+  resolveNativeIdentity,
+  resolveNativeIdentityFromDisk,
+  type TranscriptFileSystem,
+} from '@luwi/adapters';
 import { ApplicationError, createSessionBootstrap } from '@luwi/runtime';
 import { Command } from 'commander';
 import { realpath } from 'node:fs/promises';
@@ -122,6 +127,14 @@ export type CliDependencies = {
   platform: NodeJS.Platform;
   cwd: () => string;
   canonicalizePath: (path: string) => Promise<string>;
+  /**
+   * The read surface `session attach` uses to recover a vendor-native identity
+   * that lives on disk (a Codex rollout tree; ADR 0028). Injected so a test does
+   * not read the host's real sessions.
+   */
+  transcriptFileSystem: TranscriptFileSystem;
+  /** The clock the disk identity resolver reads for its freshness window. */
+  now: () => Date;
   agentProcessRunner: NativeAgentProcessRunner;
   setExitCode: (code: number) => void;
   lifecycle: LifecycleService;
@@ -145,6 +158,8 @@ const defaultDependencies: CliDependencies = {
   platform: process.platform,
   cwd: process.cwd,
   canonicalizePath: realpath,
+  transcriptFileSystem: new NodeTranscriptFileSystem(),
+  now: () => new Date(),
   agentProcessRunner: new NodeNativeAgentProcessRunner(),
   setExitCode: (code) => {
     process.exitCode = code;
@@ -1271,6 +1286,7 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
     .option('--working-directory <path>', 'Native agent working directory', dependencies.cwd())
     .option('--executable <path>', 'Explicit native agent executable')
     .option('--heartbeat-ms <milliseconds>', 'Session heartbeat interval', '5000')
+    .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
     .option('--connect-timeout-ms <milliseconds>', 'Per-request LUWI connection timeout', '2000')
     .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
     .action(
@@ -1283,6 +1299,7 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
           workingDirectory: string;
           executable?: string;
           heartbeatMs: string;
+          leaseRenewMs: string;
           connectTimeoutMs: string;
           url: string;
         },
@@ -1294,6 +1311,12 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
           '--heartbeat-ms',
           100,
           10_000,
+        );
+        const leaseRenewMs = positiveIntegerOption(
+          options.leaseRenewMs,
+          '--lease-renew-ms',
+          1_000,
+          3_600_000,
         );
         const connectTimeoutMs = positiveIntegerOption(
           options.connectTimeoutMs,
@@ -1390,6 +1413,34 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
                 agentId: context.agentId,
                 workingDirectory,
                 heartbeatIntervalMs: heartbeatMs,
+                leaseRenewIntervalMs: leaseRenewMs,
+                leaseClient: {
+                  listSessionLeases: async (sessionId) =>
+                    (
+                      await boundedRequest(
+                        dependencies,
+                        daemonUrl,
+                        `/api/v1/leases?sessionId=${encodeURIComponent(sessionId)}&limit=1000`,
+                        leaseCollectionSchema,
+                        connectTimeoutMs,
+                      )
+                    ).leases.map((lease) => ({
+                      id: lease.id,
+                      acquiredAt: lease.acquiredAt,
+                      expiresAt: lease.expiresAt,
+                      ...(lease.renewedAt === undefined ? {} : { renewedAt: lease.renewedAt }),
+                    })),
+                  renewLease: async (leaseId, sessionId, durationMs) => {
+                    await boundedRequest(
+                      dependencies,
+                      daemonUrl,
+                      `/api/v1/leases/${encodeURIComponent(leaseId)}/renew`,
+                      workLeaseSchema,
+                      connectTimeoutMs,
+                      jsonBody({ sessionId, durationMs }),
+                    );
+                  },
+                },
                 onError: (error) =>
                   printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
                 onSessionChanged: (change) => {
@@ -1456,12 +1507,16 @@ export function createCli(dependencies: CliDependencies): Command {
     .description('Prepare LUWI-owned local lifecycle configuration')
     .option('--yes', 'Approve the scoped LUWI lifecycle configuration write')
     .option('--print-hooks', 'Print optional native-agent wrapper snippets')
-    .action(async (options: { yes?: boolean; printHooks?: boolean }) => {
+    .option('--autostart', 'Register a per-user logon task that starts LUWI (Windows)')
+    .option('--no-autostart', 'Remove the LUWI autostart task')
+    .action(async (options: { yes?: boolean; printHooks?: boolean; autostart?: boolean }) => {
       printJson(
         dependencies,
         await dependencies.lifecycle.setup({
           approved: options.yes === true,
           printHooks: options.printHooks === true,
+          autostart: options.autostart === true,
+          noAutostart: options.autostart === false,
         }),
       );
     });
@@ -1784,9 +1839,10 @@ export function createCli(dependencies: CliDependencies): Command {
     .command('attach')
     .requiredOption('--project <projectId>', 'Registered project ID')
     .requiredOption('--agent <agentId>', 'Opaque agent ID')
-    .option('--working-directory <path>', 'Working directory', process.cwd())
+    .option('--working-directory <path>', 'Working directory', dependencies.cwd())
     .option('--agent-kind <kind>', 'Vendor whose identity to resolve', 'claude-code')
     .option('--heartbeat-ms <milliseconds>', 'Heartbeat interval', '5000')
+    .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
     .option('--dry-run', 'Print what would be declared and exit without registering')
     .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
     .action(
@@ -1796,15 +1852,39 @@ export function createCli(dependencies: CliDependencies): Command {
         workingDirectory: string;
         agentKind: string;
         heartbeatMs: string;
+        leaseRenewMs: string;
         dryRun?: boolean;
         url: string;
       }) => {
         const kind = agentKindSchema.parse(options.agentKind);
-        const native = resolveNativeIdentity(kind, dependencies.environment);
+        // Canonicalize the working directory so the Codex cwd-match compares like
+        // for like against the absolute path the rollout records (a junction,
+        // subst drive, or relative value would otherwise never match). Best-effort:
+        // attach must stay visible even when the path cannot be canonicalized, so a
+        // failure falls back to the raw value rather than aborting.
+        let workingDirectory: string;
+        try {
+          workingDirectory = await dependencies.canonicalizePath(options.workingDirectory);
+        } catch {
+          workingDirectory = options.workingDirectory;
+        }
+        // Environment first (deterministic, no guess); the disk fallback recovers
+        // a vendor whose id lives only in a session file, e.g. a Codex rollout
+        // (ADR 0028). An identity that resolves neither way registers with no
+        // native block rather than a fabricated one.
+        const native =
+          resolveNativeIdentity(kind, dependencies.environment) ??
+          (await resolveNativeIdentityFromDisk(kind, {
+            environment: dependencies.environment,
+            workingDirectory,
+            platform: dependencies.platform,
+            fileSystem: dependencies.transcriptFileSystem,
+            now: dependencies.now,
+          }));
         const request_ = {
           projectId: options.project,
           agentId: options.agent,
-          workingDirectory: options.workingDirectory,
+          workingDirectory,
           ...(native === undefined ? {} : { native }),
         };
 
@@ -1844,6 +1924,32 @@ export function createCli(dependencies: CliDependencies): Command {
           },
           ...request_,
           heartbeatIntervalMs: Number.parseInt(options.heartbeatMs, 10),
+          leaseRenewIntervalMs: Number.parseInt(options.leaseRenewMs, 10),
+          leaseClient: {
+            listSessionLeases: async (sessionId) =>
+              (
+                await request(
+                  dependencies,
+                  options.url,
+                  `/api/v1/leases?sessionId=${encodeURIComponent(sessionId)}&limit=1000`,
+                  leaseCollectionSchema,
+                )
+              ).leases.map((lease) => ({
+                id: lease.id,
+                acquiredAt: lease.acquiredAt,
+                expiresAt: lease.expiresAt,
+                ...(lease.renewedAt === undefined ? {} : { renewedAt: lease.renewedAt }),
+              })),
+            renewLease: async (leaseId, sessionId, durationMs) => {
+              await request(
+                dependencies,
+                options.url,
+                `/api/v1/leases/${encodeURIComponent(leaseId)}/renew`,
+                workLeaseSchema,
+                jsonBody({ sessionId, durationMs }),
+              );
+            },
+          },
           onError: (error: unknown) => {
             // Reported, never thrown: LUWI must not stop the tool it coordinates.
             dependencies.stderr.write(`${String(error)}\n`);

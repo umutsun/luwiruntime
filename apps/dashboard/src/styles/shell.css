@@ -16,7 +16,9 @@ body {
   overflow-x: hidden;
   color: var(--text);
   background: var(--bg);
-  font: 14px/1.45 var(--font-ui);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-base);
+  line-height: 1.45;
 }
 button,
 a {
@@ -123,7 +125,9 @@ button:focus-visible {
   border-radius: var(--radius-sm);
   background: linear-gradient(145deg, var(--brand-mark-from), var(--brand-mark-to));
   color: var(--brand-mark-text);
-  font: 700 13px var(--font-mono);
+  font-weight: 700;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
 }
 .identity strong,
 .identity small {
@@ -134,7 +138,8 @@ button:focus-visible {
 }
 .identity small {
   color: var(--text-dim);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .sidebar nav {
   flex: 1;
@@ -145,7 +150,8 @@ button:focus-visible {
 .nav-group {
   margin: 14px 8px 6px;
   color: var(--text-dim);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
@@ -209,7 +215,8 @@ button:focus-visible {
 }
 .runtime-footer small {
   color: var(--text-dim);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .workspace {
   grid-column: 2;
@@ -298,7 +305,8 @@ button:focus-visible {
   gap: var(--space-4);
   margin-bottom: 10px;
   color: var(--text-muted);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .snapshot-line > div {
   display: flex;
@@ -313,10 +321,17 @@ button:focus-visible {
   background: var(--surface-2);
   cursor: pointer;
 }
+/*
+ * 0.13em, not the design system's 0.22em: these eyebrows are small uppercase
+ * mono labels in a dense console, where 0.22em spreads a six-letter word past
+ * its value. The wider tracking is calibrated for larger display eyebrows the
+ * console does not use. `.nav-group` above shares this reasoning.
+ */
 .eyebrow {
   margin: 0 0 2px;
   color: var(--text-dim);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
@@ -399,7 +414,7 @@ button:focus-visible {
 .route-loading h1,
 .route-error h1 {
   margin: 8px 0;
-  font-size: 20px;
+  font-size: var(--font-size-xl);
 }
 .route-loading .identity__mark {
   margin-bottom: 18px;

@@ -89,6 +89,23 @@ export type TranscriptUsageObservation = {
   cacheReadInputTokens: number;
 };
 
+/**
+ * One file-changing tool call, as observed in a native transcript.
+ *
+ * Carries the path and nothing else from the tool input: `Write.content` and
+ * `Edit.new_string` are prose, and only the path is ever read out of them. The
+ * join key is the in-record `sessionId`, exactly as for usage.
+ */
+export type TranscriptFileObservation = {
+  nativeSessionId: string;
+  /** An allowlisted mutating tool name: Edit, Write, MultiEdit, or NotebookEdit. */
+  toolName: string;
+  /** The absolute path the tool changed, from `file_path` or `notebook_path`. */
+  absolutePath: string;
+  /** The timestamp of the tool_use record — when the change was made. */
+  observedAt: string;
+};
+
 export type TranscriptScanCursor = {
   modifiedAtMs: number;
   sizeBytes: number;
@@ -96,6 +113,8 @@ export type TranscriptScanCursor = {
 
 export type TranscriptScanResult = {
   observations: TranscriptUsageObservation[];
+  /** File-change observations from the same pass — the second extraction (B2). */
+  fileObservations: TranscriptFileObservation[];
   /** Per-file cursors, for skipping unchanged files on the next scan only. */
   cursors: Record<string, TranscriptScanCursor>;
   filesScanned: number;
@@ -108,6 +127,12 @@ export type TranscriptScanResult = {
   truncatedFiles: number;
   /** Files not opened because the per-scan cap was reached. */
   filesSkippedOverCap: number;
+  /** Allowlisted mutating tool calls with a successful, paired result. */
+  fileChangesObserved: number;
+  /** Mutating tool calls whose paired result never arrived (a cut-off turn). */
+  skippedUnresolved: number;
+  /** Path-carrying tool calls outside the mutating allowlist (e.g. Read). */
+  skippedUnknownTool: number;
 };
 
 export type AdapterCapabilityMatrix = {

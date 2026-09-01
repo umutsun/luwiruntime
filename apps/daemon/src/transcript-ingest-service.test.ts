@@ -42,22 +42,31 @@ function observation(overrides: Partial<Record<string, unknown>> = {}): Record<s
   };
 }
 
+function scanResult(overrides: Record<string, unknown> = {}) {
+  return {
+    observations: [],
+    fileObservations: [],
+    cursors: {},
+    filesScanned: 0,
+    filesSkippedUnchanged: 0,
+    malformedLines: 0,
+    filesStoppedMalformedCap: 0,
+    truncatedFiles: 0,
+    filesSkippedOverCap: 0,
+    fileChangesObserved: 0,
+    skippedUnresolved: 0,
+    skippedUnknownTool: 0,
+    ...overrides,
+  };
+}
+
 function createDependencies(
   overrides: Partial<TranscriptIngestDependencies> = {},
 ): TranscriptIngestDependencies & { ingestUsage: ReturnType<typeof vi.fn> } {
   const ingestUsage = vi.fn(async () => ({ id: 'usage-1' }));
   const base = {
     reader: {
-      scan: async () => ({
-        observations: [observation()],
-        cursors: {},
-        filesScanned: 1,
-        filesSkippedUnchanged: 0,
-        malformedLines: 0,
-        filesStoppedMalformedCap: 0,
-        truncatedFiles: 0,
-        filesSkippedOverCap: 0,
-      }),
+      scan: async () => scanResult({ observations: [observation()], filesScanned: 1 }),
     },
     repository: {
       getNativeBinding: async () => ({
@@ -74,7 +83,8 @@ function createDependencies(
       findNativeLinkAt: async () => link,
     },
     sessions: { get: async () => session },
-    intelligence: { ingestUsage },
+    projects: { list: async () => [] },
+    intelligence: { ingestUsage, projectSessionFileChanges: async () => 0 },
     transcriptRoot: '/fake/home/.claude/projects',
     adapterId: 'claude-code',
     ...overrides,
@@ -127,16 +137,11 @@ describe('transcript ingest service', () => {
   it('ingests nothing for an observation outside every interval', async () => {
     const dependencies = createDependencies({
       reader: {
-        scan: async () => ({
-          observations: [observation({ observedAt: afterInterval })],
-          cursors: {},
-          filesScanned: 1,
-          filesSkippedUnchanged: 0,
-          malformedLines: 0,
-          filesStoppedMalformedCap: 0,
-          truncatedFiles: 0,
-          filesSkippedOverCap: 0,
-        }),
+        scan: async () =>
+          scanResult({
+            observations: [observation({ observedAt: afterInterval })],
+            filesScanned: 1,
+          }),
       },
       repository: {
         getNativeBinding: async () => ({
@@ -186,16 +191,11 @@ describe('transcript ingest service', () => {
     // found nothing, which is a stronger claim than it can make.
     const dependencies = createDependencies({
       reader: {
-        scan: async () => ({
-          observations: [observation({ observedAt: '2026-08-17T07:00:00.000Z' })],
-          cursors: {},
-          filesScanned: 1,
-          filesSkippedUnchanged: 0,
-          malformedLines: 0,
-          filesStoppedMalformedCap: 0,
-          truncatedFiles: 0,
-          filesSkippedOverCap: 0,
-        }),
+        scan: async () =>
+          scanResult({
+            observations: [observation({ observedAt: '2026-08-17T07:00:00.000Z' })],
+            filesScanned: 1,
+          }),
       },
       repository: {
         getNativeBinding: async () => ({
@@ -261,16 +261,15 @@ describe('transcript ingest service', () => {
   it('carries the reader bounds into the summary', async () => {
     const dependencies = createDependencies({
       reader: {
-        scan: async () => ({
-          observations: [],
-          cursors: {},
-          filesScanned: 3,
-          filesSkippedUnchanged: 4,
-          malformedLines: 5,
-          filesStoppedMalformedCap: 1,
-          truncatedFiles: 1,
-          filesSkippedOverCap: 2,
-        }),
+        scan: async () =>
+          scanResult({
+            filesScanned: 3,
+            filesSkippedUnchanged: 4,
+            malformedLines: 5,
+            filesStoppedMalformedCap: 1,
+            truncatedFiles: 1,
+            filesSkippedOverCap: 2,
+          }),
       },
     });
     const service = createTranscriptIngestService(dependencies);
@@ -288,16 +287,12 @@ describe('transcript ingest service', () => {
   });
 
   it('reuses cursors across scans so unchanged files are skipped', async () => {
-    const scan = vi.fn(async () => ({
-      observations: [],
-      cursors: { '/fake/a.jsonl': { modifiedAtMs: 5, sizeBytes: 6 } },
-      filesScanned: 1,
-      filesSkippedUnchanged: 0,
-      malformedLines: 0,
-      filesStoppedMalformedCap: 0,
-      truncatedFiles: 0,
-      filesSkippedOverCap: 0,
-    }));
+    const scan = vi.fn(async () =>
+      scanResult({
+        cursors: { '/fake/a.jsonl': { modifiedAtMs: 5, sizeBytes: 6 } },
+        filesScanned: 1,
+      }),
+    );
     const dependencies = createDependencies({ reader: { scan } });
     const service = createTranscriptIngestService(dependencies);
 
@@ -321,6 +316,188 @@ describe('transcript ingest service', () => {
     expect(serialized).not.toContain('session-1');
     expect(serialized).not.toContain('fixture-claude-session-0001');
     expect(serialized).not.toContain('req_1');
+  });
+});
+
+function fileObservation(
+  overrides: Partial<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    nativeSessionId: 'fixture-claude-session-0001',
+    toolName: 'Edit',
+    absolutePath: 'C:/xampp/htdocs/luwiruntime/apps/daemon/src/app.ts',
+    observedAt: insideInterval,
+    ...overrides,
+  };
+}
+
+const project = { id: 'project-1', canonicalPath: 'C:/xampp/htdocs/luwiruntime' };
+
+describe('transcript ingest service — file changes (B2)', () => {
+  it('projects a file change under a registered project with its relative path', async () => {
+    const projectSessionFileChanges = vi.fn(async () => 1);
+    const dependencies = createDependencies({
+      reader: {
+        scan: async () =>
+          scanResult({ fileObservations: [fileObservation()], fileChangesObserved: 1 }),
+      },
+      projects: { list: async () => [project] },
+      intelligence: {
+        ingestUsage: vi.fn(async () => ({ id: 'usage-1' })),
+        projectSessionFileChanges,
+      },
+    });
+    const service = createTranscriptIngestService(dependencies);
+
+    const summary = await service.ingestOnce();
+
+    expect(projectSessionFileChanges).toHaveBeenCalledWith([
+      {
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        relativePath: 'apps/daemon/src/app.ts',
+        toolName: 'Edit',
+        observedAt: insideInterval,
+      },
+    ]);
+    expect(summary.fileChangesObserved).toBe(1);
+    expect(summary.fileEdgesProjected).toBe(1);
+    expect(summary.skippedOutsideProject).toBe(0);
+  });
+
+  it('counts a change whose path is inside no registered project', async () => {
+    const projectSessionFileChanges = vi.fn(async () => 0);
+    const dependencies = createDependencies({
+      reader: {
+        scan: async () =>
+          scanResult({
+            fileObservations: [fileObservation({ absolutePath: 'D:/other/repo/file.ts' })],
+            fileChangesObserved: 1,
+          }),
+      },
+      projects: { list: async () => [project] },
+      intelligence: {
+        ingestUsage: vi.fn(async () => ({ id: 'usage-1' })),
+        projectSessionFileChanges,
+      },
+    });
+    const service = createTranscriptIngestService(dependencies);
+
+    const summary = await service.ingestOnce();
+
+    expect(summary.skippedOutsideProject).toBe(1);
+    expect(projectSessionFileChanges).not.toHaveBeenCalled();
+  });
+
+  it('matches a project whose canonical path differs only in drive-letter case', async () => {
+    const projectSessionFileChanges = vi.fn(async () => 1);
+    const dependencies = createDependencies({
+      reader: {
+        scan: async () =>
+          scanResult({
+            // A backslashed, lowercase-drive path, as a Windows transcript records it.
+            fileObservations: [
+              fileObservation({
+                absolutePath: 'c:\\xampp\\htdocs\\luwiruntime\\apps\\daemon\\src\\app.ts',
+              }),
+            ],
+            fileChangesObserved: 1,
+          }),
+      },
+      projects: { list: async () => [project] },
+      intelligence: {
+        ingestUsage: vi.fn(async () => ({ id: 'usage-1' })),
+        projectSessionFileChanges,
+      },
+    });
+    const service = createTranscriptIngestService(dependencies);
+
+    await service.ingestOnce();
+
+    expect(projectSessionFileChanges).toHaveBeenCalledWith([
+      expect.objectContaining({ projectId: 'project-1', relativePath: 'apps/daemon/src/app.ts' }),
+    ]);
+  });
+
+  it('projects nothing for a file change outside every interval', async () => {
+    const projectSessionFileChanges = vi.fn(async () => 0);
+    const dependencies = createDependencies({
+      reader: {
+        scan: async () =>
+          scanResult({
+            fileObservations: [fileObservation({ observedAt: afterInterval })],
+            fileChangesObserved: 1,
+          }),
+      },
+      projects: { list: async () => [project] },
+      repository: {
+        getNativeBinding: async () => ({
+          id: bindingId,
+          adapterId: 'claude-code',
+          nativeSessionId: 'fixture-claude-session-0001',
+          kind: 'main' as const,
+          version: 2,
+          linkCount: 1,
+          trimmedLinkCount: 0,
+          firstLinkedAt: linkedAt,
+          lastLinkedAt: linkedAt,
+        }),
+        findNativeLinkAt: async () => null,
+      },
+      intelligence: {
+        ingestUsage: vi.fn(async () => ({ id: 'usage-1' })),
+        projectSessionFileChanges,
+      },
+    });
+    const service = createTranscriptIngestService(dependencies);
+
+    const summary = await service.ingestOnce();
+
+    expect(summary.fileSkippedOutsideInterval).toBe(1);
+    expect(projectSessionFileChanges).not.toHaveBeenCalled();
+  });
+
+  it('counts a bound file change whose session can no longer be read', async () => {
+    const projectSessionFileChanges = vi.fn(async () => 0);
+    const dependencies = createDependencies({
+      reader: {
+        scan: async () =>
+          scanResult({ fileObservations: [fileObservation()], fileChangesObserved: 1 }),
+      },
+      projects: { list: async () => [project] },
+      sessions: { get: async () => null },
+      intelligence: {
+        ingestUsage: vi.fn(async () => ({ id: 'usage-1' })),
+        projectSessionFileChanges,
+      },
+    });
+    const service = createTranscriptIngestService(dependencies);
+
+    const summary = await service.ingestOnce();
+
+    expect(summary.fileSkippedSessionMissing).toBe(1);
+    expect(projectSessionFileChanges).not.toHaveBeenCalled();
+  });
+
+  it('keeps every path and identifier out of the logged summary', async () => {
+    const dependencies = createDependencies({
+      reader: {
+        scan: async () =>
+          scanResult({ fileObservations: [fileObservation()], fileChangesObserved: 1 }),
+      },
+      projects: { list: async () => [project] },
+      intelligence: {
+        ingestUsage: vi.fn(async () => ({ id: 'usage-1' })),
+        projectSessionFileChanges: async () => 1,
+      },
+    });
+    const service = createTranscriptIngestService(dependencies);
+
+    const serialized = JSON.stringify(await service.ingestOnce());
+
+    expect(serialized).not.toContain('app.ts');
+    expect(serialized).not.toContain('session-1');
+    expect(serialized).not.toContain('luwiruntime');
   });
 });
 

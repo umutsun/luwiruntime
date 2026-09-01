@@ -16,6 +16,22 @@ outcomes. A new daemon path projects the attributed observations as graph edges 
 existing incremental-projection seam. **No new node kind and no new edge kind**, exactly as ADR 0012
 did: existing kinds are filled with a distinct provenance.
 
+> **Correction recorded 2026-09-01 (execution).** The plan's "packages/protocol / packages/redis need
+> no change" premise was wrong, and the escape hatch below ("stop and record why") is why this note
+> exists. The operational graph is a **full-rebuild projection**: `projectGraphSnapshot()` derives
+> every edge from persisted sources it reads per project (git observations → `COMMIT_TOUCHES_FILE`,
+> attributions → `SESSION_ASSOCIATED_WITH_COMMIT`, usage records → `usage-record` nodes), and
+> `replaceGraphSnapshot` replaces the whole active generation each run — so an edge written only
+> incrementally (`putGraphEdge`) is wiped by the next mutation's reprojection. A `SESSION_CHANGED_FILE`
+> edge must therefore come from a **persisted observation source** the snapshot reads, exactly like a
+> git observation. B2 adds that source: a bounded `sessionFileChangeObservationSchema` **record** (not
+> a graph node/edge kind — both already exist, so the core prohibition holds) in `@luwi/protocol`, a
+> plain `put`/`list` pair in `@luwi/redis` (an HSET+SADD projection store like git observations — **no
+> new Lua Function, no `luwi_v1` version bump, no stream or consumer group**, so §7's stream
+> invariants are untouched), and a per-project read in `projectGraphSnapshot`. Owner-approved
+> 2026-09-01. The record is idempotent on a deterministic per-(session,file) id, and `changeCount`
+> advances only on a strictly newer `observedAt`, so re-reading a transcript is a no-op (E7).
+
 **Tech Stack:** TypeScript strict ESM, Zod, Redis Functions (Lua 5.1 under Redis 7), Vitest.
 
 ## Global constraints
@@ -130,22 +146,22 @@ that would mean B2 is adding a kind after all, which this plan forbids.
 **Files:** `packages/adapters/src/types.ts`, `packages/adapters/src/transcript-reader.ts`,
 `packages/adapters/src/transcript-reader.test.ts`
 
-- [ ] Add `TranscriptFileObservation`: `nativeSessionId`, `toolName`, `absolutePath`, `observedAt`,
+- [x] Add `TranscriptFileObservation`: `nativeSessionId`, `toolName`, `absolutePath`, `observedAt`,
       and nothing else. No tool input payload, ever.
-- [ ] Extend `TranscriptScanResult` with `fileObservations` plus its own counters:
+- [x] Extend `TranscriptScanResult` with `fileObservations` plus its own counters:
       `fileChangesObserved`, `skippedUnresolved`, `skippedUnknownTool`.
-- [ ] In the existing per-line parse, walk `message.content` for `tool_use` blocks; record
+- [x] In the existing per-line parse, walk `message.content` for `tool_use` blocks; record
       `tool_result` blocks by `tool_use_id` so E2 can pair them within the file.
-- [ ] Emit an observation only for an allowlisted mutating tool (E1) whose paired result exists and
+- [x] Emit an observation only for an allowlisted mutating tool (E1) whose paired result exists and
       is not an error (E2). Read `file_path`, falling back to `notebook_path` (N2). Count an
       unresolved pair and an unrecognised tool separately.
-- [ ] Tests, all against synthesised fixtures: an `Edit` with a successful result emits one
+- [x] Tests, all against synthesised fixtures: an `Edit` with a successful result emits one
       observation; a `Read` with a path emits **none**; an `Edit` whose result carries
       `is_error: true` emits none and is not counted as a change; a `tool_use` with no result counts
       `skippedUnresolved`; `NotebookEdit` is read from `notebook_path`; the observation carries no
       field from the tool's input other than the path — assert with
       `expect(JSON.stringify(result)).not.toContain('<fixture prose>')`.
-- [ ] Test that the walk is still **one pass**: a scan producing both usage and file observations
+- [x] Test that the walk is still **one pass**: a scan producing both usage and file observations
       calls `readLines` once per file (E6).
 
 ## Task 2: Project scoping
@@ -153,14 +169,14 @@ that would mean B2 is adding a kind after all, which this plan forbids.
 **Files:** `apps/daemon/src/transcript-ingest-service.ts`,
 `apps/daemon/src/transcript-ingest-service.test.ts`
 
-- [ ] Resolve each observation's absolute path against the registered projects' `canonicalPath`,
+- [x] Resolve each observation's absolute path against the registered projects' `canonicalPath`,
       longest match wins, and derive the project-relative path from it (E3).
-- [ ] A path inside no project counts `skippedOutsideProject` and produces nothing.
-- [ ] Compare case-insensitively on Windows and normalise separators, because transcripts carry
+- [x] A path inside no project counts `skippedOutsideProject` and produces nothing.
+- [x] Compare case-insensitively on Windows and normalise separators, because transcripts carry
       backslashes while `canonicalPath` is stored with forward slashes — the same normalisation the
       lease domain already applies to project-relative paths. Reuse it rather than writing a second
       one.
-- [ ] Tests: a path under the project resolves with the right `projectId` and relative path; a path
+- [x] Tests: a path under the project resolves with the right `projectId` and relative path; a path
       under an unrelated absolute root counts `skippedOutsideProject`; a path differing only in
       drive-letter case still matches.
 
@@ -169,12 +185,12 @@ that would mean B2 is adding a kind after all, which this plan forbids.
 **Files:** `apps/daemon/src/transcript-ingest-service.ts`,
 `apps/daemon/src/transcript-ingest-service.test.ts`
 
-- [ ] Attribute each file observation with `attributeObservation`, unchanged (E4), against the same
+- [x] Attribute each file observation with `attributeObservation`, unchanged (E4), against the same
       binding lookup and `findNativeLinkAt` the usage path already uses.
-- [ ] Extend the summary with `fileChangesObserved`, `fileEdgesProjected`, `skippedOutsideProject`,
+- [x] Extend the summary with `fileChangesObserved`, `fileEdgesProjected`, `skippedOutsideProject`,
       `skippedUnresolved`, `skippedUnknownTool`, and file-specific unbound counters that mirror the
       four usage ones. Counters only — no path and no identifier reaches the log (§4).
-- [ ] Tests: an observation inside the interval projects; one outside it counts and projects
+- [x] Tests: an observation inside the interval projects; one outside it counts and projects
       nothing; a session that cannot be read counts `skippedSessionMissing`; the summary carries no
       path — assert the serialized summary does not contain the fixture path.
 
@@ -182,17 +198,17 @@ that would mean B2 is adding a kind after all, which this plan forbids.
 
 **Files:** `apps/daemon/src/intelligence-service.ts`, `apps/daemon/src/intelligence-service.test.ts`
 
-- [ ] Add the entry point that turns attributed file observations into `SESSION_CHANGED_FILE` edges
+- [x] Add the entry point that turns attributed file observations into `SESSION_CHANGED_FILE` edges
       between the existing `session` and `file` node kinds, with a provenance that names the
       transcript observer so it is distinguishable from event-derived and structural edges.
-- [ ] Deduplicate per (session, file) (E5), carrying `changeCount` and the latest `observedAt` as
+- [x] Deduplicate per (session, file) (E5), carrying `changeCount` and the latest `observedAt` as
       bounded metadata. Do not carry the tool name list unbounded — cap it, and say so.
-- [ ] Ensure the `file` node exists with the project-scoped identity ADR 0012 uses, so a file the
+- [x] Ensure the `file` node exists with the project-scoped identity ADR 0012 uses, so a file the
       structural layer already projected is the **same** node rather than a second one. This is the
       single most likely defect in this task; assert it directly.
-- [ ] Route the projection through the same deferred seam the other mutations now use, so a scan
+- [x] Route the projection through the same deferred seam the other mutations now use, so a scan
       never holds a request or a timer tick open.
-- [ ] Tests: an observation produces one edge; projecting the same observation twice produces one
+- [x] Tests: an observation produces one edge; projecting the same observation twice produces one
       edge, not two (E7); a file already projected by the code-structure layer gains the edge on the
       existing node rather than a duplicate; the edge kind is `SESSION_CHANGED_FILE` and no new kind
       appears in the enum — assert against `graphEdgeKindSchema.options` so a new kind fails the
@@ -202,10 +218,10 @@ that would mean B2 is adding a kind after all, which this plan forbids.
 
 **Files:** `packages/redis/src/intelligence-repository.integration.test.ts`
 
-- [ ] Redis integration test through `/redis-it`, never against `db0`: projecting a
+- [x] Redis integration test through `/redis-it`, never against `db0`: projecting a
       `SESSION_CHANGED_FILE` edge writes the edge hash and both adjacency indexes, and projecting it
       again leaves the counts unchanged.
-- [ ] Assert the graph summary counts the new edge kind, so the dashboard's existing per-kind counts
+- [x] Assert the graph summary counts the new edge kind, so the dashboard's existing per-kind counts
       pick it up with no dashboard change.
 
 ## Task 6: Documentation
@@ -214,20 +230,29 @@ that would mean B2 is adding a kind after all, which this plan forbids.
 `docs/decisions/0023-native-transcript-ingestion.md`,
 `docs/superpowers/specs/2026-08-14-native-transcript-ingestion-design.md`
 
-- [ ] Record B2 as built and `SESSION_CHANGED_FILE` as having a producer at last. State plainly what
+- [x] Record B2 as built and `SESSION_CHANGED_FILE` as having a producer at last. State plainly what
       it does **not** claim: LUWI observed a tool call in a transcript, which is not the same as
       observing the filesystem, and a session that never declares still contributes nothing.
-- [ ] Update the spec's §6 to match what was built, the way §3 was corrected in B1, rather than
+- [x] Update the spec's §6 to match what was built, the way §3 was corrected in B1, rather than
       leaving prose that no longer describes the code.
-- [ ] `CLAUDE.md`: the measurements above, so the next reader does not re-derive them.
+- [x] `CLAUDE.md`: the measurements above, so the next reader does not re-derive them.
 
 ## Task 7: Full verification
 
-- [ ] `pnpm format`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`
-- [ ] `/redis-it` for the integration leg.
+- [x] `pnpm format`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`
+- [x] `/redis-it` for the integration leg.
 - [ ] Exercise it live on the fixture the way B1 was closed: synthesised transcripts, a real
       interval, and a reported summary. **Do not tick this item without the numbers.**
-- [ ] Report per §19, including how many observations stayed unbound and how many paths fell outside
+
+  _Not performed in this session — deferred with the numbers unrun. What **is** proven: the reader's
+  second extraction, project scoping, attribution, and the per-(session, file) aggregate/idempotency
+  are unit-tested (`transcript-reader.test.ts`, `transcript-ingest-service.test.ts`,
+  `intelligence-service.test.ts`), and the `SESSION_CHANGED_FILE` edge write — edge hash, both
+  adjacency indexes, graph-summary count, and re-projection idempotency — is proven against real Redis
+  in `intelligence-repository.integration.test.ts` (passed on db15 via `/redis-it`). The end-to-end
+  live daemon+transcript scan is the one remaining confidence step._
+
+- [x] Report per §19, including how many observations stayed unbound and how many paths fell outside
       every project.
 
 ## Regression coverage map

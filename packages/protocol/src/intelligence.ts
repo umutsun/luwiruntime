@@ -498,6 +498,32 @@ export const attributionCollectionSchema = z.strictObject({
   truncated: z.boolean(),
 });
 
+/**
+ * One session's observed changes to one project file, aggregated across every
+ * mutating tool call the native transcript recorded (B2). It is the persisted
+ * source `projectGraphSnapshot` reads to project `SESSION_CHANGED_FILE` edges —
+ * a record, not a graph kind (both the `file` node and the edge already exist).
+ * `id` is deterministic per (project, session, relativePath) so the aggregate is
+ * idempotent, and `changeCount` advances only on a strictly newer `observedAt`.
+ * It carries the path and identifiers only — never any tool-input prose.
+ */
+export const sessionFileChangeObservationSchema = z.strictObject({
+  id: identifierSchema,
+  projectId: identifierSchema,
+  sessionId: identifierSchema,
+  relativePath: pathSchema,
+  toolName: z.string().trim().min(1).max(64),
+  changeCount: z.number().int().positive(),
+  firstObservedAt: timestampSchema,
+  observedAt: timestampSchema,
+  evidenceIds: evidenceIdsSchema,
+});
+
+export const sessionFileChangeCollectionSchema = z.strictObject({
+  observations: z.array(sessionFileChangeObservationSchema).max(INTELLIGENCE_MAX_LIMIT),
+  truncated: z.boolean(),
+});
+
 export const graphNodeKindSchema = z.enum([
   'developer',
   'project',
@@ -940,6 +966,7 @@ export type PackageRecord = z.infer<typeof packageRecordSchema>;
 export type TechnologyRecord = z.infer<typeof technologyRecordSchema>;
 export type AttributionConfidence = z.infer<typeof attributionConfidenceSchema>;
 export type AttributionRecord = z.infer<typeof attributionRecordSchema>;
+export type SessionFileChangeObservation = z.infer<typeof sessionFileChangeObservationSchema>;
 export type GraphNodeKind = z.infer<typeof graphNodeKindSchema>;
 export type GraphEdgeKind = z.infer<typeof graphEdgeKindSchema>;
 export type GraphNode = z.infer<typeof graphNodeSchema>;

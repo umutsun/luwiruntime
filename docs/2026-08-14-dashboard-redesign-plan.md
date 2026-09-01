@@ -270,3 +270,24 @@ now safe if you do. Screenshot over the DevTools protocol with a real wall-clock
 Two traps that cost time in this round: `TaskStop` kills the `tsx watch` parent but leaves the daemon
 listening on 4782, so check the port and `taskkill` the survivor; and the daemon's owner lease needs
 ~15 s to expire after an ungraceful kill before the next start succeeds.
+
+## Depth and motion decision (gate G2, 2026-09-01)
+
+Recorded as part of the completion program's Phase 4 UI token pass. The mockup carried an
+elevation/shadow layer (`--luwi-shadow-*`) and motion tokens (`--luwi-ease`/`--luwi-dur`) that
+production never adopted and never explicitly rejected. The decision, split on principle between
+tokenising values that already exist and adding a new visual layer:
+
+- **Motion tokens adopted.** The two hardcoded durations (the 160 ms drawer animation, the 120 ms
+  pulse-trace transition) and their easing were token debt like the fonts and spacing: values
+  repeated at their use sites with no scale behind them. They now reference `--dur-1` (120 ms),
+  `--dur-2` (160 ms), and a shared `--ease` in `tokens.css`. Near-zero visual change; the easing is
+  unified to one curve.
+- **Elevation/shadow layer deferred.** Adding shadows is not tokenising an existing value — there are
+  no production shadows to name — it is introducing a new visual layer. The console is flat by
+  design, and an overlay (the detail drawer, a dialog, the command palette) is already lifted off the
+  page by its backdrop scrim, raised background (`--bg-raised`), and border (`--border-strong`); a
+  shadow would add soft depth that reads against that flat, terminal-like surface rather than with it.
+  Reduced motion is already respected (`shell.css` honours `prefers-reduced-motion`). If a depth layer
+  is wanted later it is a small, isolated addition of two shadow tokens applied to the overlays only.
+  This is the recorded rejection G2 asked for, not a silent omission.

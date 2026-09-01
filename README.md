@@ -215,7 +215,18 @@ rather than a defect. Each scan reads at most 2000 changed files and 16 MiB per 
 files skipped by the scan cap, byte-truncated files, malformed lines, and files stopped by the
 100-malformed-line safety cap are reported separately. These bounds are configurable through
 `LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN` and `LUWI_TRANSCRIPT_MAX_FILE_BYTES`; the malformed-line cap is
-currently fixed. Tool and file observation (B2) is specified and not started.
+currently fixed.
+
+**Tool and file observation (B2) is built too**, so `SESSION_CHANGED_FILE` has a producer at last. A
+second extraction over the same one file read pairs each `tool_use` with its `tool_result` and turns
+an allowlisted mutating tool call (`Edit`, `Write`, `MultiEdit`, `NotebookEdit`) with a present,
+non-error result into a file-change observation, reading only the path out of the tool input — never
+its prose. The daemon attributes each change through the same native-link interval usage uses, scopes
+the absolute path to a registered project, and persists a bounded per-(session, file) aggregate; the
+operational-graph rebuild reads those aggregates and projects `SESSION_CHANGED_FILE` edges onto the
+same `file` node the code-structure layer already produces, so a tool call observed in a transcript —
+which is not the same as observing the filesystem — becomes an edge without a new node or edge kind. A
+session that never declares its native identity still contributes nothing.
 
 Automatic drift reconciliation, Git mutation, lifecycle/release scoring, release readiness,
 unified search, GitHub integration, prompt injection, task orchestration, a semantic knowledge
@@ -240,8 +251,27 @@ read-only, marks what it finds `observed`, executes nothing it discovers, and fe
 detail drawer instead of a docked Inspector column; the bounded Ask flow the two-module allowlist
 above already names is reachable from Pulse. An experimental `session bridge deepseek` registers one
 DeepSeek Harness ACP process as one ordinary LUWI session — fresh sessions only, no history import, no
-ACP-time MCP injection, and no DeepSeek dependency outside the CLI. Tool and file observation (B2),
-automatic lease renewal, and autostart remain the open items.
+ACP-time MCP injection, and no DeepSeek dependency outside the CLI.
+
+ADR 0026 then made work-lease renewal automatic and holder-side. The session bootstrap that keeps an
+`agent run` or `session attach` session alive gained a second timer beside the heartbeat: it renews
+every lease the current session holds at half the default lease TTL, listing the held-only
+session-lease index each tick and re-reading the bound session id so a rotation never renews a dead
+session's lease. A clean exit stops renewing and lets the leases lapse, exactly as a crash does; a
+failed renewal is surfaced once and never retried forever. It reuses the existing renew endpoint and
+Redis Function unchanged — no protocol or datastore change, just a `--lease-renew-ms` client setting.
+Notification when a held path frees and lease-to-commit correlation are deferred with reasons in the
+decision record.
+
+ADR 0027 then added **opt-in Windows autostart**, the last item in the completion sequence.
+`luwi setup --autostart` registers a per-user logon Scheduled Task named `LUWI Runtime` that runs the
+same idempotent `luwi start`; `luwi setup --no-autostart` removes it; and `luwi setup` with neither
+reports the current state without changing it, so autostart is never a side effect. It is a task, not a
+service or a supervisor — no elevation, no detached session, no persistent LUWI process, and no change
+to the daemon, its owner lease, or the datastore. `schtasks` is a fixed system command spawned through
+the existing command seam with a constant task name and the CLI entry derived from the installation
+root, so no user-controlled string reaches the scheduler. It is Windows-only and reports `unsupported`
+elsewhere rather than pretending to succeed.
 
 ## Architecture and security
 

@@ -1,4 +1,5 @@
 import type {
+  TranscriptFileObservation,
   TranscriptFileSystem,
   TranscriptScanCursor,
   TranscriptScanResult,
@@ -74,12 +75,31 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
 }
 
+/** The mutating tools whose successful calls are file changes (E1). A read-only
+ * tool such as `Read` carries a `file_path` too, so an allowlist is the only
+ * safe rule — "any tool with a path" would turn every read into a change. */
+const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+type ToolUse = {
+  id: string;
+  name: string;
+  path: string | undefined;
+  nativeSessionId: string;
+  observedAt: string;
+};
+
+type ToolResult = {
+  toolUseId: string;
+  isError: boolean;
+};
+
 /**
- * Turns one transcript line into a record, or `undefined` when the line carries
- * no attributable usage. A transcript is untrusted input: every field is checked
- * rather than assumed.
+ * Parses one line to a raw record, `undefined` for a blank or non-object line,
+ * and throws `SyntaxError` for an unparseable one. A transcript is untrusted
+ * input, so the caller checks every field rather than assuming it. Parsing runs
+ * once per line and feeds both extractions (E6).
  */
-function parseRecord(line: string): ParsedRecord | undefined {
+function parseLine(line: string): Record<string, unknown> | undefined {
   const trimmed = line.trim();
   if (trimmed.length === 0) return undefined;
 
@@ -90,8 +110,14 @@ function parseRecord(line: string): ParsedRecord | undefined {
     throw new SyntaxError('unparseable transcript line');
   }
   if (typeof value !== 'object' || value === null) return undefined;
+  return value as Record<string, unknown>;
+}
 
-  const record = value as Record<string, unknown>;
+/**
+ * Extracts one request's usage from a parsed record, or `undefined` when the
+ * record carries none. Bookkeeping and `<synthetic>` records legitimately do.
+ */
+function extractUsage(record: Record<string, unknown>): ParsedRecord | undefined {
   // The join key. Bookkeeping records legitimately carry none.
   const nativeSessionId = optionalString(record['sessionId']);
   const requestId = optionalString(record['requestId']);
@@ -128,6 +154,64 @@ function parseRecord(line: string): ParsedRecord | undefined {
   };
 }
 
+/**
+ * Extracts `tool_use` and `tool_result` content blocks from a parsed record.
+ * Only the path is ever read out of a tool's input — never `content`,
+ * `new_string`, or any other prose it carries (§4). A `tool_use` and its
+ * `tool_result` sit on different records, so they are paired by the caller
+ * within the file.
+ */
+function extractToolBlocks(record: Record<string, unknown>): {
+  toolUses: ToolUse[];
+  toolResults: ToolResult[];
+} {
+  const toolUses: ToolUse[] = [];
+  const toolResults: ToolResult[] = [];
+
+  const message = record['message'];
+  if (typeof message !== 'object' || message === null) return { toolUses, toolResults };
+  const content = (message as Record<string, unknown>)['content'];
+  if (!Array.isArray(content)) return { toolUses, toolResults };
+
+  const nativeSessionId = optionalString(record['sessionId']);
+  const observedAt = optionalString(record['timestamp']);
+
+  for (const block of content) {
+    if (typeof block !== 'object' || block === null) continue;
+    const blockRecord = block as Record<string, unknown>;
+    const type = blockRecord['type'];
+
+    if (type === 'tool_use') {
+      const id = optionalString(blockRecord['id']);
+      const name = optionalString(blockRecord['name']);
+      // Without the record's own session and timestamp a tool call cannot be
+      // attributed, so it is not a usable observation.
+      if (
+        id === undefined ||
+        name === undefined ||
+        nativeSessionId === undefined ||
+        observedAt === undefined
+      ) {
+        continue;
+      }
+      const input = blockRecord['input'];
+      let path: string | undefined;
+      if (typeof input === 'object' && input !== null) {
+        const inputRecord = input as Record<string, unknown>;
+        path =
+          optionalString(inputRecord['file_path']) ?? optionalString(inputRecord['notebook_path']);
+      }
+      toolUses.push({ id, name, path, nativeSessionId, observedAt });
+    } else if (type === 'tool_result') {
+      const toolUseId = optionalString(blockRecord['tool_use_id']);
+      if (toolUseId === undefined) continue;
+      toolResults.push({ toolUseId, isError: blockRecord['is_error'] === true });
+    }
+  }
+
+  return { toolUses, toolResults };
+}
+
 export function createTranscriptReader(options: TranscriptReaderOptions): TranscriptReader {
   const fileSystem = options.fileSystem ?? new NodeTranscriptFileSystem();
   const maxFileBytes = options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
@@ -155,6 +239,7 @@ export function createTranscriptReader(options: TranscriptReaderOptions): Transc
     async scan(input) {
       const result: TranscriptScanResult = {
         observations: [],
+        fileObservations: [],
         cursors: {},
         filesScanned: 0,
         filesSkippedUnchanged: 0,
@@ -162,6 +247,9 @@ export function createTranscriptReader(options: TranscriptReaderOptions): Transc
         filesStoppedMalformedCap: 0,
         truncatedFiles: 0,
         filesSkippedOverCap: 0,
+        fileChangesObserved: 0,
+        skippedUnresolved: 0,
+        skippedUnknownTool: 0,
       };
 
       const root = input.root.replaceAll('\\', '/').replace(/\/$/, '');
@@ -204,14 +292,17 @@ export function createTranscriptReader(options: TranscriptReaderOptions): Transc
         if (file.truncated) result.truncatedFiles += 1;
 
         // Winners per request, within this file. Grouping is per file because a
-        // request never spans two.
+        // request never spans two. Tool calls accumulate alongside, to be paired
+        // by id once the file has been read (E2).
         const winners = new Map<string, ParsedRecord>();
+        const toolUses = new Map<string, ToolUse>();
+        const toolResults = new Map<string, ToolResult>();
         let malformedInFile = 0;
 
         for (const line of file.lines) {
-          let record: ParsedRecord | undefined;
+          let record: Record<string, unknown> | undefined;
           try {
-            record = parseRecord(line);
+            record = parseLine(line);
           } catch {
             malformedInFile += 1;
             result.malformedLines += 1;
@@ -225,14 +316,24 @@ export function createTranscriptReader(options: TranscriptReaderOptions): Transc
           }
           if (record === undefined) continue;
 
-          const current = winners.get(record.requestId);
-          // Output accumulates across a streamed response, so the greatest is
-          // the completed message; a tie resolves to the last in file order.
-          if (
-            current === undefined ||
-            record.counters.outputTokens >= current.counters.outputTokens
-          ) {
-            winners.set(record.requestId, record);
+          const usage = extractUsage(record);
+          if (usage !== undefined) {
+            const current = winners.get(usage.requestId);
+            // Output accumulates across a streamed response, so the greatest is
+            // the completed message; a tie resolves to the last in file order.
+            if (
+              current === undefined ||
+              usage.counters.outputTokens >= current.counters.outputTokens
+            ) {
+              winners.set(usage.requestId, usage);
+            }
+          }
+
+          // The second extraction shares this one parse (E6).
+          const blocks = extractToolBlocks(record);
+          for (const toolUse of blocks.toolUses) toolUses.set(toolUse.id, toolUse);
+          for (const toolResult of blocks.toolResults) {
+            toolResults.set(toolResult.toolUseId, toolResult);
           }
         }
 
@@ -248,6 +349,35 @@ export function createTranscriptReader(options: TranscriptReaderOptions): Transc
             ...(record.model === undefined ? {} : { model: record.model }),
           };
           result.observations.push(observation);
+        }
+
+        // A change is an allowlisted mutating tool (E1) whose paired result
+        // exists and is not an error (E2). Everything else is counted apart and
+        // produces no observation.
+        for (const toolUse of toolUses.values()) {
+          if (!MUTATING_TOOLS.has(toolUse.name)) {
+            // A path-carrying read (e.g. Read) is seen and deliberately not a
+            // change; an unrecognised tool is never guessed at.
+            if (toolUse.path !== undefined) result.skippedUnknownTool += 1;
+            continue;
+          }
+          if (toolUse.path === undefined) continue;
+          const toolResult = toolResults.get(toolUse.id);
+          if (toolResult === undefined) {
+            // The turn was cut off before the result: assuming success would
+            // invent evidence and assuming failure would lose it.
+            result.skippedUnresolved += 1;
+            continue;
+          }
+          if (toolResult.isError) continue;
+          const observation: TranscriptFileObservation = {
+            nativeSessionId: toolUse.nativeSessionId,
+            toolName: toolUse.name,
+            absolutePath: toolUse.path,
+            observedAt: toolUse.observedAt,
+          };
+          result.fileObservations.push(observation);
+          result.fileChangesObserved += 1;
         }
       }
 

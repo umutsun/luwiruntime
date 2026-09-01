@@ -9,6 +9,7 @@ import {
   type OptimizationFinding,
   type OptimizationProposal,
   type PackageRecord,
+  type SessionFileChangeObservation,
   type TechnologyRecord,
   type UsageRecord,
 } from '@luwi/protocol';
@@ -396,6 +397,111 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         generation: 'generation-shadow',
         nodes: [{ kind: 'project', count: 1 }],
         edges: [],
+      });
+    });
+
+    it('stores a session file change, reads it back, and overwrites it in place (B2)', async () => {
+      const observation: SessionFileChangeObservation = {
+        id: 'sfc-integration-1',
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        relativePath: 'apps/daemon/src/app.ts',
+        toolName: 'Edit',
+        changeCount: 1,
+        firstObservedAt: timestamp,
+        observedAt: timestamp,
+        evidenceIds: ['sfc-integration-1'],
+      };
+
+      await repository.putSessionFileChange(observation);
+
+      expect(await repository.getSessionFileChange('sfc-integration-1')).toEqual(observation);
+      expect(await repository.listSessionFileChanges('project-1')).toEqual([observation]);
+
+      // The aggregate id is stable, so a second write overwrites in place rather
+      // than adding a second record (the store is per session-file).
+      await repository.putSessionFileChange({ ...observation, changeCount: 5 });
+      expect(await repository.listSessionFileChanges('project-1')).toEqual([
+        { ...observation, changeCount: 5 },
+      ]);
+    });
+
+    it('projects a SESSION_CHANGED_FILE edge with both adjacency indexes, idempotently (B2)', async () => {
+      // A fresh sub-namespace so this test owns its active generation rather than
+      // inheriting one an earlier test left active.
+      const repository = createIntelligenceRepository({
+        client: commandClient,
+        keys: createRedisKeys(`${namespace}:sfc`),
+        functions: registry,
+      });
+      const generation = 'generation-sfc';
+      const sessionNode: GraphNode = {
+        id: 'node-session-sfc',
+        kind: 'session',
+        entityId: 'session-1',
+        projectId: 'project-1',
+        observedAt: timestamp,
+        provenance: 'session-projection',
+        confidence: 'high',
+        evidenceIds: ['session-1'],
+        metadata: {},
+      };
+      const fileNode: GraphNode = {
+        id: 'node-file-sfc',
+        kind: 'file',
+        entityId: 'file-sfc-abc',
+        projectId: 'project-1',
+        observedAt: timestamp,
+        provenance: 'transcript-observer@1',
+        confidence: 'high',
+        evidenceIds: ['sfc-integration-1'],
+        metadata: { relativePath: 'apps/daemon/src/app.ts' },
+      };
+      const edge: GraphEdge = {
+        id: 'edge-session-changed-file',
+        source: { kind: 'session', id: 'session-1' },
+        target: { kind: 'file', id: 'file-sfc-abc' },
+        kind: 'SESSION_CHANGED_FILE',
+        projectId: 'project-1',
+        observedAt: timestamp,
+        provenance: 'transcript-observer@1',
+        confidence: 'high',
+        evidenceIds: ['sfc-integration-1'],
+        metadata: { changeCount: 3, toolName: 'Edit' },
+      };
+
+      await repository.setInitialGraphGeneration(generation);
+      await repository.replaceGraphSnapshot(
+        generation,
+        [sessionNode, fileNode],
+        [edge],
+        event('event-sfc-projected', 'graph.node.projected'),
+      );
+
+      // Both adjacency indexes: the edge is reachable outgoing from the session
+      // and incoming to the file.
+      await expect(
+        repository.getGraphNeighbors('session', 'session-1', 'out', { limit: 100 }),
+      ).resolves.toMatchObject({ node: sessionNode, nodes: [fileNode], edges: [edge] });
+      await expect(
+        repository.getGraphNeighbors('file', 'file-sfc-abc', 'in', { limit: 100 }),
+      ).resolves.toMatchObject({ node: fileNode, nodes: [sessionNode], edges: [edge] });
+
+      await expect(repository.getGraphSummary()).resolves.toMatchObject({
+        generation,
+        edges: [{ kind: 'SESSION_CHANGED_FILE', count: 1 }],
+      });
+
+      // Re-projecting the same snapshot leaves the counts unchanged (E7).
+      await repository.replaceGraphSnapshot(
+        generation,
+        [sessionNode, fileNode],
+        [edge],
+        event('event-sfc-reprojected', 'graph.node.projected'),
+      );
+      await expect(repository.getGraphSummary()).resolves.toMatchObject({
+        generation,
+        edges: [{ kind: 'SESSION_CHANGED_FILE', count: 1 }],
       });
     });
 

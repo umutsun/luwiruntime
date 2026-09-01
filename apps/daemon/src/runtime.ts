@@ -736,8 +736,17 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
           : { id: session.id, projectId: session.projectId, agentId: session.agentId };
       },
     },
+    projects: {
+      list: async () =>
+        (await projectService.list()).map((project) => ({
+          id: project.id,
+          canonicalPath: project.canonicalPath,
+        })),
+    },
     intelligence: {
       ingestUsage: async (input) => intelligenceService.ingestUsage(input),
+      projectSessionFileChanges: (changes) =>
+        intelligenceService.projectSessionFileChanges(changes),
     },
     transcriptRoot: join(config.nativeHome ?? homedir(), '.claude', 'projects'),
     adapterId: 'claude-code',

@@ -23,12 +23,18 @@ export type {
   NativeDeclarationObservation,
   NativeOpenLinkObservation,
 } from './native-session-policy.js';
-export { createSessionBootstrap, DEFAULT_HEARTBEAT_INTERVAL_MS } from './session-bootstrap.js';
+export {
+  createSessionBootstrap,
+  DEFAULT_HEARTBEAT_INTERVAL_MS,
+  DEFAULT_LEASE_RENEW_INTERVAL_MS,
+} from './session-bootstrap.js';
 export type {
   SessionBootstrap,
   SessionBootstrapChange,
   SessionBootstrapClient,
+  SessionBootstrapLeaseClient,
   SessionBootstrapOptions,
+  WorkLeaseSummary,
 } from './session-bootstrap.js';
 export { attributeObservation } from './native-attribution.js';
 export type { NativeAttribution, NativeAttributionObservation } from './native-attribution.js';

@@ -3,6 +3,12 @@
 Status: Accepted  
 Date: 2026-08-14
 
+> **Build status (2026-09-01):** B0, B1 and B2 are all built. B2's `SESSION_CHANGED_FILE` producer
+> required a bounded persisted observation store — a `@luwi/protocol` record
+> (`sessionFileChangeObservationSchema`) plus a plain HSET+SADD `@luwi/redis` `put`/`list` — that the
+> operational graph's full-rebuild projection reads to project the edge onto the existing `file` node.
+> No new node or edge kind, no Lua Function, no `luwi_v1` bump; recorded in the B2 plan.
+
 ## Context
 
 ADR 0022 built native session identity and stopped exactly where attribution begins. It records a

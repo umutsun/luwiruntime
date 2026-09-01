@@ -184,11 +184,12 @@ a.stat:focus-visible {
 }
 .panel__header h2 {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--font-size-base);
 }
 .panel__meta {
   color: var(--text-muted);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .panel__body {
   display: flex;
@@ -237,7 +238,7 @@ a.stat:focus-visible {
 .panel__toggle:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 4px;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
 }
 .panel__toggle-icon {
   flex: none;
@@ -246,7 +247,7 @@ a.stat:focus-visible {
   border-right: 1.5px solid var(--text-muted);
   border-bottom: 1.5px solid var(--text-muted);
   transform: rotate(45deg);
-  transition: transform 120ms ease;
+  transition: transform var(--dur-1) var(--ease);
 }
 .panel--collapsed .panel__toggle-icon {
   transform: rotate(-45deg);
@@ -288,13 +289,15 @@ td {
 }
 th {
   color: var(--text-dim);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 td {
   color: var(--text-secondary);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 td strong,
 td small {
@@ -327,7 +330,8 @@ td small {
   padding: var(--space-2) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
   color: var(--text-dim);
-  font: var(--font-size-2xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -424,7 +428,8 @@ td small {
 .work-dim {
   overflow: hidden;
   color: var(--text-dim);
-  font: var(--font-size-2xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -435,7 +440,8 @@ td small {
 .work-context {
   overflow: hidden;
   color: var(--text-muted);
-  font: var(--font-size-xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -519,7 +525,9 @@ td small {
   border-color: color-mix(in oklab, var(--mark) 32%, transparent);
   background: var(--surface-2);
   background: color-mix(in oklab, var(--mark) 12%, var(--surface-2));
-  font: 600 var(--font-size-2xs) var(--font-mono);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
 }
 .project-row__body {
   display: grid;
@@ -538,7 +546,8 @@ td small {
 .project-row__meta {
   align-items: center;
   color: var(--text-dim);
-  font: var(--font-size-2xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
 }
 .project-row__name {
   overflow: hidden;
@@ -558,7 +567,8 @@ td small {
 .project-row__counts {
   flex: 0 0 auto;
   color: var(--text-muted);
-  font: var(--font-size-2xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -621,12 +631,15 @@ td small {
 .context-path span {
   overflow: hidden;
   color: var(--text-dim);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
   text-overflow: ellipsis;
 }
 .context-path strong {
   margin-top: 5px;
-  font: 600 20px var(--font-mono);
+  font-weight: 600;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xl);
 }
 .health-list {
   margin: 0;
@@ -649,7 +662,8 @@ td small {
 .health-list dd {
   margin: 0;
   color: var(--text-secondary);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .activity-list {
   margin: 0;
@@ -662,7 +676,8 @@ td small {
   gap: var(--space-3);
   padding: var(--panel-pad-y) var(--panel-pad-x);
   border-bottom: 1px solid var(--border);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .activity-list li:last-child {
   border-bottom: 0;
@@ -759,7 +774,8 @@ td small {
   color: inherit;
   cursor: pointer;
   text-align: left;
-  font: var(--font-size-2xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
 }
 .stream-row__time {
   color: var(--text-dim);
@@ -827,7 +843,7 @@ td small {
   height: 8px;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: var(--magnitude-track);
 }
 .context-stage__fill {
@@ -837,7 +853,8 @@ td small {
 }
 .context-stage__value {
   color: var(--text);
-  font: var(--font-size-xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
@@ -880,13 +897,15 @@ td small {
 }
 .repo-row__branch {
   color: var(--text-secondary);
-  font: var(--font-size-2xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
 }
 .repo-row__sha,
 .repo-row__counts,
 .repo-row__age {
   color: var(--text-dim);
-  font: var(--font-size-2xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
   font-variant-numeric: tabular-nums;
 }
 .panel__meta--link {

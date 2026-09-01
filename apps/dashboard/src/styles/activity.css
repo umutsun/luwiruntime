@@ -18,7 +18,7 @@
   margin: 0;
 }
 .activity-heading h2 {
-  font-size: 22px;
+  font-size: var(--font-size-2xl);
 }
 .activity-heading p:last-child {
   margin-top: 4px;
@@ -26,7 +26,8 @@
 }
 .activity-follow {
   color: var(--success);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .activity-filters {
   display: grid;
@@ -41,7 +42,8 @@
   display: grid;
   gap: var(--space-1h);
   color: var(--text-dim);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .activity-filters select,
 .activity-filters input {
@@ -52,7 +54,8 @@
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   background: var(--surface-2);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .activity-filters select:focus-visible,
 .activity-filters input:focus-visible,
@@ -88,7 +91,8 @@
   background: transparent;
   text-align: left;
   cursor: pointer;
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .activity-feed button:hover,
 .activity-feed button:focus-visible {
@@ -133,7 +137,7 @@
   border-left: 1px solid var(--border-strong);
   background: var(--bg-raised);
   color: var(--text);
-  animation: detail-drawer-in 160ms ease-out;
+  animation: detail-drawer-in var(--dur-2) var(--ease);
 }
 
 .detail-drawer__header {
@@ -170,7 +174,8 @@
   max-width: min(18rem, 40vw);
   overflow: hidden;
   color: var(--text-muted);
-  font: var(--font-size-xs) var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -270,14 +275,16 @@
 }
 .inspector-details dt {
   color: var(--text-dim);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .inspector-details dd {
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
   color: var(--text-secondary);
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .inspector-json {
   max-height: 360px;
@@ -289,12 +296,16 @@
   background: var(--surface-1);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 12px/1.55 var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.55;
 }
 .inspector-related > p,
 .inspector-navigation > p {
   color: var(--text-dim);
-  font: 12px/1.5 var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
 }
 .inspector-related ol {
   margin: 10px 0 0;
@@ -308,7 +319,8 @@
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
-  font: 11px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
 }
 .inspector-related li > * {
   overflow: hidden;
@@ -326,7 +338,8 @@
   background: var(--surface-2);
   cursor: pointer;
   text-align: left;
-  font: 12px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
 }
 .inspect-button {
   padding: var(--space-1) var(--space-2);
@@ -335,7 +348,8 @@
   color: var(--text-muted);
   background: var(--surface-2);
   cursor: pointer;
-  font: 11px var(--font-mono);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
 }
 @media (max-width: 1399px) {
   .activity-filters {

@@ -147,3 +147,24 @@ describe('spacing literals outside tokens.css', () => {
     expect(offenders, 'use a --space-* token instead of a raw pixel length').toEqual([]);
   });
 });
+
+/**
+ * Font sizes drifted the same way spacing did: 47 raw-pixel `font-size` values
+ * and `font` shorthands (`font: 12px var(--font-mono)`) stood against the
+ * `--font-size-*` scale, so the type never lined up with the scale it was meant
+ * to. The `font` shorthand is expanded into `font-family` + `font-size` longhands
+ * on tokenisation, because a `var()` inside the shorthand grammar is fragile;
+ * this guard only reads `font`/`font-size` declarations, leaving letter-spacing
+ * and line-height alone.
+ */
+describe('font-size literals outside tokens.css', () => {
+  it.each(STYLESHEETS)('%s references the type scale for every font size', (file) => {
+    const sheet = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8');
+    const offenders = [...sheet.matchAll(/font(?:-size)?\s*:[^;{}]*/gu)]
+      .map((match) => match[0])
+      .filter((declaration) => /\b\d+(\.\d+)?px/u.test(declaration))
+      .filter((declaration) => !declaration.includes('var(--font-size-'));
+
+    expect(offenders, `${file} hard-codes a font size`).toEqual([]);
+  });
+});

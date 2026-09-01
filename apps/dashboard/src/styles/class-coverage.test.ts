@@ -29,6 +29,21 @@ const VIEWS = [
    */
   '../pulse/pulse-view.tsx',
   '../routes/runtime-view.tsx',
+  /*
+   * Extended to every view and component that carries literal class names, so a
+   * className no rule matches fails the guard rather than the page. Views that
+   * compose classes from template literals still slip past the literal scan, but
+   * their base classes are covered here.
+   */
+  '../projects/projects-view.tsx',
+  '../routes/sessions-view.tsx',
+  '../routes/usage-view.tsx',
+  '../routes/context-view.tsx',
+  '../routes/optimization-view.tsx',
+  '../routes/graph-view.tsx',
+  '../inspectors/inspector-panel.tsx',
+  '../components/detail-drawer.tsx',
+  '../routes/ask-session-dialog.tsx',
 ] as const;
 
 const STYLESHEETS = [
@@ -71,7 +86,13 @@ describe('route view class coverage', () => {
   });
 
   it('reads real class names, so the scan itself cannot pass by finding nothing', () => {
-    for (const view of VIEWS) expect(usedClasses(view).length).toBeGreaterThan(3);
+    // Every view must contribute at least one literal class, and the whole set a
+    // substantial number, so neither the per-view scan nor the guard as a whole
+    // can pass by matching nothing. A view like usage-view carries only a couple
+    // of literal classes (the rest are composed), so the per-view floor is one.
+    for (const view of VIEWS) expect(usedClasses(view).length).toBeGreaterThan(0);
+    const total = VIEWS.reduce((sum, view) => sum + usedClasses(view).length, 0);
+    expect(total).toBeGreaterThan(40);
     expect(definedClasses().has('route-stack')).toBe(true);
   });
 });

@@ -160,6 +160,7 @@ export interface IntelligenceService {
   listGitCommits(projectId: string, limit?: number): Promise<GitCommit[]>;
   listGitWorktrees(projectId: string): Promise<GitWorktree[]>;
   listAttributions(projectId: string, limit?: number): Promise<AttributionRecord[]>;
+  projectSessionFileChanges(changes: SessionFileChangeInput[]): Promise<number>;
   scanPackages(projectId: string): Promise<{
     packages: PackageRecord[];
     technologies: TechnologyRecord[];
@@ -216,6 +217,35 @@ function scopedGraphEntityId(projectId: string, entityId: string): string {
     .digest('hex')
     .slice(0, 40)}`;
 }
+
+/**
+ * Provenance for a `SESSION_CHANGED_FILE` edge (B2). It marks the transcript
+ * observer so its edges stay distinguishable from the event-derived and
+ * code-structure ones — provenance is the only discriminator, since an edge's
+ * identity is its endpoints and kind.
+ */
+const TRANSCRIPT_OBSERVER_PROVENANCE = 'transcript-observer@1';
+
+/** Deterministic per-(project, session, file) id, so the aggregate is idempotent. */
+function sessionFileChangeId(projectId: string, sessionId: string, relativePath: string): string {
+  return `sfc-${createHash('sha256')
+    .update(`${projectId}\0${sessionId}\0${relativePath}`)
+    .digest('hex')
+    .slice(0, 32)}`;
+}
+
+/**
+ * One attributed file change, produced by the transcript ingest path: a session
+ * (already resolved through the native binding) touched a project-relative file
+ * at a moment. Carries the path and identifiers only.
+ */
+export type SessionFileChangeInput = {
+  projectId: string;
+  sessionId: string;
+  relativePath: string;
+  toolName: string;
+  observedAt: string;
+};
 
 function recordValue(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -964,6 +994,25 @@ export function createIntelligenceService(
           }),
         );
       }
+      for (const change of completeGraphInputs(
+        await options.repository.listSessionFileChanges(project.id, GRAPH_REBUILD_MAX_INPUTS + 1),
+        'session file change',
+      )) {
+        const file = createFileIdentity(project.id, change.relativePath);
+        addEdge(
+          createGraphEdge({
+            source: { kind: 'session', id: change.sessionId },
+            target: { kind: 'file', id: file.id },
+            kind: 'SESSION_CHANGED_FILE',
+            projectId: project.id,
+            observedAt: change.observedAt,
+            provenance: TRANSCRIPT_OBSERVER_PROVENANCE,
+            confidence: 'high',
+            evidenceIds: change.evidenceIds,
+            metadata: { changeCount: change.changeCount, toolName: change.toolName },
+          }),
+        );
+      }
       const usagePage = await options.repository.listUsage({
         projectId: project.id,
         limit: GRAPH_REBUILD_MAX_INPUTS + 1,
@@ -1263,6 +1312,66 @@ export function createIntelligenceService(
       }
       projectIncrementally('usage-ingest', record.id);
       return persisted.usage;
+    },
+    async projectSessionFileChanges(changes) {
+      const ms = (value: string): number => Date.parse(value);
+      // Aggregate this batch per (project, session, file): a session touching one
+      // file forty times is one relationship, not forty (E5). The aggregate carries
+      // the count and the newest observation's tool and time.
+      const grouped = new Map<
+        string,
+        { input: SessionFileChangeInput; observedAts: string[]; latest: string; toolName: string }
+      >();
+      for (const change of changes) {
+        const id = sessionFileChangeId(change.projectId, change.sessionId, change.relativePath);
+        const group = grouped.get(id);
+        if (group === undefined) {
+          grouped.set(id, {
+            input: change,
+            observedAts: [change.observedAt],
+            latest: change.observedAt,
+            toolName: change.toolName,
+          });
+        } else {
+          group.observedAts.push(change.observedAt);
+          if (ms(change.observedAt) > ms(group.latest)) {
+            group.latest = change.observedAt;
+            group.toolName = change.toolName;
+          }
+        }
+      }
+
+      let projected = 0;
+      let evidenceId: string | undefined;
+      for (const [id, group] of grouped) {
+        const stored = await options.repository.getSessionFileChange(id);
+        // Only a strictly-newer observation advances the count, so re-reading an
+        // unchanged transcript writes nothing and re-projects the same edge (E7).
+        const fresh = group.observedAts.filter(
+          (at) => stored === null || ms(at) > ms(stored.observedAt),
+        );
+        if (stored !== null && fresh.length === 0) continue;
+        const observedAts =
+          stored === null ? group.observedAts : [...group.observedAts, stored.observedAt];
+        await options.repository.putSessionFileChange({
+          id,
+          projectId: group.input.projectId,
+          sessionId: group.input.sessionId,
+          relativePath: group.input.relativePath,
+          toolName: group.toolName,
+          changeCount: (stored?.changeCount ?? 0) + fresh.length,
+          firstObservedAt:
+            stored?.firstObservedAt ?? observedAts.reduce((a, b) => (ms(a) < ms(b) ? a : b)),
+          observedAt: observedAts.reduce((a, b) => (ms(a) > ms(b) ? a : b)),
+          evidenceIds: [id],
+        });
+        projected += 1;
+        evidenceId = id;
+      }
+      if (evidenceId !== undefined) {
+        projectIncrementally('session-file-change', evidenceId);
+      }
+      return projected;
     },
     listUsage: (query) => options.repository.listUsage(query),
     async summarizeUsage(query) {

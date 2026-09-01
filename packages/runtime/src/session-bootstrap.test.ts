@@ -422,3 +422,121 @@ describe('session bootstrap', () => {
     expect(client.heartbeat).not.toHaveBeenCalled();
   });
 });
+
+describe('session bootstrap — automatic lease renewal', () => {
+  function leaseHarness(overrides: Record<string, unknown> = {}) {
+    const listSessionLeases = vi.fn(async () => [
+      {
+        id: 'lease-a',
+        acquiredAt: '2026-08-17T08:00:00.000Z',
+        expiresAt: '2026-08-17T08:05:00.000Z',
+      },
+      {
+        id: 'lease-b',
+        acquiredAt: '2026-08-17T08:00:00.000Z',
+        expiresAt: '2026-08-17T08:04:00.000Z',
+        renewedAt: '2026-08-17T08:01:00.000Z',
+      },
+    ]);
+    const renewLease = vi.fn(async () => undefined);
+    const h = harness({
+      leaseClient: { listSessionLeases, renewLease },
+      leaseRenewIntervalMs: 150_000,
+      ...overrides,
+    });
+    const renewalTimer = () => h.timers.find((timer) => timer.intervalMs === 150_000);
+    return { ...h, listSessionLeases, renewLease, renewalTimer };
+  }
+
+  it('renews every held lease under the current session, preserving each lease duration', async () => {
+    const { bootstrap, listSessionLeases, renewLease, renewalTimer } = leaseHarness();
+
+    await bootstrap.start();
+    const timer = renewalTimer();
+    expect(timer).toBeDefined();
+    // The renewal cadence must sit well inside the default lease TTL (300 s).
+    expect(timer?.intervalMs).toBeLessThan(300_000);
+
+    timer?.callback();
+    await flushAsyncWork();
+
+    expect(listSessionLeases).toHaveBeenCalledWith('session-1');
+    // lease-a: 08:05 − 08:00 = 5 min; lease-b: 08:04 − renewedAt 08:01 = 3 min.
+    expect(renewLease).toHaveBeenCalledWith('lease-a', 'session-1', 300_000);
+    expect(renewLease).toHaveBeenCalledWith('lease-b', 'session-1', 180_000);
+  });
+
+  it('arms no renewal timer when no lease client is provided', async () => {
+    const { bootstrap, timers } = harness();
+
+    await bootstrap.start();
+
+    expect(timers).toHaveLength(1);
+    expect(timers[0]?.intervalMs).toBe(5_000);
+  });
+
+  it('renews nothing when no session has been registered yet', async () => {
+    const { bootstrap, listSessionLeases, renewLease, renewalTimer } = leaseHarness({
+      client: {
+        register: vi.fn(async () => {
+          throw new ApplicationError('REDIS_UNAVAILABLE', 'daemon down', 503);
+        }),
+        heartbeat: vi.fn(async () => undefined),
+        close: vi.fn(async () => undefined),
+      },
+    });
+
+    await bootstrap.start();
+    renewalTimer()?.callback();
+    await flushAsyncWork();
+
+    expect(listSessionLeases).not.toHaveBeenCalled();
+    expect(renewLease).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a failed renewal once and still renews the other leases', async () => {
+    const { bootstrap, errors, renewLease, renewalTimer } = leaseHarness();
+    renewLease.mockImplementation(async (leaseId: string) => {
+      if (leaseId === 'lease-a') {
+        throw new ApplicationError('LEASE_NOT_FOUND', 'gone', 404);
+      }
+    });
+
+    await bootstrap.start();
+    renewalTimer()?.callback();
+    await flushAsyncWork();
+
+    expect(errors).toHaveLength(1);
+    expect(renewLease).toHaveBeenCalledWith('lease-b', 'session-1', 180_000);
+  });
+
+  it('surfaces a failed listing and renews nothing', async () => {
+    const { bootstrap, errors, listSessionLeases, renewLease, renewalTimer } = leaseHarness();
+    listSessionLeases.mockRejectedValue(new Error('daemon down'));
+
+    await bootstrap.start();
+    renewalTimer()?.callback();
+    await flushAsyncWork();
+
+    expect(errors).toHaveLength(1);
+    expect(renewLease).not.toHaveBeenCalled();
+  });
+
+  it('disarms the renewal loop on stop', async () => {
+    const cleared: NodeJS.Timeout[] = [];
+    const { bootstrap, renewLease, renewalTimer } = leaseHarness({
+      clearInterval: ((timer: NodeJS.Timeout) => cleared.push(timer)) as never,
+    });
+
+    await bootstrap.start();
+    const timer = renewalTimer();
+    await bootstrap.stop();
+
+    // The loop is inert after stop (generation guard) ...
+    timer?.callback();
+    await flushAsyncWork();
+    expect(renewLease).not.toHaveBeenCalled();
+    // ... and the timer itself was disarmed.
+    expect(cleared.length).toBeGreaterThanOrEqual(2);
+  });
+});

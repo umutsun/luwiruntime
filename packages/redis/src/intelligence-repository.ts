@@ -15,6 +15,7 @@ import {
   optimizationProposalSchema,
   packageRecordSchema,
   runtimeEventSchema,
+  sessionFileChangeObservationSchema,
   technologyRecordSchema,
   usageRecordSchema,
   usageSourceSchema,
@@ -36,6 +37,7 @@ import {
   type OptimizationProposal,
   type PackageRecord,
   type RuntimeEvent,
+  type SessionFileChangeObservation,
   type TechnologyRecord,
   type UsageListQuery,
   type UsageRecord,
@@ -147,6 +149,12 @@ export interface IntelligenceRepository {
   listTechnologies(projectId: string, limit?: number): Promise<TechnologyRecord[]>;
   putAttributions(attributions: AttributionRecord[], event: RuntimeEvent): Promise<void>;
   listAttributions(projectId: string, limit?: number): Promise<AttributionRecord[]>;
+  putSessionFileChange(observation: SessionFileChangeObservation): Promise<void>;
+  getSessionFileChange(observationId: string): Promise<SessionFileChangeObservation | null>;
+  listSessionFileChanges(
+    projectId: string,
+    limit?: number,
+  ): Promise<SessionFileChangeObservation[]>;
   putGraphNode(generation: string, node: GraphNode): Promise<void>;
   putGraphEdge(generation: string, edge: GraphEdge): Promise<void>;
   replaceGraphSnapshot(
@@ -881,6 +889,42 @@ export function createIntelligenceRepository(
         (sha) => keys.gitCommit(projectId, sha),
         gitCommitSchema,
         'Git commit',
+        limit,
+      ),
+    // A projection input, not a domain transition: written with plain commands
+    // and no runtime event, so a busy transcript scan does not flood the stream.
+    // The index is added before the hash on purpose: a crash between the two
+    // leaves an index entry whose hash is absent, which the list read skips and
+    // the next scan rewrites (getSessionFileChange returns null, so the
+    // strictly-newer guard sees a fresh record) — self-healing. The reverse order
+    // would strand a hash the guard never re-indexes.
+    async putSessionFileChange(observation) {
+      await client.sendCommand([
+        'SADD',
+        keys.projectSessionFileChanges(observation.projectId),
+        observation.id,
+      ]);
+      await client.sendCommand([
+        'HSET',
+        keys.sessionFileChange(observation.id),
+        'id',
+        observation.id,
+        'json',
+        JSON.stringify(observation),
+      ]);
+    },
+    getSessionFileChange: (observationId) =>
+      read(
+        keys.sessionFileChange(observationId),
+        sessionFileChangeObservationSchema,
+        'Session file change observation',
+      ),
+    listSessionFileChanges: (projectId, limit) =>
+      list(
+        keys.projectSessionFileChanges(projectId),
+        keys.sessionFileChange,
+        sessionFileChangeObservationSchema,
+        'Session file change observation',
         limit,
       ),
     async replacePackageInventory(projectId, packages, technologies, workspaceLocations, event) {

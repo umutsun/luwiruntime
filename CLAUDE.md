@@ -177,7 +177,13 @@ ADR 0020 then built the first thing that is not a read: **advisory work leases**
 project-relative path before editing it, and an overlapping claim is refused with the holder named.
 `luwi_v1` is at version 10 with four lease Functions; `deadline:leases` is swept for expiry; four
 MCP tools take the holder from the bound session and never from input; the Projects route shows what
-is held. ADR 0022 then added **native session identity**. A client may declare its vendor-native
+is held. **ADR 0026 (2026-09-01) then made renewal automatic and holder-side:** the session bootstrap
+renews every lease the current session holds on a second timer beside the heartbeat (at half the
+default lease TTL), listing the held-only session-lease index and re-reading the bound session id each
+tick so a rotation never renews a dead session's lease; a clean exit lets the leases lapse
+(crash-consistent) and a failed renewal is surfaced once. It reuses the renew endpoint and
+`lease_renew` unchanged — no `luwi_v1` bump — as a `--lease-renew-ms` client setting on `agent run`
+and `session attach`. ADR 0022 then added **native session identity**. A client may declare its vendor-native
 session reference at registration; the runtime records a stable binding plus an immutable,
 time-bounded link per LUWI session. Identity carries no presence, project or agent; a live holder is
 refused rather than evicted; a conflict writes nothing; missing evidence is
@@ -186,7 +192,7 @@ CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no 
 `luwi_v1` is at **v12** (B1 moved it; see below).
 
 ADR 0023 then approved the next item in the sequence — **native transcript ingestion** — and
-specified it as B0 / B1 / B2. **B0 and B1 are built; B2 is not started.**
+specified it as B0 / B1 / B2. **B0, B1 and B2 are all built.**
 
 The fact that ordered the phase: at approval there were **zero native bindings in either Redis
 database**, against nine sessions. A declaration rode only on `POST /api/v1/sessions` and nothing
@@ -215,7 +221,24 @@ a `runtime.test.ts` guard now asserts **every** timer is cleared on both teardow
 `USAGE_RECORD_DUPLICATE` is counted, not thrown, because re-reading a transcript is the steady state.
 `luwi_v1` went to **v12**: the usage record gained `cacheCreationInputTokens` and
 `cacheReadInputTokens`, and per the registry's own rule the version moves only on a record-shape
-change. B2 fills `SESSION_CHANGED_FILE`, which is in the edge enum with no producer.
+change.
+
+**B2 then built the `SESSION_CHANGED_FILE` producer.** The reader gained a second extraction over the
+same one file read (E6): it pairs `tool_use` with `tool_result` in a file and emits a file
+observation only for an allowlisted mutating tool (`Edit`/`Write`/`MultiEdit`/`NotebookEdit`) whose
+paired result is present and not an error, reading **only the path** out of the input. The daemon
+attributes each change through the same `attributeObservation`, scopes the absolute path to a
+registered project (longest `canonicalPath` prefix, drive-letter case-insensitive; the relative
+remainder reuses the lease domain's `normalizeLeasePath`), and persists a per-(session, file)
+aggregate whose `changeCount` advances only on a strictly newer `observedAt`. That aggregate is the
+persisted source `projectGraphSnapshot` reads to project edges onto the **same** `file` node the
+ADR 0012 structural layer already produces — no new node or edge kind. The B2 plan assumed no
+protocol/redis change, but the graph is a full-rebuild projection from persisted sources (git
+observations feed `COMMIT_TOUCHES_FILE` the same way), so B2 added a bounded observation store
+(`sessionFileChangeObservationSchema` plus a plain HSET+SADD `put`/`list` — **no Lua Function, no
+`luwi_v1` bump, no stream**, recorded in the plan and owner-approved 2026-09-01, with SADD before
+HSET so a crash self-heals). The store has no retention: a project past `GRAPH_REBUILD_MAX_INPUTS`
+distinct (session, file) records fails its rebuild loudly rather than dropping edges.
 
 Two measured traps for anyone touching this. `subagents/` directories exist at
 `<sessionId>/subagents/workflows/<workflowId>/agent-<id>.jsonl` and hold 11.3% of distinct requests,

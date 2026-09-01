@@ -73,13 +73,41 @@ describe('native identity resolution', () => {
     });
   });
 
-  it('resolves nothing for Codex and Gemini, whose identity is not in the environment', () => {
-    // Measured: Codex keeps sessions under ~/.codex/sessions/YYYY/MM/DD and
-    // Gemini under ~/.gemini/history/<project>. Guessing an id from either
-    // would produce a binding that never matches a transcript, which is worse
-    // than registering without one.
-    expect(resolveNativeIdentity('codex', { CODEX_SESSION_ID: 'anything' })).toBeUndefined();
+  it('resolves Codex from CODEX_SESSION_ID when a Codex exports one', () => {
+    // The registry is extensible: a vendor that carries its session id in the
+    // environment wires up the same way Claude does. Codex records a UUIDv7
+    // session id in its rollout file; a build that exports it as CODEX_SESSION_ID
+    // resolves here.
+    expect(
+      resolveNativeIdentity('codex', { CODEX_SESSION_ID: '019f839b-20be-7480-be44-f9c4446b59a1' }),
+    ).toEqual({
+      adapterId: 'codex',
+      nativeSessionId: '019f839b-20be-7480-be44-f9c4446b59a1',
+    });
+  });
+
+  it('resolves nothing for Codex when no session-id variable is present (the measured case)', () => {
+    // Measured 2026-09-01: Codex on this machine is launched by Codex Desktop and
+    // the VSCode extension, which export no session-id variable. CODEX_HOME is
+    // present but is not identity. Registering unattributed beats a filesystem
+    // guess that would name the wrong rollout file.
+    expect(resolveNativeIdentity('codex', {})).toBeUndefined();
+    expect(resolveNativeIdentity('codex', { CODEX_HOME: 'C:/Users/umuts/.codex' })).toBeUndefined();
+    expect(resolveNativeIdentity('codex', { CODEX_SESSION_ID: 'has spaces' })).toBeUndefined();
+  });
+
+  it('resolves nothing for Gemini, which has no per-session identity at all', () => {
+    // Measured: ~/.gemini/history/<project> is project-scoped and git-backed with
+    // no session id, so even a spurious variable is ignored rather than bound.
+    expect(resolveNativeIdentity('gemini-cli', {})).toBeUndefined();
     expect(resolveNativeIdentity('gemini-cli', { GEMINI_SESSION_ID: 'anything' })).toBeUndefined();
+  });
+
+  it('resolves nothing for an agent with no registered resolver', () => {
+    // kimi is not installed here and `other` is deliberately open; both register
+    // without a native block, the honest state for an unreadable identity.
+    expect(resolveNativeIdentity('kimi', {})).toBeUndefined();
+    expect(resolveNativeIdentity('other', { ANYTHING: 'x' })).toBeUndefined();
   });
 
   it('reads nothing from the ambient process environment', () => {
