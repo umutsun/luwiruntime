@@ -2,6 +2,9 @@ import { ApplicationError } from '@luwi/runtime';
 import { describe, expect, it, vi } from 'vitest';
 
 import { runCli, type CliDependencies, type CliWebSocket, type HttpResponseLike } from './cli.js';
+import { DeepSeekBridgeStartupCancelledError, type DeepSeekAcpFactory } from './deepseek-bridge.js';
+import type { LifecycleService } from './lifecycle.js';
+import type { ProjectDiscoveryService } from './project-discovery.js';
 
 const runtimeResponse = {
   version: '0.1.0',
@@ -61,6 +64,119 @@ class FakeWebSocket implements CliWebSocket {
 }
 
 describe('LUWI CLI', () => {
+  it('registers the CLI-first lifecycle command surface with stable arguments', async () => {
+    const status = {
+      daemon: { state: 'ready' as const, managed: true, ownership: 'owned' as const, pid: 42 },
+      redis: { state: 'connected' as const, compose: 'running' as const },
+      endpoints: {
+        daemon: 'http://127.0.0.1:4782',
+        redis: 'redis://127.0.0.1:6379',
+      },
+    };
+    const lifecycle: LifecycleService = {
+      doctor: vi.fn(async () => ({
+        ready: true,
+        checks: [{ id: 'node', status: 'ok', summary: 'Node.js 22' }],
+        endpoints: {
+          daemon: 'http://127.0.0.1:4782',
+          redis: 'redis://127.0.0.1:6379',
+        },
+        roots: {
+          luwiHome: 'C:/fixture/.luwi',
+          claude: 'C:/fixture/.claude',
+          codex: 'C:/fixture/.codex',
+          gemini: 'C:/fixture/.gemini',
+        },
+      })),
+      setup: vi.fn(async () => ({
+        changed: true,
+        target: 'C:/fixture/.luwi/runtime/config.json',
+        hooks: ['luwi agent run codex -- <native arguments>'],
+      })),
+      start: vi.fn(async () => status),
+      status: vi.fn(async () => status),
+      stop: vi.fn(async () => ({
+        ...status,
+        daemon: { state: 'stopped', managed: false, ownership: 'none' },
+      })),
+      resetRuntimeState: vi.fn(async () => ({
+        namespace: 'luwi:v1:' as const,
+        matched: 12,
+        deleted: 0,
+        status: 'confirmation_required' as const,
+      })),
+    };
+    let output = '';
+    const dependencies: Partial<CliDependencies> = {
+      lifecycle,
+      stdout: { write: (text) => (output += text) },
+    };
+
+    await runCli(['doctor', '--json'], dependencies);
+    expect(JSON.parse(output)).toMatchObject({ ready: true });
+    output = '';
+    await runCli(['setup', '--yes', '--print-hooks'], dependencies);
+    expect(lifecycle.setup).toHaveBeenCalledWith({ approved: true, printHooks: true });
+    output = '';
+    await runCli(['start'], dependencies);
+    expect(lifecycle.start).toHaveBeenCalledWith({});
+    output = '';
+    await runCli(['status', '--json'], dependencies);
+    expect(JSON.parse(output)).toMatchObject({ daemon: { state: 'ready' } });
+    output = '';
+    await runCli(['stop', '--with-redis'], dependencies);
+    expect(lifecycle.stop).toHaveBeenCalledWith({ withRedis: true });
+    output = '';
+    await runCli(['reset', '--runtime-state', '--json'], dependencies);
+    expect(lifecycle.resetRuntimeState).toHaveBeenCalledWith({
+      approved: false,
+      interactive: false,
+    });
+    expect(JSON.parse(output)).toMatchObject({
+      namespace: 'luwi:v1:',
+      status: 'confirmation_required',
+    });
+  });
+
+  it('renders concise human diagnostics without requiring JSON parsing', async () => {
+    let output = '';
+    await runCli(['doctor'], {
+      lifecycle: {
+        doctor: vi.fn(async () => ({
+          ready: false,
+          checks: [
+            { id: 'node', status: 'ok', summary: 'Node.js 22' },
+            {
+              id: 'daemon',
+              status: 'warning',
+              summary: 'The daemon is not running.',
+              hint: 'Run luwi start.',
+            },
+          ],
+          endpoints: {
+            daemon: 'http://127.0.0.1:4782',
+            redis: 'redis://127.0.0.1:6379',
+          },
+          roots: {
+            luwiHome: 'C:/fixture/.luwi',
+            claude: 'C:/fixture/.claude',
+            codex: 'C:/fixture/.codex',
+            gemini: 'C:/fixture/.gemini',
+          },
+        })),
+        setup: vi.fn(),
+        start: vi.fn(),
+        status: vi.fn(),
+        stop: vi.fn(),
+      } as unknown as LifecycleService,
+      stdout: { write: (text) => (output += text) },
+    });
+
+    expect(output).toContain('[ok] node: Node.js 22');
+    expect(output).toContain('[warning] daemon: The daemon is not running.');
+    expect(output).toContain('Run luwi start.');
+  });
+
   it('prints validated runtime status from the daemon', async () => {
     let requestedUrl = '';
     let output = '';
@@ -135,6 +251,34 @@ describe('LUWI CLI', () => {
       method: 'PATCH',
       body: JSON.stringify({ enabled: false }),
     });
+  });
+
+  it('prints passive capability scan diagnostics instead of a catalogue-shaped guess', async () => {
+    let output = '';
+    let requestedInit: unknown;
+    const scan = {
+      capabilities: [],
+      diagnostics: {
+        rootsScanned: 3,
+        rootsUnavailable: 4,
+        malformedManifests: 2,
+        ignoredEntries: 1,
+        conflictsSkipped: 0,
+        truncated: false,
+      },
+    };
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (_url, init) => {
+        requestedInit = init;
+        return response(scan);
+      },
+      stdout: { write: (text) => (output += text) },
+    };
+
+    await runCli(['capability', 'scan'], dependencies);
+
+    expect(requestedInit).toMatchObject({ method: 'POST', body: '{}' });
+    expect(JSON.parse(output)).toEqual(scan);
   });
 
   it('builds bounded capability list filters', async () => {
@@ -241,6 +385,213 @@ describe('LUWI CLI', () => {
       body: JSON.stringify({ name: 'LUWI', localPath: 'C:/workspace/luwi' }),
     });
     expect(JSON.parse(output)).toMatchObject({ id: 'project-1' });
+  });
+
+  it('discovers projects as a read-only dry run by default', async () => {
+    let output = '';
+    const requests: Array<{ url: string; method: string }> = [];
+    const projectDiscovery: ProjectDiscoveryService = {
+      createPlan: vi.fn(async () => ({
+        root: 'C:\\xampp\\htdocs',
+        selected: [
+          {
+            directoryName: 'luwiruntime',
+            displayName: 'LUWI Runtime',
+            localPath: 'C:\\xampp\\htdocs\\luwiruntime',
+            canonicalPath: 'C:\\xampp\\htdocs\\luwiruntime',
+            existingProjectId: 'project-1',
+          },
+        ],
+        excluded: [],
+        invalid: [],
+      })),
+    };
+
+    await runCli(['project', 'discover', 'C:\\xampp\\htdocs', '--json'], {
+      projectDiscovery,
+      fetch: async (url, init) => {
+        requests.push({ url, method: init?.method ?? 'GET' });
+        return response({
+          projects: [
+            {
+              id: 'project-1',
+              name: 'LUWI Runtime',
+              localPath: 'C:\\xampp\\htdocs\\luwiruntime',
+              canonicalPath: 'C:\\xampp\\htdocs\\luwiruntime',
+              createdAt: '2026-08-25T12:00:00.000Z',
+              updatedAt: '2026-08-25T12:00:00.000Z',
+            },
+          ],
+        });
+      },
+      stdout: { write: (text) => (output += text) },
+    });
+
+    expect(requests).toEqual([{ url: 'http://127.0.0.1:4782/api/v1/projects', method: 'GET' }]);
+    expect(JSON.parse(output)).toMatchObject({
+      mode: 'dry_run',
+      plan: { root: 'C:\\xampp\\htdocs' },
+    });
+  });
+
+  it('applies discovery idempotently and classifies a non-Git project', async () => {
+    let output = '';
+    const requests: Array<{ url: string; method: string; body?: string }> = [];
+    const projectDiscovery: ProjectDiscoveryService = {
+      createPlan: vi.fn(async () => ({
+        root: 'C:\\xampp\\htdocs',
+        selected: [
+          {
+            directoryName: 'luwiruntime',
+            displayName: 'LUWI Runtime',
+            localPath: 'C:\\xampp\\htdocs\\luwiruntime',
+            canonicalPath: 'C:\\xampp\\htdocs\\luwiruntime',
+            existingProjectId: 'project-1',
+          },
+          {
+            directoryName: 'glasshouse',
+            displayName: 'Glasshouse',
+            localPath: 'C:\\xampp\\htdocs\\glasshouse',
+            canonicalPath: 'C:\\xampp\\htdocs\\glasshouse',
+          },
+        ],
+        excluded: [],
+        invalid: [],
+      })),
+    };
+
+    await runCli(['project', 'discover', 'C:\\xampp\\htdocs', '--apply', '--json'], {
+      projectDiscovery,
+      fetch: async (url, init) => {
+        requests.push({
+          url,
+          method: init?.method ?? 'GET',
+          ...(init?.body === undefined ? {} : { body: init.body }),
+        });
+        if (url.endsWith('/api/v1/projects')) {
+          if (init?.method === 'POST') {
+            return response({
+              id: 'project-2',
+              name: 'Glasshouse',
+              localPath: 'C:\\xampp\\htdocs\\glasshouse',
+              canonicalPath: 'C:\\xampp\\htdocs\\glasshouse',
+              createdAt: '2026-08-25T12:00:00.000Z',
+              updatedAt: '2026-08-25T12:00:00.000Z',
+            });
+          }
+          return response({
+            projects: [
+              {
+                id: 'project-1',
+                name: 'LUWI Runtime',
+                localPath: 'C:\\xampp\\htdocs\\luwiruntime',
+                canonicalPath: 'C:\\xampp\\htdocs\\luwiruntime',
+                createdAt: '2026-08-25T12:00:00.000Z',
+                updatedAt: '2026-08-25T12:00:00.000Z',
+              },
+            ],
+          });
+        }
+        if (url.includes('/project-1/git/scan')) {
+          expect(init).toMatchObject({
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          });
+          return response({
+            id: 'git-1',
+            projectId: 'project-1',
+            repositoryRoot: 'C:\\xampp\\htdocs\\luwiruntime',
+            clean: true,
+            stagedCount: 0,
+            unstagedCount: 0,
+            untrackedCount: 0,
+            branches: [],
+            tags: [],
+            worktrees: [],
+            recentCommits: [],
+            observedAt: '2026-08-25T12:00:00.000Z',
+            repositoryStateHash: 'a'.repeat(64),
+          });
+        }
+        expect(init).toMatchObject({
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+        return response(
+          { error: { code: 'GIT_REPOSITORY_NOT_FOUND', message: 'Not a Git repository.' } },
+          { ok: false, status: 404 },
+        );
+      },
+      stdout: { write: (text) => (output += text) },
+    });
+
+    expect(requests.filter(({ url }) => url.endsWith('/api/v1/projects'))).toEqual([
+      { url: 'http://127.0.0.1:4782/api/v1/projects', method: 'GET' },
+      {
+        url: 'http://127.0.0.1:4782/api/v1/projects',
+        method: 'POST',
+        body: JSON.stringify({ name: 'Glasshouse', localPath: 'C:\\xampp\\htdocs\\glasshouse' }),
+      },
+    ]);
+    expect(JSON.parse(output)).toMatchObject({
+      mode: 'applied',
+      registered: [{ directoryName: 'glasshouse', projectId: 'project-2' }],
+      unchanged: [{ directoryName: 'luwiruntime', projectId: 'project-1' }],
+      conflict: [],
+      failed: [],
+      git: [
+        { directoryName: 'luwiruntime', projectId: 'project-1', status: 'observed' },
+        { directoryName: 'glasshouse', projectId: 'project-2', status: 'not_git' },
+      ],
+    });
+  });
+
+  it('captures discovery registration conflicts and failures without attempting Git scans', async () => {
+    let output = '';
+    const requestedUrls: string[] = [];
+    const projectDiscovery: ProjectDiscoveryService = {
+      createPlan: vi.fn(async () => ({
+        root: 'C:\\xampp\\htdocs',
+        selected: ['conflict', 'failed'].map((directoryName) => ({
+          directoryName,
+          displayName: directoryName,
+          localPath: `C:\\xampp\\htdocs\\${directoryName}`,
+          canonicalPath: `C:\\xampp\\htdocs\\${directoryName}`,
+        })),
+        excluded: [],
+        invalid: [],
+      })),
+    };
+
+    await runCli(['project', 'discover', 'C:\\xampp\\htdocs', '--apply', '--json'], {
+      projectDiscovery,
+      fetch: async (url, init) => {
+        requestedUrls.push(url);
+        if (init?.method !== 'POST') return response({ projects: [] });
+        const body = JSON.parse(init.body ?? '{}') as { name?: string };
+        return body.name === 'conflict'
+          ? response(
+              { error: { code: 'PROJECT_PATH_CONFLICT', message: 'Path already registered.' } },
+              { ok: false, status: 409 },
+            )
+          : response(
+              { error: { code: 'PROJECT_REGISTRATION_FAILED', message: 'Registration failed.' } },
+              { ok: false, status: 500 },
+            );
+      },
+      stdout: { write: (text) => (output += text) },
+    });
+
+    expect(requestedUrls.some((url) => url.includes('/git/scan'))).toBe(false);
+    expect(JSON.parse(output)).toMatchObject({
+      registered: [],
+      unchanged: [],
+      conflict: [{ directoryName: 'conflict', code: 'PROJECT_PATH_CONFLICT' }],
+      failed: [{ directoryName: 'failed', code: 'PROJECT_REGISTRATION_FAILED' }],
+      git: [],
+    });
   });
 
   it('filters validated session views to online in the CLI', async () => {
@@ -697,6 +1048,205 @@ describe('LUWI CLI', () => {
     expect(output).toContain('"redacted": true');
   });
 
+  it('runs an opt-in DeepSeek ACP bridge without adding DeepSeek behavior to the daemon', async () => {
+    const listeners = new Map<string, () => void>();
+    const requests: Array<{ url: string; body: unknown }> = [];
+    let output = '';
+    let factoryOptions: unknown;
+    let startInput: unknown;
+    const acpFactory: DeepSeekAcpFactory = {
+      start: vi.fn(async (input) => {
+        startInput = input;
+        return {
+          sessionId: 'deepseek-native-1',
+          closed: new Promise<void>(() => undefined),
+          prompt: vi.fn(async () => ({ text: 'Done.', stopReason: 'end_turn' })),
+          cancel: vi.fn(async () => undefined),
+          close: vi.fn(async () => undefined),
+        };
+      }),
+    };
+    const session = {
+      id: 'luwi-deepseek-1',
+      agentId: 'deepseek-agent',
+      projectId: 'project-1',
+      status: 'idle',
+      workingDirectory: 'C:/workspace',
+      startedAt: '2026-08-24T00:00:00.000Z',
+      lastHeartbeatAt: '2026-08-24T00:00:00.000Z',
+      metadata: { bridge: 'deepseek-harness-acp', experimental: true },
+      presence: 'online',
+    };
+    const createFactory = vi.fn((options: unknown) => {
+      factoryOptions = options;
+      return acpFactory;
+    });
+
+    await runCli(
+      [
+        'session',
+        'bridge',
+        'deepseek',
+        '--project',
+        'project-1',
+        '--agent',
+        'deepseek-agent',
+        '--working-directory',
+        'C:/workspace',
+        '--bridge-instance',
+        'deepseek-bridge-1',
+        '--command',
+        'node',
+        '--args-json',
+        '["acp-agent.mjs"]',
+        '--block-ms',
+        '0',
+      ],
+      {
+        createDeepSeekAcpFactory: createFactory,
+        fetch: async (url, init) => {
+          const body = init?.body === undefined ? undefined : JSON.parse(init.body);
+          requests.push({ url, body });
+          if (url.endsWith('/inbox/claim')) {
+            listeners.get('SIGINT')?.();
+            return response({ items: [] });
+          }
+          if (url.endsWith('/native')) {
+            return response({
+              outcome: 'created',
+              binding: {
+                id: 'binding-1',
+                adapterId: 'deepseek-harness-acp-v1',
+                nativeSessionId: 'deepseek-native-1',
+                kind: 'main',
+                openLinkId: 'link-1',
+                version: 1,
+                linkCount: 1,
+                trimmedLinkCount: 0,
+                firstLinkedAt: '2026-08-24T00:00:00.000Z',
+                lastLinkedAt: '2026-08-24T00:00:00.000Z',
+              },
+              link: {
+                id: 'link-1',
+                bindingId: 'binding-1',
+                sessionId: 'luwi-deepseek-1',
+                linkedAt: '2026-08-24T00:00:00.000Z',
+              },
+            });
+          }
+          if (url.endsWith('/heartbeat')) {
+            return response({ status: 'renewed', eventEmitted: false });
+          }
+          if (url.endsWith('/status')) {
+            return response({ ...session, status: (body as { status: string }).status });
+          }
+          if (url.endsWith('/close')) {
+            return response({ ...session, status: 'completed', presence: 'offline' });
+          }
+          return response(session, { status: 201 });
+        },
+        signals: {
+          once: (signal, listener) => listeners.set(signal, listener),
+          off: (signal) => listeners.delete(signal),
+        },
+        stdout: { write: (text) => (output += text) },
+      },
+    );
+
+    expect(factoryOptions).toMatchObject({
+      command: 'node',
+      args: ['acp-agent.mjs'],
+      permission: 'reject',
+    });
+    expect(startInput).toEqual({
+      workingDirectory: 'C:/workspace',
+      signal: expect.any(AbortSignal),
+      environment: {
+        LUWI_DAEMON_URL: 'http://127.0.0.1:4782',
+        LUWI_SESSION_ID: 'luwi-deepseek-1',
+      },
+    });
+    expect(requests.find(({ url }) => url.endsWith('/native'))?.body).toEqual({
+      native: {
+        adapterId: 'deepseek-harness-acp-v1',
+        nativeSessionId: 'deepseek-native-1',
+      },
+    });
+    expect(requests.filter(({ url }) => url.endsWith('/close'))).toHaveLength(1);
+    expect(output).toContain('luwi-deepseek-1');
+    expect(output).not.toContain('Done.');
+  });
+
+  it('handles a termination signal during DeepSeek ACP startup and rolls back the LUWI session', async () => {
+    const listeners = new Map<string, () => void>();
+    const requested: string[] = [];
+    const session = {
+      id: 'luwi-deepseek-starting',
+      agentId: 'deepseek-agent',
+      projectId: 'project-1',
+      status: 'starting',
+      workingDirectory: 'C:/workspace',
+      startedAt: '2026-08-24T00:00:00.000Z',
+      lastHeartbeatAt: '2026-08-24T00:00:00.000Z',
+      metadata: { bridge: 'deepseek-harness-acp', experimental: true },
+      presence: 'online',
+    };
+    const acpFactory: DeepSeekAcpFactory = {
+      start: vi.fn(
+        async (input) =>
+          await new Promise((_resolve, reject) => {
+            expect(listeners.has('SIGINT')).toBe(true);
+            input.signal.addEventListener(
+              'abort',
+              () => reject(new DeepSeekBridgeStartupCancelledError()),
+              { once: true },
+            );
+            listeners.get('SIGINT')?.();
+          }),
+      ),
+    };
+
+    await expect(
+      runCli(
+        [
+          'session',
+          'bridge',
+          'deepseek',
+          '--project',
+          'project-1',
+          '--agent',
+          'deepseek-agent',
+          '--working-directory',
+          'C:/workspace',
+          '--bridge-instance',
+          'deepseek-bridge-startup',
+          '--command',
+          'node',
+        ],
+        {
+          createDeepSeekAcpFactory: () => acpFactory,
+          fetch: async (url) => {
+            requested.push(url);
+            return response(
+              url.endsWith('/close')
+                ? { ...session, status: 'completed', presence: 'offline' }
+                : session,
+              { status: url.endsWith('/sessions') ? 201 : 200 },
+            );
+          },
+          signals: {
+            once: (signal, listener) => listeners.set(signal, listener),
+            off: (signal) => listeners.delete(signal),
+          },
+          stdout: { write: () => undefined },
+        },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(requested.filter((url) => url.endsWith('/close'))).toHaveLength(1);
+    expect(listeners.size).toBe(0);
+  });
+
   it('continues recovered processing work without repeating earlier transitions', async () => {
     const listeners = new Map<string, () => void>();
     const requested: Array<{ url: string; body: unknown }> = [];
@@ -926,6 +1476,248 @@ describe('session attach', () => {
     expect(JSON.parse(output)).toMatchObject({
       native: { adapterId: 'claude-code', nativeSessionId: 'abc-123' },
     });
+  });
+});
+
+describe('agent run', () => {
+  const timestamp = '2026-08-24T12:00:00.000Z';
+  const project = {
+    id: 'project-app',
+    name: 'App',
+    localPath: 'C:/work/app',
+    canonicalPath: 'C:/work/app',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const agent = {
+    id: 'codex-main',
+    kind: 'codex',
+    displayName: 'Codex',
+    executable: 'C:/tools/codex.exe',
+    enabled: true,
+    adapterId: 'codex',
+    nativeConfigRoots: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    metadata: {},
+  };
+  const binding = {
+    id: 'binding-codex',
+    projectId: project.id,
+    agentId: agent.id,
+    enabled: true,
+    profileIds: [],
+    capabilityBindingIds: [],
+    overrides: {},
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const session = {
+    id: 'session-codex',
+    projectId: project.id,
+    agentId: agent.id,
+    status: 'starting',
+    workingDirectory: 'C:/work/app',
+    startedAt: timestamp,
+    lastHeartbeatAt: timestamp,
+    metadata: {},
+    presence: 'online',
+  };
+
+  it('passes native arguments and the initial LUWI session through inherited environment', async () => {
+    const processRunner = { run: vi.fn(async () => ({ exitCode: 0 })) };
+    const setExitCode = vi.fn();
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools', EXISTING: 'preserved' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: processRunner,
+      setExitCode,
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      fetch: async (url, init) => {
+        requests.push({
+          url,
+          method: init?.method,
+          body: init?.body === undefined ? undefined : JSON.parse(init.body),
+        });
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [agent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [binding] });
+        }
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(session, { status: 201 });
+        }
+        if (url.endsWith(`/api/v1/sessions/${session.id}/close`)) {
+          return response({ ...session, status: 'completed', presence: 'offline' });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(
+      ['agent', 'run', 'codex', '--working-directory', 'C:/work/app', '--', '--model', 'gpt-5'],
+      dependencies,
+    );
+
+    expect(processRunner.run).toHaveBeenCalledWith({
+      executable: 'C:/tools/codex.exe',
+      args: ['--model', 'gpt-5'],
+      workingDirectory: 'C:/work/app',
+      environment: {
+        PATH: 'C:/tools',
+        EXISTING: 'preserved',
+        LUWI_DAEMON_URL: 'http://127.0.0.1:4782',
+        LUWI_SESSION_ID: 'session-codex',
+      },
+      signals: dependencies.signals ?? expect.anything(),
+      onDiagnostic: expect.any(Function),
+    });
+    expect(requests).toContainEqual({
+      url: 'http://127.0.0.1:4782/api/v1/sessions',
+      method: 'POST',
+      body: {
+        projectId: 'project-app',
+        agentId: 'codex-main',
+        workingDirectory: 'C:/work/app',
+      },
+    });
+    expect(setExitCode).toHaveBeenCalledWith(0);
+  });
+
+  it('launches the native agent in degraded mode when session registration is unavailable', async () => {
+    const processRunner = { run: vi.fn(async () => ({ exitCode: 3 })) };
+    const setExitCode = vi.fn();
+    let diagnostics = '';
+    const dependencies: Partial<CliDependencies> = {
+      environment: {
+        PATH: 'C:/tools',
+        LUWI_DAEMON_URL: 'http://127.0.0.1:9999',
+        LUWI_SESSION_ID: 'stale-parent-session',
+      },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: processRunner,
+      setExitCode,
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn((callback) => {
+        queueMicrotask(callback);
+        return 2 as unknown as NodeJS.Timeout;
+      }),
+      clearTimeout: vi.fn(),
+      stderr: { write: (text) => (diagnostics += text) },
+      fetch: () => new Promise(() => undefined),
+    };
+
+    await runCli(
+      [
+        'agent',
+        'run',
+        'claude',
+        '--project',
+        'project-app',
+        '--agent-id',
+        'claude-main',
+        '--',
+        '--resume',
+      ],
+      dependencies,
+    );
+
+    expect(processRunner.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executable: 'claude',
+        args: ['--resume'],
+        environment: {
+          PATH: 'C:/tools',
+          LUWI_DAEMON_URL: 'http://127.0.0.1:4782',
+        },
+      }),
+    );
+    expect(diagnostics).toContain('LUWI_OBSERVATION_DEGRADED');
+    expect(diagnostics).toContain('DAEMON_REQUEST_TIMEOUT');
+    expect(setExitCode).toHaveBeenCalledWith(3);
+  });
+
+  it('reports recovered observation without claiming the running child environment changed', async () => {
+    const intervalCallbacks: Array<() => void> = [];
+    let finishProcess: ((result: { exitCode: number }) => void) | undefined;
+    const processRunner = {
+      run: vi.fn(
+        () =>
+          new Promise<{ exitCode: number }>((resolve) => {
+            finishProcess = resolve;
+          }),
+      ),
+    };
+    let diagnostics = '';
+    let registrations = 0;
+    let heartbeatAttempted = false;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: processRunner,
+      setExitCode: vi.fn(),
+      setInterval: vi.fn((callback) => {
+        intervalCallbacks.push(callback);
+        return intervalCallbacks.length as unknown as NodeJS.Timeout;
+      }),
+      clearInterval: vi.fn(),
+      stderr: { write: (text) => (diagnostics += text) },
+      fetch: async (url, init) => {
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          registrations += 1;
+          return response({
+            ...session,
+            id: `session-${registrations}`,
+            agentId: 'codex-main',
+          });
+        }
+        if (url.endsWith('/api/v1/sessions/session-1/heartbeat')) {
+          heartbeatAttempted = true;
+          return response(
+            { error: { code: 'SESSION_TERMINAL', message: 'The session is terminal.' } },
+            { ok: false, status: 409 },
+          );
+        }
+        if (url.endsWith('/api/v1/sessions/session-2/close')) {
+          return response({
+            ...session,
+            id: 'session-2',
+            agentId: 'codex-main',
+            status: 'completed',
+            presence: 'offline',
+          });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    const running = runCli(
+      ['agent', 'run', 'codex', '--project', 'project-app', '--agent-id', 'codex-main'],
+      dependencies,
+    );
+    await vi.waitFor(() => expect(processRunner.run).toHaveBeenCalledTimes(1));
+
+    intervalCallbacks[0]?.();
+    await vi.waitFor(() => expect(heartbeatAttempted).toBe(true));
+    await vi.waitFor(() => expect(diagnostics).toContain('SESSION_TERMINAL'));
+    intervalCallbacks[0]?.();
+    await vi.waitFor(() => expect(registrations).toBe(2));
+
+    expect(processRunner.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: expect.objectContaining({ LUWI_SESSION_ID: 'session-1' }),
+      }),
+    );
+    await vi.waitFor(() => expect(diagnostics).toContain('LUWI_SESSION_RECOVERED'));
+
+    finishProcess?.({ exitCode: 0 });
+    await running;
   });
 });
 

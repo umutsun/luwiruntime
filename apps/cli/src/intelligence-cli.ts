@@ -84,12 +84,8 @@ async function request<Output>(
 function mutation(body?: unknown): FetchInitLike {
   return {
     method: 'POST',
-    ...(body === undefined
-      ? {}
-      : {
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        }),
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
   };
 }
 

@@ -7,6 +7,7 @@ import {
   capabilityPackageSchema,
   capabilityProfileCollectionSchema,
   capabilityProfileSchema,
+  capabilityScanResponseSchema,
   configDriftCollectionSchema,
   configOperationReceiptSchema,
   configPlanApprovalResponseSchema,
@@ -114,7 +115,7 @@ export function registerControlPlaneCli(
   program: Command,
   projects: Command,
   dependencies: ControlPlaneCliDependencies,
-): void {
+): Command {
   const agents = program.command('agent').description('Manage coding-agent definitions');
   addUrl(agents.command('detect').option('--project <projectId>', 'Project context')).action(
     async (options: { project?: string; url: string }) =>
@@ -272,7 +273,7 @@ export function registerControlPlaneCli(
         dependencies,
         options.url,
         '/api/v1/capabilities/scan',
-        capabilityCollectionSchema,
+        capabilityScanResponseSchema,
         mutation('POST', {}),
       ),
     ),
@@ -630,4 +631,5 @@ export function registerControlPlaneCli(
         ),
       ),
   );
+  return agents;
 }

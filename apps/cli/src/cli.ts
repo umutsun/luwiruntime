@@ -1,8 +1,10 @@
 import {
+  agentDefinitionCollectionSchema,
   agentKindSchema,
   agentMessageResponseSchema,
   evidenceTypeSchema,
   eventListResponseSchema,
+  gitObservationSchema,
   heartbeatResponseSchema,
   inboxClaimResponseSchema,
   leaseAcquireResponseSchema,
@@ -13,8 +15,10 @@ import {
   messageKindSchema,
   messageResponseSchema,
   messageStateSchema,
+  nativeDeclarationResponseSchema,
   nativeSessionRefSchema,
   projectCollectionResponseSchema,
+  projectAgentBindingCollectionSchema,
   projectResponseSchema,
   publicErrorResponseSchema,
   realtimeEventMessageSchema,
@@ -31,15 +35,43 @@ import {
 import { resolveNativeIdentity } from '@luwi/adapters';
 import { ApplicationError, createSessionBootstrap } from '@luwi/runtime';
 import { Command } from 'commander';
+import { realpath } from 'node:fs/promises';
+import { isAbsolute } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
 import { registerControlPlaneCli } from './control-plane-cli.js';
+import {
+  NodeNativeAgentProcessRunner,
+  agentProvider,
+  resolveAgentRunContext,
+  type NativeAgentProcessRunner,
+} from './agent-runner.js';
+import { createDeepSeekAcpFactory, type DeepSeekAcpFactoryOptions } from './deepseek-acp-client.js';
+import {
+  DeepSeekBridgeStartupCancelledError,
+  createDeepSeekBridge,
+  type DeepSeekBridgeDaemonClient,
+} from './deepseek-bridge.js';
 import { registerIntelligenceCli } from './intelligence-cli.js';
+import {
+  createNodeLifecycleService,
+  type DoctorReport,
+  type LifecycleService,
+  type LifecycleStatus,
+  type RuntimeResetResult,
+} from './lifecycle.js';
+import {
+  createProjectDiscoveryService,
+  type ProjectCandidate,
+  type ProjectDiscoveryPlan,
+  type ProjectDiscoveryService,
+} from './project-discovery.js';
 
 export type FetchInitLike = {
   method?: string;
   headers?: Record<string, string>;
   body?: string;
+  signal?: AbortSignal;
 };
 
 export type HttpResponseLike = {
@@ -74,14 +106,35 @@ export type CliDependencies = {
   };
   setInterval: (callback: () => void, intervalMs: number) => NodeJS.Timeout;
   clearInterval: (timer: NodeJS.Timeout) => void;
+  setTimeout: (callback: () => void, milliseconds: number) => NodeJS.Timeout;
+  clearTimeout: (timer: NodeJS.Timeout) => void;
   wait: (milliseconds: number) => Promise<void>;
   confirm: (prompt: string) => Promise<boolean>;
+  createDeepSeekAcpFactory: (
+    options: DeepSeekAcpFactoryOptions,
+  ) => ReturnType<typeof createDeepSeekAcpFactory>;
   /**
    * The process environment, injected so `session attach` can resolve a native
    * identity without a test passing merely because it runs inside an agent
    * session.
    */
   environment: Readonly<Record<string, string | undefined>>;
+  platform: NodeJS.Platform;
+  cwd: () => string;
+  canonicalizePath: (path: string) => Promise<string>;
+  agentProcessRunner: NativeAgentProcessRunner;
+  setExitCode: (code: number) => void;
+  lifecycle: LifecycleService;
+  projectDiscovery: ProjectDiscoveryService;
+};
+
+const defaultConfirm = async (prompt: string): Promise<boolean> => {
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return (await terminal.question(`${prompt} [y/N] `)).trim().toLowerCase() === 'y';
+  } finally {
+    terminal.close();
+  }
 };
 
 const defaultDependencies: CliDependencies = {
@@ -89,19 +142,24 @@ const defaultDependencies: CliDependencies = {
   createWebSocket: (url) => new WebSocket(url) as unknown as CliWebSocket,
   signals: process,
   environment: process.env,
+  platform: process.platform,
+  cwd: process.cwd,
+  canonicalizePath: realpath,
+  agentProcessRunner: new NodeNativeAgentProcessRunner(),
+  setExitCode: (code) => {
+    process.exitCode = code;
+  },
   stdout: process.stdout,
   stderr: process.stderr,
   setInterval,
   clearInterval,
+  setTimeout,
+  clearTimeout,
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
-  confirm: async (prompt) => {
-    const terminal = createInterface({ input: process.stdin, output: process.stdout });
-    try {
-      return (await terminal.question(`${prompt} [y/N] `)).trim().toLowerCase() === 'y';
-    } finally {
-      terminal.close();
-    }
-  },
+  confirm: defaultConfirm,
+  lifecycle: createNodeLifecycleService({ confirm: defaultConfirm }),
+  projectDiscovery: createProjectDiscoveryService(),
+  createDeepSeekAcpFactory,
 };
 
 type Parser<Output> = { parse(value: unknown): Output };
@@ -142,6 +200,141 @@ async function request<Output>(
   return parser.parse(body);
 }
 
+async function boundedRequest<Output>(
+  dependencies: CliDependencies,
+  base: string,
+  path: string,
+  parser: Parser<Output>,
+  timeoutMs: number,
+  init?: FetchInitLike,
+): Promise<Output> {
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = dependencies.setTimeout(() => {
+      controller.abort();
+      reject(
+        new ApplicationError(
+          'DAEMON_REQUEST_TIMEOUT',
+          'The LUWI daemon request exceeded its bounded timeout.',
+          503,
+        ),
+      );
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([
+      request(dependencies, base, path, parser, { ...init, signal: controller.signal }),
+      timedOut,
+    ]);
+  } finally {
+    if (timeout !== undefined) dependencies.clearTimeout(timeout);
+  }
+}
+
+function loopbackDaemonUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ApplicationError('CLI_OPTION_INVALID', '--url must be a valid loopback URL.', 400);
+  }
+  const loopback =
+    parsed.hostname === '127.0.0.1' ||
+    parsed.hostname === 'localhost' ||
+    parsed.hostname === '[::1]';
+  if (
+    parsed.protocol !== 'http:' ||
+    !loopback ||
+    parsed.username !== '' ||
+    parsed.password !== ''
+  ) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      '--url must be an HTTP loopback URL without credentials.',
+      400,
+    );
+  }
+  return baseUrl(value);
+}
+
+function positiveIntegerOption(
+  value: string,
+  option: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      `${option} must be an integer from ${minimum} through ${maximum}.`,
+      400,
+    );
+  }
+  return parsed;
+}
+
+function safeErrorCode(error: unknown): string {
+  return error instanceof ApplicationError ? error.code : 'DAEMON_UNAVAILABLE';
+}
+
+function printDoctor(dependencies: CliDependencies, report: DoctorReport, json: boolean): void {
+  if (json) {
+    printJson(dependencies, report);
+    return;
+  }
+  for (const check of report.checks) {
+    dependencies.stdout.write(`[${check.status}] ${check.id}: ${check.summary}\n`);
+    if (check.hint !== undefined) dependencies.stdout.write(`  ${check.hint}\n`);
+  }
+  dependencies.stdout.write(`ready: ${report.ready ? 'yes' : 'no'}\n`);
+}
+
+function printLifecycleStatus(
+  dependencies: CliDependencies,
+  status: LifecycleStatus,
+  json: boolean,
+): void {
+  if (json) {
+    printJson(dependencies, status);
+    return;
+  }
+  dependencies.stdout.write(
+    `daemon: ${status.daemon.state} (${status.daemon.managed ? 'managed' : status.daemon.ownership})\n`,
+  );
+  dependencies.stdout.write(`redis: ${status.redis.state} (compose: ${status.redis.compose})\n`);
+  dependencies.stdout.write(`endpoint: ${status.endpoints.daemon}\n`);
+}
+
+function printRuntimeResetResult(
+  dependencies: CliDependencies,
+  result: RuntimeResetResult,
+  json: boolean,
+): void {
+  if (json) {
+    printJson(dependencies, result);
+    return;
+  }
+  dependencies.stdout.write(`namespace: ${result.namespace}\n`);
+  dependencies.stdout.write(`matched: ${result.matched}\n`);
+  dependencies.stdout.write(`deleted: ${result.deleted}\n`);
+  dependencies.stdout.write(`status: ${result.status}\n`);
+}
+
+function printAgentDiagnostic(
+  dependencies: CliDependencies,
+  code: 'LUWI_OBSERVATION_DEGRADED' | 'LUWI_SESSION_RECOVERED' | 'AGENT_PROCESS_DIAGNOSTIC',
+  error?: unknown,
+): void {
+  dependencies.stderr.write(
+    `${JSON.stringify({
+      code,
+      ...(error === undefined ? {} : { cause: safeErrorCode(error) }),
+    })}\n`,
+  );
+}
+
 function jsonBody(value: unknown): FetchInitLike {
   return {
     method: 'POST',
@@ -157,6 +350,136 @@ function jsonBodyWithHeaders(value: unknown, headers: Record<string, string>): F
 
 function printJson(dependencies: CliDependencies, value: unknown): void {
   dependencies.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function appendOption(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function parseProjectNameMappings(
+  values: readonly string[],
+  platform: NodeJS.Platform,
+): Record<string, string> {
+  const result: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const value of values) {
+    const separator = value.indexOf('=');
+    const directory = separator < 0 ? '' : value.slice(0, separator);
+    const displayName = separator < 0 ? '' : value.slice(separator + 1).trim();
+    const key = platform === 'win32' ? directory.toLowerCase() : directory;
+    if (directory === '' || displayName === '' || seen.has(key)) {
+      throw new ApplicationError(
+        'CLI_OPTION_INVALID',
+        '--name must use a unique exact directory=Display Name mapping.',
+        400,
+      );
+    }
+    seen.add(key);
+    result[directory] = displayName;
+  }
+  return result;
+}
+
+type ProjectDiscoveryItemResult = {
+  directoryName: string;
+  projectId: string;
+};
+
+type ProjectDiscoveryFailure = {
+  directoryName: string;
+  code: string;
+  message: string;
+};
+
+type ProjectDiscoveryGitResult = ProjectDiscoveryItemResult & {
+  status: 'observed' | 'not_git' | 'failed';
+};
+
+function safeProjectDiscoveryFailure(
+  candidate: ProjectCandidate,
+  error: unknown,
+): ProjectDiscoveryFailure {
+  if (error instanceof ApplicationError) {
+    return { directoryName: candidate.directoryName, code: error.code, message: error.message };
+  }
+  return {
+    directoryName: candidate.directoryName,
+    code: 'INTERNAL_ERROR',
+    message: 'The project operation failed.',
+  };
+}
+
+async function applyProjectDiscovery(
+  dependencies: CliDependencies,
+  url: string,
+  plan: ProjectDiscoveryPlan,
+): Promise<{
+  mode: 'applied';
+  plan: ProjectDiscoveryPlan;
+  registered: ProjectDiscoveryItemResult[];
+  unchanged: ProjectDiscoveryItemResult[];
+  conflict: ProjectDiscoveryFailure[];
+  failed: ProjectDiscoveryFailure[];
+  git: ProjectDiscoveryGitResult[];
+}> {
+  const registered: ProjectDiscoveryItemResult[] = [];
+  const unchanged: ProjectDiscoveryItemResult[] = [];
+  const conflict: ProjectDiscoveryFailure[] = [];
+  const failed: ProjectDiscoveryFailure[] = [];
+  const observable: Array<{ candidate: ProjectCandidate; projectId: string }> = [];
+
+  for (const candidate of plan.selected) {
+    if (candidate.existingProjectId !== undefined) {
+      unchanged.push({
+        directoryName: candidate.directoryName,
+        projectId: candidate.existingProjectId,
+      });
+      observable.push({ candidate, projectId: candidate.existingProjectId });
+      continue;
+    }
+    try {
+      const project = await request(
+        dependencies,
+        url,
+        '/api/v1/projects',
+        projectResponseSchema,
+        jsonBody({ name: candidate.displayName, localPath: candidate.localPath }),
+      );
+      registered.push({ directoryName: candidate.directoryName, projectId: project.id });
+      observable.push({ candidate, projectId: project.id });
+    } catch (error) {
+      const result = safeProjectDiscoveryFailure(candidate, error);
+      if (error instanceof ApplicationError && error.statusCode === 409) conflict.push(result);
+      else failed.push(result);
+    }
+  }
+
+  const git: ProjectDiscoveryGitResult[] = [];
+  for (const { candidate, projectId } of observable) {
+    try {
+      await request(
+        dependencies,
+        url,
+        `/api/v1/projects/${encodeURIComponent(projectId)}/git/scan`,
+        gitObservationSchema,
+        jsonBody({}),
+      );
+      git.push({
+        directoryName: candidate.directoryName,
+        projectId,
+        status: 'observed',
+      });
+    } catch (error) {
+      git.push({
+        directoryName: candidate.directoryName,
+        projectId,
+        status:
+          error instanceof ApplicationError && error.statusCode === 404 ? 'not_git' : 'failed',
+      });
+    }
+  }
+
+  return { mode: 'applied', plan, registered, unchanged, conflict, failed, git };
 }
 
 function parseJsonObject(value: string, option: string): Record<string, unknown> {
@@ -181,6 +504,18 @@ function parseJsonArray(value: string, option: string): unknown[] {
   } catch {
     throw new ApplicationError('CLI_OPTION_INVALID', `${option} must be a JSON array.`, 400);
   }
+}
+
+function parseStringArray(value: string, option: string): string[] {
+  const parsed = parseJsonArray(value, option);
+  if (!parsed.every((item) => typeof item === 'string')) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      `${option} must be a JSON array of strings.`,
+      400,
+    );
+  }
+  return parsed;
 }
 
 /**
@@ -575,6 +910,238 @@ async function runBridgeSimulation(
   }
 }
 
+function parseBridgeInteger(
+  value: string,
+  option: string,
+  minimum: number,
+  maximum = Number.MAX_SAFE_INTEGER,
+): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      `${option} must be an integer from ${minimum} through ${maximum}.`,
+      400,
+    );
+  }
+  return parsed;
+}
+
+function exactLoopbackUrl(value: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ApplicationError('CLI_OPTION_INVALID', '--url must be a valid URL.', 400);
+  }
+  if (
+    parsed.protocol !== 'http:' ||
+    (parsed.hostname !== '127.0.0.1' &&
+      parsed.hostname !== 'localhost' &&
+      parsed.hostname !== '[::1]') ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.pathname !== '/' ||
+    parsed.search !== '' ||
+    parsed.hash !== ''
+  ) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      'The DeepSeek bridge --url must be an exact loopback HTTP origin.',
+      400,
+    );
+  }
+  return parsed.origin;
+}
+
+async function runDeepSeekBridge(
+  dependencies: CliDependencies,
+  options: {
+    url: string;
+    project: string;
+    agent: string;
+    workingDirectory: string;
+    bridgeInstance: string;
+    command: string;
+    argsJson: string;
+    permission: string;
+    limit: string;
+    blockMs: string;
+    minIdleMs: string;
+    heartbeatMs: string;
+    closeGraceMs: string;
+  },
+): Promise<void> {
+  if (!isAbsolute(options.workingDirectory)) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      '--working-directory must be absolute for ACP.',
+      400,
+    );
+  }
+  if (options.permission !== 'reject' && options.permission !== 'allow-once') {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      '--permission must be reject or allow-once.',
+      400,
+    );
+  }
+  const daemonUrl = exactLoopbackUrl(options.url);
+  const claimLimit = parseBridgeInteger(options.limit, '--limit', 1, 100);
+  const claimBlockMs = parseBridgeInteger(options.blockMs, '--block-ms', 0, 30_000);
+  const claimMinIdleMs = parseBridgeInteger(options.minIdleMs, '--min-idle-ms', 0, 86_400_000);
+  const heartbeatMs = parseBridgeInteger(options.heartbeatMs, '--heartbeat-ms', 100);
+  const closeGraceMs = parseBridgeInteger(options.closeGraceMs, '--close-grace-ms', 100, 60_000);
+
+  const daemon: DeepSeekBridgeDaemonClient = {
+    registerSession: async (input) =>
+      request(dependencies, daemonUrl, '/api/v1/sessions', sessionResponseSchema, jsonBody(input)),
+    declareNative: async (sessionId, native) => {
+      await request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/native`,
+        nativeDeclarationResponseSchema,
+        jsonBody({ native }),
+      );
+    },
+    heartbeatSession: async (sessionId) => {
+      await request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+        heartbeatResponseSchema,
+        jsonBody({}),
+      );
+    },
+    setSessionStatus: async (sessionId, status) => {
+      await request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/status`,
+        sessionResponseSchema,
+        jsonBody({ status }),
+      );
+    },
+    closeSession: async (sessionId) => {
+      await request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
+        sessionResponseSchema,
+        jsonBody({}),
+      );
+    },
+    claimInbox: async (sessionId, input) =>
+      request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/inbox/claim`,
+        inboxClaimResponseSchema,
+        jsonBody(input),
+      ),
+    getMessage: async (correlationId) =>
+      request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/messages/${encodeURIComponent(correlationId)}`,
+        messageResponseSchema,
+      ),
+    transitionMessage: async (action, sessionId, correlationId) =>
+      request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/messages/${encodeURIComponent(correlationId)}/${action}`,
+        messageResponseSchema,
+        jsonBody({ responderSessionId: sessionId }),
+      ),
+    completeMessage: async (action, sessionId, correlationId, response) =>
+      request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/messages/${encodeURIComponent(correlationId)}/${action}`,
+        messageResponseSchema,
+        jsonBody({ responderSessionId: sessionId, response }),
+      ),
+  };
+  const acp = dependencies.createDeepSeekAcpFactory({
+    command: options.command,
+    args: parseStringArray(options.argsJson, '--args-json'),
+    permission: options.permission,
+    environment: { ...dependencies.environment },
+    closeGraceMs,
+  });
+  const bridge = createDeepSeekBridge({
+    daemon,
+    acp,
+    daemonUrl,
+    projectId: options.project,
+    agentId: options.agent,
+    workingDirectory: options.workingDirectory,
+    bridgeInstanceId: options.bridgeInstance,
+    claimLimit,
+    claimBlockMs,
+    claimMinIdleMs,
+  });
+
+  let stopped = false;
+  let heartbeatError: unknown;
+  let shutdown: Promise<void> | undefined;
+  const stop = (): void => {
+    stopped = true;
+    shutdown ??= bridge.stop();
+    shutdown.catch(() => undefined);
+  };
+  dependencies.signals.once('SIGINT', stop);
+  dependencies.signals.once('SIGTERM', stop);
+  let heartbeatTimer: NodeJS.Timeout | undefined;
+  let heartbeatPending = false;
+  try {
+    try {
+      await bridge.start();
+    } catch (error) {
+      if (!stopped || !(error instanceof DeepSeekBridgeStartupCancelledError)) throw error;
+      await (shutdown ?? bridge.stop());
+      return;
+    }
+    if (stopped) return;
+    printJson(dependencies, {
+      bridge: 'deepseek-harness-acp',
+      experimental: true,
+      sessionId: bridge.sessionId,
+    });
+    heartbeatTimer = dependencies.setInterval(() => {
+      if (heartbeatPending) return;
+      heartbeatPending = true;
+      void bridge
+        .heartbeat()
+        .catch((error: unknown) => {
+          heartbeatError = error;
+          stop();
+        })
+        .finally(() => {
+          heartbeatPending = false;
+        });
+    }, heartbeatMs);
+    while (!stopped) {
+      const count = await bridge.pollOnce();
+      if (count === 0 && claimBlockMs === 0 && !stopped) await dependencies.wait(100);
+    }
+  } finally {
+    if (heartbeatTimer !== undefined) dependencies.clearInterval(heartbeatTimer);
+    dependencies.signals.off('SIGINT', stop);
+    dependencies.signals.off('SIGTERM', stop);
+    await (shutdown ?? bridge.stop());
+  }
+  if (heartbeatError !== undefined) {
+    throw new ApplicationError(
+      'BRIDGE_HEARTBEAT_FAILED',
+      'The DeepSeek bridge heartbeat failed.',
+      503,
+    );
+  }
+}
+
 function compareStreamIds(left: RealtimeEventMessage, right: RealtimeEventMessage): number {
   const [leftTime = '0', leftSequence = '0'] = left.streamId.split('-');
   const [rightTime = '0', rightSequence = '0'] = right.streamId.split('-');
@@ -695,11 +1262,254 @@ async function watchEvents(dependencies: CliDependencies, options: { url: string
   }
 }
 
+function registerAgentRunCli(agents: Command, dependencies: CliDependencies): void {
+  agents
+    .command('run <provider> [nativeArgs...]')
+    .description('Run Claude, Codex, or Gemini with optional LUWI session observation')
+    .option('--project <projectId>', 'Explicit registered project ID')
+    .option('--agent-id <agentId>', 'Explicit LUWI AgentDefinition ID')
+    .option('--working-directory <path>', 'Native agent working directory', dependencies.cwd())
+    .option('--executable <path>', 'Explicit native agent executable')
+    .option('--heartbeat-ms <milliseconds>', 'Session heartbeat interval', '5000')
+    .option('--connect-timeout-ms <milliseconds>', 'Per-request LUWI connection timeout', '2000')
+    .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
+    .action(
+      async (
+        providerValue: string,
+        nativeArgs: string[] | undefined,
+        options: {
+          project?: string;
+          agentId?: string;
+          workingDirectory: string;
+          executable?: string;
+          heartbeatMs: string;
+          connectTimeoutMs: string;
+          url: string;
+        },
+      ) => {
+        const provider = agentProvider(providerValue);
+        const daemonUrl = loopbackDaemonUrl(options.url);
+        const heartbeatMs = positiveIntegerOption(
+          options.heartbeatMs,
+          '--heartbeat-ms',
+          100,
+          10_000,
+        );
+        const connectTimeoutMs = positiveIntegerOption(
+          options.connectTimeoutMs,
+          '--connect-timeout-ms',
+          100,
+          30_000,
+        );
+        let workingDirectory: string;
+        try {
+          workingDirectory = await dependencies.canonicalizePath(options.workingDirectory);
+        } catch {
+          throw new ApplicationError(
+            'AGENT_WORKING_DIRECTORY_INVALID',
+            'The native agent working directory could not be canonicalized.',
+            400,
+          );
+        }
+
+        const get = <Output>(path: string, parser: Parser<Output>) =>
+          boundedRequest(dependencies, daemonUrl, path, parser, connectTimeoutMs);
+        const discoveryClient = {
+          listProjects: async () =>
+            (await get('/api/v1/projects', projectCollectionResponseSchema)).projects.map(
+              (project) => ({ id: project.id, localPath: project.canonicalPath }),
+            ),
+          listAgents: async () =>
+            (await get('/api/v1/agents', agentDefinitionCollectionSchema)).agents.map((agent) => ({
+              id: agent.id,
+              kind: agent.kind,
+              enabled: agent.enabled,
+              ...(agent.executable === undefined ? {} : { executable: agent.executable }),
+            })),
+          listProjectAgentBindings: async (projectId: string) =>
+            (
+              await get(
+                `/api/v1/projects/${encodeURIComponent(projectId)}/agents`,
+                projectAgentBindingCollectionSchema,
+              )
+            ).bindings,
+        };
+
+        let context: { projectId: string; agentId: string; executable: string } | undefined;
+        try {
+          context = await resolveAgentRunContext({
+            provider,
+            workingDirectory,
+            ...(options.project === undefined ? {} : { projectId: options.project }),
+            ...(options.agentId === undefined ? {} : { agentId: options.agentId }),
+            ...(options.executable === undefined ? {} : { executable: options.executable }),
+            platform: dependencies.platform,
+            client: discoveryClient,
+          });
+        } catch (error) {
+          printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error);
+        }
+
+        let childStarted = false;
+        const bootstrap =
+          context === undefined
+            ? undefined
+            : createSessionBootstrap({
+                client: {
+                  register: (input) =>
+                    boundedRequest(
+                      dependencies,
+                      daemonUrl,
+                      '/api/v1/sessions',
+                      sessionResponseSchema,
+                      connectTimeoutMs,
+                      jsonBody(input),
+                    ),
+                  heartbeat: async (sessionId) => {
+                    await boundedRequest(
+                      dependencies,
+                      daemonUrl,
+                      `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+                      heartbeatResponseSchema,
+                      connectTimeoutMs,
+                      jsonBody({}),
+                    );
+                  },
+                  close: async (sessionId) => {
+                    await boundedRequest(
+                      dependencies,
+                      daemonUrl,
+                      `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
+                      sessionResponseSchema,
+                      connectTimeoutMs,
+                      jsonBody({}),
+                    );
+                  },
+                },
+                projectId: context.projectId,
+                agentId: context.agentId,
+                workingDirectory,
+                heartbeatIntervalMs: heartbeatMs,
+                onError: (error) =>
+                  printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
+                onSessionChanged: (change) => {
+                  if (
+                    change.reason !== 'stopped' &&
+                    childStarted &&
+                    change.sessionId !== environmentSessionId
+                  ) {
+                    printAgentDiagnostic(dependencies, 'LUWI_SESSION_RECOVERED');
+                  }
+                },
+                setInterval: dependencies.setInterval,
+                clearInterval: dependencies.clearInterval,
+              });
+
+        await bootstrap?.start();
+        const environmentSessionId = bootstrap?.sessionId;
+        const inheritedEnvironment: Record<string, string | undefined> = {
+          ...dependencies.environment,
+        };
+        delete inheritedEnvironment['LUWI_DAEMON_URL'];
+        delete inheritedEnvironment['LUWI_SESSION_ID'];
+        const childEnvironment = {
+          ...inheritedEnvironment,
+          LUWI_DAEMON_URL: daemonUrl,
+          ...(environmentSessionId === undefined ? {} : { LUWI_SESSION_ID: environmentSessionId }),
+        };
+        childStarted = true;
+        try {
+          const result = await dependencies.agentProcessRunner.run({
+            executable: context?.executable ?? options.executable ?? provider.executable,
+            args: nativeArgs ?? [],
+            workingDirectory,
+            environment: childEnvironment,
+            signals: dependencies.signals,
+            onDiagnostic: (error) =>
+              printAgentDiagnostic(dependencies, 'AGENT_PROCESS_DIAGNOSTIC', error),
+          });
+          dependencies.setExitCode(result.exitCode);
+        } finally {
+          childStarted = false;
+          await bootstrap?.stop();
+        }
+      },
+    );
+}
+
 export function createCli(dependencies: CliDependencies): Command {
   const program = new Command()
     .name('luwi')
     .description('Inspect and operate the local LUWI Runtime daemon')
     .version(LUWI_RUNTIME_VERSION);
+
+  program
+    .command('doctor')
+    .description('Check local LUWI, Docker, Redis, daemon, and native-agent readiness')
+    .option('--json', 'Print a machine-readable report')
+    .action(async (options: { json?: boolean }) => {
+      printDoctor(dependencies, await dependencies.lifecycle.doctor(), options.json === true);
+    });
+
+  program
+    .command('setup')
+    .description('Prepare LUWI-owned local lifecycle configuration')
+    .option('--yes', 'Approve the scoped LUWI lifecycle configuration write')
+    .option('--print-hooks', 'Print optional native-agent wrapper snippets')
+    .action(async (options: { yes?: boolean; printHooks?: boolean }) => {
+      printJson(
+        dependencies,
+        await dependencies.lifecycle.setup({
+          approved: options.yes === true,
+          printHooks: options.printHooks === true,
+        }),
+      );
+    });
+
+  program
+    .command('start')
+    .description('Start Compose Redis when applicable and one owned LUWI daemon')
+    .action(async () => {
+      printLifecycleStatus(dependencies, await dependencies.lifecycle.start({}), false);
+    });
+
+  program
+    .command('status')
+    .description('Report daemon, ownership, Redis, and Compose state')
+    .option('--json', 'Print a machine-readable report')
+    .action(async (options: { json?: boolean }) => {
+      printLifecycleStatus(
+        dependencies,
+        await dependencies.lifecycle.status(),
+        options.json === true,
+      );
+    });
+
+  program
+    .command('stop')
+    .description('Stop the owned daemon; preserve Redis unless explicitly requested')
+    .option('--with-redis', 'Also stop the Compose Redis service without deleting its volume')
+    .action(async (options: { withRedis?: boolean }) => {
+      printLifecycleStatus(
+        dependencies,
+        await dependencies.lifecycle.stop({ withRedis: options.withRedis === true }),
+        false,
+      );
+    });
+
+  program
+    .command('reset')
+    .description('Reset only the fixed LUWI Redis runtime namespace')
+    .requiredOption('--runtime-state', 'Authorize only the LUWI runtime-state reset surface')
+    .option('--yes', 'Approve deletion of the fixed LUWI runtime namespace')
+    .option('--json', 'Print machine-readable output without prompting')
+    .action(async (options: { runtimeState: boolean; yes?: boolean; json?: boolean }) => {
+      const result = await dependencies.lifecycle.resetRuntimeState({
+        approved: options.yes === true,
+        interactive: options.json !== true,
+      });
+      printRuntimeResetResult(dependencies, result, options.json === true);
+    });
 
   program
     .command('runtime')
@@ -713,6 +1523,46 @@ export function createCli(dependencies: CliDependencies): Command {
     });
 
   const projects = program.command('project').description('Manage registered projects');
+  projects
+    .command('discover <root>')
+    .description('Preview or apply one-level local project discovery')
+    .option('--exclude <directory>', 'Exclude an exact immediate-child directory', appendOption, [])
+    .option('--name <mapping>', 'Set an exact directory=Display Name mapping', appendOption, [])
+    .option('--apply', 'Register new candidates and refresh read-only Git observations')
+    .option('--json', 'Print machine-readable output')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (
+        root: string,
+        options: {
+          exclude: string[];
+          name: string[];
+          apply?: boolean;
+          json?: boolean;
+          url: string;
+        },
+      ) => {
+        const existingProjects = (
+          await request(
+            dependencies,
+            options.url,
+            '/api/v1/projects',
+            projectCollectionResponseSchema,
+          )
+        ).projects;
+        const plan = await dependencies.projectDiscovery.createPlan({
+          root,
+          excludes: options.exclude,
+          names: parseProjectNameMappings(options.name, dependencies.platform),
+          existingProjects,
+        });
+        if (options.apply !== true) {
+          printJson(dependencies, { mode: 'dry_run', plan });
+          return;
+        }
+        printJson(dependencies, await applyProjectDiscovery(dependencies, options.url, plan));
+      },
+    );
   projects
     .command('register')
     .requiredOption('-n, --name <name>', 'Project display name')
@@ -778,7 +1628,8 @@ export function createCli(dependencies: CliDependencies): Command {
       );
     });
 
-  registerControlPlaneCli(program, projects, dependencies);
+  const agents = registerControlPlaneCli(program, projects, dependencies);
+  registerAgentRunCli(agents, dependencies);
   registerIntelligenceCli(program, dependencies);
 
   const sessions = program.command('session').description('Manage agent sessions');
@@ -977,7 +1828,7 @@ export function createCli(dependencies: CliDependencies): Command {
                 dependencies,
                 options.url,
                 `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
-                sessionResponseSchema,
+                heartbeatResponseSchema,
                 jsonBody({}),
               );
             },
@@ -1002,8 +1853,9 @@ export function createCli(dependencies: CliDependencies): Command {
         });
 
         await bootstrap.start();
-        if (bootstrap.sessionId === undefined) return;
-        printJson(dependencies, { attached: bootstrap.sessionId, ...request_ });
+        if (bootstrap.sessionId !== undefined) {
+          printJson(dependencies, { attached: bootstrap.sessionId, ...request_ });
+        }
 
         await new Promise<void>((resolve) => {
           const stop = (): void => {
@@ -1107,6 +1959,39 @@ export function createCli(dependencies: CliDependencies): Command {
           includeContent: options.includeContent === true,
         });
       },
+    );
+  sessionBridge
+    .command('deepseek')
+    .description('Run one experimental DeepSeek Harness ACP process as one LUWI session')
+    .requiredOption('--project <projectId>', 'Registered project ID')
+    .requiredOption('--agent <agentId>', 'Opaque agent ID')
+    .requiredOption('--working-directory <path>', 'Absolute ACP session workspace')
+    .requiredOption('--bridge-instance <id>', 'Stable bridge process identity')
+    .requiredOption('--command <executable>', 'DeepSeek Harness ACP executable')
+    .option('--args-json <json>', 'JSON string array passed directly to the ACP executable', '[]')
+    .option('--permission <policy>', 'reject or allow-once', 'reject')
+    .option('--limit <count>', 'Maximum inbox items per claim', '1')
+    .option('--block-ms <milliseconds>', 'Bounded claim block interval', '5000')
+    .option('--min-idle-ms <milliseconds>', 'Pending recovery minimum idle time', '15000')
+    .option('--heartbeat-ms <milliseconds>', 'Session heartbeat interval', '5000')
+    .option('--close-grace-ms <milliseconds>', 'ACP cooperative shutdown grace', '6000')
+    .option('-u, --url <url>', 'LUWI daemon loopback origin', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        project: string;
+        agent: string;
+        workingDirectory: string;
+        bridgeInstance: string;
+        command: string;
+        argsJson: string;
+        permission: string;
+        limit: string;
+        blockMs: string;
+        minIdleMs: string;
+        heartbeatMs: string;
+        closeGraceMs: string;
+        url: string;
+      }) => runDeepSeekBridge(dependencies, options),
     );
 
   const messages = program.command('message').description('Exchange durable session messages');

@@ -155,6 +155,42 @@ describe('Phase 4 intelligence CLI', () => {
     expect(output.value).toContain('"provenance": "project-record"');
   });
 
+  it('marks an empty Git scan POST as JSON so the daemon accepts the origin-less CLI request', async () => {
+    const output = { value: '' };
+    const observedAt = '2026-07-30T10:00:00.000Z';
+
+    await runCli(
+      ['git', 'scan', '--project', 'project-1'],
+      dependencies(async (url, init) => {
+        expect(url).toBe('http://127.0.0.1:4782/api/v1/projects/project-1/git/scan');
+        expect(init).toEqual({
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{}',
+        });
+        return response({
+          id: 'git-1',
+          projectId: 'project-1',
+          repositoryRoot: 'C:/sandbox',
+          branch: 'main',
+          headSha: 'a'.repeat(40),
+          clean: true,
+          stagedCount: 0,
+          unstagedCount: 0,
+          untrackedCount: 0,
+          branches: ['main'],
+          tags: [],
+          worktrees: [],
+          recentCommits: [],
+          observedAt,
+          repositoryStateHash: 'b'.repeat(64),
+        });
+      }, output),
+    );
+
+    expect(output.value).toContain('"repositoryRoot": "C:/sandbox"');
+  });
+
   it('accepts a proposal without applying configuration and creates a plan separately', async () => {
     const requested: Array<{ url: string; body?: unknown }> = [];
     const output = { value: '' };
