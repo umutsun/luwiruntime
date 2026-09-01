@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import type { AgentMessage, Bounded, MessageState } from '../api/messages-scope.js';
+import { DetailDrawer } from '../components/detail-drawer.js';
 import { IdBadge } from '../components/id-badge.js';
-import { Panel, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
+import { PanelBody, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
 import { StatusChip, type StatusTone } from '../components/status-chip.js';
 
 /**
@@ -74,14 +75,24 @@ function turnaround(message: AgentMessage): string | undefined {
 export function MessagesView({
   messages,
   loading = false,
+  selectedCorrelationId,
+  onCloseRoutedDetail,
 }: {
   messages: ResourceState<Bounded<AgentMessage>> | undefined;
   loading?: boolean;
+  selectedCorrelationId?: string;
+  onCloseRoutedDetail?: () => void;
 }) {
   const [stateFilter, setStateFilter] = useState('');
   const [selectedId, setSelectedId] = useState<string>();
 
   const all = messages?.state === 'ready' ? messages.data.items : [];
+
+  useEffect(() => {
+    if (selectedCorrelationId === undefined) return;
+    const matched = all.find((message) => message.correlationId === selectedCorrelationId);
+    setSelectedId(matched?.id);
+  }, [all, selectedCorrelationId]);
   const statesPresent = useMemo(
     () => [...new Set(all.map((message) => message.state))].sort(),
     [all],
@@ -111,25 +122,29 @@ export function MessagesView({
       >
         {(value) => (
           <>
-            <div className="table-filters">
-              <label>
-                State
-                <select
-                  value={stateFilter}
-                  onChange={(event) => setStateFilter(event.target.value)}
-                >
-                  <option value="">All states</option>
-                  {statesPresent.map((state) => (
-                    <option key={state} value={state}>
-                      {stateLabels[state]}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
+            <PanelBody>
+              <div className="table-filters">
+                <label>
+                  State
+                  <select
+                    value={stateFilter}
+                    onChange={(event) => setStateFilter(event.target.value)}
+                  >
+                    <option value="">All states</option>
+                    {statesPresent.map((state) => (
+                      <option key={state} value={state}>
+                        {stateLabels[state]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </PanelBody>
 
             {filtered.length === 0 ? (
-              <p className="empty-state">No messages match this filter</p>
+              <PanelBody>
+                <p className="empty-state">No messages match this filter</p>
+              </PanelBody>
             ) : (
               <TableWrap caption="Inter-agent messages" tall>
                 <thead>
@@ -179,23 +194,33 @@ export function MessagesView({
               </TableWrap>
             )}
 
-            <p className="bounded-note">
-              Message kinds and states are rendered exactly as the runtime records them. A rejected
-              message is an answer, not a fault: it means the recipient declined, and the reason is
-              in its response.
-            </p>
-            {value.truncated ? (
+            <PanelBody>
               <p className="bounded-note">
-                Bounded list — more messages exist than are shown. Truncation is disclosed rather
-                than hidden.
+                Message kinds and states are rendered exactly as the runtime records them. A
+                rejected message is an answer, not a fault: it means the recipient declined, and the
+                reason is in its response.
               </p>
-            ) : null}
+              {value.truncated ? (
+                <p className="bounded-note">
+                  Bounded list — more messages exist than are shown. Truncation is disclosed rather
+                  than hidden.
+                </p>
+              ) : null}
+            </PanelBody>
           </>
         )}
       </ResourcePanel>
 
       {selected === undefined ? null : (
-        <Panel title="Message detail" meta={selected.correlationId}>
+        <DetailDrawer
+          eyebrow="Read-only evidence"
+          title="Message detail"
+          meta={selected.correlationId}
+          onClose={() => {
+            setSelectedId(undefined);
+            onCloseRoutedDetail?.();
+          }}
+        >
           <dl className="key-values">
             <div>
               <dt>Correlation</dt>
@@ -295,7 +320,7 @@ export function MessagesView({
               <pre className="message-body">{selected.response.answer}</pre>
             </>
           )}
-        </Panel>
+        </DetailDrawer>
       )}
     </div>
   );

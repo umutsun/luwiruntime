@@ -108,14 +108,10 @@
   --font-size-lg: 16px;
   --font-size-xl: 18px;
   --font-size-2xl: 22px;
-  /*
-   * Shell metrics. The third track is what makes the inspector a docked pane
-   * rather than an overlay; below the 1399px breakpoint it collapses back to an
-   * overlay, because 220 + 344 of chrome leaves too little content width.
-   */
+  /* Shell metrics. The detail drawer overlays the two-track shell. */
   --rail-width: 220px;
   --rail-width-collapsed: 62px;
-  --inspector-width: 344px;
+  --detail-drawer-width: min(42rem, calc(100vw - var(--space-8)));
   --topbar-height: 52px;
   /*
    * Panel rhythm. Every panel header, row and empty state reads from these two

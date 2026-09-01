@@ -113,65 +113,153 @@
 .activity-feed code {
   color: var(--text-dim);
 }
-/*
- * The docked inspector: grid column three, not an overlay.
- *
- * It is `position: fixed` for the same reason the rail is — the pane scrolls
- * independently of the page while the grid track reserves its gutter — and the
- * two widths therefore read the same token. There is no backdrop and no shadow
- * any more; nothing is being covered.
- */
-.inspector {
+
+.detail-drawer-layer {
   position: fixed;
+  inset: 0;
+  z-index: var(--z-dialog);
+  background: rgba(8, 10, 16, 0.62);
+}
+
+.detail-drawer {
+  position: absolute;
   inset: 0 0 0 auto;
-  z-index: var(--z-sidebar);
   display: flex;
-  width: var(--inspector-width);
+  width: var(--detail-drawer-width);
+  max-width: 100%;
+  min-width: 0;
   flex-direction: column;
   overflow: hidden;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid var(--border-strong);
   background: var(--bg-raised);
+  color: var(--text);
+  animation: detail-drawer-in 160ms ease-out;
 }
-.inspector > header {
+
+.detail-drawer__header {
   display: flex;
+  min-height: var(--topbar-height);
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  min-height: var(--topbar-height);
-  /*
-   * Vertical padding, not just horizontal: with `0` the eyebrow sat against the
-   * pane's top edge, which the owner read as a rendering fault. `min-height`
-   * centres a short header, so this only takes effect when the title wraps.
-   */
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-3) var(--space-5);
   border-bottom: 1px solid var(--border);
   background: var(--bg-raised);
 }
-.inspector--empty .empty-state {
-  margin-top: var(--space-6);
-}
-.inspector h2,
-.inspector h3 {
+
+.detail-drawer__heading,
+.detail-drawer__heading h2,
+.detail-drawer__heading p {
+  min-width: 0;
   margin: 0;
 }
-.inspector > header button {
-  width: 34px;
-  height: 34px;
+
+.detail-drawer__heading h2 {
+  margin-top: var(--space-1);
+  font-size: var(--font-size-xl);
+}
+
+.detail-drawer__tools {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.detail-drawer__meta {
+  max-width: min(18rem, 40vw);
+  overflow: hidden;
+  color: var(--text-muted);
+  font: var(--font-size-xs) var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-drawer__close {
+  width: var(--space-8);
+  height: var(--space-8);
+  flex: 0 0 auto;
+  padding: 0;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   background: var(--surface-2);
   cursor: pointer;
-  font-size: 20px;
+  font-size: var(--font-size-xl);
 }
-.inspector__body {
+
+.detail-drawer__close:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.detail-drawer__body {
+  display: flex;
   flex: 1;
+  min-width: 0;
   min-height: 0;
+  flex-direction: column;
+  gap: var(--space-4);
   overflow-y: auto;
-  padding: var(--space-4);
+  padding: var(--space-5);
+}
+
+.detail-drawer__body > :first-child {
+  margin-top: 0;
+}
+
+.detail-drawer__body > :last-child {
+  margin-bottom: 0;
+}
+
+.detail-content {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.detail-content > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+@keyframes detail-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .detail-drawer {
+    width: calc(100vw - var(--space-4));
+  }
+
+  .detail-drawer__header,
+  .detail-drawer__body {
+    padding-right: var(--space-4);
+    padding-left: var(--space-4);
+  }
+
+  .detail-drawer__meta {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detail-drawer {
+    animation: none;
+  }
+}
+/* Inspector evidence is content-only; DetailDrawer owns the modal shell. */
+.inspector-content h3 {
+  margin: 0;
 }
 .inspector-details {
-  margin: 0 0 22px;
+  margin: 0 0 var(--space-5);
 }
 .inspector-details div {
   display: grid;
@@ -261,22 +349,7 @@
     display: none;
   }
 }
-/*
- * The project-evidence drawer in the third column. Wider than the inspector
- * — its panels carry tables — and its long tables scroll inside themselves:
- * the owner's read of the running product was that page-length cards made
- * the UI feel chaotic. The width override rides the same token the shell
- * grid track reads, so pane and gutter cannot drift apart.
- */
-.app-shell:has(.inspector--drawer) {
-  /*
-   * Widened from 520px after the owner reported cards and tables overflowing
-   * it. It is a clamp rather than a fixed width so the drawer takes a share of
-   * a wide display without starving the main column on a narrow one.
-   */
-  --inspector-width: clamp(520px, 34vw, 760px);
-}
-.inspector--drawer .project-detail {
+.detail-drawer .project-detail {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
@@ -285,7 +358,7 @@
  * Taller than the old 260px: that cut most tables to three or four rows, so
  * the reader scrolled inside a box *and* down the drawer to see one table.
  */
-.inspector--drawer .table-wrap {
+.detail-drawer .table-wrap {
   max-height: 340px;
   overflow-y: auto;
 }
@@ -294,10 +367,10 @@
  * push it sideways. `min-width: 0` is what actually lets a wide table shrink
  * inside a grid item rather than forcing the pane wider than its track.
  */
-.inspector--drawer > * {
+.detail-drawer > * {
   min-width: 0;
 }
-.inspector--drawer table {
+.detail-drawer table {
   table-layout: auto;
 }
 /*

@@ -31,7 +31,7 @@ import {
   Unavailable,
 } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
-import type { PulseSnapshot } from '../pulse/model.js';
+import type { PulseProject, PulseSnapshot } from '../pulse/model.js';
 
 /**
  * How many branch or tag names one panel shows.
@@ -125,13 +125,21 @@ function WorktreeTable({ worktrees }: { worktrees: ProjectWorktree[] }) {
   );
 }
 
-function RepositoryBody({ git }: { git: ProjectGit }) {
+function RepositoryBody({ git, project }: { git: ProjectGit; project: PulseProject }) {
   return (
     <div className="project-detail__body">
       <dl className="key-values">
         <div>
           <dt>Branch</dt>
           <dd>{git.branch ?? <span className="unavailable">Unknown</span>}</dd>
+        </div>
+        <div>
+          <dt>Observed default</dt>
+          <dd>{git.defaultBranch ?? <span className="unavailable">Not reported</span>}</dd>
+        </div>
+        <div>
+          <dt>Registered default</dt>
+          <dd>{project.defaultBranch ?? <span className="unavailable">Not registered</span>}</dd>
         </div>
         <div>
           <dt>HEAD</dt>
@@ -144,6 +152,26 @@ function RepositoryBody({ git }: { git: ProjectGit }) {
           </dd>
         </div>
         <div>
+          <dt>Observed remote</dt>
+          <dd>
+            {git.remoteUrl === undefined ? (
+              <span className="unavailable">Not reported</span>
+            ) : (
+              <code>{git.remoteUrl}</code>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Registered remote</dt>
+          <dd>
+            {project.repositoryUrl === undefined ? (
+              <span className="unavailable">Not registered</span>
+            ) : (
+              <code>{project.repositoryUrl}</code>
+            )}
+          </dd>
+        </div>
+        <div>
           <dt>Root</dt>
           <dd>
             <small title={git.repositoryRoot}>{abbreviatePath(git.repositoryRoot)}</small>
@@ -152,6 +180,16 @@ function RepositoryBody({ git }: { git: ProjectGit }) {
         <div>
           <dt>Observed</dt>
           <dd>{git.observedAt}</dd>
+        </div>
+        <div>
+          <dt>Divergence</dt>
+          <dd>
+            {git.ahead === undefined && git.behind === undefined ? (
+              <span className="unavailable">Not reported</span>
+            ) : (
+              `${git.ahead === undefined ? 'Unknown' : String(git.ahead)} ahead / ${git.behind === undefined ? 'Unknown' : String(git.behind)} behind`
+            )}
+          </dd>
         </div>
       </dl>
       <p className="worktree-state">
@@ -535,7 +573,7 @@ export function ProjectsView({
   nowMs?: number;
   onSelectProject: (projectId: string) => void;
   onSelectAgent?: (agentId: string | undefined) => void;
-  /** The shell passes false and docks <ProjectDetail/> into the drawer itself. */
+  /** The shell passes false and renders <ProjectDetail/> in the overlay drawer itself. */
   renderDetailInline?: boolean;
 }) {
   const projectsAvailable = snapshot.projectCount.state !== 'unavailable';
@@ -656,11 +694,9 @@ export function ProjectsView({
 /**
  * The scoped evidence for one selected project.
  *
- * Extracted from the registry so the shell can dock it into the third
- * column as a drawer — the owner's read of the running product was that
- * evidence opening *below* the registry left the docked column empty and
- * the page long. The registry keeps rendering it inline by default so its
- * own tests and any embedder without a drawer still get the full view.
+ * Extracted from the registry so the shell can place it in an overlay drawer.
+ * The registry keeps rendering it inline by default so its own tests and any
+ * embedder without a drawer still get the full view.
  */
 export function ProjectDetail({
   snapshot,
@@ -703,7 +739,7 @@ export function ProjectDetail({
         emptyMessage="No repository detail"
         isEmpty={() => false}
       >
-        {(git) => <RepositoryBody git={git} />}
+        {(git) => <RepositoryBody git={git} project={selected} />}
       </ResourcePanel>
 
       <ResourcePanel<Bounded<ProjectAttribution>>

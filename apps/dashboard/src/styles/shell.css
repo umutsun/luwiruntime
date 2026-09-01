@@ -60,34 +60,11 @@ button:focus-visible {
  */
 .app-shell {
   display: grid;
-  grid-template-columns: var(--rail-width) minmax(0, 1fr) var(--inspector-width);
+  grid-template-columns: var(--rail-width) minmax(0, 1fr);
   min-height: 100vh;
 }
 .app-shell--rail-collapsed {
-  grid-template-columns: var(--rail-width-collapsed) minmax(0, 1fr) var(--inspector-width);
-}
-/*
- * Below the desktop breakpoint the inspector stops being a column and becomes a
- * full-width section under the content. It does **not** become a modal again:
- * two layouts are a responsive concern, but two accessibility contracts for the
- * same pane is a maintenance trap, and the docked contract is the honest one.
- */
-@media (max-width: 1399px) {
-  .app-shell,
-  .app-shell--rail-collapsed {
-    grid-template-columns: var(--rail-width) minmax(0, 1fr);
-  }
-  .app-shell--rail-collapsed {
-    grid-template-columns: var(--rail-width-collapsed) minmax(0, 1fr);
-  }
-  .inspector {
-    position: static;
-    grid-column: 2;
-    width: auto;
-    max-height: none;
-    border-left: 0;
-    border-top: 1px solid var(--border);
-  }
+  grid-template-columns: var(--rail-width-collapsed) minmax(0, 1fr);
 }
 .sidebar {
   position: fixed;
@@ -433,7 +410,7 @@ button:focus-visible {
 /*
  * The ⌘K palette. The trigger reuses the command-shell slot the scope summary
  * always occupied — the mockup drew this exact control as its search field.
- * The overlay is transient and modal for real, unlike the docked inspector.
+ * The overlay is transient and modal, matching the detail drawer interaction.
  */
 .command-shell--trigger {
   display: flex;

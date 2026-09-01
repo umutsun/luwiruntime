@@ -559,3 +559,96 @@ tr[data-selected='true'] {
 .table-dim {
   color: var(--text-dim);
 }
+
+/* The only dashboard action that creates runtime state. It stays attached to
+   the session row and opens a bounded dispatch form; it is not a chat UI. */
+.row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* Keep identifiers and actions readable before the existing table wrapper
+   switches to horizontal scrolling on a narrow workspace. */
+.session-registry table {
+  min-width: 48rem;
+}
+
+.ask-button {
+  border-color: var(--selection);
+  color: var(--selection);
+}
+
+.ask-dialog {
+  width: min(38rem, 100%);
+}
+
+.ask-dispatch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-4) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--selection);
+  border-radius: var(--radius-sm);
+  background: var(--selection-soft);
+  color: var(--text-secondary);
+  font: var(--font-size-xs) var(--font-mono);
+}
+
+.ask-dispatch code:last-child {
+  text-align: right;
+}
+
+.ask-dispatch code {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ask-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+
+.ask-form label {
+  display: grid;
+  gap: var(--space-1h);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.ask-form label:has(textarea) {
+  grid-column: 1 / -1;
+}
+
+.ask-form input,
+.ask-form select,
+.ask-form textarea {
+  width: 100%;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  background: var(--bg-raised);
+  font: var(--font-size-sm) var(--font-ui);
+}
+
+.ask-form textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .ask-form {
+    grid-template-columns: 1fr;
+  }
+
+  .ask-form label:has(textarea) {
+    grid-column: auto;
+  }
+}

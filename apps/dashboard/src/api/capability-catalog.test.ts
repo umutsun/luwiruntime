@@ -94,11 +94,37 @@ describe('loadCapabilityCatalog', () => {
             scope: 'global',
             source: 'luwi-global',
             enabled: true,
+            observed: false,
             compatibleAgentKinds: ['codex', 'claude-code'],
           },
         ],
       },
     });
+  });
+
+  it('maps only the explicit observation marker as observed provenance', async () => {
+    const { client } = stubClient({
+      capabilities: [
+        capability({
+          source: 'agent-native',
+          manifest: {
+            managementMode: 'observed',
+            observation: {
+              adapterId: 'claude-code-native-v1',
+              root: 'C:/home/.claude/skills',
+              manifestPath: 'C:/home/.claude/skills/review/SKILL.md',
+              observedAt: timestamp,
+            },
+          },
+        }),
+      ],
+    });
+
+    const result = await loadCapabilityCatalog(client, ['capabilities']);
+    const item =
+      result.capabilities?.state === 'ready' ? result.capabilities.data.items[0] : undefined;
+
+    expect(item?.observed).toBe(true);
   });
 
   it('omits an unversioned, pathless package rather than inventing blanks for it', async () => {
@@ -191,6 +217,7 @@ describe('resolveProfileCapabilities', () => {
       requiredCapabilityIds: [],
       requiredMcpIds: [],
       enabled: true,
+      observed: false,
       checksum: 'a'.repeat(64),
     },
   ];

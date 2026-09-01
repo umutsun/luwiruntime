@@ -57,6 +57,9 @@ describe('SessionsView', () => {
 
     expect(screen.getByText('s-active')).toBeTruthy();
     expect(screen.getByText('s-done')).toBeTruthy();
+    expect(
+      screen.getByRole('table', { name: 'Observed sessions' }).closest('.session-registry'),
+    ).toBeTruthy();
   });
 
   it('labels an unrecognised status as Unknown rather than dropping the row', () => {
@@ -187,6 +190,45 @@ describe('SessionsView', () => {
 
     expect(onOpenSession).toHaveBeenCalledTimes(1);
     expect(onOpenSession.mock.calls[0]?.[0]).toMatchObject({ id: 's1' });
+  });
+
+  it('offers Ask only for an online target with another online session in the same project', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [
+            session('source'),
+            session('target', { agentId: 'a2' }),
+            session('offline', { agentId: 'a3', presence: 'offline' }),
+            session('foreign', { agentId: 'a4', projectId: 'other-project' }),
+          ],
+        },
+      }),
+    );
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        messageMutations={{ ask: vi.fn() }}
+        onMessageCreated={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Ask session target' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Ask session offline' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Ask session target' }));
+    const sourceSelect = screen.getByLabelText('Source session');
+    expect(within(sourceSelect).getByRole('option', { name: /source/i })).toBeTruthy();
+    expect(within(sourceSelect).queryByRole('option', { name: /offline|foreign/i })).toBeNull();
+  });
+
+  it('renders no Ask action when mutation capability is absent', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('source'), session('target')] } }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    expect(screen.queryByRole('button', { name: /ask session/i })).toBeNull();
   });
 
   it('shows a relative start time and keeps the absolute value accessible', () => {

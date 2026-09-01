@@ -87,6 +87,7 @@ describe('needsConfigOf', () => {
 describe('needsMessagesOf', () => {
   it('opens the message read only on its own route', () => {
     expect(needsMessagesOf('#/messages')).toBe(true);
+    expect(needsMessagesOf('#/messages/corr%2F1')).toBe(true);
     for (const route of ['#/pulse', '#/capabilities', '#/activity', '']) {
       expect(needsMessagesOf(route), route).toBe(false);
     }

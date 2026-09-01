@@ -177,7 +177,7 @@ describe('ConfigView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open plan-1' }));
 
-    const detail = screen.getByRole('region', { name: 'Plan detail' });
+    const detail = screen.getByRole('dialog', { name: 'Plan detail' });
     expect(within(detail).getByText('+ enabled = true')).toBeTruthy();
     expect(within(detail).getByText('Existing fragment replaced')).toBeTruthy();
     expect(within(detail).getByText('managed-fragment')).toBeTruthy();
@@ -204,7 +204,7 @@ describe('ConfigView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open plan-1' }));
 
-    const detail = screen.getByRole('region', { name: 'Plan detail' });
+    const detail = screen.getByRole('dialog', { name: 'Plan detail' });
     expect(within(detail).getByText('No diff recorded')).toBeTruthy();
   });
 
@@ -232,7 +232,7 @@ describe('ConfigView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open snapshot-1' }));
 
-    const detail = screen.getByRole('region', { name: 'Snapshot detail' });
+    const detail = screen.getByRole('dialog', { name: 'Snapshot detail' });
     const created = within(detail).getByRole('row', { name: /new\.toml/ });
     expect(within(created).getByText('Created by the apply')).toBeTruthy();
     const restored = within(detail).getByRole('row', { name: /config\.toml/ });

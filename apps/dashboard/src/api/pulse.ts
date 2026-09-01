@@ -169,7 +169,13 @@ export async function loadPulseResources(
             key,
             client.get('/api/v1/projects', projectCollectionResponseSchema, options),
             ({ projects: values }) =>
-              values.map(({ id, name, localPath }) => ({ id, name, localPath })),
+              values.map(({ id, name, localPath, repositoryUrl, defaultBranch }) => ({
+                id,
+                name,
+                localPath,
+                ...(repositoryUrl === undefined ? {} : { repositoryUrl }),
+                ...(defaultBranch === undefined ? {} : { defaultBranch }),
+              })),
           ),
         );
         break;
@@ -322,7 +328,13 @@ export async function loadPulseResources(
         .get('/api/v1/projects', projectCollectionResponseSchema, options)
         .then((result) =>
           availability(result, ({ projects: values }) =>
-            values.map(({ id, name, localPath }) => ({ id, name, localPath })),
+            values.map(({ id, name, localPath, repositoryUrl, defaultBranch }) => ({
+              id,
+              name,
+              localPath,
+              ...(repositoryUrl === undefined ? {} : { repositoryUrl }),
+              ...(defaultBranch === undefined ? {} : { defaultBranch }),
+            })),
           ),
         ));
     resources.git = await loadGitResource(client, projects, options);

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createConfigMutations } from './api/config-mutations.js';
+import type { AgentMessage } from './api/messages-scope.js';
 import { DashboardApp } from './app.js';
 import { buildPulseSnapshot, type PulseInput } from './pulse/model.js';
 
@@ -49,6 +50,32 @@ const input = (): PulseInput => ({
   activity: { state: 'ready', data: [] },
   findings: { state: 'ready', data: [] },
 });
+
+const routedMessage: AgentMessage = {
+  id: 'message-1',
+  correlationId: 'corr-1',
+  projectId: 'p1',
+  sourceSessionId: 's1',
+  sourceAgentId: 'agent-a',
+  targetSessionId: 's2',
+  targetAgentId: 'agent-b',
+  selectionReason: 'direct target',
+  kind: 'question',
+  subject: 'Drawer precedence',
+  content: 'Can two drawers mount?',
+  evidenceRequirements: [],
+  state: 'responded',
+  createdAt: '2026-08-05T07:00:00.000Z',
+  updatedAt: '2026-08-05T07:00:01.000Z',
+  deadlineAt: '2026-08-05T07:02:00.000Z',
+  respondedAt: '2026-08-05T07:00:01.000Z',
+  response: {
+    status: 'answered',
+    answer: 'Only one drawer may mount.',
+    evidenceCount: 0,
+    verifiedAt: '2026-08-05T07:00:01.000Z',
+  },
+};
 
 describe('skip link', () => {
   it('moves focus to the main region without changing the route', () => {
@@ -115,6 +142,19 @@ describe('Runtime health panel', () => {
 });
 
 describe('LUWI Pulse shell', () => {
+  it('does not render or reserve an empty Inspector before a subject is selected', () => {
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText('Select a project, session or event to inspect')).toBeNull();
+  });
+
   it('renders identity, the supported route, and disabled planned destinations', () => {
     render(
       <DashboardApp
@@ -266,7 +306,7 @@ describe('LUWI Pulse shell', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Inspect project LUWI Runtime' }));
-    expect(screen.getByRole('complementary', { name: 'Project inspector' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Project inspector' })).toBeTruthy();
     expect(screen.getAllByText('C:/xampp/htdocs/luwiruntime')).toHaveLength(2);
   });
 
@@ -391,7 +431,7 @@ describe('LUWI Pulse shell', () => {
    * This used to pin an "Active LUWI agent sessions" table by column order and
    * by `cells[3]`/`cells[4]`/`cells[5]` index. Active Work is not that table any
    * more: it is four dual-line columns, and the row itself is the control that
-   * drives the docked inspector, so there is no sixth cell holding an Inspect
+   * opens the detail drawer, so there is no sixth cell holding an Inspect
    * button and no cell indices to align. Adapting the old assertions would have
    * meant asserting positions that no longer describe the component.
    *
@@ -400,7 +440,7 @@ describe('LUWI Pulse shell', () => {
    * and the row's evidence is still reachable — now as the button's description,
    * because an `aria-label` naming the action would otherwise replace it.
    */
-  it('drives the docked inspector from the whole row, keeping its evidence announced', () => {
+  it('opens the detail drawer from the whole row, keeping its evidence announced', () => {
     const withSession = input();
     withSession.projects = {
       state: 'ready',
@@ -441,10 +481,10 @@ describe('LUWI Pulse shell', () => {
 
     row.focus();
     fireEvent.click(row, { detail: 0 });
-    expect(screen.getByRole('complementary', { name: 'Session inspector' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Session inspector' })).toBeTruthy();
   });
 
-  it('marks the row the docked inspector is showing, since both stay on screen', () => {
+  it('marks the row whose detail drawer is open', () => {
     const withSession = input();
     withSession.projects = {
       state: 'ready',
@@ -738,7 +778,61 @@ describe('Phase 5D routes', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Inspect session s1' }));
 
-    expect(screen.getByRole('complementary', { name: /session inspector/i })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: /session inspector/i })).toBeTruthy();
+  });
+
+  it('dispatches a bounded session question and routes to its correlation', async () => {
+    window.location.hash = '#/sessions';
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'Runtime', localPath: 'C:/work/runtime' }],
+    };
+    value.sessions = {
+      state: 'ready',
+      data: [
+        {
+          id: 'source',
+          agentId: 'agent-a',
+          projectId: 'p1',
+          status: 'thinking',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+        },
+        {
+          id: 'target',
+          agentId: 'agent-b',
+          projectId: 'p1',
+          status: 'idle',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
+        },
+      ],
+    };
+    const ask = vi.fn().mockResolvedValue({
+      state: 'ok',
+      httpStatus: 202,
+      data: { correlationId: 'corr/created', targetSessionId: 'target', idempotent: false },
+    });
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(value)}
+        websocketState="live"
+        onRetry={vi.fn()}
+        messageMutations={{ ask }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Ask session target' }));
+    fireEvent.change(screen.getByLabelText('Question'), {
+      target: { value: 'Who owns this change?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Dispatch question' }));
+
+    await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(window.location.hash).toBe('#/messages/corr%2Fcreated');
   });
 });
 
@@ -845,8 +939,8 @@ describe('project scope switcher', () => {
 
 describe('project evidence drawer', () => {
   // The owner's read of the running product: scoped evidence opening *below*
-  // the registry left the docked third column empty and the page long. The
-  // detail now docks into that column as a drawer; the registry stays put.
+  // the registry made the page long. The detail now opens as a right overlay
+  // drawer, and the registry stays put.
   it('shows the selected project evidence in the right drawer, not below the table', () => {
     window.location.hash = '#/projects/p1';
     const value = input();
@@ -858,7 +952,7 @@ describe('project evidence drawer', () => {
       <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
     );
 
-    const drawer = screen.getByRole('complementary', { name: 'Project evidence' });
+    const drawer = screen.getByRole('dialog', { name: 'Project evidence' });
     expect(within(drawer).getByRole('region', { name: /repository/i })).toBeTruthy();
     // The registry panel must not also render the detail beneath itself.
     const registry = screen.getByRole('region', { name: /registered projects/i });
@@ -876,7 +970,7 @@ describe('project evidence drawer', () => {
       <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close project evidence' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close drawer' }));
     expect(window.location.hash).toBe('#/projects');
   });
 
@@ -902,21 +996,18 @@ describe('project evidence drawer', () => {
     fireEvent.click(opener);
     expect(window.location.hash).toBe('#/projects/p1');
     fireEvent(window, new Event('hashchange'));
-    expect(screen.getByRole('complementary', { name: 'Project evidence' })).toBeTruthy();
+    const drawer = screen.getByRole('dialog', { name: 'Project evidence' });
 
-    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(drawer, { key: 'Escape' });
     expect(window.location.hash).toBe('#/projects');
     fireEvent(window, new Event('hashchange'));
-    expect(screen.queryByRole('complementary', { name: 'Project evidence' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Project evidence' })).toBeNull();
     await vi.waitFor(() => {
       expect(document.activeElement).toBe(opener);
     });
   });
 
-  // Selection is global and survives navigation, so the real contention path
-  // is: inspect a session on Pulse, navigate to a project, close the
-  // inspector — the drawer must be what remains.
-  it('restores the drawer when the inspector that displaced it closes', () => {
+  it('dismisses the inspector before a routed project drawer opens', () => {
     window.location.hash = '#/pulse';
     const value = input();
     value.projects = {
@@ -944,9 +1035,47 @@ describe('project evidence drawer', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Inspect session s1' }));
     window.location.hash = '#/projects/p1';
     fireEvent(window, new Event('hashchange'));
-    expect(screen.queryByRole('complementary', { name: 'Project evidence' })).toBeNull();
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Project evidence' })).toBeTruthy();
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close inspector' }));
-    expect(screen.getByRole('complementary', { name: 'Project evidence' })).toBeTruthy();
+  it('dismisses the inspector before a routed message drawer opens', () => {
+    window.location.hash = '#/pulse';
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'Drawer Project', localPath: 'C:/work/drawer' }],
+    };
+    value.sessions = {
+      state: 'ready',
+      data: [
+        {
+          id: 's1',
+          agentId: 'agent-a',
+          projectId: 'p1',
+          status: 'thinking',
+          presence: 'online',
+          startedAt: '2026-08-05T07:00:00.000Z',
+          lastHeartbeatAt: '2026-08-05T07:00:05.000Z',
+        },
+      ],
+    };
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(value)}
+        websocketState="live"
+        messageResources={{
+          messages: { state: 'ready', data: { items: [routedMessage], truncated: false } },
+        }}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect session s1' }));
+    window.location.hash = '#/messages/corr-1';
+    fireEvent(window, new Event('hashchange'));
+
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Message detail' })).toBeTruthy();
   });
 });

@@ -26,7 +26,17 @@ describe('loadPulseInput', () => {
       ],
       [
         '/api/v1/projects',
-        ready({ projects: [{ id: 'project-1', name: 'LUWI', localPath: 'C:/luwi' }] }),
+        ready({
+          projects: [
+            {
+              id: 'project-1',
+              name: 'LUWI',
+              localPath: 'C:/luwi',
+              repositoryUrl: 'https://github.com/umutsun/luwi.git',
+              defaultBranch: 'main',
+            },
+          ],
+        }),
       ],
       [
         '/api/v1/sessions',
@@ -95,7 +105,15 @@ describe('loadPulseInput', () => {
     expect(input.measuredLatencyMs).toBe(24);
     expect(input.projects).toEqual({
       state: 'ready',
-      data: [{ id: 'project-1', name: 'LUWI', localPath: 'C:/luwi' }],
+      data: [
+        {
+          id: 'project-1',
+          name: 'LUWI',
+          localPath: 'C:/luwi',
+          repositoryUrl: 'https://github.com/umutsun/luwi.git',
+          defaultBranch: 'main',
+        },
+      ],
     });
     expect(input.sessions.state === 'ready' && input.sessions.data[0]?.presence).toBe('online');
     expect(input.usage.state === 'ready' && input.usage.data[0]?.source).toBe('agent-exact');

@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const shell = readFileSync(new URL('./shell.css', import.meta.url), 'utf8');
+const activity = readFileSync(new URL('./activity.css', import.meta.url), 'utf8');
+const pulse = readFileSync(new URL('./pulse.css', import.meta.url), 'utf8');
 const tokens = readFileSync(new URL('./tokens.css', import.meta.url), 'utf8');
 
 describe('desktop shell CSS contract', () => {
@@ -29,7 +31,7 @@ describe('desktop shell CSS contract', () => {
   /**
    * A fixed sidebar over a grid gutter desynchronises the moment the two widths
    * disagree, which is what put content under the rail before. Collapsing must
-   * move both. The same applies to the docked inspector on the other edge.
+   * move both while the detail drawer remains an independent overlay.
    */
   it('moves the grid track and the fixed rail together when collapsed', () => {
     expect(shell).toMatch(
@@ -40,11 +42,20 @@ describe('desktop shell CSS contract', () => {
     );
   });
 
-  it('reserves a grid track for the docked inspector', () => {
-    expect(tokens).toContain('--inspector-width:');
+  it('does not reserve a grid track for transient detail', () => {
+    expect(tokens).not.toContain('--inspector-width:');
     expect(shell).toMatch(
-      /\.app-shell \{\s*display: grid;\s*grid-template-columns: var\(--rail-width\) minmax\(0, 1fr\) var\(--inspector-width\);/u,
+      /\.app-shell \{\s*display: grid;\s*grid-template-columns: var\(--rail-width\) minmax\(0, 1fr\);/u,
     );
+  });
+
+  it('keeps detail in a fixed overlay at every breakpoint', () => {
+    expect(activity).toMatch(/\.detail-drawer \{\s*position: absolute;/u);
+    expect(activity).not.toMatch(/\.inspector \{\s*position: static;/u);
+  });
+
+  it('avoids double-insetting an empty state inside PanelBody', () => {
+    expect(pulse).toMatch(/\.panel__body > \.empty-state \{\s*padding: 0;/u);
   });
 });
 

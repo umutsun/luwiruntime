@@ -9,7 +9,8 @@ import {
   type CatalogProfile,
   type ResolvedProfileCapability,
 } from '../api/capability-catalog.js';
-import { Panel, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
+import { DetailDrawer } from '../components/detail-drawer.js';
+import { PanelBody, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
 
 /**
@@ -91,6 +92,7 @@ function CapabilityTable({
             <td>{capability.source}</td>
             <td>{capability.version ?? <span className="unavailable">Not versioned</span>}</td>
             <td>
+              {capability.observed ? <StatusChip tone="unknown">Observed</StatusChip> : null}
               <StatusChip tone={capability.enabled ? 'success' : 'unknown'}>
                 {capability.enabled ? 'Enabled' : 'Disabled'}
               </StatusChip>
@@ -121,7 +123,7 @@ function PackageDetail({
   const carriers = profiles?.state === 'ready' ? profilesUsing(capability.id, profiles.data) : [];
 
   return (
-    <Panel title="Package detail" meta={capability.kind}>
+    <div className="detail-content">
       <dl className="key-values">
         <div>
           <dt>Identifier</dt>
@@ -132,6 +134,10 @@ function PackageDetail({
         <div>
           <dt>Source</dt>
           <dd>{capability.source}</dd>
+        </div>
+        <div>
+          <dt>Provenance</dt>
+          <dd>{capability.observed ? 'Observed from native filesystem' : 'Declared'}</dd>
         </div>
         <div>
           <dt>Path</dt>
@@ -211,7 +217,7 @@ function PackageDetail({
           ))}
         </ul>
       )}
-    </Panel>
+    </div>
   );
 }
 
@@ -228,7 +234,7 @@ function ProfileDetail({
   );
 
   return (
-    <Panel title="Profile detail" meta={profile.scope}>
+    <div className="detail-content">
       <dl className="key-values">
         <div>
           <dt>Identifier</dt>
@@ -325,7 +331,7 @@ function ProfileDetail({
           ))}
         </ul>
       )}
-    </Panel>
+    </div>
   );
 }
 
@@ -341,8 +347,9 @@ export function CapabilitiesView({
   const [kindFilter, setKindFilter] = useState('');
   const [scopeFilter, setScopeFilter] = useState('');
   const [stateFilter, setStateFilter] = useState('');
-  const [selectedCapabilityId, setSelectedCapabilityId] = useState<string>();
-  const [selectedProfileId, setSelectedProfileId] = useState<string>();
+  const [selection, setSelection] = useState<
+    { kind: 'capability' | 'profile'; id: string } | undefined
+  >();
 
   const allCapabilities = capabilities?.state === 'ready' ? capabilities.data.items : [];
   const allProfiles = profiles?.state === 'ready' ? profiles.data : [];
@@ -358,10 +365,14 @@ export function CapabilitiesView({
     [allCapabilities, kindFilter, scopeFilter, stateFilter],
   );
 
-  const selectedCapability = allCapabilities.find(
-    (capability) => capability.id === selectedCapabilityId,
-  );
-  const selectedProfile = allProfiles.find((profile) => profile.id === selectedProfileId);
+  const selectedCapability =
+    selection?.kind === 'capability'
+      ? allCapabilities.find((capability) => capability.id === selection.id)
+      : undefined;
+  const selectedProfile =
+    selection?.kind === 'profile'
+      ? allProfiles.find((profile) => profile.id === selection.id)
+      : undefined;
   const disabledCount = allCapabilities.filter((capability) => !capability.enabled).length;
 
   return (
@@ -380,70 +391,79 @@ export function CapabilitiesView({
       >
         {(value) => (
           <>
-            <div className="table-filters">
-              <label>
-                Kind
-                <select value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
-                  <option value="">All kinds</option>
-                  {KINDS.map((kind) => (
-                    <option key={kind} value={kind}>
-                      {kind}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Scope
-                <select
-                  value={scopeFilter}
-                  onChange={(event) => setScopeFilter(event.target.value)}
-                >
-                  <option value="">All scopes</option>
-                  <option value="global">global</option>
-                  <option value="project">project</option>
-                </select>
-              </label>
-              <label>
-                State
-                <select
-                  value={stateFilter}
-                  onChange={(event) => setStateFilter(event.target.value)}
-                >
-                  <option value="">Any state</option>
-                  <option value="enabled">Enabled</option>
-                  <option value="disabled">Disabled</option>
-                </select>
-              </label>
-              <span className="table-filters__count">
-                {String(filtered.length)} of {String(allCapabilities.length)}
-              </span>
-            </div>
+            <PanelBody>
+              <div className="table-filters">
+                <label>
+                  Kind
+                  <select
+                    value={kindFilter}
+                    onChange={(event) => setKindFilter(event.target.value)}
+                  >
+                    <option value="">All kinds</option>
+                    {KINDS.map((kind) => (
+                      <option key={kind} value={kind}>
+                        {kind}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Scope
+                  <select
+                    value={scopeFilter}
+                    onChange={(event) => setScopeFilter(event.target.value)}
+                  >
+                    <option value="">All scopes</option>
+                    <option value="global">global</option>
+                    <option value="project">project</option>
+                  </select>
+                </label>
+                <label>
+                  State
+                  <select
+                    value={stateFilter}
+                    onChange={(event) => setStateFilter(event.target.value)}
+                  >
+                    <option value="">Any state</option>
+                    <option value="enabled">Enabled</option>
+                    <option value="disabled">Disabled</option>
+                  </select>
+                </label>
+                <span className="table-filters__count">
+                  {String(filtered.length)} of {String(allCapabilities.length)}
+                </span>
+              </div>
+            </PanelBody>
 
             {filtered.length === 0 ? (
-              <p className="empty-state">No capability packages match this filter</p>
+              <PanelBody>
+                <p className="empty-state">No capability packages match this filter</p>
+              </PanelBody>
             ) : (
               <CapabilityTable
                 capabilities={filtered}
-                selectedId={selectedCapabilityId}
-                onToggle={(id) =>
-                  setSelectedCapabilityId((current) => (current === id ? undefined : id))
-                }
+                selectedId={selection?.kind === 'capability' ? selection.id : undefined}
+                onToggle={(id) => {
+                  setSelection((current) =>
+                    current?.kind === 'capability' && current.id === id
+                      ? undefined
+                      : { kind: 'capability', id },
+                  );
+                }}
               />
             )}
 
             {value.truncated ? (
-              <p className="bounded-note">
-                Bounded list — more capability packages exist than are shown, and a profile naming
-                one of them resolves as beyond the loaded page rather than as missing.
-              </p>
+              <PanelBody>
+                <p className="bounded-note">
+                  Bounded list — more capability packages exist than are shown, and a profile naming
+                  one of them resolves as beyond the loaded page rather than as missing.
+                </p>
+              </PanelBody>
             ) : null}
           </>
         )}
       </ResourcePanel>
-
-      {selectedCapability === undefined ? null : (
-        <PackageDetail capability={selectedCapability} profiles={profiles} />
-      )}
 
       <ResourcePanel<CatalogProfile[]>
         title="Capability profiles"
@@ -467,7 +487,10 @@ export function CapabilitiesView({
             </thead>
             <tbody>
               {value.map((profile) => (
-                <tr key={profile.id} aria-selected={profile.id === selectedProfileId}>
+                <tr
+                  key={profile.id}
+                  aria-selected={selection?.kind === 'profile' && profile.id === selection.id}
+                >
                   <td>
                     {profile.name}
                     <small title={profile.id}>{profile.id}</small>
@@ -484,14 +507,18 @@ export function CapabilitiesView({
                   <td>
                     <button
                       type="button"
-                      aria-label={`${profile.id === selectedProfileId ? 'Hide' : 'Open'} ${profile.name}`}
-                      onClick={() =>
-                        setSelectedProfileId((current) =>
-                          current === profile.id ? undefined : profile.id,
-                        )
-                      }
+                      aria-label={`${selection?.kind === 'profile' && profile.id === selection.id ? 'Hide' : 'Open'} ${profile.name}`}
+                      onClick={() => {
+                        setSelection((current) =>
+                          current?.kind === 'profile' && current.id === profile.id
+                            ? undefined
+                            : { kind: 'profile', id: profile.id },
+                        );
+                      }}
                     >
-                      {profile.id === selectedProfileId ? 'Hide' : 'Open'}
+                      {selection?.kind === 'profile' && profile.id === selection.id
+                        ? 'Hide'
+                        : 'Open'}
                     </button>
                   </td>
                 </tr>
@@ -501,8 +528,26 @@ export function CapabilitiesView({
         )}
       </ResourcePanel>
 
+      {selectedCapability === undefined ? null : (
+        <DetailDrawer
+          eyebrow="Read-only evidence"
+          title="Package detail"
+          meta={selectedCapability.kind}
+          onClose={() => setSelection(undefined)}
+        >
+          <PackageDetail capability={selectedCapability} profiles={profiles} />
+        </DetailDrawer>
+      )}
+
       {selectedProfile === undefined ? null : (
-        <ProfileDetail profile={selectedProfile} capabilities={capabilities} />
+        <DetailDrawer
+          eyebrow="Read-only evidence"
+          title="Profile detail"
+          meta={selectedProfile.scope}
+          onClose={() => setSelection(undefined)}
+        >
+          <ProfileDetail profile={selectedProfile} capabilities={capabilities} />
+        </DetailDrawer>
       )}
 
       <p className="bounded-note">

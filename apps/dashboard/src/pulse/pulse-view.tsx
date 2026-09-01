@@ -176,7 +176,7 @@ export function PulseView({
 }: {
   snapshot: PulseSnapshot;
   websocketState: WebSocketState;
-  /** What the docked inspector is showing, so the row it came from is marked. */
+  /** What the detail drawer is showing, so the row it came from is marked. */
   selectedSessionId?: string;
   selectedProjectId?: string;
   onOpenProject: (project: PulseSnapshot['projects'][number], opener: HTMLElement) => void;

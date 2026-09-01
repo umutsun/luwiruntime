@@ -34,18 +34,23 @@ describe('dashboard product independence', () => {
     expect(dependencies).not.toMatch(/(?:goose|acp|redis|claude|codex|gemini|kimi)/i);
   });
 
-  it('issues mutation requests from the config mutation module and nowhere else', () => {
+  it('issues mutation requests from the two approved mutation modules and nowhere else', () => {
     const files = productionSources(sourceRoot);
-    const mutationModule = join(sourceRoot, 'api', 'config-mutations.ts');
-    expect(files, 'the allowlisted module must exist, or this test passes vacuously').toContain(
-      mutationModule,
-    );
+    const mutationModules = [
+      join(sourceRoot, 'api', 'config-mutations.ts'),
+      join(sourceRoot, 'api', 'message-mutations.ts'),
+    ];
+    for (const module of mutationModules) {
+      expect(files, 'each allowlisted module must exist, or this test passes vacuously').toContain(
+        module,
+      );
+    }
 
-    // Dashboard mutations were approved on 2026-08-10 for the configuration
-    // plan chain only. The ban is not lifted, it is narrowed to one module, so
-    // a mutation reaching the daemon from anywhere else is still a defect.
+    // Dashboard mutations are restricted to the approved configuration plan
+    // chain and bounded message creation. A request reaching the daemon from
+    // anywhere else is still a defect.
     const elsewhere = files
-      .filter((path) => path !== mutationModule)
+      .filter((path) => !mutationModules.includes(path))
       .map((path) => readFileSync(path, 'utf8'))
       .join('\n');
 

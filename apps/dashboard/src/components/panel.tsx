@@ -141,6 +141,13 @@ export function Panel({
   );
 }
 
+/** Shared inset and vertical rhythm for non-table content inside a Panel. */
+export function PanelBody({ children, className }: { children: ReactNode; className?: string }) {
+  return (
+    <div className={`panel__body${className === undefined ? '' : ` ${className}`}`}>{children}</div>
+  );
+}
+
 /**
  * Renders one resource with its three failure-shaped outcomes kept apart:
  * unavailable, not observed, and genuinely empty. Collapsing empty into

@@ -66,6 +66,17 @@ function view(items: AgentMessage[], truncated = false) {
 }
 
 describe('MessagesView', () => {
+  it('insets controls and notes without adding padding around the table', () => {
+    render(view([message()]));
+
+    const panel = screen.getByRole('region', { name: 'Messages' });
+    const filters = within(panel).getByLabelText('State').closest('.table-filters');
+    const note = within(panel).getByText(/message kinds and states/i);
+    expect(filters?.parentElement?.classList.contains('panel__body')).toBe(true);
+    expect(note.closest('.panel__body')).toBeTruthy();
+    expect(within(panel).getByRole('table').closest('.panel__body')).toBeNull();
+  });
+
   it('names both ends of the exchange and its state', () => {
     render(view([message()]));
 
@@ -99,9 +110,50 @@ describe('MessagesView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
 
-    expect(screen.getByText(/only online session/)).toBeTruthy();
-    expect(screen.getByText(/Asking before I change/)).toBeTruthy();
+    const detail = screen.getByRole('dialog', { name: 'Message detail' });
+    expect(within(detail).getByText(/only online session/)).toBeTruthy();
+    expect(within(detail).getByText(/Asking before I change/)).toBeTruthy();
+    expect(within(detail).getByText('The background worker owns it.')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Message detail' })).toBeNull();
+
+    fireEvent.click(within(detail).getByRole('button', { name: 'Close drawer' }));
+    expect(screen.queryByRole('dialog', { name: 'Message detail' })).toBeNull();
+  });
+
+  it('opens the message selected by correlation once the bounded list arrives', () => {
+    const { rerender } = render(
+      <MessagesView messages={undefined} loading selectedCorrelationId="corr-2" />,
+    );
+
+    rerender(
+      <MessagesView
+        messages={{ state: 'ready', data: { items: [message(), inFlight], truncated: false } }}
+        selectedCorrelationId="corr-2"
+      />,
+    );
+
+    expect(screen.getByText(/still in flight/i)).toBeTruthy();
+    expect(
+      screen
+        .getByRole('row', { name: /agent-a.*agent-b.*no subject/i })
+        .getAttribute('aria-selected'),
+    ).toBe('true');
+  });
+
+  it('clears an old routed detail when a new correlation is outside the bounded list', () => {
+    const resource = {
+      state: 'ready' as const,
+      data: { items: [message()], truncated: false },
+    };
+    const { rerender } = render(
+      <MessagesView messages={resource} selectedCorrelationId="corr-1" />,
+    );
     expect(screen.getByText('The background worker owns it.')).toBeTruthy();
+
+    rerender(<MessagesView messages={resource} selectedCorrelationId="corr-not-retained" />);
+
+    expect(screen.queryByText('The background worker owns it.')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open' })).toBeTruthy();
   });
 
   it('separates an in-flight message with no response from one that ended without a response', () => {

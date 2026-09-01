@@ -1,15 +1,10 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  InspectorEmpty,
-  InspectorPanel,
-  formatSafeJson,
-  type InspectorSelection,
-} from './inspector-panel.js';
+import { InspectorPanel, formatSafeJson, type InspectorSelection } from './inspector-panel.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 
 afterEach(() => {
@@ -65,7 +60,6 @@ describe('read-only inspectors', () => {
       <InspectorPanel
         selection={selected}
         activity={[event(3, { projectId: 'p1', sessionId: 's1' })]}
-        onClose={vi.fn()}
       />,
     );
 
@@ -94,40 +88,6 @@ describe('read-only inspectors', () => {
     expect(rendered).toContain('<img');
   });
 
-  it('closes on Escape and restores focus to the opener', async () => {
-    function Harness() {
-      const [open, setOpen] = useState(false);
-      return (
-        <div>
-          <button
-            type="button"
-            onClick={(event) => {
-              event.currentTarget.focus();
-              setOpen(true);
-            }}
-          >
-            Open inspector
-          </button>
-          {open ? (
-            <InspectorPanel
-              selection={{
-                kind: 'project',
-                projectId: 'p1',
-              }}
-              projects={[project]}
-              onClose={() => setOpen(false)}
-            />
-          ) : null}
-        </div>
-      );
-    }
-    render(<Harness />);
-    const opener = screen.getByRole('button', { name: 'Open inspector' });
-    fireEvent.click(opener);
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => expect(document.activeElement).toBe(opener));
-  });
-
   it('shows canonical event identifiers and payload as text', () => {
     const selectedEvent: DashboardEvent = {
       streamId: '1-0',
@@ -139,11 +99,7 @@ describe('read-only inspectors', () => {
       payload: { markup: '<script>unsafe()</script>' },
     };
     render(
-      <InspectorPanel
-        selection={{ kind: 'event', streamId: '1-0' }}
-        activity={[selectedEvent]}
-        onClose={vi.fn()}
-      />,
+      <InspectorPanel selection={{ kind: 'event', streamId: '1-0' }} activity={[selectedEvent]} />,
     );
 
     expect(screen.getByText('1-0')).toBeTruthy();
@@ -172,7 +128,6 @@ describe('read-only inspectors', () => {
         }}
         projects={[project]}
         activity={activity}
-        onClose={vi.fn()}
       />,
     );
 
@@ -193,7 +148,6 @@ describe('read-only inspectors', () => {
         sessions={[session()]}
         activity={[event(1, { sessionId: 's1' }), event(2, { sessionId: 'other' })]}
         now={() => new Date('2026-08-05T08:30:00.000Z')}
-        onClose={vi.fn()}
       />,
     );
 
@@ -216,7 +170,6 @@ describe('read-only inspectors', () => {
             startedAt: 'invalid',
           }),
         ]}
-        onClose={vi.fn()}
       />,
     );
 
@@ -236,7 +189,6 @@ describe('read-only inspectors', () => {
         selection={{ kind: 'session', sessionId: 's1' }}
         sessions={[session({ startedAt }) as never]}
         now={() => new Date(Date.now())}
-        onClose={vi.fn()}
       />,
     );
 
@@ -254,7 +206,6 @@ describe('read-only inspectors', () => {
         selection={{ kind: 'session', sessionId: 's1' }}
         sessions={[session({ lastHeartbeatAt: '2026-08-05T08:30:00.000Z' })]}
         now={now}
-        onClose={vi.fn()}
       />,
     );
 
@@ -273,7 +224,6 @@ describe('read-only inspectors', () => {
         selection={{ kind: 'session', sessionId: 's1' }}
         sessions={[session({ lastHeartbeatAt: '2026-08-05T08:00:00.000Z' })]}
         now={() => new Date(Date.now())}
-        onClose={vi.fn()}
       />,
     );
 
@@ -300,7 +250,6 @@ describe('read-only inspectors', () => {
         selection={{ kind: 'session', sessionId: 's1' }}
         sessions={[session({ startedAt: 'invalid' })]}
         now={now}
-        onClose={vi.fn()}
       />,
     );
     expect(intervalSpy).not.toHaveBeenCalled();
@@ -310,7 +259,6 @@ describe('read-only inspectors', () => {
         selection={{ kind: 'session', sessionId: 's1' }}
         sessions={[session()]}
         now={now}
-        onClose={vi.fn()}
       />,
     );
     expect(intervalSpy).toHaveBeenCalledOnce();
@@ -320,7 +268,6 @@ describe('read-only inspectors', () => {
         selection={{ kind: 'session', sessionId: 's1' }}
         sessions={[session({ lastHeartbeatAt: '2026-08-05T08:00:00.000Z' })]}
         now={now}
-        onClose={vi.fn()}
       />,
     );
     expect(intervalSpy).toHaveBeenCalledOnce();
@@ -330,7 +277,6 @@ describe('read-only inspectors', () => {
         selection={{ kind: 'session', sessionId: 's1' }}
         sessions={[session({ startedAt: '2026-08-05T09:00:00.000Z' })]}
         now={now}
-        onClose={vi.fn()}
       />,
     );
     expect(clearIntervalSpy).toHaveBeenCalledOnce();
@@ -342,7 +288,6 @@ describe('read-only inspectors', () => {
       <InspectorPanel
         selection={{ kind: 'event', streamId: initial.streamId }}
         activity={[initial]}
-        onClose={vi.fn()}
       />,
     );
     expect(screen.getByText(initial.type)).toBeTruthy();
@@ -352,17 +297,12 @@ describe('read-only inspectors', () => {
       <InspectorPanel
         selection={{ kind: 'event', streamId: initial.streamId }}
         activity={[refreshed]}
-        onClose={vi.fn()}
       />,
     );
     expect(screen.getByText('session.status.changed')).toBeTruthy();
 
     view.rerender(
-      <InspectorPanel
-        selection={{ kind: 'event', streamId: initial.streamId }}
-        activity={[]}
-        onClose={vi.fn()}
-      />,
+      <InspectorPanel selection={{ kind: 'event', streamId: initial.streamId }} activity={[]} />,
     );
     expect(
       screen.getByText('Selected event unavailable from the retained Activity window'),
@@ -370,13 +310,7 @@ describe('read-only inspectors', () => {
   });
 
   it('does not retain session details after the selected session is deleted', () => {
-    render(
-      <InspectorPanel
-        selection={{ kind: 'session', sessionId: 'missing' }}
-        sessions={[]}
-        onClose={vi.fn()}
-      />,
-    );
+    render(<InspectorPanel selection={{ kind: 'session', sessionId: 'missing' }} sessions={[]} />);
 
     expect(screen.getByText('Selected session unavailable')).toBeTruthy();
     expect(screen.queryByText('agent-1')).toBeNull();
@@ -414,14 +348,14 @@ describe('read-only inspectors', () => {
             },
           ]}
           onNavigate={setSelection}
-          onClose={vi.fn()}
         />
       );
     }
     render(<Harness />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Open project inspector' }));
-    expect(screen.getByRole('complementary', { name: 'Project inspector' })).toBeTruthy();
+    expect(screen.getByText('Local path')).toBeTruthy();
+    expect(screen.getByText('C:/luwi')).toBeTruthy();
   });
 
   it('keeps a valid project action but suppresses a session owned by another project', () => {
@@ -459,7 +393,6 @@ describe('read-only inspectors', () => {
             lastHeartbeatAt: '2026-08-05T07:59:00.000Z',
           },
         ]}
-        onClose={vi.fn()}
       />,
     );
 
@@ -501,7 +434,6 @@ describe('read-only inspectors', () => {
           },
         ]}
         sessions={[coherentSession]}
-        onClose={vi.fn()}
       />,
     );
     expect(screen.getByRole('button', { name: 'Open session inspector' })).toBeTruthy();
@@ -519,7 +451,6 @@ describe('read-only inspectors', () => {
           },
         ]}
         sessions={[{ ...coherentSession, projectId: 'p2', projectName: 'Project Two' }]}
-        onClose={vi.fn()}
       />,
     );
 
@@ -531,7 +462,7 @@ describe('read-only inspectors', () => {
     ).toBeTruthy();
   });
 
-  it('navigates to a known session and Escape returns focus to the original event opener', async () => {
+  it('navigates to a known session within the drawer content', () => {
     function Harness() {
       const [selection, setSelection] = useState<InspectorSelection>();
       return (
@@ -566,7 +497,6 @@ describe('read-only inspectors', () => {
                 },
               ]}
               onNavigate={setSelection}
-              onClose={() => setSelection(undefined)}
             />
           )}
         </>
@@ -576,9 +506,8 @@ describe('read-only inspectors', () => {
     const opener = screen.getByRole('button', { name: 'Open event' });
     fireEvent.click(opener);
     fireEvent.click(screen.getByRole('button', { name: 'Open session inspector' }));
-    expect(screen.getByRole('complementary', { name: 'Session inspector' })).toBeTruthy();
-    fireEvent.keyDown(document, { key: 'Escape' });
-    await waitFor(() => expect(document.activeElement).toBe(opener));
+    expect(screen.getByText('Agent ID')).toBeTruthy();
+    expect(screen.getByText('agent-1')).toBeTruthy();
   });
 
   it('does not render dead navigation for unavailable referenced entities', () => {
@@ -591,7 +520,6 @@ describe('read-only inspectors', () => {
         activity={[event(1, { projectId: 'missing-project', sessionId: 'missing-session' })]}
         projects={[]}
         sessions={[]}
-        onClose={vi.fn()}
       />,
     );
 
@@ -610,107 +538,9 @@ describe('read-only inspectors', () => {
         }}
         projects={[project]}
         activity={[]}
-        onClose={vi.fn()}
       />,
     );
 
     expect(screen.getByText('No related activity in the retained window')).toBeTruthy();
-  });
-  it('does not steal focus back on an unrelated re-render', () => {
-    // `onClose` is an inline arrow in the parent, so it changes identity every
-    // render. Keying the focus effect on it re-fired the focus call on every
-    // accepted realtime event, yanking focus out from under anyone who had
-    // moved it inside the open dialog.
-    const view = render(
-      <InspectorPanel
-        selection={{ kind: 'project', projectId: 'p1' }}
-        projects={[project]}
-        activity={[]}
-        onClose={() => undefined}
-      />,
-    );
-
-    const inside = screen.getByRole('heading', { name: /related activity/i });
-    inside.setAttribute('tabindex', '-1');
-    inside.focus();
-    expect(document.activeElement).toBe(inside);
-
-    view.rerender(
-      <InspectorPanel
-        selection={{ kind: 'project', projectId: 'p1' }}
-        projects={[project]}
-        activity={[]}
-        onClose={() => undefined}
-      />,
-    );
-
-    expect(document.activeElement).toBe(inside);
-  });
-
-  it('moves focus to the panel when the selection changes', () => {
-    const view = render(
-      <InspectorPanel
-        selection={{ kind: 'project', projectId: 'p1' }}
-        projects={[project]}
-        activity={[]}
-        onClose={vi.fn()}
-      />,
-    );
-    const close = screen.getByRole('button', { name: /close inspector/i });
-    expect(document.activeElement).toBe(close);
-
-    (document.activeElement as HTMLElement).blur();
-    view.rerender(
-      <InspectorPanel
-        selection={{ kind: 'session', sessionId: 's1' }}
-        projects={[project]}
-        sessions={[session()]}
-        activity={[]}
-        onClose={vi.fn()}
-      />,
-    );
-
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /close inspector/i }));
-  });
-
-  /**
-   * This replaces "keeps Tab inside the dialog, because it declares aria-modal".
-   *
-   * That test was correct for an overlay. The inspector is a docked column now:
-   * it is permanently visible, nothing behind it is inert, and it declares no
-   * `aria-modal`. Trapping Tab in a region the user never entered would strand
-   * them, so the trap was removed on purpose and this asserts the removal rather
-   * than leaving a hole where a contract used to be.
-   */
-  it('lets Tab leave, because it is docked rather than modal', () => {
-    render(
-      <InspectorPanel
-        selection={{ kind: 'event', streamId: '1-0' }}
-        projects={[project]}
-        sessions={[session()]}
-        activity={[event(1, { projectId: 'p1', sessionId: 's1' })]}
-        onClose={vi.fn()}
-      />,
-    );
-
-    const pane = screen.getByRole('complementary', { name: 'Event inspector' });
-    expect(pane.getAttribute('aria-modal')).toBeNull();
-
-    const focusable = [...pane.querySelectorAll<HTMLElement>('button')];
-    expect(focusable.length).toBeGreaterThan(1);
-    const last = focusable[focusable.length - 1]!;
-
-    // Tab is not intercepted, so focus stays where the browser left it rather
-    // than wrapping to the first control.
-    last.focus();
-    fireEvent.keyDown(pane, { key: 'Tab' });
-    expect(document.activeElement).toBe(last);
-  });
-
-  it('names itself as a landmark even with nothing selected', () => {
-    render(<InspectorEmpty />);
-
-    const pane = screen.getByRole('complementary', { name: 'Inspector' });
-    expect(pane.textContent).toContain('Select a project, session or event');
   });
 });

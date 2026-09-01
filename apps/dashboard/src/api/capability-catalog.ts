@@ -43,6 +43,7 @@ export type CatalogCapability = {
   requiredCapabilityIds: string[];
   requiredMcpIds: string[];
   enabled: boolean;
+  observed: boolean;
 };
 
 export type CatalogProfile = {
@@ -139,6 +140,10 @@ export async function loadCapabilityCatalog(
                 requiredCapabilityIds: [...entry.requiredCapabilityIds],
                 requiredMcpIds: [...entry.requiredMcpIds],
                 enabled: entry.enabled,
+                observed:
+                  entry.manifest['managementMode'] === 'observed' &&
+                  typeof entry.manifest['observation'] === 'object' &&
+                  entry.manifest['observation'] !== null,
               })),
               truncated: response.data.truncated,
             },

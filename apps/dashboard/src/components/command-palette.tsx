@@ -160,9 +160,8 @@ export function CommandPalette({
             if (event.target === event.currentTarget) close();
           }}
         >
-          {/* Transient overlay, so aria-modal is truthful here — unlike the
-              docked inspector, everything behind it really is inert while it
-              is up, and Escape tears it down. */}
+          {/* Transient overlay: everything behind it is inert while it is up,
+              and Escape tears it down. */}
           <div className="palette" role="dialog" aria-modal="true" aria-label="Search">
             <input
               ref={box}

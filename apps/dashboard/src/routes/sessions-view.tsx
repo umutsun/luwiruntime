@@ -1,10 +1,12 @@
 import { useState } from 'react';
 
+import type { MessageMutations } from '../api/message-mutations.js';
 import { formatRelativeTime } from '../components/format.js';
 import { IdBadge } from '../components/id-badge.js';
 import { ResourcePanel, TableWrap, Unavailable } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
 import type { PulseSnapshot } from '../pulse/model.js';
+import { AskSessionDialog } from './ask-session-dialog.js';
 
 type SessionRow = PulseSnapshot['sessions'][number];
 
@@ -62,10 +64,14 @@ function SortHeader({
 export function SessionsView({
   snapshot,
   onOpenSession,
+  messageMutations,
+  onMessageCreated,
   now = systemNow,
 }: {
   snapshot: PulseSnapshot;
   onOpenSession?: (session: SessionRow, opener: HTMLElement) => void;
+  messageMutations?: MessageMutations;
+  onMessageCreated?: (correlationId: string) => void;
   now?: () => Date;
 }) {
   const [statusFilter, setStatusFilter] = useState('');
@@ -74,6 +80,7 @@ export function SessionsView({
     key: 'started',
     direction: 'descending',
   });
+  const [askTarget, setAskTarget] = useState<SessionRow>();
   const resource =
     snapshot.sessionsState === 'ready'
       ? ({ state: 'ready', data: snapshot.sessions } as const)
@@ -152,74 +159,118 @@ export function SessionsView({
               {sorted.length === 0 ? (
                 <p className="empty-state">No sessions match the current filters</p>
               ) : (
-                <TableWrap caption="Observed sessions" tall>
-                  <thead>
-                    <tr>
-                      <th scope="col">Session</th>
-                      <SortHeader label="Agent" sortKey="agent" active={sort} onSort={toggleSort} />
-                      <th scope="col">Project</th>
-                      <SortHeader
-                        label="Status"
-                        sortKey="status"
-                        active={sort}
-                        onSort={toggleSort}
-                      />
-                      <th scope="col">Presence</th>
-                      <SortHeader
-                        label="Started"
-                        sortKey="started"
-                        active={sort}
-                        onSort={toggleSort}
-                      />
-                      <th scope="col">
-                        <span className="sr-only">Inspect</span>
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {sorted.map((row) => (
-                      <tr key={row.id}>
-                        <td>
-                          <IdBadge id={row.id} label="session" />
-                        </td>
-                        <td>
-                          <IdBadge id={row.agentId} label="agent" />
-                        </td>
-                        <td>
-                          {row.projectName === 'Unavailable' ? <Unavailable /> : row.projectName}
-                        </td>
-                        <td>{row.statusLabel}</td>
-                        <td>
-                          <StatusChip tone={row.presence === 'online' ? 'success' : 'unknown'}>
-                            {row.presence === 'online' ? 'Online' : 'Offline'}
-                          </StatusChip>
-                        </td>
-                        <td>
-                          <time dateTime={row.startedAt} title={row.startedAt}>
-                            {formatRelativeTime(row.startedAt, nowMs)}
-                          </time>
-                        </td>
-                        <td>
-                          {onOpenSession === undefined ? null : (
-                            <button
-                              className="inspect-button"
-                              type="button"
-                              onClick={(event) => onOpenSession(row, event.currentTarget)}
-                              aria-label={`Inspect session ${row.id}`}
-                            >
-                              Inspect
-                            </button>
-                          )}
-                        </td>
+                <div className="session-registry">
+                  <TableWrap caption="Observed sessions" tall>
+                    <thead>
+                      <tr>
+                        <th scope="col">Session</th>
+                        <SortHeader
+                          label="Agent"
+                          sortKey="agent"
+                          active={sort}
+                          onSort={toggleSort}
+                        />
+                        <th scope="col">Project</th>
+                        <SortHeader
+                          label="Status"
+                          sortKey="status"
+                          active={sort}
+                          onSort={toggleSort}
+                        />
+                        <th scope="col">Presence</th>
+                        <SortHeader
+                          label="Started"
+                          sortKey="started"
+                          active={sort}
+                          onSort={toggleSort}
+                        />
+                        <th scope="col">
+                          <span className="sr-only">Actions</span>
+                        </th>
                       </tr>
-                    ))}
-                  </tbody>
-                </TableWrap>
+                    </thead>
+                    <tbody>
+                      {sorted.map((row) => (
+                        <tr key={row.id}>
+                          <td>
+                            <IdBadge id={row.id} label="session" />
+                          </td>
+                          <td>
+                            <IdBadge id={row.agentId} label="agent" />
+                          </td>
+                          <td>
+                            {row.projectName === 'Unavailable' ? <Unavailable /> : row.projectName}
+                          </td>
+                          <td>{row.statusLabel}</td>
+                          <td>
+                            <StatusChip tone={row.presence === 'online' ? 'success' : 'unknown'}>
+                              {row.presence === 'online' ? 'Online' : 'Offline'}
+                            </StatusChip>
+                          </td>
+                          <td>
+                            <time dateTime={row.startedAt} title={row.startedAt}>
+                              {formatRelativeTime(row.startedAt, nowMs)}
+                            </time>
+                          </td>
+                          <td>
+                            <div className="row-actions">
+                              {messageMutations === undefined ||
+                              onMessageCreated === undefined ||
+                              row.presence !== 'online' ||
+                              !rows.some(
+                                (source) =>
+                                  source.id !== row.id &&
+                                  source.projectId === row.projectId &&
+                                  source.presence === 'online',
+                              ) ? null : (
+                                <button
+                                  className="ask-button"
+                                  type="button"
+                                  onClick={() => setAskTarget(row)}
+                                  aria-label={`Ask session ${row.id}`}
+                                >
+                                  Ask
+                                </button>
+                              )}
+                              {onOpenSession === undefined ? null : (
+                                <button
+                                  className="inspect-button"
+                                  type="button"
+                                  onClick={(event) => onOpenSession(row, event.currentTarget)}
+                                  aria-label={`Inspect session ${row.id}`}
+                                >
+                                  Inspect
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </TableWrap>
+                </div>
               )}
             </>
           );
         }}
       </ResourcePanel>
+      {askTarget === undefined || messageMutations === undefined ? null : (
+        <AskSessionDialog
+          target={askTarget}
+          sources={snapshot.sessions.filter(
+            (source) =>
+              source.id !== askTarget.id &&
+              source.projectId === askTarget.projectId &&
+              source.presence === 'online',
+          )}
+          mutations={messageMutations}
+          onSuccess={(correlationId) => {
+            setAskTarget(undefined);
+            onMessageCreated?.(correlationId);
+          }}
+          onCancel={() => setAskTarget(undefined)}
+        />
+      )}
     </div>
   );
 }

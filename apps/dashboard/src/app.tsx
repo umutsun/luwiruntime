@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ActivityView } from './activity/activity-view.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
@@ -7,13 +7,14 @@ import type { ProjectScopeResources } from './api/project-scope.js';
 import type { PulseFreshness } from './api/refresh-state.js';
 import { BrandMark } from './components/brand-mark.js';
 import { CommandPalette } from './components/command-palette.js';
+import { DetailDrawer } from './components/detail-drawer.js';
 import { NavIcon } from './components/nav-icon.js';
 import type { ResourceState } from './components/panel.js';
 import { StatusChip } from './components/status-chip.js';
 import { nextTheme, THEME_LABELS, useTheme } from './components/use-theme.js';
 import {
-  InspectorEmpty,
   InspectorPanel,
+  inspectorTitle,
   type InspectorSelection,
 } from './inspectors/inspector-panel.js';
 import type { GraphSeed } from './routes/graph-explorer-view.js';
@@ -29,6 +30,7 @@ import type { ConfigResources } from './api/config-scope.js';
 import type { LeaseResources } from './api/lease-scope.js';
 import { ConfigView } from './routes/config-view.js';
 import type { MessageResources } from './api/messages-scope.js';
+import type { MessageMutations } from './api/message-mutations.js';
 import { MessagesView } from './routes/messages-view.js';
 import { OptimizationView } from './routes/optimization-view.js';
 import { RuntimeView } from './routes/runtime-view.js';
@@ -186,57 +188,6 @@ function connectionLabel(state: WebSocketState): string {
   return 'Realtime disconnected';
 }
 
-/**
- * The drawer shares the inspector's column and therefore its contract
- * (inspector-panel.tsx): Escape closes, focus returns to what opened it,
- * and there is no focus trap because nothing behind the pane is inert.
- */
-function ProjectEvidenceDrawer({
-  title,
-  onClose,
-  children,
-}: {
-  title: string;
-  onClose: () => void;
-  children: ReactNode;
-}) {
-  const closeButton = useRef<HTMLButtonElement | null>(null);
-  const returnFocus = useRef<HTMLElement | null>(
-    document.activeElement instanceof HTMLElement ? document.activeElement : null,
-  );
-  const close = useCallback(() => {
-    const target = returnFocus.current;
-    onClose();
-    queueMicrotask(() => target?.focus());
-  }, [onClose]);
-  useEffect(() => {
-    closeButton.current?.focus();
-  }, []);
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      close();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [close]);
-  return (
-    <aside className="inspector inspector--drawer" aria-label="Project evidence">
-      <header>
-        <div>
-          <p className="eyebrow">Scoped evidence</p>
-          <h2>{title}</h2>
-        </div>
-        <button ref={closeButton} type="button" aria-label="Close project evidence" onClick={close}>
-          ×
-        </button>
-      </header>
-      <div className="inspector__body">{children}</div>
-    </aside>
-  );
-}
-
 export function DashboardApp({
   snapshot,
   websocketState,
@@ -254,6 +205,7 @@ export function DashboardApp({
   configResources = {},
   configLoading = false,
   configMutations,
+  messageMutations,
   onConfigMutated,
   agentPairResources = {},
   agentPairLoading = false,
@@ -288,6 +240,8 @@ export function DashboardApp({
    * this file's tests do — carries no mutation capability at all.
    */
   configMutations?: ConfigMutations | undefined;
+  /** Absent keeps the sessions route observational and removes Ask actions. */
+  messageMutations?: MessageMutations | undefined;
   onConfigMutated?: (() => void) | undefined;
   agentPairResources?: Partial<AgentPairResources>;
   /** The pair-scoped reads have not returned yet. */
@@ -328,7 +282,13 @@ export function DashboardApp({
   const graphSeeds = useMemo(() => graphSeedsOf(snapshot), [snapshot]);
 
   useEffect(() => {
-    const updateRoute = () => setRoute(parseRoute(window.location.hash));
+    const updateRoute = () => {
+      // Route-local and inspector selections share one modal surface. Closing
+      // the inspector in the same hash transition prevents two focus traps
+      // and two scroll-lock owners from mounting at once.
+      setSelection(undefined);
+      setRoute(parseRoute(window.location.hash));
+    };
     window.addEventListener('hashchange', updateRoute);
     return () => window.removeEventListener('hashchange', updateRoute);
   }, []);
@@ -567,12 +527,25 @@ export function DashboardApp({
           ) : route.name === 'sessions' ? (
             <SessionsView
               snapshot={scoped}
+              {...(messageMutations === undefined ? {} : { messageMutations })}
+              onMessageCreated={(correlationId) => {
+                window.location.hash = routeHref({ name: 'messages', correlationId });
+              }}
               onOpenSession={(session, opener) =>
                 openInspector({ kind: 'session', sessionId: session.id }, opener)
               }
             />
           ) : route.name === 'messages' ? (
-            <MessagesView messages={messageResources.messages} loading={messagesLoading} />
+            <MessagesView
+              messages={messageResources.messages}
+              loading={messagesLoading}
+              onCloseRoutedDetail={() => {
+                window.location.hash = routeHref({ name: 'messages' });
+              }}
+              {...(route.correlationId === undefined
+                ? {}
+                : { selectedCorrelationId: route.correlationId })}
+            />
           ) : route.name === 'capabilities' ? (
             <CapabilitiesView
               capabilities={capabilityCatalogResources.capabilities}
@@ -644,11 +617,7 @@ export function DashboardApp({
               }}
             />
           ) : (
-            /*
-             * The docked pane is permanently visible, so the row it is showing
-             * has to be identifiable in the list too — otherwise the inspector
-             * describes a row the reader has to find again by eye.
-             */
+            /* The selected row stays identifiable while its overlay is open. */
             <PulseView
               snapshot={scoped}
               websocketState={websocketState}
@@ -667,16 +636,28 @@ export function DashboardApp({
           )}
         </div>
       </main>
-      {/* Grid column three. Permanently mounted, so it keeps its landmark and
-          its accessible name whether or not anything is selected — an overlay
-          that appears and disappears was a different contract, and the empty
-          state is what a docked pane needs instead. */}
-      {selection === undefined && route.name === 'projects' && route.projectId !== undefined ? (
-        <ProjectEvidenceDrawer
+      {selection !== undefined ? (
+        <DetailDrawer
+          eyebrow="Read-only evidence"
+          title={inspectorTitle(selection)}
+          onClose={closeInspector}
+        >
+          <InspectorPanel
+            selection={selection}
+            activity={displayedActivity.events}
+            projects={snapshot.projects}
+            sessions={snapshot.sessions}
+            onNavigate={setSelection}
+          />
+        </DetailDrawer>
+      ) : route.name === 'projects' && route.projectId !== undefined ? (
+        <DetailDrawer
           key={route.projectId}
-          title={
+          eyebrow="Scoped evidence"
+          title="Project evidence"
+          meta={
             snapshot.projects.find((project) => project.id === route.projectId)?.name ??
-            'Project evidence'
+            route.projectId
           }
           onClose={() => {
             window.location.hash = routeHref({ name: 'projects' });
@@ -700,19 +681,8 @@ export function DashboardApp({
               });
             }}
           />
-        </ProjectEvidenceDrawer>
-      ) : selection === undefined ? (
-        <InspectorEmpty />
-      ) : (
-        <InspectorPanel
-          selection={selection}
-          activity={displayedActivity.events}
-          projects={snapshot.projects}
-          sessions={snapshot.sessions}
-          onNavigate={setSelection}
-          onClose={closeInspector}
-        />
-      )}
+        </DetailDrawer>
+      ) : null}
     </div>
   );
 }

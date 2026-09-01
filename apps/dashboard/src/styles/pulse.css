@@ -1,10 +1,9 @@
 /*
  * Pulse asks its own width, not the window's.
  *
- * The mockup was drawn with no docked inspector, so its row-2 pair had the
- * whole window. Here the rail and the inspector take 564 px before any content
- * exists, and a media query cannot see that: at 1440 the viewport says "wide"
- * while the content column is 836 px. Measured, the four-column work row needs
+ * The fixed rail reduces the space available to the dashboard content, and a
+ * media query cannot see that directly: at 1440 the viewport says "wide" while
+ * the content column is narrower. Measured, the four-column work row needs
  * about 620 px, so a viewport-driven layout put it side by side with Project
  * Pulse at 511 px and clipped two of its columns.
  */
@@ -191,6 +190,22 @@ a.stat:focus-visible {
   color: var(--text-muted);
   font: 12px var(--font-mono);
 }
+.panel__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--panel-pad-y) var(--panel-pad-x) var(--space-4);
+}
+.panel__body > * {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+.panel__body > .empty-state {
+  padding: 0;
+}
+
 .empty-state {
   margin: 0;
   padding: var(--space-6) var(--panel-pad-x);

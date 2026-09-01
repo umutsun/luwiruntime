@@ -11,8 +11,15 @@ import {
   type DriftSeverity,
 } from '../api/config-scope.js';
 import { ConfirmDialog } from '../components/confirm-dialog.js';
+import { DetailDrawer } from '../components/detail-drawer.js';
 import { IdBadge } from '../components/id-badge.js';
-import { Panel, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
+import {
+  Panel,
+  PanelBody,
+  ResourcePanel,
+  TableWrap,
+  type ResourceState,
+} from '../components/panel.js';
 import { StatusChip, type StatusTone } from '../components/status-chip.js';
 
 /**
@@ -151,61 +158,63 @@ function PlanForm({
 
   return (
     <Panel title="New plan" meta="Prepares changes; writes nothing until applied">
-      <div className="plan-form">
-        <label htmlFor="plan-form-agent">Agent</label>
-        <select
-          id="plan-form-agent"
-          value={agentId}
-          disabled={busy}
-          onChange={(event) => setAgentId(event.target.value)}
-        >
-          {agents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {agent.displayName}
-            </option>
-          ))}
-        </select>
-
-        <label htmlFor="plan-form-adopt">
-          <input
-            id="plan-form-adopt"
-            type="checkbox"
-            checked={adoptUnmanaged}
+      <PanelBody>
+        <div className="plan-form">
+          <label htmlFor="plan-form-agent">Agent</label>
+          <select
+            id="plan-form-agent"
+            value={agentId}
             disabled={busy}
-            onChange={(event) => setAdoptUnmanaged(event.target.checked)}
-          />
-          Adopt files LUWI does not already manage
-        </label>
+            onChange={(event) => setAgentId(event.target.value)}
+          >
+            {agents.map((agent) => (
+              <option key={agent.id} value={agent.id}>
+                {agent.displayName}
+              </option>
+            ))}
+          </select>
 
-        <div className="plan-form__actions">
-          <button
-            type="button"
-            disabled={busy || agentId === ''}
-            onClick={() => run(mutations.createImportPlan)}
-          >
-            Import plan
-          </button>
-          <button
-            type="button"
-            disabled={busy || agentId === ''}
-            onClick={() => run(mutations.createRenderPlan)}
-          >
-            Render plan
-          </button>
+          <label htmlFor="plan-form-adopt">
+            <input
+              id="plan-form-adopt"
+              type="checkbox"
+              checked={adoptUnmanaged}
+              disabled={busy}
+              onChange={(event) => setAdoptUnmanaged(event.target.checked)}
+            />
+            Adopt files LUWI does not already manage
+          </label>
+
+          <div className="plan-form__actions">
+            <button
+              type="button"
+              disabled={busy || agentId === ''}
+              onClick={() => run(mutations.createImportPlan)}
+            >
+              Import plan
+            </button>
+            <button
+              type="button"
+              disabled={busy || agentId === ''}
+              onClick={() => run(mutations.createRenderPlan)}
+            >
+              Render plan
+            </button>
+          </div>
         </div>
-      </div>
-      <OutcomeLine outcome={outcome} />
-      <p className="bounded-note">
-        An import plan brings the agent&apos;s existing native configuration under management. A
-        render plan writes what LUWI would produce. Neither touches a file until it is applied.
-      </p>
+        <OutcomeLine outcome={outcome} />
+        <p className="bounded-note">
+          An import plan brings the agent&apos;s existing native configuration under management. A
+          render plan writes what LUWI would produce. Neither touches a file until it is applied.
+        </p>
+      </PanelBody>
     </Panel>
   );
 }
 
 function PlanDetail({ plan }: { plan: ConfigPlanRecord }) {
   return (
-    <Panel title="Plan detail" meta={plan.kind}>
+    <div className="detail-content">
       <dl className="key-values">
         <div>
           <dt>Agent</dt>
@@ -277,13 +286,13 @@ function PlanDetail({ plan }: { plan: ConfigPlanRecord }) {
         The diff is the one the daemon recorded, already redacted at the source. This view does not
         redact it a second time.
       </p>
-    </Panel>
+    </div>
   );
 }
 
 function SnapshotDetail({ snapshot }: { snapshot: ConfigSnapshotRecord }) {
   return (
-    <Panel title="Snapshot detail" meta={snapshot.adapterVersion}>
+    <div className="detail-content">
       <dl className="key-values">
         <div>
           <dt>Plan</dt>
@@ -346,7 +355,7 @@ function SnapshotDetail({ snapshot }: { snapshot: ConfigSnapshotRecord }) {
           ))}
         </tbody>
       </TableWrap>
-    </Panel>
+    </div>
   );
 }
 
@@ -368,8 +377,9 @@ export function ConfigView({
   onMutated?: (() => void) | undefined;
   loading?: boolean;
 }) {
-  const [selectedPlanId, setSelectedPlanId] = useState<string>();
-  const [selectedSnapshotId, setSelectedSnapshotId] = useState<string>();
+  const [selection, setSelection] = useState<
+    { kind: 'plan' | 'snapshot'; id: string } | undefined
+  >();
   const [pendingPlan, setPendingPlan] = useState<ConfigPlanRecord>();
   const [busy, setBusy] = useState(false);
   const [planOutcome, setPlanOutcome] = useState<Outcome>();
@@ -377,8 +387,12 @@ export function ConfigView({
 
   const allPlans = plans?.state === 'ready' ? plans.data : [];
   const allSnapshots = snapshots?.state === 'ready' ? snapshots.data : [];
-  const selectedPlan = allPlans.find((plan) => plan.id === selectedPlanId);
-  const selectedSnapshot = allSnapshots.find((snapshot) => snapshot.id === selectedSnapshotId);
+  const selectedPlan =
+    selection?.kind === 'plan' ? allPlans.find((plan) => plan.id === selection.id) : undefined;
+  const selectedSnapshot =
+    selection?.kind === 'snapshot'
+      ? allSnapshots.find((snapshot) => snapshot.id === selection.id)
+      : undefined;
   const notifyMutated = onMutated ?? (() => undefined);
 
   const confirmApply = () => {
@@ -507,7 +521,10 @@ export function ConfigView({
               {value.map((plan) => {
                 const counts = changeSummary(plan.changes);
                 return (
-                  <tr key={plan.id} aria-selected={plan.id === selectedPlanId}>
+                  <tr
+                    key={plan.id}
+                    aria-selected={selection?.kind === 'plan' && plan.id === selection.id}
+                  >
                     <td>
                       <IdBadge id={plan.id} label="plan" />
                     </td>
@@ -534,14 +551,16 @@ export function ConfigView({
                     <td>
                       <button
                         type="button"
-                        aria-label={`${plan.id === selectedPlanId ? 'Hide' : 'Open'} ${plan.id}`}
-                        onClick={() =>
-                          setSelectedPlanId((current) =>
-                            current === plan.id ? undefined : plan.id,
-                          )
-                        }
+                        aria-label={`${selection?.kind === 'plan' && plan.id === selection.id ? 'Hide' : 'Open'} ${plan.id}`}
+                        onClick={() => {
+                          setSelection((current) =>
+                            current?.kind === 'plan' && current.id === plan.id
+                              ? undefined
+                              : { kind: 'plan', id: plan.id },
+                          );
+                        }}
                       >
-                        {plan.id === selectedPlanId ? 'Hide' : 'Open'}
+                        {selection?.kind === 'plan' && plan.id === selection.id ? 'Hide' : 'Open'}
                       </button>
                     </td>
                     {/*
@@ -575,8 +594,6 @@ export function ConfigView({
 
       <OutcomeLine outcome={planOutcome} />
 
-      {selectedPlan === undefined ? null : <PlanDetail plan={selectedPlan} />}
-
       <ResourcePanel<ConfigSnapshotRecord[]>
         title="Configuration snapshots"
         meta={snapshots?.state === 'ready' ? `${String(allSnapshots.length)} retained` : undefined}
@@ -601,7 +618,10 @@ export function ConfigView({
             </thead>
             <tbody>
               {value.map((snapshot) => (
-                <tr key={snapshot.id} aria-selected={snapshot.id === selectedSnapshotId}>
+                <tr
+                  key={snapshot.id}
+                  aria-selected={selection?.kind === 'snapshot' && snapshot.id === selection.id}
+                >
                   <td>
                     <IdBadge id={snapshot.id} label="snapshot" />
                   </td>
@@ -617,14 +637,18 @@ export function ConfigView({
                   <td>
                     <button
                       type="button"
-                      aria-label={`${snapshot.id === selectedSnapshotId ? 'Hide' : 'Open'} ${snapshot.id}`}
-                      onClick={() =>
-                        setSelectedSnapshotId((current) =>
-                          current === snapshot.id ? undefined : snapshot.id,
-                        )
-                      }
+                      aria-label={`${selection?.kind === 'snapshot' && snapshot.id === selection.id ? 'Hide' : 'Open'} ${snapshot.id}`}
+                      onClick={() => {
+                        setSelection((current) =>
+                          current?.kind === 'snapshot' && current.id === snapshot.id
+                            ? undefined
+                            : { kind: 'snapshot', id: snapshot.id },
+                        );
+                      }}
                     >
-                      {snapshot.id === selectedSnapshotId ? 'Hide' : 'Open'}
+                      {selection?.kind === 'snapshot' && snapshot.id === selection.id
+                        ? 'Hide'
+                        : 'Open'}
                     </button>
                   </td>
                   {mutations === undefined ? null : (
@@ -658,7 +682,27 @@ export function ConfigView({
         )}
       </ResourcePanel>
 
-      {selectedSnapshot === undefined ? null : <SnapshotDetail snapshot={selectedSnapshot} />}
+      {selectedPlan === undefined ? null : (
+        <DetailDrawer
+          eyebrow="Configuration evidence"
+          title="Plan detail"
+          meta={selectedPlan.kind}
+          onClose={() => setSelection(undefined)}
+        >
+          <PlanDetail plan={selectedPlan} />
+        </DetailDrawer>
+      )}
+
+      {selectedSnapshot === undefined ? null : (
+        <DetailDrawer
+          eyebrow="Configuration evidence"
+          title="Snapshot detail"
+          meta={selectedSnapshot.adapterVersion}
+          onClose={() => setSelection(undefined)}
+        >
+          <SnapshotDetail snapshot={selectedSnapshot} />
+        </DetailDrawer>
+      )}
 
       {pendingPlan === undefined ? null : (
         <ConfirmDialog

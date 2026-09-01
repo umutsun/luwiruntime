@@ -305,7 +305,7 @@ describe('Active Work', () => {
     expect(document.body.textContent).not.toMatch(/lease conflict|because/i);
   });
 
-  it('selects the whole row into the docked inspector, keeping its action name', () => {
+  it('opens the detail drawer from the whole row, keeping its action name', () => {
     const onOpenSession = vi.fn();
     renderPulse(withWork(), { onOpenSession });
 
@@ -314,7 +314,7 @@ describe('Active Work', () => {
     expect(onOpenSession).toHaveBeenCalledOnce();
   });
 
-  it('marks the row the docked inspector is currently showing', () => {
+  it('marks the row the detail drawer is currently showing', () => {
     const { container } = renderPulse(withWork(), { selectedSessionId: 'session-1' });
 
     expect(container.querySelector('.work-row--selected')).toBeTruthy();

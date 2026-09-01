@@ -3,7 +3,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { AttributionConfidenceChip, Panel, ResourcePanel } from './panel.js';
+import { AttributionConfidenceChip, Panel, PanelBody, ResourcePanel } from './panel.js';
 
 afterEach(cleanup);
 
@@ -79,6 +79,20 @@ describe('ResourcePanel', () => {
     render(panel({ resource: undefined, loading: true }));
 
     expect(screen.getByText(/loading/i).getAttribute('aria-busy')).toBe('true');
+  });
+});
+
+describe('PanelBody', () => {
+  it('keeps the shared inset class while accepting a route-specific class', () => {
+    render(
+      <PanelBody className="route-controls">
+        <span>Controls</span>
+      </PanelBody>,
+    );
+
+    expect(screen.getByText('Controls').parentElement?.className).toBe(
+      'panel__body route-controls',
+    );
   });
 });
 
@@ -177,5 +191,20 @@ describe('collapsible Panel', () => {
 
     expect(screen.getByText('rows')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /projection/i })).toBeNull();
+  });
+});
+
+describe('PanelBody', () => {
+  it('provides the shared inset and vertical rhythm hook for non-table panel content', () => {
+    render(
+      <Panel title="New plan">
+        <PanelBody>
+          <label htmlFor="agent">Agent</label>
+          <select id="agent" />
+        </PanelBody>
+      </Panel>,
+    );
+
+    expect(screen.getByLabelText('Agent').parentElement?.className).toBe('panel__body');
   });
 });

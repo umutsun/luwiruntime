@@ -9,19 +9,19 @@
  * the hash is user-editable and a thrown parse would blank the shell.
  */
 
-/** Matches `identifierSchema` in `@luwi/protocol`, which is `min(1).max(128)`. */
-const MAX_PROJECT_ID_LENGTH = 128;
+/** Matches bounded identifiers in `@luwi/protocol`, which are `min(1).max(128)`. */
+const MAX_IDENTIFIER_LENGTH = 128;
 
 /**
- * Routes that carry no parameter. `projects` is handled separately because it
- * can carry a project id, and `pulse` is the fallback rather than a match.
+ * Routes that carry no parameter. `projects` and `messages` are handled
+ * separately because they can carry bounded identifiers, and `pulse` is the
+ * fallback rather than a match.
  */
 export const SIMPLE_ROUTES = [
   'activity',
   'runtime',
   'sessions',
   'agents',
-  'messages',
   'capabilities',
   'config',
   'usage',
@@ -35,6 +35,7 @@ type SimpleRouteName = (typeof SIMPLE_ROUTES)[number];
 export type DashboardRoute =
   | { name: 'pulse' }
   | { name: SimpleRouteName }
+  | { name: 'messages'; correlationId?: string }
   /**
    * `agentId` is only meaningful with a `projectId`: the reads it selects are
    * pair-scoped, so an agent without a project addresses nothing.
@@ -64,10 +65,20 @@ export function parseRoute(hash: string): DashboardRoute {
   const [head, second] = segments;
   if (isSimpleRoute(head) && segments.length === 1) return { name: head };
 
+  if (head === 'messages') {
+    if (second === undefined) return { name: 'messages' };
+    const correlationId = decodeSegment(second).trim();
+    return segments.length === 2 &&
+      correlationId !== '' &&
+      correlationId.length <= MAX_IDENTIFIER_LENGTH
+      ? { name: 'messages', correlationId }
+      : { name: 'messages' };
+  }
+
   if (head === 'projects') {
     if (second === undefined) return { name: 'projects' };
     const projectId = decodeSegment(second).trim();
-    if (projectId === '' || projectId.length > MAX_PROJECT_ID_LENGTH) {
+    if (projectId === '' || projectId.length > MAX_IDENTIFIER_LENGTH) {
       return { name: 'projects' };
     }
     // `projects/<id>/agents/<agentId>`. Anything else after the project id is
@@ -76,7 +87,7 @@ export function parseRoute(hash: string): DashboardRoute {
     const [, , third, fourth] = segments;
     if (third === 'agents' && fourth !== undefined) {
       const agentId = decodeSegment(fourth).trim();
-      if (agentId !== '' && agentId.length <= MAX_PROJECT_ID_LENGTH) {
+      if (agentId !== '' && agentId.length <= MAX_IDENTIFIER_LENGTH) {
         return { name: 'projects', projectId, agentId };
       }
     }
@@ -87,6 +98,11 @@ export function parseRoute(hash: string): DashboardRoute {
 }
 
 export function routeHref(route: DashboardRoute): string {
+  if (route.name === 'messages') {
+    return route.correlationId === undefined
+      ? '#/messages'
+      : `#/messages/${encodeURIComponent(route.correlationId)}`;
+  }
   if (route.name === 'projects') {
     // Encoding keeps an id containing `/` from forging an extra path segment.
     if (route.projectId === undefined) return '#/projects';

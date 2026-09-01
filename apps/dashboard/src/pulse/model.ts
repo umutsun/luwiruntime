@@ -3,7 +3,13 @@ import type { DashboardEvent } from '../realtime/schema.js';
 export type Availability<T> = { state: 'ready'; data: T } | { state: 'unavailable' };
 export type ObservedBoolean = boolean | 'unknown';
 
-export type PulseProject = { id: string; name: string; localPath: string };
+export type PulseProject = {
+  id: string;
+  name: string;
+  localPath: string;
+  repositoryUrl?: string;
+  defaultBranch?: string;
+};
 export type PulseSession = {
   id: string;
   agentId: string;

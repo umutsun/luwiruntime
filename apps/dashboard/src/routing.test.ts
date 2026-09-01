@@ -26,6 +26,14 @@ describe('parseRoute', () => {
     }
   });
 
+  it('resolves a correlation-scoped messages route', () => {
+    expect(parseRoute('#/messages/corr%2F1')).toEqual({
+      name: 'messages',
+      correlationId: 'corr/1',
+    });
+    expect(parseRoute(`#/messages/${'a'.repeat(129)}`)).toEqual({ name: 'messages' });
+  });
+
   it('resolves the projects list without a selection', () => {
     expect(parseRoute('#/projects')).toEqual({ name: 'projects' });
     expect(parseRoute('#/projects/')).toEqual({ name: 'projects' });
@@ -67,6 +75,7 @@ describe('routeHref', () => {
     [{ name: 'sessions' }, '#/sessions'],
     [{ name: 'agents' }, '#/agents'],
     [{ name: 'messages' }, '#/messages'],
+    [{ name: 'messages', correlationId: 'corr/1' }, '#/messages/corr%2F1'],
     [{ name: 'capabilities' }, '#/capabilities'],
     [{ name: 'config' }, '#/config'],
     [{ name: 'usage' }, '#/usage'],

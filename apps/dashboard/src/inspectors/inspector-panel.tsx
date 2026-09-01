@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 
 import { Count } from '../components/panel.js';
 import type { CountValue, PulseProject, PulseSession } from '../pulse/model.js';
@@ -12,6 +12,10 @@ export type InspectorSelection =
   | { kind: 'project'; projectId: string }
   | { kind: 'session'; sessionId: string }
   | { kind: 'event'; streamId: string };
+
+export function inspectorTitle(selection: InspectorSelection): string {
+  return `${selection.kind[0]?.toUpperCase()}${selection.kind.slice(1)} inspector`;
+}
 
 const MAX_JSON_CHARACTERS = 8192;
 export const RELATED_ACTIVITY_LIMIT = 20;
@@ -153,7 +157,6 @@ export function InspectorPanel({
   sessions = [],
   onNavigate,
   now = systemNow,
-  onClose,
 }: {
   selection: InspectorSelection;
   activity?: readonly DashboardEvent[];
@@ -161,9 +164,7 @@ export function InspectorPanel({
   sessions?: readonly SessionInspection[];
   onNavigate?: (selection: InspectorSelection) => void;
   now?: () => Date;
-  onClose: () => void;
 }) {
-  const closeButton = useRef<HTMLButtonElement>(null);
   const selectedProject =
     selection.kind === 'project'
       ? projects.find((candidate) => candidate.id === selection.projectId)
@@ -193,55 +194,6 @@ export function InspectorPanel({
       : undefined;
   const previousClockTarget = useRef(activeSessionKey);
   const [clockNowMs, setClockNowMs] = useState(eligibilityNowMs);
-  const returnFocus = useRef<HTMLElement | null>(
-    document.activeElement instanceof HTMLElement ? document.activeElement : null,
-  );
-  const close = useCallback(() => {
-    const target = returnFocus.current;
-    onClose();
-    queueMicrotask(() => target?.focus());
-  }, [onClose]);
-  /*
-   * Two effects, because they answer to different things.
-   *
-   * Focus belongs to the *subject*: it moves when the inspector opens on
-   * something new, and never otherwise. It used to be keyed on `close`, which
-   * is derived from an inline `onClose` the parent recreates every render — so
-   * every accepted realtime event yanked focus back to the Close button, out
-   * from under anyone who had moved it inside the dialog.
-   */
-  const selectionKey =
-    selection.kind === 'project'
-      ? selection.projectId
-      : selection.kind === 'session'
-        ? selection.sessionId
-        : selection.streamId;
-  useEffect(() => {
-    closeButton.current?.focus();
-  }, [selection.kind, selectionKey]);
-
-  /* The Escape listener answers to `close`, and only to that. */
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      close();
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [close]);
-
-  /*
-   * There is deliberately no focus trap here any more.
-   *
-   * The inspector used to be an overlay dialog with `aria-modal="true"`, which
-   * removes everything outside it from the assistive tree — so Tab had to be
-   * contained or a screen-reader user could land on controls their reader could
-   * no longer describe. The pane is docked now: it is permanently visible
-   * beside the content, nothing behind it is inert, and trapping Tab in a region
-   * the user never "entered" would strand them. Tab passes through, and Escape
-   * still returns to whatever opened it.
-   */
   useEffect(() => {
     if (previousClockTarget.current !== activeSessionKey) {
       previousClockTarget.current = activeSessionKey;
@@ -252,7 +204,6 @@ export function InspectorPanel({
     return () => clearInterval(timer);
   }, [activeSessionKey, eligibilityNowMs, now]);
 
-  const title = `${selection.kind[0]?.toUpperCase()}${selection.kind.slice(1)} inspector`;
   const projectEvents =
     selection.kind === 'project'
       ? relatedActivity(activity, (event) => event.projectId === selection.projectId)
@@ -273,149 +224,106 @@ export function InspectorPanel({
   const duration =
     selectedSession === undefined ? undefined : sessionDuration(selectedSession, clockNowMs);
   return (
-    <aside className="inspector" aria-labelledby="inspector-title">
-      <header>
-        <div>
-          <p className="eyebrow">Read-only evidence</p>
-          <h2 id="inspector-title">{title}</h2>
-        </div>
-        <button ref={closeButton} type="button" onClick={close} aria-label="Close inspector">
-          ×
-        </button>
-      </header>
-      <div className="inspector__body">
-        {selection.kind === 'project' ? (
-          selectedProject === undefined ? (
-            <p className="empty-state">Selected project unavailable</p>
-          ) : (
-            <>
-              <DetailList
-                rows={[
-                  ['Name', selectedProject.name],
-                  ['Project ID', selectedProject.id],
-                  ['Local path', selectedProject.localPath],
-                  ['Active sessions', <Count value={selectedProject.activeSessions} />],
-                ]}
-              />
-              <RelatedActivity events={projectEvents} />
-            </>
-          )
-        ) : selection.kind === 'session' ? (
-          selectedSession === undefined ? (
-            <p className="empty-state">Selected session unavailable</p>
-          ) : (
-            <>
-              <DetailList
-                rows={[
-                  ['Session ID', selectedSession.id],
-                  ['Agent ID', selectedSession.agentId],
-                  ['Project', selectedSession.projectName],
-                  ['Project ID', selectedSession.projectId],
-                  ['Status', selectedSession.statusLabel],
-                  ['Presence', selectedSession.presence],
-                  ['Branch', selectedSession.branch],
-                  ['Started', selectedSession.startedAt],
-                  ['Last heartbeat', selectedSession.lastHeartbeatAt],
-                  [
-                    'Duration',
-                    <span aria-label={`Session duration: ${duration}`}>{duration}</span>,
-                  ],
-                ]}
-              />
-              <RelatedActivity events={sessionEvents} />
-            </>
-          )
-        ) : selectedEvent === undefined ? (
-          <p className="empty-state">
-            Selected event unavailable from the retained Activity window
-          </p>
+    <div className="inspector-content">
+      {selection.kind === 'project' ? (
+        selectedProject === undefined ? (
+          <p className="empty-state">Selected project unavailable</p>
         ) : (
           <>
             <DetailList
               rows={[
-                ['Event type', selectedEvent.type],
-                ['Stream ID', selectedEvent.streamId],
-                ['Event ID', selectedEvent.id],
-                ['Occurred at', selectedEvent.occurredAt],
-                ['Workspace ID', selectedEvent.workspaceId],
-                ['Project ID', selectedEvent.projectId],
-                ['Agent ID', selectedEvent.agentId],
-                ['Session ID', selectedEvent.sessionId],
-                ['Correlation ID', selectedEvent.correlationId],
-                ['Causation ID', selectedEvent.causationId],
+                ['Name', selectedProject.name],
+                ['Project ID', selectedProject.id],
+                ['Local path', selectedProject.localPath],
+                ['Active sessions', <Count value={selectedProject.activeSessions} />],
               ]}
             />
-            <InspectorSection title="Payload" defaultCollapsed>
-              <pre className="inspector-json">
-                <code>{formatSafeJson(selectedEvent.payload)}</code>
-              </pre>
-            </InspectorSection>
-            {selectedEvent.projectId === undefined &&
-            selectedEvent.sessionId === undefined ? null : (
-              <InspectorSection title="Related entities" className="inspector-navigation">
-                {selectedEvent.projectId === undefined
-                  ? null
-                  : (() => {
-                      const project = projects.find(
-                        (candidate) => candidate.id === selectedEvent.projectId,
-                      );
-                      return project === undefined ? (
-                        <p>Referenced project unavailable</p>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => onNavigate?.({ kind: 'project', projectId: project.id })}
-                        >
-                          Open project inspector
-                        </button>
-                      );
-                    })()}
-                {selectedEvent.sessionId === undefined ? null : eventSession === undefined ? (
-                  <p>Referenced session unavailable</p>
-                ) : eventSessionProjectMismatch ? (
-                  <p>
-                    Referenced session unavailable because its project does not match the event
-                    project.
-                  </p>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => onNavigate?.({ kind: 'session', sessionId: eventSession.id })}
-                  >
-                    Open session inspector
-                  </button>
-                )}
-              </InspectorSection>
-            )}
+            <RelatedActivity events={projectEvents} />
           </>
-        )}
-      </div>
-    </aside>
-  );
-}
-
-/**
- * What the docked pane shows when nothing is selected.
- *
- * A docked column has a state an overlay never had: present, and empty. Leaving
- * it blank reads as a rendering fault, so it names itself and says what fills
- * it. It is the same landmark either way, so the region's accessible name does
- * not change as the selection comes and goes.
- */
-export function InspectorEmpty() {
-  return (
-    <aside className="inspector inspector--empty" aria-labelledby="inspector-title">
-      <header>
-        <div>
-          <p className="eyebrow">Read-only evidence</p>
-          <h2 id="inspector-title">Inspector</h2>
-        </div>
-      </header>
-      <div className="inspector__body">
-        <p className="empty-state">
-          Select a project, session or event to inspect the evidence behind it.
-        </p>
-      </div>
-    </aside>
+        )
+      ) : selection.kind === 'session' ? (
+        selectedSession === undefined ? (
+          <p className="empty-state">Selected session unavailable</p>
+        ) : (
+          <>
+            <DetailList
+              rows={[
+                ['Session ID', selectedSession.id],
+                ['Agent ID', selectedSession.agentId],
+                ['Project', selectedSession.projectName],
+                ['Project ID', selectedSession.projectId],
+                ['Status', selectedSession.statusLabel],
+                ['Presence', selectedSession.presence],
+                ['Branch', selectedSession.branch],
+                ['Started', selectedSession.startedAt],
+                ['Last heartbeat', selectedSession.lastHeartbeatAt],
+                ['Duration', <span aria-label={`Session duration: ${duration}`}>{duration}</span>],
+              ]}
+            />
+            <RelatedActivity events={sessionEvents} />
+          </>
+        )
+      ) : selectedEvent === undefined ? (
+        <p className="empty-state">Selected event unavailable from the retained Activity window</p>
+      ) : (
+        <>
+          <DetailList
+            rows={[
+              ['Event type', selectedEvent.type],
+              ['Stream ID', selectedEvent.streamId],
+              ['Event ID', selectedEvent.id],
+              ['Occurred at', selectedEvent.occurredAt],
+              ['Workspace ID', selectedEvent.workspaceId],
+              ['Project ID', selectedEvent.projectId],
+              ['Agent ID', selectedEvent.agentId],
+              ['Session ID', selectedEvent.sessionId],
+              ['Correlation ID', selectedEvent.correlationId],
+              ['Causation ID', selectedEvent.causationId],
+            ]}
+          />
+          <InspectorSection title="Payload" defaultCollapsed>
+            <pre className="inspector-json">
+              <code>{formatSafeJson(selectedEvent.payload)}</code>
+            </pre>
+          </InspectorSection>
+          {selectedEvent.projectId === undefined && selectedEvent.sessionId === undefined ? null : (
+            <InspectorSection title="Related entities" className="inspector-navigation">
+              {selectedEvent.projectId === undefined
+                ? null
+                : (() => {
+                    const project = projects.find(
+                      (candidate) => candidate.id === selectedEvent.projectId,
+                    );
+                    return project === undefined ? (
+                      <p>Referenced project unavailable</p>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => onNavigate?.({ kind: 'project', projectId: project.id })}
+                      >
+                        Open project inspector
+                      </button>
+                    );
+                  })()}
+              {selectedEvent.sessionId === undefined ? null : eventSession === undefined ? (
+                <p>Referenced session unavailable</p>
+              ) : eventSessionProjectMismatch ? (
+                <p>
+                  Referenced session unavailable because its project does not match the event
+                  project.
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onNavigate?.({ kind: 'session', sessionId: eventSession.id })}
+                >
+                  Open session inspector
+                </button>
+              )}
+            </InspectorSection>
+          )}
+        </>
+      )}
+    </div>
   );
 }

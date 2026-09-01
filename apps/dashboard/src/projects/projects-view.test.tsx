@@ -19,7 +19,13 @@ function snapshotOf(overrides: Partial<PulseInput> = {}) {
     projects: {
       state: 'ready',
       data: [
-        { id: 'proj-1', name: 'LUWI Runtime', localPath: LONG_PATH },
+        {
+          id: 'proj-1',
+          name: 'LUWI Runtime',
+          localPath: LONG_PATH,
+          repositoryUrl: 'https://github.com/umutsun/registered-luwi.git',
+          defaultBranch: 'registered-main',
+        },
         { id: 'proj-2', name: 'Second', localPath: 'C:/work/second' },
       ],
     },
@@ -61,6 +67,7 @@ const gitData: ProjectGit = {
   branch: 'master',
   headSha: 'b'.repeat(40),
   defaultBranch: 'main',
+  remoteUrl: 'https://github.com/umutsun/luwiruntime.git',
   clean: false,
   stagedCount: 2,
   unstagedCount: 3,
@@ -258,10 +265,42 @@ describe('ProjectsView detail', () => {
     // Scoped to the summary: `master` now also appears in the branch list and
     // in the worktree table, which are separate assertions below.
     expect(within(panel).getByText('master', { selector: 'dd' })).toBeTruthy();
+    expect(within(panel).getByText('Observed default')).toBeTruthy();
+    expect(within(panel).getByText('Observed remote')).toBeTruthy();
+    expect(within(panel).getByText('Registered default')).toBeTruthy();
+    expect(within(panel).getByText('Registered remote')).toBeTruthy();
+    expect(within(panel).getByText('main', { selector: 'dd' })).toBeTruthy();
+    expect(within(panel).getByText('https://github.com/umutsun/luwiruntime.git')).toBeTruthy();
     expect(within(panel).getByTitle('b'.repeat(40))).toBeTruthy();
+    expect(within(panel).getByText('1 ahead / 0 behind')).toBeTruthy();
     expect(within(panel).getByText(/2 staged/i)).toBeTruthy();
     expect(within(panel).getByText(/3 unstaged/i)).toBeTruthy();
     expect(within(panel).getByText(/4 untracked/i)).toBeTruthy();
+  });
+
+  it('labels registered repository metadata separately when Git does not report it', () => {
+    const gitWithoutRegistryFacts = { ...gitData };
+    delete gitWithoutRegistryFacts.defaultBranch;
+    delete gitWithoutRegistryFacts.remoteUrl;
+
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: { ...readyScope, git: { state: 'ready', data: gitWithoutRegistryFacts } },
+    });
+
+    const panel = screen.getByRole('region', { name: /repository/i });
+    const observedDefault = within(panel).getByText('Observed default').closest('div');
+    const observedRemote = within(panel).getByText('Observed remote').closest('div');
+    const registeredDefault = within(panel).getByText('Registered default').closest('div');
+    const registeredRemote = within(panel).getByText('Registered remote').closest('div');
+    expect(within(observedDefault as HTMLElement).getByText('Not reported')).toBeTruthy();
+    expect(within(observedRemote as HTMLElement).getByText('Not reported')).toBeTruthy();
+    expect(within(registeredDefault as HTMLElement).getByText('registered-main')).toBeTruthy();
+    expect(
+      within(registeredRemote as HTMLElement).getByText(
+        'https://github.com/umutsun/registered-luwi.git',
+      ),
+    ).toBeTruthy();
   });
 
   it('distinguishes a never-scanned repository from an unavailable one', () => {

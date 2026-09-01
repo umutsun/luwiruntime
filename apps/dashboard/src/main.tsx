@@ -5,6 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
 import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
+import { createMessageMutations, type MessageMutations } from './api/message-mutations.js';
 import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
 import {
   intelligenceResourceKeys,
@@ -100,6 +101,7 @@ const client = createDaemonClient();
  * write. `product-independence.test.ts` enforces that separation.
  */
 const configMutations: ConfigMutations = createConfigMutations();
+const messageMutations: MessageMutations = createMessageMutations();
 
 /**
  * Bound once so the Graph explorer's load effect has a stable dependency; a new
@@ -510,6 +512,7 @@ function DashboardRoute() {
       configResources={configResources}
       configLoading={configLoading}
       configMutations={configMutations}
+      messageMutations={messageMutations}
       onConfigMutated={onConfigMutated}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
