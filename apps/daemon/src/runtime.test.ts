@@ -118,6 +118,28 @@ describe('daemon runtime', () => {
     expect(relay.connectCalls).toBe(0);
     expect(signals.listeners.size).toBe(0);
   });
+
+  it('defers the operational-graph rebuild to background work instead of blocking startup on it', () => {
+    // The rebuild is minutes of Redis work on a real datastore; awaiting it here
+    // gated the daemon's readiness on it, so a first start against real data
+    // timed out and — interrupted — left an orphaned rebuild lock. The successful
+    // startup path needs a real Redis, so the deferral invariant is asserted
+    // against the source, exactly like the ordering test above.
+    const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('const ensureIntelligenceHealthy');
+    const end = source.indexOf('refreshProject =', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start, end);
+
+    // It still short-circuits when the projection is already healthy...
+    expect(body).toContain("=== 'healthy'");
+    // ...and otherwise hands the rebuild to the background-work tracker rather
+    // than awaiting it inline (which gated readiness) or aborting startup.
+    expect(body).toContain('backgroundWork.run(');
+    expect(body).not.toContain('await intelligenceService.rebuildGraph');
+    expect(body).not.toContain('GRAPH_PROJECTION_DEGRADED');
+  });
 });
 
 const lapsingSession: SessionView = {

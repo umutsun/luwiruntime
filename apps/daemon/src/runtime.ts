@@ -19,7 +19,6 @@ import {
   ensureRealtimeStreamGroup,
   readLatestRuntimeEvents,
   REALTIME_CONSUMER_GROUP,
-  RedisRepositoryError,
   runMessageRetention,
   runStreamRetention,
   verifyOrLoadFunctionLibrary,
@@ -622,12 +621,19 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   intelligenceServiceReference.current = intelligenceService;
   const ensureIntelligenceHealthy = async (): Promise<void> => {
     if ((await intelligenceRepository.getGraphProjectionHealth()) === 'healthy') return;
-    await intelligenceService.rebuildGraph();
-    if ((await intelligenceRepository.getGraphProjectionHealth()) !== 'healthy') {
-      throw new RedisRepositoryError(
-        'GRAPH_PROJECTION_DEGRADED',
-        'The operational graph could not be reconciled.',
-      );
+    // The operational-graph rebuild is minutes of Redis work on a real datastore,
+    // and the projects, sessions, usage, capabilities, and messaging surfaces do
+    // not depend on it. Awaiting it here gated the daemon's readiness on it, so a
+    // first start against real data timed out and — interrupted mid-flight — logged
+    // REDIS_UNAVAILABLE against a healthy Redis. Defer it to the background-work
+    // tracker instead (still tracked, logged, and drained at shutdown) so a slow or
+    // failing rebuild degrades only the graph view rather than preventing startup.
+    const scheduled = backgroundWork.run(
+      () => intelligenceService.rebuildGraph().then(() => undefined),
+      (error) => app?.log.error({ err: error }, 'Startup operational-graph rebuild failed'),
+    );
+    if (!scheduled) {
+      app?.log.debug('Startup operational-graph rebuild skipped during drain');
     }
   };
   refreshProject = (projectId, reason) => {
