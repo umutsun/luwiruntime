@@ -60,8 +60,13 @@ export const runtimeInfoResponseSchema = z.object({
   }),
 });
 
+export const lifecycleStopResponseSchema = z.strictObject({
+  status: z.literal('stopping'),
+});
+
 export type RedisConnected = z.infer<typeof redisConnectedSchema>;
 export type RedisDisconnected = z.infer<typeof redisDisconnectedSchema>;
 export type RedisHealthResponse = z.infer<typeof redisHealthSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type RuntimeInfoResponse = z.infer<typeof runtimeInfoResponseSchema>;
+export type LifecycleStopResponse = z.infer<typeof lifecycleStopResponseSchema>;

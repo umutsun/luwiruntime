@@ -28,7 +28,15 @@ export {
   usageSummarySchema,
 } from './intelligence.js';
 export { leaseCollectionSchema } from './lease.js';
-export { messageCollectionResponseSchema } from './message.js';
+export {
+  MESSAGE_DEFAULT_TIMEOUT_MS,
+  MESSAGE_MAX_CONTENT_BYTES,
+  MESSAGE_MAX_SUBJECT_BYTES,
+  MESSAGE_MAX_TIMEOUT_MS,
+  messageCollectionResponseSchema,
+  messageCreateRequestSchema,
+  messageCreateResponseSchema,
+} from './message.js';
 export { projectCollectionResponseSchema } from './project.js';
 /**
  * From the leaf module, never from `runtime-api.js`: that file reaches
@@ -36,4 +44,8 @@ export { projectCollectionResponseSchema } from './project.js';
  * browser bundle.
  */
 export { publicErrorResponseSchema } from './public-error.js';
-export { healthResponseSchema, runtimeInfoResponseSchema } from './runtime-http.js';
+export {
+  healthResponseSchema,
+  lifecycleStopResponseSchema,
+  runtimeInfoResponseSchema,
+} from './runtime-http.js';

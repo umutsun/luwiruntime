@@ -104,6 +104,26 @@ describe('runtime repository project boundary', () => {
       code: 'REDIS_DATA_INVALID',
     });
   });
+
+  it('passes canonical project timestamps through the validated Function payload', async () => {
+    const client = new FakeCommandClient();
+    client.reply = JSON.stringify({ status: 'conflict', reason: 'hash_collision' });
+    const repository = createRuntimeRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+    const createdAt = '2026-08-01T10:00:00.000Z';
+    const updatedAt = '2026-08-02T10:00:00.000Z';
+
+    await repository.registerProject({
+      ...projectInput,
+      project: { ...projectInput.project, createdAt, updatedAt },
+    });
+
+    const payload = JSON.parse(client.commands[0]?.[8] ?? '{}') as Record<string, unknown>;
+    expect(payload).toMatchObject({ createdAt, updatedAt });
+  });
 });
 
 describe('runtime repository session boundary', () => {

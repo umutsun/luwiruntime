@@ -54,6 +54,13 @@ const grandchild: WindowsProcessIdentity = {
   executableName: 'node.exe',
   canonicalExecutablePath: 'C:\\Program Files\\nodejs\\node.exe',
 };
+const olderUnrelatedProcess: WindowsProcessIdentity = {
+  pid: 400,
+  parentPid: root.pid,
+  creationTicks: creationTicks(TEST_NOW_MS - 10_000),
+  executableName: 'unrelated.exe',
+  canonicalExecutablePath: 'C:\\Program Files\\Unrelated\\unrelated.exe',
+};
 
 const rootRequest = {
   rootPid: root.pid,
@@ -252,6 +259,28 @@ describe('WindowsOwnedProcessTreeCleaner', () => {
     expect(io.terminateExact).not.toHaveBeenCalled();
   });
 
+  it('does not adopt a process older than the live parent PID it names', async () => {
+    const io = ioWithSnapshots([
+      { status: 'ok', processes: [root, olderUnrelatedProcess] },
+      { status: 'ok', processes: [root, olderUnrelatedProcess] },
+      { status: 'ok', processes: [root, olderUnrelatedProcess] },
+      { status: 'ok', processes: [] },
+    ]);
+    const cleaner = new WindowsOwnedProcessTreeCleaner(io);
+
+    await expect(
+      cleaner.cleanup({
+        ...rootRequest,
+        taskkillPath: 'C:\\Windows\\System32\\taskkill.exe',
+        powershellPath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        timeoutMs: 500,
+      }),
+    ).resolves.toMatchObject({ cleaned: true, diagnostic: 'verified_fallback' });
+    expect(io.terminateTree).not.toHaveBeenCalled();
+    expect(io.terminateExact).toHaveBeenCalledWith(root);
+    expect(io.terminateExact).not.toHaveBeenCalledWith(olderUnrelatedProcess);
+  });
+
   it('keeps the same creation identity owned when Windows reparents it', async () => {
     const reparentedChild = { ...child, parentPid: 0 };
     const io = ioWithSnapshots(
@@ -298,6 +327,28 @@ describe('WindowsOwnedProcessTreeCleaner', () => {
       }),
     ).resolves.toMatchObject({ cleaned: true, diagnostic: 'verified_fallback' });
     expect(io.terminateExact).toHaveBeenCalledWith(pathUnavailable);
+  });
+
+  it('revalidates helper identity-change status when only canonical paths became unreadable', async () => {
+    const rootWithoutPath = { ...root, canonicalExecutablePath: undefined };
+    const childWithoutPath = { ...child, canonicalExecutablePath: undefined };
+    const io = ioWithSnapshots([
+      { status: 'ok', processes: [root, child] },
+      { status: 'identity_changed', processes: [rootWithoutPath, childWithoutPath] },
+      { status: 'ok', processes: [] },
+      { status: 'ok', processes: [] },
+    ]);
+    const cleaner = new WindowsOwnedProcessTreeCleaner(io);
+
+    await expect(
+      cleaner.cleanup({
+        ...rootRequest,
+        taskkillPath: 'C:\\Windows\\System32\\taskkill.exe',
+        powershellPath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        timeoutMs: 500,
+      }),
+    ).resolves.toMatchObject({ cleaned: true });
+    expect(io.terminateTree).toHaveBeenCalledOnce();
   });
 
   it('does not terminate a root PID that already belongs to another executable', async () => {
@@ -499,6 +550,47 @@ describe('WindowsOwnedProcessTreeCleaner', () => {
 });
 
 describe('NodeWindowsProcessTreeIo trusted helper lifecycle', () => {
+  it('normalizes an empty canonical path to unavailable identity evidence', async () => {
+    const powershellPath = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    const helperProcess = controllableUtility();
+    const helperIdentity: WindowsProcessIdentity = {
+      pid: helperProcess.pid,
+      parentPid: process.pid,
+      creationTicks: creationTicks(TEST_NOW_MS),
+      executableName: 'powershell.exe',
+      canonicalExecutablePath: powershellPath,
+    };
+    const pathUnavailable = { ...child, canonicalExecutablePath: '' };
+    const spawnProcess = vi.fn(() => {
+      queueMicrotask(() => {
+        helperProcess.stdout.emit(
+          'data',
+          Buffer.from(
+            `${JSON.stringify({ version: 1, kind: 'helper_identity', identity: helperIdentity })}\n${JSON.stringify({ version: 1, kind: 'process_snapshot', status: 'identity_changed', processes: [pathUnavailable] })}`,
+            'utf8',
+          ),
+        );
+        helperProcess.emit('close', 0);
+      });
+      return helperProcess;
+    });
+    const io = new NodeWindowsProcessTreeIo(spawnProcess as never);
+
+    await expect(
+      io.snapshot({
+        rootPid: root.pid,
+        rootIdentity: root,
+        knownIdentities: [child],
+        powershellPath,
+        timeoutMs: 100,
+      }),
+    ).resolves.toEqual({
+      status: 'identity_changed',
+      processes: [{ ...child, canonicalExecutablePath: undefined }],
+      helperIdentity,
+    });
+  });
+
   it('rejects a snapshot that omits the strict helper identity header', async () => {
     const child = controllableUtility();
     const spawnProcess = vi.fn(() => {

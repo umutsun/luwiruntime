@@ -4,6 +4,7 @@ import {
   agentDefinitionSchema,
   capabilityAssignmentRequestSchema,
   capabilityPackageSchema,
+  capabilityScanResponseSchema,
   configPlanSchema,
   configSnapshotSchema,
   contextFootprintSchema,
@@ -121,6 +122,62 @@ describe('Phase 3 control-plane contracts', () => {
         scope: 'project',
         enabled: true,
         settings: {},
+      }).success,
+    ).toBe(false);
+  });
+
+  it('validates bounded capability observation diagnostics separately from the catalogue', () => {
+    const observed = capabilityPackageSchema.parse({
+      id: 'observed:abc123',
+      kind: 'skill',
+      name: 'Review',
+      scope: 'global',
+      source: 'agent-native',
+      path: 'C:/fixture/.claude/skills/review',
+      checksum: 'a'.repeat(64),
+      compatibleAgentKinds: ['claude-code'],
+      requiredCapabilityIds: [],
+      requiredMcpIds: [],
+      enabled: true,
+      manifest: {
+        managementMode: 'observed',
+        observation: {
+          adapterId: 'claude-code',
+          root: 'C:/fixture/.claude/skills',
+          manifestPath: 'C:/fixture/.claude/skills/review/SKILL.md',
+          observedAt: timestamp,
+        },
+      },
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    expect(
+      capabilityScanResponseSchema.parse({
+        capabilities: [observed],
+        diagnostics: {
+          rootsScanned: 1,
+          rootsUnavailable: 2,
+          malformedManifests: 3,
+          ignoredEntries: 4,
+          conflictsSkipped: 5,
+          truncated: false,
+        },
+      }),
+    ).toMatchObject({
+      diagnostics: { malformedManifests: 3, conflictsSkipped: 5, truncated: false },
+    });
+    expect(
+      capabilityScanResponseSchema.safeParse({
+        capabilities: [],
+        diagnostics: {
+          rootsScanned: -1,
+          rootsUnavailable: 0,
+          malformedManifests: 0,
+          ignoredEntries: 0,
+          conflictsSkipped: 0,
+          truncated: false,
+        },
       }).success,
     ).toBe(false);
   });

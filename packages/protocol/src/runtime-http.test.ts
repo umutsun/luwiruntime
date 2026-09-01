@@ -2,12 +2,22 @@ import { describe, expect, it } from 'vitest';
 
 import {
   healthResponseSchema,
+  lifecycleStopResponseSchema,
   runtimeInfoResponseSchema,
   type HealthResponse,
   type RuntimeInfoResponse,
 } from './index.js';
 
 describe('runtime HTTP response schemas', () => {
+  it('accepts only the strict lifecycle stopping response', () => {
+    expect(lifecycleStopResponseSchema.parse({ status: 'stopping' })).toEqual({
+      status: 'stopping',
+    });
+    expect(() =>
+      lifecycleStopResponseSchema.parse({ status: 'stopping', token: 'must-not-leak' }),
+    ).toThrow();
+  });
+
   it('validates a healthy response with Redis latency', () => {
     const response: HealthResponse = {
       status: 'ok',

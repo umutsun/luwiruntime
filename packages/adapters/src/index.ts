@@ -7,6 +7,20 @@ export {
 } from './adapter.js';
 export { resolveNativeIdentity } from './native-identity.js';
 export type { NativeIdentityEnvironment } from './native-identity.js';
+export {
+  createCapabilityObserver,
+  NodeCapabilityObserverFileSystem,
+} from './capability-observer.js';
+export type {
+  CapabilityObservationResult,
+  CapabilityObservationRoot,
+  CapabilityObserver,
+  CapabilityObserverDirectoryEntry,
+  CapabilityObserverDirectoryListing,
+  CapabilityObserverFileSystem,
+  CapabilityObserverOptions,
+  ObservedCapability,
+} from './capability-observer.js';
 export { createTranscriptReader } from './transcript-reader.js';
 export type {
   TranscriptReader,
@@ -18,7 +32,14 @@ export {
   NodeTranscriptFileSystem,
   PathExecutableResolver,
   SpawnCommandRunner,
+  resolveTrustedWindowsUtilities,
 } from './node-collaborators.js';
+export type { TrustedWindowsUtilities } from './node-collaborators.js';
+export {
+  NodeWindowsProcessTreeIo,
+  WindowsOwnedProcessTreeCleaner,
+} from './windows-process-cleanup.js';
+export type { WindowsProcessCleanupRequest } from './windows-process-cleanup.js';
 export type {
   AdapterCapabilityMatrix,
   AdapterTelemetryCapabilities,

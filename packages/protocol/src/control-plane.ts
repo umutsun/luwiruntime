@@ -208,6 +208,18 @@ export const capabilityCollectionSchema = z.strictObject({
   capabilities: z.array(capabilityPackageSchema).max(CONTROL_PLANE_MAX_COLLECTION_LIMIT),
   truncated: z.boolean().default(false),
 });
+const capabilityScanCountSchema = z.number().int().nonnegative().max(1_000_000);
+export const capabilityScanResponseSchema = z.strictObject({
+  capabilities: z.array(capabilityPackageSchema).max(CONTROL_PLANE_MAX_COLLECTION_LIMIT),
+  diagnostics: z.strictObject({
+    rootsScanned: capabilityScanCountSchema,
+    rootsUnavailable: capabilityScanCountSchema,
+    malformedManifests: capabilityScanCountSchema,
+    ignoredEntries: capabilityScanCountSchema,
+    conflictsSkipped: capabilityScanCountSchema,
+    truncated: z.boolean(),
+  }),
+});
 export const capabilityListQuerySchema = z.strictObject({
   kind: capabilityKindSchema.optional(),
   scope: capabilityScopeSchema.optional(),
@@ -660,6 +672,7 @@ export type CapabilityScope = z.infer<typeof capabilityScopeSchema>;
 export type CapabilityPackage = z.infer<typeof capabilityPackageSchema>;
 export type CapabilityPackageCreateRequest = z.infer<typeof capabilityPackageCreateRequestSchema>;
 export type CapabilityPackagePatchRequest = z.infer<typeof capabilityPackagePatchRequestSchema>;
+export type CapabilityScanResponse = z.infer<typeof capabilityScanResponseSchema>;
 export type CapabilityListQuery = z.infer<typeof capabilityListQuerySchema>;
 export type CapabilityBinding = z.infer<typeof capabilityBindingSchema>;
 export type CapabilityAssignmentRequest = z.infer<typeof capabilityAssignmentRequestSchema>;

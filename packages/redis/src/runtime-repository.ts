@@ -34,6 +34,8 @@ export type RegisterProjectInput = {
     pathIdentityHash: string;
     repositoryUrl?: string;
     defaultBranch?: string;
+    createdAt?: string;
+    updatedAt?: string;
   };
   workspaceId: string;
   eventId: string;

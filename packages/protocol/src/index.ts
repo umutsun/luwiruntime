@@ -78,6 +78,7 @@ export type {
 } from './native-session.js';
 export {
   healthResponseSchema,
+  lifecycleStopResponseSchema,
   redisConnectedSchema,
   redisDisconnectedSchema,
   redisHealthSchema,
@@ -85,6 +86,7 @@ export {
 } from './runtime-http.js';
 export type {
   HealthResponse,
+  LifecycleStopResponse,
   RedisConnected,
   RedisDisconnected,
   RedisHealthResponse,
@@ -256,6 +258,7 @@ export {
   capabilityAssignmentRequestSchema,
   capabilityBindingSchema,
   capabilityCollectionSchema,
+  capabilityScanResponseSchema,
   capabilityKindSchema,
   capabilityListQuerySchema,
   capabilityPackageCreateRequestSchema,
@@ -323,6 +326,7 @@ export type {
   CapabilityPackage,
   CapabilityPackageCreateRequest,
   CapabilityPackagePatchRequest,
+  CapabilityScanResponse,
   CapabilityProfile,
   CapabilityProfileCreateRequest,
   CapabilityProfilePatchRequest,

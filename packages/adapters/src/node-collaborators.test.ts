@@ -381,15 +381,15 @@ describe('SpawnCommandRunner', () => {
 
       const result = await runner.run(process.execPath, ['-e', script]);
 
+      if (process.platform === 'win32') {
+        expect(cleanupEvidence?.cleaned, JSON.stringify(cleanupEvidence)).toBe(true);
+      }
       expect(result).toEqual({
         exitCode: 1,
         stdout: '',
         stderr: '',
         failure,
       });
-      if (process.platform === 'win32') {
-        expect(cleanupEvidence?.cleaned).toBe(true);
-      }
     },
   );
 

@@ -26,6 +26,16 @@ export {
 export type { StreamRetentionOptions, StreamRetentionResult } from './event-streams.js';
 export { createManagedRedisConnection } from './redis-connection.js';
 export type { ManagedRedisConnection, ManagedRedisConnectionOptions } from './redis-connection.js';
+export {
+  inspectRuntimeNamespace,
+  resetRuntimeNamespace,
+  RuntimeResetPartialError,
+} from './runtime-reset.js';
+export type {
+  RuntimeNamespaceInspection,
+  RuntimeNamespaceOptions,
+  RuntimeNamespaceResetResult,
+} from './runtime-reset.js';
 export { createRuntimeRepository, RedisRepositoryError } from './runtime-repository.js';
 export type {
   RedisCommandClient,

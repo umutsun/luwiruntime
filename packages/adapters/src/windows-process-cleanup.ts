@@ -111,6 +111,7 @@ type WindowsCleanupContext = {
   cleanupDeadline: number;
   maximumSnapshots: typeof MAX_SNAPSHOT_COUNT;
   maximumIdentities: typeof MAX_OWNED_PROCESS_COUNT;
+  treeTerminationSafe: boolean;
 };
 
 type FixedPointResult =
@@ -154,6 +155,13 @@ function ticksToUnixMilliseconds(ticks: string): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+function wasCreatedBefore(
+  candidate: WindowsProcessIdentity,
+  claimedParent: WindowsProcessIdentity,
+): boolean {
+  return BigInt(candidate.creationTicks) < BigInt(claimedParent.creationTicks);
 }
 
 function validateIdentity(value: WindowsProcessIdentity): boolean {
@@ -248,6 +256,8 @@ function mergeSnapshot(
   const current = new Map<number, WindowsProcessIdentity>();
   const queue = [...context.knownIdentities.values()];
   const queued = new Set(queue.map((identity) => identity.pid));
+  const ignored = new Set<number>();
+  const ignoredQueue: WindowsProcessIdentity[] = [];
   let additions = 0;
   for (const known of queue) {
     const live = rows.get(known.pid);
@@ -260,6 +270,14 @@ function mergeSnapshot(
       const prior = context.knownIdentities.get(child.pid);
       if (prior !== undefined && !sameIdentity(prior, child)) {
         return { status: 'identity_changed' };
+      }
+      if (prior === undefined && wasCreatedBefore(child, parent)) {
+        context.treeTerminationSafe = false;
+        if (!ignored.has(child.pid)) {
+          ignored.add(child.pid);
+          ignoredQueue.push(child);
+        }
+        continue;
       }
       if (prior === undefined) {
         if (context.knownIdentities.size >= context.maximumIdentities) {
@@ -276,7 +294,20 @@ function mergeSnapshot(
     }
   }
 
-  if (validation.identities.some((identity) => !current.has(identity.pid))) {
+  for (let index = 0; index < ignoredQueue.length; index += 1) {
+    const parent = ignoredQueue[index]!;
+    for (const child of childrenByParent.get(parent.pid) ?? []) {
+      if (context.knownIdentities.has(child.pid) || ignored.has(child.pid)) continue;
+      ignored.add(child.pid);
+      ignoredQueue.push(child);
+    }
+  }
+
+  if (
+    validation.identities.some(
+      (identity) => !current.has(identity.pid) && !ignored.has(identity.pid),
+    )
+  ) {
     return { status: 'discovery_failed' };
   }
   return { status: 'ok', additions, current };
@@ -319,6 +350,7 @@ export class WindowsOwnedProcessTreeCleaner {
       cleanupDeadline: this.now() + input.timeoutMs,
       maximumSnapshots: MAX_SNAPSHOT_COUNT,
       maximumIdentities: MAX_OWNED_PROCESS_COUNT,
+      treeTerminationSafe: true,
     };
 
     const runBounded = async <T>(operation: () => Promise<T>): Promise<T | undefined> => {
@@ -382,7 +414,26 @@ export class WindowsOwnedProcessTreeCleaner {
           });
           continue;
         }
-        if (snapshot.status === 'identity_changed') return 'identity_changed';
+        if (snapshot.status === 'identity_changed') {
+          const validation = validatedIdentities(snapshot.processes);
+          const onlyUnavailablePathsChanged =
+            validation.status === 'ok' &&
+            validation.identities.length > 0 &&
+            validation.identities.every((identity) => {
+              const known = context.knownIdentities.get(identity.pid);
+              return known !== undefined && sameIdentity(known, identity);
+            });
+          if (!onlyUnavailablePathsChanged || validation.status !== 'ok') {
+            return 'identity_changed';
+          }
+          return {
+            status: 'ok',
+            processes: validation.identities,
+            ...(snapshot.helperIdentity === undefined
+              ? {}
+              : { helperIdentity: snapshot.helperIdentity }),
+          };
+        }
         if (snapshot.status === 'limit') return 'identity_limit';
         if (snapshot.status === 'timeout') return 'deadline';
         if (snapshot.status !== 'ok') return 'discovery_failed';
@@ -441,7 +492,7 @@ export class WindowsOwnedProcessTreeCleaner {
       }
 
       const matchingRoot = initial.current.get(root.pid);
-      if (matchingRoot !== undefined) {
+      if (matchingRoot !== undefined && context.treeTerminationSafe) {
         const treeResult = await runBounded(() =>
           this.io.terminateTree({
             rootIdentity: root,
@@ -532,7 +583,8 @@ function parseIdentityRecord(value: unknown): WindowsProcessIdentity | undefined
     parentPid: record['parentPid'],
     creationTicks: record['creationTicks'],
     executableName: record['executableName'],
-    ...(typeof record['canonicalExecutablePath'] === 'string'
+    ...(typeof record['canonicalExecutablePath'] === 'string' &&
+    record['canonicalExecutablePath'].length > 0
       ? { canonicalExecutablePath: record['canonicalExecutablePath'] }
       : {}),
   };

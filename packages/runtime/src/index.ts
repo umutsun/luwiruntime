@@ -26,6 +26,7 @@ export type {
 export { createSessionBootstrap, DEFAULT_HEARTBEAT_INTERVAL_MS } from './session-bootstrap.js';
 export type {
   SessionBootstrap,
+  SessionBootstrapChange,
   SessionBootstrapClient,
   SessionBootstrapOptions,
 } from './session-bootstrap.js';

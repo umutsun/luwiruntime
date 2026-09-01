@@ -8,10 +8,12 @@ import type { NativeSessionRef } from '@luwi/protocol';
  *
  * - **The heartbeat is owned here, not by the caller.** Presence TTL is 15 s and
  *   `disconnected` has no transition out, so a forgotten beat kills a session id
- *   permanently.
+ *   permanently. A confirmed dead id is replaced with a new registration.
  * - **A failure never reaches the caller.** An agent starts whether or not LUWI
  *   is running; a coordinator that can prevent the tools it coordinates from
  *   starting has inverted its own relationship to them.
+ * - **Recovery is conservative.** Transient failures retain the current session
+ *   and use bounded backoff. Only explicit missing/terminal responses rotate it.
  * - **A crash is allowed to lapse.** Presence expiry is the backstop and the
  *   session goes `disconnected`, which is the honest outcome. This does not try
  *   to outlive its own process.
@@ -43,10 +45,19 @@ export type SessionBootstrapOptions = {
   native?: NativeSessionRef;
   /** Must stay well inside the presence TTL. Defaults to a third of 15 s. */
   heartbeatIntervalMs?: number;
+  /** Caps exponential retry delay. Must be at least the heartbeat interval. */
+  maxRetryBackoffMs?: number;
   onError?: (error: unknown) => void;
+  onSessionChanged?: (change: SessionBootstrapChange) => void;
+  now?: () => number;
   setInterval?: (callback: () => void, intervalMs: number) => NodeJS.Timeout;
   clearInterval?: (timer: NodeJS.Timeout) => void;
 };
+
+export type SessionBootstrapChange =
+  | { reason: 'registered'; sessionId: string }
+  | { reason: 'recovered'; previousSessionId: string; sessionId: string }
+  | { reason: 'stopped'; previousSessionId: string };
 
 export interface SessionBootstrap {
   start(): Promise<void>;
@@ -56,18 +67,138 @@ export interface SessionBootstrap {
 
 /** A third of the 15 s presence TTL, so two beats can fail before a lapse. */
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000;
+/** Bounds degraded retry traffic while still probing often enough to recover. */
+export const DEFAULT_MAX_RETRY_BACKOFF_MS = 30_000;
+
+const LOST_SESSION_CODES = new Set(['SESSION_NOT_FOUND', 'SESSION_TERMINAL']);
+
+function requirePositiveInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TypeError(`${name} must be a positive safe integer.`);
+  }
+}
+
+function isLostSessionError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return false;
+  const code = Reflect.get(error, 'code');
+  return typeof code === 'string' && LOST_SESSION_CODES.has(code);
+}
 
 export function createSessionBootstrap(options: SessionBootstrapOptions): SessionBootstrap {
   const arm = options.setInterval ?? setInterval;
   const disarm = options.clearInterval ?? clearInterval;
   const intervalMs = options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  const maxRetryBackoffMs = options.maxRetryBackoffMs ?? DEFAULT_MAX_RETRY_BACKOFF_MS;
+  const now = options.now ?? Date.now;
+  requirePositiveInteger(intervalMs, 'heartbeatIntervalMs');
+  requirePositiveInteger(maxRetryBackoffMs, 'maxRetryBackoffMs');
+  if (maxRetryBackoffMs < intervalMs) {
+    throw new TypeError('maxRetryBackoffMs must be at least heartbeatIntervalMs.');
+  }
+
   const report = (error: unknown): void => {
     options.onError?.(error);
+  };
+  const reportSessionChange = (change: SessionBootstrapChange): void => {
+    try {
+      options.onSessionChanged?.(change);
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const registrationRequest = {
+    projectId: options.projectId,
+    agentId: options.agentId,
+    workingDirectory: options.workingDirectory,
+    ...(options.native === undefined ? {} : { native: options.native }),
   };
 
   let sessionId: string | undefined;
   let timer: NodeJS.Timeout | undefined;
-  let starting = false;
+  let active = false;
+  let lifecycle = 0;
+  let operation: Promise<void> | undefined;
+  let consecutiveFailures = 0;
+  let nextAttemptAt = 0;
+  let recoverySessionId: string | undefined;
+
+  const resetBackoff = (): void => {
+    consecutiveFailures = 0;
+    nextAttemptAt = 0;
+  };
+
+  const recordTransientFailure = (error: unknown): void => {
+    report(error);
+    consecutiveFailures += 1;
+    const exponent = Math.min(consecutiveFailures - 1, 30);
+    const delayMs = Math.min(maxRetryBackoffMs, intervalMs * 2 ** exponent);
+    nextAttemptAt = now() + delayMs;
+  };
+
+  const closeQuietly = async (id: string): Promise<void> => {
+    try {
+      await options.client.close(id);
+    } catch (error) {
+      report(error);
+    }
+  };
+
+  const attempt = async (generation: number): Promise<void> => {
+    if (!active || generation !== lifecycle || operation !== undefined || now() < nextAttemptAt) {
+      return;
+    }
+
+    const current = sessionId;
+    const pending = (async (): Promise<void> => {
+      if (current === undefined) {
+        try {
+          const registered = await options.client.register(registrationRequest);
+          if (!active || generation !== lifecycle) {
+            await closeQuietly(registered.id);
+            return;
+          }
+          sessionId = registered.id;
+          if (recoverySessionId === undefined) {
+            reportSessionChange({ reason: 'registered', sessionId: registered.id });
+          } else {
+            reportSessionChange({
+              reason: 'recovered',
+              previousSessionId: recoverySessionId,
+              sessionId: registered.id,
+            });
+            recoverySessionId = undefined;
+          }
+          resetBackoff();
+        } catch (error) {
+          if (active && generation === lifecycle) recordTransientFailure(error);
+        }
+        return;
+      }
+
+      try {
+        await options.client.heartbeat(current);
+        if (active && generation === lifecycle && sessionId === current) resetBackoff();
+      } catch (error) {
+        if (!active || generation !== lifecycle || sessionId !== current) return;
+        if (isLostSessionError(error)) {
+          report(error);
+          recoverySessionId = current;
+          sessionId = undefined;
+          resetBackoff();
+          return;
+        }
+        recordTransientFailure(error);
+      }
+    })();
+
+    operation = pending;
+    try {
+      await pending;
+    } finally {
+      if (operation === pending) operation = undefined;
+    }
+  };
 
   return {
     get sessionId() {
@@ -75,23 +206,13 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
     },
 
     async start() {
-      if (sessionId !== undefined || starting) return;
-      starting = true;
-      try {
-        const registered = await options.client.register({
-          projectId: options.projectId,
-          agentId: options.agentId,
-          workingDirectory: options.workingDirectory,
-          ...(options.native === undefined ? {} : { native: options.native }),
-        });
-        sessionId = registered.id;
-      } catch (error) {
-        // Logged once and then inert: the agent carries on without LUWI.
-        report(error);
-        return;
-      } finally {
-        starting = false;
-      }
+      if (active) return;
+      active = true;
+      lifecycle += 1;
+      const generation = lifecycle;
+      resetBackoff();
+      await attempt(generation);
+      if (!active || generation !== lifecycle || timer !== undefined) return;
 
       /**
        * Deliberately **not** unreffed.
@@ -103,28 +224,26 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
        * `disconnected` fifteen seconds later. Observed on the first live run.
        */
       timer = arm(() => {
-        const current = sessionId;
-        if (current === undefined) return;
-        // A refused beat is retried on the next tick rather than ending the
-        // session: one blip must not become a permanent `disconnected`.
-        void options.client.heartbeat(current).catch(report);
+        void attempt(lifecycle);
       }, intervalMs);
     },
 
     async stop() {
+      if (!active && sessionId === undefined && timer === undefined) return;
+      active = false;
+      lifecycle += 1;
       const current = sessionId;
       // Cleared before the close so a beat cannot race the close it follows.
       sessionId = undefined;
+      recoverySessionId = undefined;
+      resetBackoff();
       if (timer !== undefined) {
         disarm(timer);
         timer = undefined;
       }
       if (current === undefined) return;
-      try {
-        await options.client.close(current);
-      } catch (error) {
-        report(error);
-      }
+      await closeQuietly(current);
+      reportSessionChange({ reason: 'stopped', previousSessionId: current });
     },
   };
 }
