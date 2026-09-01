@@ -13,6 +13,24 @@ afterEach(async () => {
 });
 
 describe('canonical LUWI manifest store', () => {
+  it('reads the validated tracked projects used for startup restoration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'luwi-canonical-projects-'));
+    roots.push(root);
+    const store = createCanonicalStore({ globalRoot: root });
+    const project = {
+      id: 'project-restore',
+      name: 'Restore',
+      localPath: 'C:/workspace/restore',
+      canonicalPath: 'C:/workspace/restore',
+      createdAt: '2026-08-01T10:00:00.000Z',
+      updatedAt: '2026-08-01T10:00:00.000Z',
+    };
+
+    await store.trackProject(project);
+
+    await expect(store.loadTrackedProjects()).resolves.toEqual([project]);
+  });
+
   it('writes stable, hashed, human-readable global agent manifests', async () => {
     const root = await mkdtemp(join(tmpdir(), 'luwi-canonical-'));
     roots.push(root);

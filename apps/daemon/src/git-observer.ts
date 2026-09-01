@@ -117,11 +117,31 @@ export function assertGitCommandAllowed(arguments_: readonly string[]): void {
   }
 }
 
+/**
+ * Git rejects repositories owned by the developer when LUWI itself runs in a
+ * local sandbox account. Trust only this invocation's exact working directory
+ * and disable repository-configured fsmonitor execution. These process-local
+ * `-c` values change no global or repository configuration and do not widen
+ * trust to sibling paths.
+ */
+export function gitInvocationArguments(
+  cwd: string,
+  arguments_: readonly string[],
+): readonly string[] {
+  return [
+    '-c',
+    `safe.directory=${cwd.replaceAll('\\', '/')}`,
+    '-c',
+    'core.fsmonitor=false',
+    ...arguments_,
+  ];
+}
+
 export class NodeGitCommandRunner implements GitCommandRunner {
   async run(arguments_: readonly string[], options: GitCommandOptions): Promise<GitCommandResult> {
     assertGitCommandAllowed(arguments_);
     return new Promise((resolve, reject) => {
-      const child = spawn('git', [...arguments_], {
+      const child = spawn('git', gitInvocationArguments(options.cwd, arguments_), {
         cwd: options.cwd,
         shell: false,
         windowsHide: true,

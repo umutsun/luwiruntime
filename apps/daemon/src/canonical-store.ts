@@ -64,6 +64,7 @@ export type CanonicalControlPlaneState = {
 export interface CanonicalStore {
   readonly globalRoot: string;
   trackProject(project: Project): Promise<void>;
+  loadTrackedProjects(): Promise<Project[]>;
   loadControlPlaneState(): Promise<CanonicalControlPlaneState>;
   writeAgent(agent: AgentDefinition): Promise<CanonicalManifest<AgentDefinition>>;
   readAgent(agentId: string): Promise<AgentDefinition | null>;
@@ -410,6 +411,8 @@ export function createCanonicalStore(options: CanonicalStoreOptions): CanonicalS
 
   return {
     globalRoot: options.globalRoot,
+
+    loadTrackedProjects: readTrackedProjects,
 
     async trackProject(project) {
       const projects = await readTrackedProjects();

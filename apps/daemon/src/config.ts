@@ -11,6 +11,7 @@ import {
   MESSAGE_MAX_TIMEOUT_MS,
 } from '@luwi/protocol';
 import { z } from 'zod';
+import { delimiter, isAbsolute } from 'node:path';
 
 const environmentSchema = z.object({
   HOST: z.literal('127.0.0.1').default('127.0.0.1'),
@@ -105,6 +106,7 @@ const environmentSchema = z.object({
   LUWI_ALLOWED_ORIGINS: z.string().optional(),
   LUWI_HOME: z.string().trim().min(1).optional(),
   LUWI_NATIVE_HOME: z.string().trim().min(1).optional(),
+  LUWI_CAPABILITY_ROOTS: z.string().max(131_072).optional(),
   LUWI_CONFIG_SNAPSHOT_RETENTION_COUNT: z.coerce.number().int().min(1).max(10_000).default(50),
   LUWI_GIT_COMMAND_TIMEOUT_MS: z.coerce.number().int().min(100).max(120_000).default(5_000),
   LUWI_GIT_SCAN_INTERVAL_MS: z.coerce.number().int().min(60_000).max(86_400_000).default(300_000),
@@ -136,6 +138,8 @@ const environmentSchema = z.object({
     .max(100_000_000)
     .default(8_000),
 });
+
+const runtimeInstanceIdSchema = z.string().uuid().optional();
 
 export type DaemonConfig = {
   host: string;
@@ -181,6 +185,7 @@ export type DaemonConfig = {
   allowedOrigins?: string[];
   luwiHome?: string;
   nativeHome?: string;
+  capabilityRoots?: string[];
   configSnapshotRetentionCount?: number;
   gitCommandTimeoutMs?: number;
   gitScanIntervalMs?: number;
@@ -198,6 +203,12 @@ export type DaemonConfig = {
   optimizationOversizedContextTokens?: number;
 };
 
+export function loadRuntimeInstanceId(
+  environment: Readonly<Record<string, string | undefined>>,
+): string | undefined {
+  return runtimeInstanceIdSchema.parse(environment['LUWI_RUNTIME_INSTANCE_ID']);
+}
+
 export function loadDaemonConfig(
   environment: Readonly<Record<string, string | undefined>>,
 ): DaemonConfig {
@@ -209,6 +220,34 @@ export function loadDaemonConfig(
       : parsed.LUWI_ALLOWED_ORIGINS.split(',')
           .map((origin) => origin.trim())
           .filter((origin) => origin !== '');
+  const configuredCapabilityRoots =
+    parsed.LUWI_CAPABILITY_ROOTS === undefined
+      ? []
+      : parsed.LUWI_CAPABILITY_ROOTS.split(delimiter).map((root) => root.trim());
+  if (configuredCapabilityRoots.some((root) => root === '')) {
+    throw new Error('Capability roots must not contain blank entries.');
+  }
+  if (
+    configuredCapabilityRoots.length > 32 ||
+    configuredCapabilityRoots.some(
+      (root) =>
+        root.length > 4_096 ||
+        !isAbsolute(root) ||
+        Array.from(root).some((character) => {
+          const point = character.codePointAt(0);
+          return point !== undefined && (point <= 0x1f || point === 0x7f);
+        }),
+    )
+  ) {
+    throw new Error('Capability roots must be at most 32 absolute filesystem paths.');
+  }
+  const seenCapabilityRoots = new Set<string>();
+  const capabilityRoots = configuredCapabilityRoots.filter((root) => {
+    const key = process.platform === 'win32' ? root.toLowerCase() : root;
+    if (seenCapabilityRoots.has(key)) return false;
+    seenCapabilityRoots.add(key);
+    return true;
+  });
   if (parsed.LUWI_DAEMON_OWNER_RENEW_INTERVAL_MS >= parsed.LUWI_DAEMON_OWNER_TTL_MS) {
     throw new Error('Daemon owner renewal interval must be shorter than its TTL.');
   }
@@ -261,6 +300,7 @@ export function loadDaemonConfig(
     deadLetterStreamMaxLength: parsed.LUWI_STREAM_MAXLEN_DEAD_LETTER,
     retentionIntervalMs: parsed.LUWI_RETENTION_INTERVAL_MS,
     nativeLinkRetentionMax: parsed.LUWI_NATIVE_LINK_RETENTION_MAX,
+    capabilityRoots,
     messageTimeoutSweepIntervalMs: parsed.LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS,
     messageTimeoutBatchSize: parsed.LUWI_MESSAGE_TIMEOUT_BATCH_SIZE,
     messageMaxContentBytes: parsed.LUWI_MESSAGE_MAX_CONTENT_BYTES,

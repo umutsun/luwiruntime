@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
@@ -7,7 +10,7 @@ import {
   createRedisKeys,
   type ManagedRedisConnection,
 } from '@luwi/redis';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import type { DaemonConfig } from './config.js';
 import { startDaemon, type RunningDaemon } from './runtime.js';
@@ -22,6 +25,8 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
     const namespace = `luwi:test:${runId}:v1`;
     const keys = createRedisKeys(namespace);
     const registry = createFunctionRegistry(runId);
+    const testRoot = join(tmpdir(), `luwi-runtime-integration-${runId}`);
+    const projectRoot = join(testRoot, 'project');
     const config: DaemonConfig = {
       host: '127.0.0.1',
       port: 48_782,
@@ -38,8 +43,14 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       retentionIntervalMs: 60_000,
       drainTimeoutMs: 1_000,
       allowedOrigins: ['http://127.0.0.1:48782'],
+      luwiHome: join(testRoot, 'home'),
+      nativeHome: join(testRoot, 'native-home'),
     };
     let runtime: RunningDaemon | undefined;
+
+    beforeAll(async () => {
+      await mkdir(projectRoot, { recursive: true });
+    });
 
     function connections(): {
       command: ManagedRedisConnection;
@@ -75,6 +86,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       } while (cursor !== '0');
       await cleanup.sendCommand(['FUNCTION', 'DELETE', registry.libraryName]).catch(() => 0);
       await cleanup.quit();
+      await rm(testRoot, { recursive: true, force: true });
     });
 
     it('boots in order, rejects a second owner, and serves projects, sessions, and messages', async () => {
@@ -128,14 +140,14 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       const projectResponse = await runtime.app.inject({
         method: 'POST',
         url: '/api/v1/projects',
-        payload: { name: 'LUWI Runtime', localPath: process.cwd() },
+        payload: { name: 'LUWI Runtime', localPath: projectRoot },
       });
       expect(projectResponse.statusCode).toBe(201);
       const project = projectResponse.json<{ id: string }>();
       const duplicate = await runtime.app.inject({
         method: 'POST',
         url: '/api/v1/projects',
-        payload: { name: 'Duplicate', localPath: `${process.cwd()}/` },
+        payload: { name: 'Duplicate', localPath: `${projectRoot}/` },
       });
       expect(duplicate.statusCode).toBe(409);
       expect(duplicate.headers.location).toBe(`/api/v1/projects/${project.id}`);
@@ -146,7 +158,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         payload: {
           projectId: project.id,
           agentId: 'codex-sim',
-          workingDirectory: process.cwd(),
+          workingDirectory: projectRoot,
         },
       });
       expect(sessionResponse.statusCode).toBe(201);
@@ -158,7 +170,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         payload: {
           projectId: project.id,
           agentId: 'gemini-sim',
-          workingDirectory: process.cwd(),
+          workingDirectory: projectRoot,
         },
       });
       expect(targetResponse.statusCode).toBe(201);

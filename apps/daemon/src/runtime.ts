@@ -229,6 +229,7 @@ export type StartDaemonConnections = {
 
 export type StartDaemonOptions = {
   config: DaemonConfig;
+  lifecycleToken?: string;
   logger?: BuildDaemonOptions['logger'];
   signals?: SignalSource;
   runtimeInstanceId?: string;
@@ -404,6 +405,14 @@ async function relayCaughtUp(
 
 export async function startDaemon(options: StartDaemonOptions): Promise<RunningDaemon> {
   const { config } = options;
+  if (
+    options.lifecycleToken !== undefined &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      options.lifecycleToken,
+    )
+  ) {
+    throw new Error('The daemon lifecycle token is invalid.');
+  }
   const runtimeInstanceId = options.runtimeInstanceId ?? randomUUID();
   const keys = options.keys ?? createRedisKeys();
   const registry = options.functionRegistry ?? createFunctionRegistry();
@@ -547,6 +556,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     projects: projectService,
     workspaceId: config.workspaceId,
     ...(config.nativeHome === undefined ? {} : { homeDirectory: config.nativeHome }),
+    ...(config.capabilityRoots === undefined ? {} : { capabilityRoots: config.capabilityRoots }),
   });
   const intelligenceServiceReference: { current?: IntelligenceService } = {};
   const configControlService = createConfigControlService({
@@ -646,6 +656,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     if (!scheduled) projectRefreshes.delete(projectId);
   };
   const reconcileCanonicalControlPlane = async (): Promise<void> => {
+    await projectService.reconcileCanonical(await canonicalStore.loadTrackedProjects());
     for (const project of await projectService.list()) {
       await canonicalStore.trackProject(project);
     }
@@ -899,6 +910,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       runtimeState: () => readiness.state,
       readiness,
       onRedisUnavailable: () => requestRecovery(),
+      ...(options.lifecycleToken === undefined
+        ? {}
+        : {
+            lifecycle: {
+              token: options.lifecycleToken,
+              requestStop: shutdownRuntime,
+            },
+          }),
       services: {
         projects: projectService,
         sessions: sessionService,

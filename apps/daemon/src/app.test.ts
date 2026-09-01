@@ -1,6 +1,6 @@
 import type { RuntimeEvent } from '@luwi/protocol';
 import type { RedisGateway, RedisHealth } from '@luwi/redis';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildDaemon, type DaemonApp } from './app.js';
 import type { DaemonConfig } from './config.js';
@@ -39,6 +39,69 @@ describe('LUWI daemon HTTP API', () => {
 
   afterEach(async () => {
     await app?.close();
+  });
+
+  it('authorizes lifecycle stop with an in-memory token and never returns it', async () => {
+    const redis = new FakeRedisGateway();
+    const requestStop = vi.fn(async () => undefined);
+    app = buildDaemon({
+      config,
+      redis,
+      logger: false,
+      runtimeInstanceId: 'runtime-1',
+      runtimeState: () => 'ready',
+      lifecycle: {
+        token: '6ccfd2c0-e424-4a21-91db-30dc72092a01',
+        requestStop,
+        schedule: (action) => action(),
+      },
+    });
+
+    for (const token of [undefined, 'bad', '01a4d3e9-761e-4df8-824d-8f2182367512']) {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/runtime/stop',
+        headers: {
+          'content-type': 'application/json',
+          ...(token === undefined ? {} : { 'x-luwi-lifecycle-token': token }),
+        },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(403);
+      expect(JSON.stringify(response.json())).not.toContain('6ccfd2c0');
+    }
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/runtime/stop',
+      headers: {
+        'content-type': 'application/json',
+        'x-luwi-lifecycle-token': '6ccfd2c0-e424-4a21-91db-30dc72092a01',
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(response.json()).toEqual({ status: 'stopping' });
+    expect(JSON.stringify(response.json())).not.toContain('6ccfd2c0');
+    expect(requestStop).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses lifecycle stop when this daemon was not CLI-managed', async () => {
+    app = buildDaemon({ config, redis: new FakeRedisGateway(), logger: false });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/runtime/stop',
+      headers: {
+        'content-type': 'application/json',
+        'x-luwi-lifecycle-token': '6ccfd2c0-e424-4a21-91db-30dc72092a01',
+      },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { code: 'DAEMON_LIFECYCLE_UNMANAGED' } });
   });
 
   it('reports healthy Redis connectivity with HTTP 200', async () => {

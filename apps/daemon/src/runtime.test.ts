@@ -69,6 +69,35 @@ const ephemeralConfig: DaemonConfig = {
 };
 
 describe('daemon runtime', () => {
+  it('restores canonical project projections before dependent control-plane state', () => {
+    const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
+    const restore = source.indexOf(
+      'projectService.reconcileCanonical(await canonicalStore.loadTrackedProjects())',
+    );
+    const controlPlane = source.indexOf('controlPlaneService.reconcileCanonicalState()');
+
+    expect(restore).toBeGreaterThan(-1);
+    expect(controlPlane).toBeGreaterThan(restore);
+  });
+
+  it('rejects an invalid lifecycle token before opening Redis', async () => {
+    const command = new FailingConnection();
+    const admin = new FailingConnection();
+    const relay = new FailingConnection();
+
+    await expect(
+      startDaemon({
+        config: ephemeralConfig,
+        lifecycleToken: 'not-a-token',
+        connections: { command, admin, relay },
+      }),
+    ).rejects.toThrow('lifecycle token');
+
+    expect(command.connectCalls).toBe(0);
+    expect(admin.connectCalls).toBe(0);
+    expect(relay.connectCalls).toBe(0);
+  });
+
   it('does not open the listener or signal handlers when Redis bootstrap fails', async () => {
     const command = new FailingConnection();
     const admin = new FailingConnection();

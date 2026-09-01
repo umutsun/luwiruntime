@@ -321,4 +321,63 @@ describe('Phase 3 HTTP routes', () => {
     expect(response.json().capabilities).toHaveLength(1);
     expect(response.json().truncated).toBe(false);
   });
+
+  it('runs passive capability observation as an explicit mutation with diagnostics', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const scanCapabilities = vi.fn(async () => ({
+      capabilities: [capability],
+      diagnostics: {
+        rootsScanned: 2,
+        rootsUnavailable: 3,
+        malformedManifests: 4,
+        ignoredEntries: 5,
+        conflictsSkipped: 6,
+        truncated: false,
+      },
+    }));
+    app = buildDaemon({
+      config: {
+        host: '127.0.0.1',
+        port: 80,
+        redisUrl: 'redis://127.0.0.1:6379',
+        logLevel: 'silent',
+        workspaceId: 'local',
+      },
+      redis: new HealthyRedis(),
+      logger: false,
+      readiness,
+      runtimeState: () => readiness.state,
+      services: {
+        projects: {
+          register: async () => project,
+          get: async () => project,
+          list: async () => [project],
+        } as ProjectService,
+        sessions: { list: async () => [] } as unknown as SessionService,
+        controlPlane: { scanCapabilities } as unknown as ControlPlaneService,
+        listEvents: async () => [],
+      },
+    });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/capabilities/scan',
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(scanCapabilities).toHaveBeenCalledTimes(1);
+    expect(response.json()).toEqual({
+      capabilities: [capability],
+      diagnostics: {
+        rootsScanned: 2,
+        rootsUnavailable: 3,
+        malformedManifests: 4,
+        ignoredEntries: 5,
+        conflictsSkipped: 6,
+        truncated: false,
+      },
+    });
+  });
 });

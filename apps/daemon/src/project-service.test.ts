@@ -1,6 +1,6 @@
 import type { ProjectRegistrationRequest } from '@luwi/protocol';
 import type { RegisterProjectResult, RuntimeRepository } from '@luwi/redis';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createProjectService } from './project-service.js';
 
@@ -113,6 +113,183 @@ describe('project service', () => {
         existingProjectId: 'project-existing',
         canonicalLocalPath: 'C:/workspace/luwi',
       },
+    });
+  });
+
+  it('rebuilds a missing project projection from its canonical facts', async () => {
+    let registeredInput: unknown;
+    const canonicalProject = {
+      id: 'project-canonical',
+      name: 'Canonical Project',
+      localPath: 'C:/workspace/canonical',
+      canonicalPath: 'C:/workspace/canonical',
+      repositoryUrl: 'https://example.test/canonical.git',
+      defaultBranch: 'main',
+      createdAt: '2026-08-01T10:00:00.000Z',
+      updatedAt: '2026-08-02T10:00:00.000Z',
+    };
+    const service = createProjectService({
+      repository: {
+        getProject: async () => null,
+        registerProject: async (input) => {
+          registeredInput = input;
+          return {
+            status: 'created',
+            project: canonicalProject,
+            event: {
+              id: 'event-restore',
+              version: 1,
+              type: 'project.registered',
+              occurredAt: '2026-08-25T10:00:00.000Z',
+              workspaceId: 'local',
+              projectId: canonicalProject.id,
+              payload: { project: canonicalProject },
+            },
+            globalStreamId: '1-0',
+            projectStreamId: '2-0',
+          };
+        },
+      } as RuntimeRepository,
+      workspaceId: 'local',
+      createId: () => 'event-restore',
+      canonicalizePath: async () => ({
+        localPath: canonicalProject.localPath,
+        canonicalPath: canonicalProject.canonicalPath,
+        identityPath: 'c:/workspace/canonical',
+        pathIdentityHash: 'c'.repeat(64),
+      }),
+      detectGitMetadata: async () => ({}),
+    });
+
+    await expect(service.reconcileCanonical([canonicalProject])).resolves.toEqual({
+      rebuilt: 1,
+      unchanged: 0,
+    });
+    expect(registeredInput).toMatchObject({
+      project: {
+        id: 'project-canonical',
+        identityPath: 'c:/workspace/canonical',
+        pathIdentityHash: 'c'.repeat(64),
+        createdAt: canonicalProject.createdAt,
+        updatedAt: canonicalProject.updatedAt,
+      },
+      eventId: 'event-restore',
+    });
+  });
+
+  it('rejects an existing same-id projection whose canonical facts drifted', async () => {
+    const canonicalProject = {
+      id: 'project-canonical',
+      name: 'Canonical Project',
+      localPath: 'C:/workspace/canonical',
+      canonicalPath: 'C:/workspace/canonical',
+      createdAt: '2026-08-01T10:00:00.000Z',
+      updatedAt: '2026-08-01T10:00:00.000Z',
+    };
+    const service = createProjectService({
+      repository: {
+        getProject: async () => ({ ...canonicalProject, name: 'Drifted Project' }),
+      } as RuntimeRepository,
+      workspaceId: 'local',
+      canonicalizePath: async () => ({
+        localPath: canonicalProject.localPath,
+        canonicalPath: canonicalProject.canonicalPath,
+        identityPath: 'c:/workspace/canonical',
+        pathIdentityHash: 'c'.repeat(64),
+      }),
+      detectGitMetadata: async () => ({}),
+    });
+
+    await expect(service.reconcileCanonical([canonicalProject])).rejects.toMatchObject({
+      code: 'CONFIG_RECONCILIATION_REQUIRED',
+      statusCode: 503,
+      details: { projectId: 'project-canonical' },
+    });
+  });
+
+  it('leaves an identical canonical project projection unchanged', async () => {
+    const canonicalProject = {
+      id: 'project-canonical',
+      name: 'Canonical Project',
+      localPath: 'C:/workspace/canonical',
+      canonicalPath: 'C:/workspace/canonical',
+      createdAt: '2026-08-01T10:00:00.000Z',
+      updatedAt: '2026-08-01T10:00:00.000Z',
+    };
+    const service = createProjectService({
+      repository: { getProject: async () => canonicalProject } as RuntimeRepository,
+      workspaceId: 'local',
+      canonicalizePath: async () => ({
+        localPath: canonicalProject.localPath,
+        canonicalPath: canonicalProject.canonicalPath,
+        identityPath: 'c:/workspace/canonical',
+        pathIdentityHash: 'c'.repeat(64),
+      }),
+      detectGitMetadata: async () => ({}),
+    });
+
+    await expect(service.reconcileCanonical([canonicalProject])).resolves.toEqual({
+      rebuilt: 0,
+      unchanged: 1,
+    });
+  });
+
+  it('rejects canonical filesystem drift before consulting Redis', async () => {
+    const getProject = vi.fn();
+    const canonicalProject = {
+      id: 'project-canonical',
+      name: 'Canonical Project',
+      localPath: 'C:/workspace/canonical',
+      canonicalPath: 'C:/workspace/canonical',
+      createdAt: '2026-08-01T10:00:00.000Z',
+      updatedAt: '2026-08-01T10:00:00.000Z',
+    };
+    const service = createProjectService({
+      repository: { getProject } as unknown as RuntimeRepository,
+      workspaceId: 'local',
+      canonicalizePath: async () => ({
+        localPath: canonicalProject.localPath,
+        canonicalPath: 'C:/workspace/moved',
+        identityPath: 'c:/workspace/moved',
+        pathIdentityHash: 'd'.repeat(64),
+      }),
+      detectGitMetadata: async () => ({}),
+    });
+
+    await expect(service.reconcileCanonical([canonicalProject])).rejects.toMatchObject({
+      code: 'CONFIG_RECONCILIATION_REQUIRED',
+      details: { projectId: canonicalProject.id },
+    });
+    expect(getProject).not.toHaveBeenCalled();
+  });
+
+  it('rejects a path already owned by another runtime identity', async () => {
+    const canonicalProject = {
+      id: 'project-canonical',
+      name: 'Canonical Project',
+      localPath: 'C:/workspace/canonical',
+      canonicalPath: 'C:/workspace/canonical',
+      createdAt: '2026-08-01T10:00:00.000Z',
+      updatedAt: '2026-08-01T10:00:00.000Z',
+    };
+    const service = createProjectService({
+      repository: {
+        getProject: async () => null,
+        registerProject: async () => ({ status: 'conflict', reason: 'hash_collision' }),
+      } as unknown as RuntimeRepository,
+      workspaceId: 'local',
+      canonicalizePath: async () => ({
+        localPath: canonicalProject.localPath,
+        canonicalPath: canonicalProject.canonicalPath,
+        identityPath: 'c:/workspace/canonical',
+        pathIdentityHash: 'c'.repeat(64),
+      }),
+      detectGitMetadata: async () => ({}),
+    });
+
+    await expect(service.reconcileCanonical([canonicalProject])).rejects.toMatchObject({
+      code: 'CONFIG_RECONCILIATION_REQUIRED',
+      details: { projectId: canonicalProject.id },
     });
   });
 });

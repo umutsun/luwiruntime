@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -11,6 +11,7 @@ import {
   NodeGitCommandRunner,
   assertGitCommandAllowed,
   createGitObserver,
+  gitInvocationArguments,
   redactGitRemoteUrl,
   type GitCommandRunner,
 } from './git-observer.js';
@@ -117,6 +118,41 @@ describe('local Git observer', () => {
       'ssh://example.com/org/repo.git',
     );
     expect(redactGitRemoteUrl('git@github.com:org/repo.git')).toBe('git@github.com:org/repo.git');
+  });
+
+  it('trusts only the exact observed working directory without changing Git configuration', () => {
+    expect(
+      gitInvocationArguments('C:\\work\\repo', ['status', '--porcelain=v1', '--branch']),
+    ).toEqual([
+      '-c',
+      'safe.directory=C:/work/repo',
+      '-c',
+      'core.fsmonitor=false',
+      'status',
+      '--porcelain=v1',
+      '--branch',
+    ]);
+  });
+
+  it('does not execute a repository-configured fsmonitor command', async () => {
+    const sentinel = join(repository, 'fsmonitor-sentinel.txt');
+    const hook = join(repository, 'fsmonitor-hook.cjs');
+    await writeFile(
+      hook,
+      `require('node:fs').writeFileSync(${JSON.stringify(sentinel)}, 'called'); process.stdout.write('token\\n');\n`,
+      'utf8',
+    );
+    await exec('git', ['config', 'core.fsmonitor', `node ${hook.replaceAll('\\', '/')}`], {
+      cwd: repository,
+    });
+
+    await exec('git', ['status', '--porcelain=v1'], { cwd: repository }).catch(() => undefined);
+    await expect(access(sentinel)).resolves.toBeUndefined();
+    await rm(sentinel);
+
+    await createGitObserver().observe({ projectId: 'project-1', localPath: repository });
+
+    await expect(access(sentinel)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it.each(

@@ -100,6 +100,16 @@ async function serviceFixture(
               updatedAt: '2026-07-29T12:00:00.000Z',
             }
           : null,
+      list: async () => [
+        {
+          id: 'project-1',
+          name: 'Fixture',
+          localPath: projectRoot,
+          canonicalPath: projectRoot,
+          createdAt: '2026-07-29T12:00:00.000Z',
+          updatedAt: '2026-07-29T12:00:00.000Z',
+        },
+      ],
     },
     createId: (() => {
       let index = 0;
@@ -112,6 +122,171 @@ async function serviceFixture(
 }
 
 describe('control-plane service', () => {
+  it('projects observed native skills with explicit provenance and bounded diagnostics', async () => {
+    const scannedRoots: unknown[] = [];
+    const { service, capabilities, projectRoot, globalRoot } = await serviceFixture({
+      capabilityRoots: ['C:/custom/skills'],
+      capabilityObserver: {
+        scan: async (roots) => {
+          scannedRoots.push(...roots);
+          return {
+            capabilities: [
+              {
+                id: 'observed:1234567890abcdef12345678',
+                kind: 'skill',
+                name: 'Review',
+                scope: 'global',
+                source: 'agent-native',
+                path: 'C:/native/review',
+                checksum: 'a'.repeat(64),
+                compatibleAgentKinds: ['claude-code'],
+                manifest: {
+                  managementMode: 'observed',
+                  description: 'Review changes.',
+                  observation: {
+                    adapterId: 'claude-code',
+                    root: 'C:/native',
+                    manifestPath: 'C:/native/review/SKILL.md',
+                    observedAt: '2026-08-24T12:00:00.000Z',
+                  },
+                },
+              },
+            ],
+            diagnostics: {
+              rootsScanned: 1,
+              rootsUnavailable: 6,
+              malformedManifests: 2,
+              ignoredEntries: 3,
+              truncated: false,
+            },
+          };
+        },
+      },
+    });
+
+    const result = await service.scanCapabilities();
+
+    expect(scannedRoots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: join(globalRoot, 'fake-home', '.claude', 'skills'),
+          adapterId: 'claude-code-native-v1',
+          scope: 'global',
+        }),
+        expect.objectContaining({
+          path: join(projectRoot, '.codex', 'skills'),
+          adapterId: 'codex-native-v1',
+          scope: 'project',
+          projectId: 'project-1',
+        }),
+        expect.objectContaining({
+          path: 'C:/custom/skills',
+          source: 'local-path',
+          compatibleAgentKinds: ['claude-code', 'codex', 'gemini-cli'],
+        }),
+      ]),
+    );
+    expect(capabilities).toEqual([
+      expect.objectContaining({
+        id: 'observed:1234567890abcdef12345678',
+        createdAt: '2026-07-29T12:00:00.000Z',
+        updatedAt: '2026-07-29T12:00:00.000Z',
+        requiredCapabilityIds: [],
+        requiredMcpIds: [],
+        enabled: true,
+      }),
+    ]);
+    expect(result).toEqual({
+      capabilities,
+      diagnostics: {
+        rootsScanned: 1,
+        rootsUnavailable: 6,
+        malformedManifests: 2,
+        ignoredEntries: 3,
+        conflictsSkipped: 0,
+        truncated: false,
+      },
+    });
+    await expect(
+      service.updateCapability('observed:1234567890abcdef12345678', { name: 'Manual edit' }),
+    ).rejects.toMatchObject({ code: 'CAPABILITY_OBSERVED_READ_ONLY' });
+  });
+
+  it('never overwrites a declared capability when an observed stable ID collides', async () => {
+    const fixture = await serviceFixture({
+      capabilityObserver: {
+        scan: async () => ({
+          capabilities: [
+            {
+              id: 'observed:collision00000000000000',
+              kind: 'skill',
+              name: 'Observed replacement',
+              scope: 'global',
+              source: 'agent-native',
+              path: 'C:/native/collision',
+              checksum: 'b'.repeat(64),
+              compatibleAgentKinds: ['codex'],
+              manifest: {
+                managementMode: 'observed',
+                description: 'Must not replace declaration.',
+                observation: {
+                  adapterId: 'codex',
+                  root: 'C:/native',
+                  manifestPath: 'C:/native/collision/SKILL.md',
+                  observedAt: '2026-08-24T12:00:00.000Z',
+                },
+              },
+            },
+          ],
+          diagnostics: {
+            rootsScanned: 1,
+            rootsUnavailable: 0,
+            malformedManifests: 0,
+            ignoredEntries: 0,
+            truncated: false,
+          },
+        }),
+      },
+    });
+    await fixture.service.createCapability({
+      id: 'observed:collision00000000000000',
+      kind: 'skill',
+      name: 'Declared owner',
+      scope: 'global',
+      source: 'bundled',
+      compatibleAgentKinds: ['codex'],
+      requiredCapabilityIds: [],
+      requiredMcpIds: [],
+      enabled: true,
+      manifest: {},
+    });
+
+    const result = await fixture.service.scanCapabilities();
+
+    expect(fixture.capabilities[0]?.name).toBe('Declared owner');
+    expect(result.capabilities).toEqual([]);
+    expect(result.diagnostics.conflictsSkipped).toBe(1);
+  });
+
+  it('reserves observed provenance for the passive scanner', async () => {
+    const { service } = await serviceFixture();
+
+    await expect(
+      service.createCapability({
+        id: 'forged-observation',
+        kind: 'skill',
+        name: 'Forged',
+        scope: 'global',
+        source: 'local-path',
+        compatibleAgentKinds: ['codex'],
+        requiredCapabilityIds: [],
+        requiredMcpIds: [],
+        enabled: true,
+        manifest: { managementMode: 'observed' },
+      }),
+    ).rejects.toMatchObject({ code: 'CAPABILITY_PROVENANCE_RESERVED' });
+  });
+
   it('keeps sibling detections when one native command-runner promise rejects', async () => {
     const { service } = await serviceFixture({
       executableResolver: {

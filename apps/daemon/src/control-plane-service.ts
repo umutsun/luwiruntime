@@ -4,6 +4,7 @@ import { basename, isAbsolute, relative, resolve } from 'node:path';
 import { readFile, readdir, realpath, stat } from 'node:fs/promises';
 
 import {
+  createCapabilityObserver,
   createBuiltInAdapters,
   NodeAdapterFileSystem,
   PathExecutableResolver,
@@ -12,12 +13,15 @@ import {
   type AdapterExecutableResolver,
   type AdapterFileSystem,
   type AgentAdapter,
+  type CapabilityObservationRoot,
+  type CapabilityObserver,
 } from '@luwi/adapters';
 import {
   agentDefinitionSchema,
   capabilityBindingSchema,
   capabilityPackageSchema,
   capabilityProfileSchema,
+  capabilityScanResponseSchema,
   contextSourceSchema,
   createRuntimeEvent,
   projectAgentBindingSchema,
@@ -33,6 +37,7 @@ import {
   type CapabilityProfile,
   type CapabilityProfileCreateRequest,
   type CapabilityProfilePatchRequest,
+  type CapabilityScanResponse,
   type ContextFootprint,
   type ContextSource,
   type DetectedAgentInstallation,
@@ -70,6 +75,8 @@ export type ControlPlaneServiceOptions = {
   fileSystem?: AdapterFileSystem;
   executableResolver?: AdapterExecutableResolver;
   commandRunner?: AdapterCommandRunner;
+  capabilityRoots?: string[];
+  capabilityObserver?: CapabilityObserver;
   createId?: () => string;
   now?: () => Date;
 };
@@ -99,6 +106,7 @@ export interface ControlPlaneService {
   ): Promise<CapabilityPackage>;
   getCapability(capabilityId: string): Promise<CapabilityPackage>;
   listCapabilities(query?: Partial<CapabilityListQuery>): Promise<CapabilityPackage[]>;
+  scanCapabilities(): Promise<CapabilityScanResponse>;
   assignCapability(
     capabilityId: string,
     request: CapabilityAssignmentRequest,
@@ -222,6 +230,7 @@ export function createControlPlaneService(
   const fileSystem = options.fileSystem ?? new NodeAdapterFileSystem();
   const executableResolver = options.executableResolver ?? new PathExecutableResolver();
   const commandRunner = options.commandRunner ?? new SpawnCommandRunner();
+  const capabilityObserver = options.capabilityObserver ?? createCapabilityObserver();
   const adapterById = new Map(adapters.map((adapter) => [adapter.id, adapter]));
   let serialized = Promise.resolve();
 
@@ -265,6 +274,68 @@ export function createControlPlaneService(
       throw new ApplicationError('CAPABILITY_NOT_FOUND', 'The capability was not found.', 404);
     }
     return capability;
+  };
+
+  const isObservedCapability = (capability: CapabilityPackage): boolean =>
+    capability.id.startsWith('observed:') &&
+    (capability.source === 'agent-native' || capability.source === 'local-path') &&
+    capability.manifest['managementMode'] === 'observed' &&
+    isRecord(capability.manifest['observation']);
+
+  const assertDeclaredManifest = (manifest: Record<string, unknown>): void => {
+    if (manifest['managementMode'] === 'observed') {
+      throw new ApplicationError(
+        'CAPABILITY_PROVENANCE_RESERVED',
+        'Observed capability provenance is reserved for passive scanning.',
+        409,
+      );
+    }
+  };
+
+  const capabilityObservationRoots = async (): Promise<CapabilityObservationRoot[]> => {
+    const nativeRoots = [
+      {
+        directory: '.claude',
+        adapterId: 'claude-code-native-v1',
+        kind: 'claude-code' as const,
+      },
+      { directory: '.codex', adapterId: 'codex-native-v1', kind: 'codex' as const },
+      {
+        directory: '.gemini',
+        adapterId: 'gemini-cli-native-v1',
+        kind: 'gemini-cli' as const,
+      },
+    ];
+    const roots: CapabilityObservationRoot[] = nativeRoots.map((native) => ({
+      path: resolve(homeDirectory, native.directory, 'skills'),
+      scope: 'global',
+      source: 'agent-native',
+      adapterId: native.adapterId,
+      compatibleAgentKinds: [native.kind],
+    }));
+    const projects = (await options.projects.list?.()) ?? [];
+    for (const project of projects.toSorted((left, right) => left.id.localeCompare(right.id))) {
+      for (const native of nativeRoots) {
+        roots.push({
+          path: resolve(project.canonicalPath, native.directory, 'skills'),
+          scope: 'project',
+          projectId: project.id,
+          source: 'agent-native',
+          adapterId: native.adapterId,
+          compatibleAgentKinds: [native.kind],
+        });
+      }
+    }
+    for (const path of options.capabilityRoots ?? []) {
+      roots.push({
+        path,
+        scope: 'global',
+        source: 'local-path',
+        adapterId: 'luwi-configured-roots-v1',
+        compatibleAgentKinds: ['claude-code', 'codex', 'gemini-cli'],
+      });
+    }
+    return roots;
   };
 
   const projectRootForScope = async (
@@ -732,6 +803,7 @@ export function createControlPlaneService(
             409,
           );
         }
+        assertDeclaredManifest(request.manifest);
         assertSecretFreeConfiguration(request.manifest);
         const projectRoot = await projectRootForScope(request.scope, request.projectId);
         let canonicalPath: string | undefined;
@@ -772,7 +844,17 @@ export function createControlPlaneService(
     updateCapability: (capabilityId, request) =>
       serializeWrite(async () => {
         const current = await requireCapability(capabilityId);
-        if (request.manifest !== undefined) assertSecretFreeConfiguration(request.manifest);
+        if (isObservedCapability(current)) {
+          throw new ApplicationError(
+            'CAPABILITY_OBSERVED_READ_ONLY',
+            'Observed capabilities can only be refreshed by passive scanning.',
+            409,
+          );
+        }
+        if (request.manifest !== undefined) {
+          assertDeclaredManifest(request.manifest);
+          assertSecretFreeConfiguration(request.manifest);
+        }
         const projectRoot = await projectRootForScope(current.scope, current.projectId);
         const path =
           request.path === undefined
@@ -840,6 +922,54 @@ export function createControlPlaneService(
         .sort((left, right) => left.id.localeCompare(right.id))
         .slice(0, query.limit ?? 100);
     },
+
+    scanCapabilities: () =>
+      serializeWrite(async () => {
+        const observed = await capabilityObserver.scan(await capabilityObservationRoots());
+        const capabilities: CapabilityPackage[] = [];
+        let conflictsSkipped = 0;
+        for (const observation of observed.capabilities) {
+          const current = await options.repository.getCapability(observation.id);
+          if (current !== null && !isObservedCapability(current)) {
+            conflictsSkipped += 1;
+            continue;
+          }
+          const timestamp = now().toISOString();
+          const capability = capabilityPackageSchema.parse({
+            ...observation,
+            requiredCapabilityIds: [],
+            requiredMcpIds: [],
+            enabled: true,
+            createdAt: current?.createdAt ?? timestamp,
+            updatedAt: timestamp,
+          });
+          await options.repository.putCapability(
+            current === null ? 'create' : 'update',
+            capability,
+            event(current === null ? 'capability.registered' : 'capability.updated', {
+              workspaceId: options.workspaceId,
+              createId,
+              now,
+              ...(capability.projectId === undefined ? {} : { projectId: capability.projectId }),
+              payload: {
+                capabilityId: capability.id,
+                kind: capability.kind,
+                checksum: capability.checksum,
+                managementMode: 'observed',
+                adapterId: observation.manifest.observation.adapterId,
+              },
+            }),
+          );
+          capabilities.push(capability);
+        }
+        return capabilityScanResponseSchema.parse({
+          capabilities,
+          diagnostics: {
+            ...observed.diagnostics,
+            conflictsSkipped,
+          },
+        });
+      }),
 
     assignCapability: (capabilityId, request) =>
       serializeWrite(async () => {

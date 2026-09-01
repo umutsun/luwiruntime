@@ -16,6 +16,7 @@ export type GitMetadata = {
 
 export type ProjectService = {
   register(request: ProjectRegistrationRequest): Promise<Project>;
+  reconcileCanonical(projects: readonly Project[]): Promise<{ rebuilt: number; unchanged: number }>;
   get(projectId: string): Promise<Project | null>;
   list(): Promise<Project[]>;
 };
@@ -43,6 +44,19 @@ async function gitValue(canonicalPath: string, arguments_: string[]): Promise<st
   }
 }
 
+function sameProjectFacts(left: Project, right: Project): boolean {
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    left.localPath === right.localPath &&
+    left.canonicalPath === right.canonicalPath &&
+    left.repositoryUrl === right.repositoryUrl &&
+    left.defaultBranch === right.defaultBranch &&
+    left.createdAt === right.createdAt &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
 export async function detectGitMetadata(canonicalPath: string): Promise<GitMetadata> {
   const [repositoryUrl, remoteHead] = await Promise.all([
     gitValue(canonicalPath, ['config', '--get', 'remote.origin.url']),
@@ -61,6 +75,65 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
   const inspectGit = options.detectGitMetadata ?? detectGitMetadata;
 
   return {
+    async reconcileCanonical(projects) {
+      let rebuilt = 0;
+      let unchanged = 0;
+      for (const project of projects) {
+        const canonical = await canonicalizePath(project.localPath);
+        if (canonical.canonicalPath !== project.canonicalPath) {
+          throw new ApplicationError(
+            'CONFIG_RECONCILIATION_REQUIRED',
+            'A canonical project path no longer matches the filesystem.',
+            503,
+            { projectId: project.id },
+          );
+        }
+        const current = await options.repository.getProject(project.id);
+        if (current !== null) {
+          if (!sameProjectFacts(current, project)) {
+            throw new ApplicationError(
+              'CONFIG_RECONCILIATION_REQUIRED',
+              'A canonical project conflicts with the runtime projection.',
+              503,
+              { projectId: project.id },
+            );
+          }
+          unchanged += 1;
+          continue;
+        }
+        const result = await options.repository.registerProject({
+          project: {
+            id: project.id,
+            name: project.name,
+            localPath: project.localPath,
+            canonicalPath: project.canonicalPath,
+            identityPath: canonical.identityPath,
+            pathIdentityHash: canonical.pathIdentityHash,
+            ...(project.repositoryUrl === undefined
+              ? {}
+              : { repositoryUrl: project.repositoryUrl }),
+            ...(project.defaultBranch === undefined
+              ? {}
+              : { defaultBranch: project.defaultBranch }),
+            createdAt: project.createdAt,
+            updatedAt: project.updatedAt,
+          },
+          workspaceId: options.workspaceId,
+          eventId: createId(),
+        });
+        if (result.status !== 'created') {
+          throw new ApplicationError(
+            'CONFIG_RECONCILIATION_REQUIRED',
+            'A canonical project conflicts with the runtime projection.',
+            503,
+            { projectId: project.id },
+          );
+        }
+        rebuilt += 1;
+      }
+      return { rebuilt, unchanged };
+    },
+
     async register(request) {
       const canonical = await canonicalizePath(request.localPath);
       const detected = await inspectGit(canonical.canonicalPath);

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 import {
   agentDefinitionCollectionSchema,
@@ -7,7 +7,6 @@ import {
   agentDefinitionSchema,
   agentDetectionRequestSchema,
   agentDetectionResponseSchema,
-  CONTROL_PLANE_COLLECTION_LIMIT,
   capabilityAssignmentRequestSchema,
   capabilityBindingSchema,
   capabilityCollectionSchema,
@@ -19,6 +18,7 @@ import {
   capabilityProfileCreateRequestSchema,
   capabilityProfilePatchRequestSchema,
   capabilityProfileSchema,
+  capabilityScanResponseSchema,
   configDriftCollectionSchema,
   configOperationReceiptSchema,
   configPlanApplyRequestSchema,
@@ -57,6 +57,7 @@ import {
   leaseListQuerySchema,
   leaseReleaseRequestSchema,
   leaseRenewRequestSchema,
+  lifecycleStopResponseSchema,
   workLeaseSchema,
   messageCollectionResponseSchema,
   messageCreateRequestSchema,
@@ -175,6 +176,11 @@ export type BuildDaemonOptions = {
   closeRedisOnClose?: boolean;
   onRedisUnavailable?: (error: RedisRepositoryError) => void;
   dashboardDistRoot?: string;
+  lifecycle?: {
+    token: string;
+    requestStop: () => Promise<void>;
+    schedule?: (action: () => void) => void;
+  };
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -183,6 +189,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function utf8Bytes(value: string): number {
   return Buffer.byteLength(value, 'utf8');
+}
+
+function lifecycleTokenMatches(actual: unknown, expected: string): boolean {
+  if (typeof actual !== 'string' || actual.length > 128) return false;
+  const actualBytes = Buffer.from(actual, 'utf8');
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
 }
 
 // The only source of REQUEST_VALIDATION_FAILED (ADR 0015): a ZodError anywhere else
@@ -390,6 +403,37 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
     };
 
     return response;
+  });
+
+  app.post('/api/v1/runtime/stop', async (request, reply) => {
+    parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
+    const lifecycle = options.lifecycle;
+    if (lifecycle === undefined) {
+      throw new ApplicationError(
+        'DAEMON_LIFECYCLE_UNMANAGED',
+        'This daemon was not started by the LUWI lifecycle CLI.',
+        403,
+      );
+    }
+    if (!lifecycleTokenMatches(request.headers['x-luwi-lifecycle-token'], lifecycle.token)) {
+      throw new ApplicationError(
+        'DAEMON_LIFECYCLE_FORBIDDEN',
+        'The daemon lifecycle ownership proof was rejected.',
+        403,
+      );
+    }
+    const requestStop = (): void => {
+      void lifecycle.requestStop().catch((error: unknown) => {
+        app.log.error({ err: error }, 'Lifecycle shutdown failed');
+      });
+    };
+    if (lifecycle.schedule === undefined) {
+      const timer = setTimeout(requestStop, 0);
+      timer.unref();
+    } else {
+      lifecycle.schedule(requestStop);
+    }
+    return reply.code(202).send(lifecycleStopResponseSchema.parse({ status: 'stopping' }));
   });
 
   if (options.services !== undefined) {
@@ -1124,13 +1168,9 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       });
       app.post('/api/v1/capabilities/scan', async (request) => {
         parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
-        const capabilities = await withCurrentRead(() =>
-          control.listCapabilities({ limit: CONTROL_PLANE_COLLECTION_LIMIT + 1 }),
+        return capabilityScanResponseSchema.parse(
+          await withMutation(() => control.scanCapabilities()),
         );
-        return capabilityCollectionSchema.parse({
-          capabilities: capabilities.slice(0, CONTROL_PLANE_COLLECTION_LIMIT),
-          truncated: capabilities.length > CONTROL_PLANE_COLLECTION_LIMIT,
-        });
       });
       app.post('/api/v1/capabilities', async (request, reply) => {
         const body = parseRequestInput(capabilityPackageCreateRequestSchema, request.body);

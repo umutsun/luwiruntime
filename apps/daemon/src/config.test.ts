@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { delimiter, resolve } from 'node:path';
 
-import { loadDaemonConfig } from './config.js';
+import { loadDaemonConfig, loadRuntimeInstanceId } from './config.js';
 
 describe('daemon configuration', () => {
   it('uses localhost-safe defaults', () => {
@@ -27,6 +28,7 @@ describe('daemon configuration', () => {
       deadLetterStreamMaxLength: 10000,
       retentionIntervalMs: 60000,
       nativeLinkRetentionMax: 1000,
+      capabilityRoots: [],
       messageTimeoutSweepIntervalMs: 1000,
       messageTimeoutBatchSize: 100,
       messageMaxContentBytes: 32768,
@@ -62,6 +64,44 @@ describe('daemon configuration', () => {
       optimizationMaximumProposals: 25,
       optimizationOversizedContextTokens: 8000,
     });
+  });
+
+  it('parses bounded unique absolute capability roots without touching the filesystem', () => {
+    const first = resolve('fixtures', 'capabilities-one');
+    const second = resolve('fixtures', 'capabilities-two');
+
+    expect(
+      loadDaemonConfig({
+        LUWI_CAPABILITY_ROOTS: [first, ` ${second} `, first].join(delimiter),
+      }).capabilityRoots,
+    ).toEqual([first, second]);
+    expect(() => loadDaemonConfig({ LUWI_CAPABILITY_ROOTS: '   ' })).toThrow(/blank/i);
+    expect(() =>
+      loadDaemonConfig({ LUWI_CAPABILITY_ROOTS: [first, '', second].join(delimiter) }),
+    ).toThrow(/blank/i);
+  });
+
+  it('validates an optional lifecycle-provided runtime instance identity', () => {
+    expect(loadRuntimeInstanceId({})).toBeUndefined();
+    expect(
+      loadRuntimeInstanceId({
+        LUWI_RUNTIME_INSTANCE_ID: 'f2e95fa4-f12d-4a42-92bb-fba0bb5f938b',
+      }),
+    ).toBe('f2e95fa4-f12d-4a42-92bb-fba0bb5f938b');
+    expect(() => loadRuntimeInstanceId({ LUWI_RUNTIME_INSTANCE_ID: 'not-a-runtime-id' })).toThrow();
+  });
+
+  it('rejects relative or excessive capability roots', () => {
+    expect(() => loadDaemonConfig({ LUWI_CAPABILITY_ROOTS: 'relative/skills' })).toThrow(
+      /capability roots/i,
+    );
+    expect(() =>
+      loadDaemonConfig({
+        LUWI_CAPABILITY_ROOTS: Array.from({ length: 33 }, (_, index) =>
+          resolve('fixtures', `capabilities-${String(index)}`),
+        ).join(delimiter),
+      }),
+    ).toThrow(/capability roots/i);
   });
 
   it('validates environment overrides', () => {
@@ -115,6 +155,7 @@ describe('daemon configuration', () => {
       reconnectInitialMs: 250,
       reconnectMaxMs: 5000,
       allowedOrigins: ['http://127.0.0.1:5000', 'http://localhost:5000'],
+      capabilityRoots: [],
       configSnapshotRetentionCount: 50,
       gitCommandTimeoutMs: 5000,
       gitScanIntervalMs: 300000,
