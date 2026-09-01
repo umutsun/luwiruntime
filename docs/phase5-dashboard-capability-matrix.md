@@ -270,3 +270,26 @@ therefore make no completeness claim.
   `product-independence.test.ts` forbids those names in dashboard source. There is no label map and
   no per-vendor branch, so a new agent kind needs no dashboard change and no existing one is
   privileged.
+
+## CLI-first MVP delta — bounded Ask
+
+Date: 2026-08-24
+
+| Surface                   | HTTP mutation           | Eligibility and outcome                                                                                                                        | Status    |
+| ------------------------- | ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | --------- |
+| Session question dispatch | `POST /api/v1/messages` | Online target; explicit online source in the same project; fixed `question` kind; accepted correlation opens under `#/messages/<correlation>`. | SUPPORTED |
+
+Ask is asynchronous request/reply, not terminal injection or a chat transport. The target receives
+the existing durable inbox entry, and the Messages route displays the authoritative projection
+after persistence. Pulse does not optimistically create a row and offers no message acknowledge,
+processing, response, reject, fail, retry, or cancel controls.
+
+The browser creates one bounded idempotency key per draft. An identical retry retains the key; any
+field change rotates it. Subject and content are validated by the browser-safe protocol schemas and
+again by the daemon. The 2, 5, and 10 minute choices all remain inside the existing daemon timeout
+bound. Same-project/online filtering is an affordance over the snapshot; daemon routing revalidates
+the relationship and presence at mutation time.
+
+`apps/dashboard/src/product-independence.test.ts` now allowlists exactly two write modules:
+configuration mutations and message creation. No dependency, datastore, daemon route, Redis
+representation, agent-vendor branch, or native configuration writer was added for this slice.

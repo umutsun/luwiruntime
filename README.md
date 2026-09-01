@@ -67,8 +67,9 @@ realtime Pulse and the Phase 1–4 runtime foundation:
   ConfigPlan, approval, snapshot, apply, drift, rollback, and reconciliation;
 - non-causal post-change evaluation and project-scoped read-only Phase 4 MCP tools;
 - unit and opt-in Redis integration tests.
-- a loopback-served React/TypeScript Pulse shell with independently validated read-only
-  health, project, session, agent, activity, usage, context, and optimization snapshots;
+- a loopback-served React/TypeScript Pulse shell with independently validated observational
+  health, project, session, agent, activity, usage, context, and optimization snapshots, plus
+  narrowly isolated configuration and inter-session question mutations;
 - explicit loading, empty, partial, degraded, Redis-unavailable, daemon-unavailable, and
   WebSocket connection states;
 - validated WebSocket events with first-live and reconnect refresh, bounded reconnect,
@@ -117,10 +118,13 @@ file-to-file imports and the module dependencies aggregated from them into the s
 the event-derived relationships, kept apart by provenance. An import it cannot resolve is recorded
 as unresolved rather than pointed at the nearest plausible file.
 
-ADR 0018 added `#/messages`, a read-only view of inter-agent requests that renders what an
+ADR 0018 added `#/messages`, a view of inter-agent requests that renders what an
 Activity row cannot: who asked whom, the subject and body, why the runtime selected that recipient,
 the state, and the response with its own confidence. A rejected message is presented as an answer
-rather than as a fault. Selecting a bound agent on the Projects route opens
+rather than as a fault. The Sessions route can now dispatch one bounded `question` from an online
+same-project source to an online target and opens the accepted correlation at
+`#/messages/<correlationId>`; the daemon and durable inbox remain authoritative and the dashboard
+does not inject text into an agent terminal. Selecting a bound agent on the Projects route opens
 `#/projects/<id>/agents/<agentId>` and loads the effective configuration with its conflicts and
 unsupported capabilities, plus the pair-scoped context summary and footprint — which is what makes
 the binding's profile and capability counts openable rather than terminal.
@@ -157,7 +161,7 @@ that never asks still edits the file. What the runtime guarantees is an atomic a
 including `lease.denied`, which is the only evidence that a collision was prevented rather than
 merely not observed.
 
-ADR 0021 made the dashboard capable of writing, for one domain. `#/config` now creates import and
+ADR 0021 first made the dashboard capable of writing. `#/config` creates import and
 render plans, prepares a rollback plan from a snapshot, rescans drift, and applies a plan behind a
 confirmation that names every file the apply will write. Creating a plan touches nothing, so only
 the apply is gated; a rollback is itself a plan and must pass the same gate, so an undo cannot skip
@@ -167,9 +171,10 @@ is shown with no control rather than a button that would fail.
 
 Two things followed. A `POST` that carries no `Origin` must now declare `application/json`, which a
 browser cannot send cross-site without a preflight the daemon deliberately never answers; `PUT`,
-`PATCH` and `DELETE` are unaffected because a cross-site one of those always preflights. And one
-module, `api/config-mutations.ts`, is the only place in the dashboard permitted to issue a
-state-changing request, enforced as an allowlist of one.
+`PATCH` and `DELETE` are unaffected because a cross-site one of those always preflights.
+State-changing requests remain isolated: `api/config-mutations.ts` owns the configuration chain and
+`api/message-mutations.ts` owns only `POST /api/v1/messages`. The static allowlist admits exactly
+those two modules.
 
 ADR 0022 added **native session identity**. A client may declare its vendor-native
 session reference when it registers a LUWI session; the runtime records a stable binding and an
@@ -217,9 +222,26 @@ unified search, GitHub integration, prompt injection, task orchestration, a sema
 graph, memory federation, cloud accounts, and authentication are not implemented. Optimization
 accept/reject/evaluate, graph rebuild, lease release and `config/reconcile` (interrupted-apply
 recovery, run at daemon start) exist on the HTTP API and CLI but are deliberately not dashboard
-mutations — the dashboard's only writes remain the config plan chain. Work leases exist but are
+mutations. Dashboard writes remain the config plan chain and bounded question creation; it does not
+acknowledge, process, answer, retry, cancel, or inject a message. Work leases exist but are
 not renewed automatically, do not notify when a held path frees, and are not correlated with the
 commits made under them.
+
+ADR 0025 then landed the CLI-first tranche. `luwi doctor|setup|start|status|stop|reset` is the
+recommended golden path; `stop` reaches the daemon through a token-gated `POST /api/v1/runtime/stop`
+that refuses a daemon it did not start (`DAEMON_LIFECYCLE_UNMANAGED`) and a caller whose ownership
+token does not match (`DAEMON_LIFECYCLE_FORBIDDEN`), the token compared in constant time.
+`luwi reset --runtime-state` clears operational state through a daemon-boundary maintenance entry
+that only ever removes keys under `luwi:v1:` and refuses while a daemon is running, so a non-LUWI key
+in the same Redis database survives it. `luwi project discover` reads one directory level, dry-run
+first, and applies through the existing project HTTP API. Capability observation scans declared roots
+read-only, marks what it finds `observed`, executes nothing it discovers, and feeds a real
+`capabilities/scan` mutation. The dashboard's list-to-detail surfaces now open in a genuinely modal
+detail drawer instead of a docked Inspector column; the bounded Ask flow the two-module allowlist
+above already names is reachable from Pulse. An experimental `session bridge deepseek` registers one
+DeepSeek Harness ACP process as one ordinary LUWI session — fresh sessions only, no history import, no
+ACP-time MCP injection, and no DeepSeek dependency outside the CLI. Tool and file observation (B2),
+automatic lease renewal, and autostart remain the open items.
 
 ## Architecture and security
 
@@ -302,6 +324,82 @@ home. Tests and the Phase 3 demo set both to temporary sandbox roots.
 
 Remote binding is intentionally unsupported in local mode.
 
+## CLI-first local lifecycle
+
+Build once, then use the lifecycle CLI as the recommended local path:
+
+```text
+pnpm build
+pnpm --filter @luwi/cli dev -- doctor
+pnpm --filter @luwi/cli dev -- setup
+pnpm --filter @luwi/cli dev -- start
+pnpm --filter @luwi/cli dev -- status
+```
+
+`setup` shows the exact LUWI-owned target and asks before writing. `--yes` is the scoped
+non-interactive approval. It writes a versioned `runtime/config.json` under `LUWI_HOME`
+(normally `~/.luwi`) and never edits `.env` or Claude, Codex, or Gemini files. Optional
+wrapper examples are printed by `setup --print-hooks` for manual use.
+
+For the default `redis://127.0.0.1:6379`, `start` uses the existing `compose.yaml`, waits for
+Redis, starts the built daemon, and records private lifecycle ownership only after the daemon
+reports ready with the expected startup identity. A bounded atomic lifecycle lock prevents
+concurrent `start`/`stop` ownership races. A compatible daemon already running is success but is
+not silently adopted. An external loopback Redis URL is never started or stopped by LUWI.
+
+Stop the CLI-owned daemon while keeping Redis and its AOF-backed state warm:
+
+```text
+pnpm --filter @luwi/cli dev -- stop
+```
+
+Stop the Compose Redis container too, without deleting its named volume:
+
+```text
+pnpm --filter @luwi/cli dev -- stop --with-redis
+```
+
+A runtime-only clean installation is explicit and dry-run-first. The daemon must be stopped:
+
+```text
+pnpm --filter @luwi/cli dev -- reset --runtime-state --json
+pnpm --filter @luwi/cli dev -- reset --runtime-state --yes --json
+pnpm --filter @luwi/cli dev -- start
+```
+
+The first reset command only reports the number of keys matching the fixed `luwi:v1:*`
+namespace. Without `--yes`, JSON mode cannot delete anything. The approved command uses bounded
+`SCAN` plus `UNLINK`; it never accepts a caller-controlled namespace and never calls `KEYS`,
+`FLUSHDB`, or `FLUSHALL`. It deletes LUWI runtime projections and history, while preserving
+canonical LUWI files, every project file, the Redis database/volume, and all non-`luwi:v1:*`
+keys. On restart, canonical projects are restored before project-agent bindings and other
+dependent control-plane projections.
+
+Project discovery is one-level, passive, and also dry-run-first. For the approved XAMPP layout,
+review the JSON output before adding `--apply`:
+
+```powershell
+pnpm --filter @luwi/cli dev -- project discover C:\xampp\htdocs `
+  --exclude dashboard --exclude img --exclude webalizer --exclude xampp `
+  --exclude luwi-clients --exclude luwi-themes-inspect `
+  --name "arshahomes=Arsha Homes" --name "corenine=Corenine" `
+  --name "flybydeniz=Fly by Deniz" --name "glasshouse=Glasshouse" `
+  --name "luwi-dev=LUWI Dev" --name "luwilisting=LUWI Listing" `
+  --name "luwipress=LUWI Press" --name "luwiruntime=LUWI Runtime" `
+  --name "luwistudio=LUWI Studio" --name "semantic-bridge=Semantic Bridge" --json
+```
+
+Repeat the same command with `--apply` only after the selected, excluded, and invalid arrays are
+correct. Apply registers only missing canonical paths, reports existing paths as `unchanged`, and
+runs the existing read-only Git observation for each selected project. A non-Git folder is reported
+as `not_git`; project contents are never changed.
+
+The lifecycle CLI never uses Redis protocol credentials. Redis connectivity and Function
+compatibility are accepted only after the daemon verifies them. Shutdown uses a private
+loopback ownership token and the daemon's existing graceful drain path; stale or mismatched
+ownership is refused rather than converted into an unverified PID kill. See the [CLI
+lifecycle guide](docs/guides/cli-lifecycle.md) for recovery and file locations.
+
 ## Start Redis
 
 With Docker:
@@ -369,6 +467,13 @@ pnpm --filter @luwi/cli dev runtime
 ## CLI examples
 
 ```text
+pnpm --filter @luwi/cli dev -- doctor --json
+pnpm --filter @luwi/cli dev -- status --json
+pnpm --filter @luwi/cli dev -- agent run claude -- <native arguments>
+pnpm --filter @luwi/cli dev -- agent run codex -- <native arguments>
+pnpm --filter @luwi/cli dev -- agent run gemini -- <native arguments>
+pnpm --filter @luwi/cli dev -- capability scan
+
 pnpm --filter @luwi/cli dev project register --name "LUWI Runtime" --path .
 pnpm --filter @luwi/cli dev project list
 pnpm --filter @luwi/cli dev project get <projectId>
@@ -434,6 +539,56 @@ The Phase 4 temporary-repository intelligence and optimization walkthrough is in
 4 demo guide](docs/guides/phase-4-intelligence-demo.md). After `pnpm build`, run
 `pnpm demo:phase4`. It labels all telemetry as simulated, applies configuration only through
 an explicitly approved Phase 3 plan, and cleans its run-specific Redis/filesystem state.
+
+### Experimental DeepSeek Harness ACP bridge
+
+The CLI can opt one DeepSeek Harness ACP process into LUWI as one ordinary session. This is
+an edge adapter: the daemon, Runtime, protocol, Redis model, and native configuration remain
+unchanged, and LUWI does not depend on a DeepSeek package. The CLI alone uses the official
+vendor-neutral ACP SDK version used by the current DeepSeek Harness implementation.
+
+The DeepSeek Harness repository currently provides its ACP server through `pnpm run
+demo:acp`. With the daemon running, a registered project, and the DeepSeek repository already
+installed and configured with its own provider credentials, a PowerShell launch looks like:
+
+```powershell
+pnpm --filter @luwi/cli dev -- session bridge deepseek `
+  --project <projectId> `
+  --agent deepseek-harness `
+  --working-directory C:/absolute/project/path `
+  --bridge-instance deepseek-bridge-1 `
+  --command pnpm.cmd `
+  --args-json '["--dir","C:/absolute/deepseek-harness","run","demo:acp"]'
+```
+
+The command registers the LUWI session, starts one ACP process, creates one fresh ACP
+session, declares its returned id as `deepseek-harness-acp-v1`, heartbeats, consumes the
+durable inbox serially, and closes both sides on `SIGINT`/`SIGTERM`. It prints identifiers and
+lifecycle facts only, never prompt or answer bodies. ACP permission requests default to
+`reject`; `--permission allow-once` is an explicit opt-in and selects only an offered
+one-shot allow choice.
+
+ACP startup, cancellation, protocol-frame size, response size, and each prompt's durable LUWI
+message deadline are bounded. A recovered request already in `processing` is failed without
+replaying potentially side-effecting ACP work. On Windows, planned shutdown uses LUWI's
+existing creation-time-verified owned-process-tree cleanup; an unexpected root exit is
+reported as unverified cleanup rather than silently treated as clean.
+Signal handlers are active before ACP initialization and abort startup through the same
+rollback path. Valid JSON is admitted to the ACP SDK only after its supported inbound envelope
+and parameters validate; invalid frames are rejected with a redacted error.
+Only the typed, fully cleaned startup-cancellation path exits quietly; an unverified process or
+LUWI-session cleanup is propagated as a command failure.
+
+DeepSeek Harness currently rejects non-empty ACP `mcpServers`, so this bridge does not inject
+LUWI tools during `session/new`. To give that DeepSeek composition LUWI MCP tools, configure
+its existing `@deepseek-ai/dsh-mcp-client` plugin to launch
+`apps/mcp-server/dist/main.js`. Map `LUWI_SESSION_ID` and `LUWI_DAEMON_URL` from the parent
+process in that Cordis configuration; the bridge sets both before it starts DeepSeek. This is
+an explicit DeepSeek-side configuration choice and LUWI never edits it.
+
+This surface is experimental because DeepSeek Harness is in developer preview and supports
+fresh ACP sessions only. It intentionally does not resume/import history, manage Cordis,
+install MCP configuration, or add a general orchestration framework.
 
 ### MCP server
 
@@ -665,8 +820,10 @@ consumers prove a package split.
 
 ## Roadmap disclaimer
 
-Phase 5B is limited to tested read-only Pulse, native realtime invalidation, bounded Activity,
-and supported inspectors. Lifecycle/release intelligence, leases, global search,
-ACP, GitHub, and mutation surfaces remain deferred. Future work must not bypass daemon-owned
+Pulse began as a tested read-only shell and now has two narrow mutation boundaries: the approved
+configuration plan chain and durable question creation between eligible sessions. Native realtime
+invalidation, bounded Activity, and supported inspectors remain observational. Lifecycle/release
+intelligence, global search, broader ACP orchestration, GitHub, and additional mutation surfaces
+remain deferred. Future work must not bypass daemon-owned
 Redis access, execute discovered code, convert unknown evidence to non-use, or describe
 estimates/correlations as exact facts.

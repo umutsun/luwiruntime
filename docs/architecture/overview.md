@@ -100,6 +100,42 @@ connection is aborted; Fastify close is bounded and force-closes remaining trans
 connections. The daemon then closes Redis clients, compare-and-deletes the owner token if
 still owned, and marks `stopped`. Only fully processed events are acknowledged.
 
+The CLI-first lifecycle layer adds no supervisor or datastore. For the exact default local
+Redis URL it invokes the repository's fixed Compose service arguments, then starts the built
+daemon as one detached child. Ownership metadata is written under `LUWI_HOME/runtime` only
+after the versioned runtime response is healthy and its generated startup instance identity
+matches. Atomic, bounded `LUWI_HOME/runtime/lifecycle.lock` acquisition serializes `start` and
+`stop` across CLI processes. The private lifecycle token is held in the daemon process and
+generated owner record; it is never returned by HTTP or logged.
+
+`POST /api/v1/runtime/stop` is a loopback-only lifecycle mutation. It accepts only the matching
+token and schedules the same idempotent graceful shutdown path used by `SIGINT`/`SIGTERM`.
+The CLI first matches the live `runtimeInstanceId` to its owner record, so it never treats a
+stale PID as ownership and never kills an unverified process. Normal `luwi stop` leaves Redis
+running. `luwi stop --with-redis` uses `docker compose stop redis`; it does not remove the
+container volume, image, configuration, or AOF data.
+
+`doctor` and `status` remain outside the Redis protocol boundary. They use versioned daemon
+HTTP responses, bounded TCP listener probes, PATH discovery, and fixed Compose inspection.
+Redis Function compatibility is reported as verified only when a ready daemon has completed
+its Redis bootstrap.
+
+Runtime reset is an offline maintenance exception that preserves the same package boundary: the
+CLI coordinates lifecycle state but never speaks Redis, while a dedicated `@luwi/daemon` entry is
+the only executable that opens the Redis connection. Its production namespace is the compile-time
+constant `luwi:v1:`. It enumerates with bounded `SCAN`, rejects any returned key outside that
+namespace, and deletes validated keys in `UNLINK` batches of at most 100. Caller-provided
+namespaces, database-wide flushes, volume operations, and deletion while a daemon/listener is
+present are refused.
+
+Canonical project restoration is ordered before dependent startup reconciliation. The daemon
+loads validated tracked projects from the canonical manifest, canonicalizes each current local
+path, and either restores the missing projection with the original ID and timestamps or fails
+closed on path/identity drift. Only after all projects exist does it rebuild project-agent
+bindings, capabilities, profiles, and later derived projections. The passive CLI discovery path is
+separate: it reads only immediate child directory metadata and real paths, defaults to a dry run,
+and applies registrations and Git observations only through versioned daemon HTTP routes.
+
 ## Atomic transition flow
 
 ```text
@@ -368,6 +404,45 @@ daemon APIs. Status responder evidence is explicitly labeled simulated and descr
 the LUWI project/session snapshot it actually read. The simulator never closes the
 underlying coding session unless a separate session-close command is issued.
 
+The experimental DeepSeek Harness bridge is a real but deliberately thin Session Bridge in
+`@luwi/cli`. One bridge process owns exactly one LUWI session, one ACP subprocess, and one
+fresh ACP session. Startup is ordered and transactional:
+
+```text
+LUWI register -> ACP process -> initialize -> session/new
+              -> declare native ACP session id -> heartbeat/inbox loop
+```
+
+It communicates with LUWI only through validated loopback HTTP and uses the existing
+session, native-declaration, status, message-transition, response, and inbox routes. It does
+not add a daemon route, Redis representation, event type, package boundary, DeepSeek runtime
+dependency, or native-file writer. The sole new library is the vendor-neutral official ACP
+SDK scoped to `@luwi/cli` and pinned to the version used by DeepSeek Harness. If the command
+is never invoked, daemon/runtime behavior and dependencies are unchanged.
+
+ACP output is folded from committed `agent_message_chunk` text. Inbox work is processed
+serially because the current DeepSeek ACP server permits one in-flight prompt per session.
+Permission requests fail closed unless the operator explicitly selects the one-shot allow
+policy. ACP startup, cancellation, message-deadline execution, protocol frames, and response
+bytes are bounded. A recovered message already marked `processing` is failed without replay,
+because prior ACP side effects cannot be proven idempotent. Signals cancel ACP work before
+process shutdown and LUWI session close; Windows shutdown reuses LUWI's creation-time-verified
+owned-process-tree cleanup. An unexpected root exit is reported as unverified cleanup rather
+than silently accepted. Startup failures roll back both owned resources. Prompts, answers,
+environment dumps, malformed frames, and credentials are not logged.
+Signal handling is installed before startup and aborts in-progress ACP initialization before
+waiting for owned-resource rollback. The bridge validates its deliberately narrow inbound ACP
+request/notification surface before handing frames to the SDK, preventing SDK diagnostics from
+printing valid JSON with invalid protocol parameters.
+Only a typed startup cancellation whose rollback succeeds is suppressed. Process-tree or LUWI
+session cleanup failures are preserved through bridge shutdown and returned by the CLI.
+
+DeepSeek Harness currently refuses non-empty `mcpServers` on `session/new`. LUWI therefore
+does not smuggle an MCP server through ACP or rewrite Cordis. A composition that wants LUWI
+tools configures DeepSeek's own MCP client plugin; the bridge provides the child process with
+the already-registered `LUWI_SESSION_ID` and exact loopback daemon origin needed by LUWI's
+existing bound-session MCP server.
+
 The implemented MCP server verifies `LUWI_SESSION_ID` at startup, rejects offline/terminal
 bindings, derives source and responder identity from that binding, and limits message reads
 to the bound project/session. It exposes stdio tools through the official SDK and never
@@ -450,9 +525,11 @@ exists; unsupported fields are not inferred.
 ## Read-only Git and package observation
 
 The Git observer uses `spawn("git", args, {shell:false})`, bounded output and timeouts,
-`GIT_OPTIONAL_LOCKS=0`, and the ADR 0011 allowlist. It does not fetch or mutate. Repository
-root, HEAD/branch, status, local refs, worktrees, recent commits/paths, LUWI trailers, and
-redacted configured remotes are projected into Redis.
+`GIT_OPTIONAL_LOCKS=0`, and the ADR 0011 allowlist. Its process-local Git configuration trusts
+only the exact observed working directory and disables repository-configured filesystem
+monitors. It does not fetch or mutate. Repository root, HEAD/branch, status, local refs,
+worktrees, recent commits/paths, LUWI trailers, and redacted configured remotes are projected
+into Redis.
 
 An explicit, internally consistent LUWI session/agent/project trailer set produces exact
 attribution. Contradictory trailers are rejected as unknown. A unique bounded
@@ -514,6 +591,26 @@ pre-change baseline; a successful Phase 3 apply records its apply timestamp. Eva
 counts only explicit post-apply session/adapter observations and usage evidence, compares
 configuration hashes and evidence windows, returns verified/inconclusive/failed, and always
 sets `causalClaim: false`.
+
+## Pulse mutation boundary
+
+The dashboard remains an HTTP/WebSocket client and never receives Redis credentials. Its read
+loaders cannot mutate. Two separately constructed modules contain the complete browser write
+surface: the Phase 3 configuration plan chain and `POST /api/v1/messages`. A static test rejects a
+state-changing request from any other production dashboard module and continues to prohibit graph,
+Git, optimization, and reconciliation writes.
+
+The Sessions route exposes Ask only when the target is online and another online session exists in
+the same project. The form fixes the message kind to `question`, supplies no evidence requirements,
+uses protocol-bounded subject/content/deadline fields, and names both session IDs explicitly. One
+idempotency key belongs to one draft: an unchanged retry retains it, while editing a field rotates
+it. This is a convenience check over the authoritative daemon rules, not a replacement for them;
+the daemon may still reject a session that went offline after the snapshot.
+
+Successful acceptance navigates to the encoded correlation under `#/messages`. Pulse never inserts
+an optimistic record: the bounded message read and normalized realtime events load the persisted
+projection. The browser cannot acknowledge, process, answer, reject, fail, retry, cancel, or inject
+the request into a terminal.
 
 ## Phase 4 retention
 

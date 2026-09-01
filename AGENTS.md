@@ -1026,9 +1026,11 @@ How the three decisions landed:
   accept/reject/evaluate, graph rebuild, Git mutation, `inspect` and lease release are out and
   untouched.
 
-`apps/dashboard/src/api/config-mutations.ts` is the **only** production module in the dashboard
-permitted to issue a state-changing request. `product-independence.test.ts` enforces that as an
-allowlist of one and still forbids the prohibited operations everywhere, including inside it.
+`apps/dashboard/src/api/config-mutations.ts` and `apps/dashboard/src/api/message-mutations.ts`
+(ADR 0025 — the second owns exactly `POST /api/v1/messages` for the bounded Ask flow) are the only
+production modules in the dashboard permitted to issue a state-changing request.
+`product-independence.test.ts` enforces that as an allowlist of two and still forbids the
+prohibited operations everywhere, including inside them.
 
 ### Built: native session binding (A1 and A2, complete)
 
@@ -1123,6 +1125,14 @@ never the filename**, which is a stem only for top-level transcripts. `cachedInp
 alone with its `<= inputTokens` invariant and two new additive fields are added beside it. Nothing
 discovered is executed and no conversation content is ever stored or logged. Automatic lease renewal
 and autostart — the two items that follow ingestion in the sequence — remain unapproved.
+
+**Built since, under ADR 0025 (committed 2026-09-01):** the CLI-first lifecycle surface
+(`luwi start`, `stop`, `status`, `doctor`, `setup`, `reset`) with the token-gated
+`POST /api/v1/runtime/stop`; the daemon-boundary runtime reset over `luwi:v1:*`; one-level,
+dry-run-first project discovery; read-only capability-root observation feeding a real
+`capabilities/scan` mutation; the dashboard detail drawer with the bounded Ask flow behind the
+second dashboard write module; and the experimental DeepSeek Harness ACP bridge as a CLI edge
+adapter. Automatic lease renewal and autostart remain unapproved by that ADR.
 
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers

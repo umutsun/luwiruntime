@@ -183,6 +183,11 @@ to be required, stop and record why — that would mean the phase is larger than
       fatal; a skill outside every declared root is not catalogued; the scanner never invokes a
       command runner.
 
+_Superseded by ADR 0025: capability observation shipped as a read-only adapter scan in
+`packages/adapters/src/capability-observer.ts` with `observed` provenance — roots read from
+`LUWI_CAPABILITY_ROOTS` in `apps/daemon/src/config.ts` and threaded through the control-plane
+service — rather than the control-plane-service scan sketched here._
+
 ## Task 5: Making the evidence visible
 
 **Files:** `apps/dashboard/src/…`
@@ -194,6 +199,11 @@ to be required, stop and record why — that would mean the phase is larger than
 - [ ] Long panels on these routes use the collapsible `Panel` added on 2026-08-17, so the route
       does not become another page-length stack.
 
+_Not completed as a discrete Phase C step: the live-session and loaded-capability evidence in the
+dashboard landed with ADR 0024's session self-registration and the ADR 0025 dashboard pass. Codex
+and Gemini identity resolution — the precondition for a non-Claude session's binding to appear — is
+carried to `docs/superpowers/plans/2026-09-01-completion-program.md` (Phase 3)._
+
 ## Task 6: Full verification
 
 - [ ] `pnpm format`, `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`
@@ -202,6 +212,11 @@ to be required, stop and record why — that would mean the phase is larger than
       show it in Pulse as `online`, then let it lapse and show it go `disconnected`. Do not tick this
       without the evidence — C1 is exactly the claim that went unverified before.
 - [ ] Report per §19, including how many of C2's processes are now visible and how many are not.
+
+_Not completed as a discrete Phase C gate. `pnpm format`, `pnpm lint`, `pnpm typecheck`, and
+`pnpm test` pass on the current tree (verified 2026-09-01: 148 files / 1452 tests), and the
+definition-of-done sequence is re-run under the 2026-09-01 completion program; the `/redis-it` leg
+and the live attach-then-lapse proof were not performed here and are carried to that program._
 
 ## Regression coverage map
 

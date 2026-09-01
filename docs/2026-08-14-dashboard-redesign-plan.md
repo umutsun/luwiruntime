@@ -111,9 +111,14 @@ Phases 1 and 2 are committed at `09b152a`. Tokens, the rail (icons, counts, coll
 bar, the theme toggle and the status dual encoding are in; the inspector is docked as grid column
 three with its modal contract removed and its tests rewritten.
 
+**Superseded 2026-08-25:** the docked inspector column was replaced by a modal detail drawer —
+spec `docs/superpowers/specs/2026-08-25-dashboard-detail-drawer-spacing-design.md`, decision
+ADR 0025. The aria-modal argument this phase made is satisfied in the opposite direction: the
+drawer is genuinely modal, and `shell.test.ts` now pins the two-track grid instead.
+
 ## Status after phase 3
 
-Phase 3 is **built and verified, and not yet committed**. `pulse-view.tsx`, `pulse/model.ts` and
+Phase 3 is **built and verified, committed at `4404b1a`**. `pulse-view.tsx`, `pulse/model.ts` and
 `styles/pulse.css` carry the redesign; `pulse/retained-window.ts` and `pulse/pulse-view.test.tsx` are
 new. Rows 1 and 2 are the mockup's: a single dotted stat line with a client-side trace, Active Work
 as four dual-line columns whose row is the control, and Project Pulse with monogram tiles. Row 3 is
@@ -133,7 +138,7 @@ breakdown states the observed statuses (`1 thinking · 1 tool running · 1 waiti
 `Not observed` from `Unavailable`, an unresolved agent id is set as an identifier rather than a name,
 and Project Pulse invents no status word and no lifecycle stage.
 
-## Status after phases 4-6 (2026-08-15, uncommitted)
+## Status after phases 4-6 (2026-08-15, committed at `4404b1a`; completion recorded at `3d2a679`)
 
 Everything visible in the mockup now has a counterpart, honest where the comp was not:
 
