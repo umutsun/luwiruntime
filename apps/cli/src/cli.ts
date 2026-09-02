@@ -1841,6 +1841,7 @@ export function createCli(dependencies: CliDependencies): Command {
     .requiredOption('--agent <agentId>', 'Opaque agent ID')
     .option('--working-directory <path>', 'Working directory', dependencies.cwd())
     .option('--agent-kind <kind>', 'Vendor whose identity to resolve', 'claude-code')
+    .option('--model <model>', 'Model the agent runs, recorded as session metadata')
     .option('--heartbeat-ms <milliseconds>', 'Heartbeat interval', '5000')
     .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
     .option('--dry-run', 'Print what would be declared and exit without registering')
@@ -1851,6 +1852,7 @@ export function createCli(dependencies: CliDependencies): Command {
         agent: string;
         workingDirectory: string;
         agentKind: string;
+        model?: string;
         heartbeatMs: string;
         leaseRenewMs: string;
         dryRun?: boolean;
@@ -1886,6 +1888,7 @@ export function createCli(dependencies: CliDependencies): Command {
           agentId: options.agent,
           workingDirectory,
           ...(native === undefined ? {} : { native }),
+          ...(options.model === undefined ? {} : { metadata: { model: options.model } }),
         };
 
         if (options.dryRun === true) {

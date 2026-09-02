@@ -149,6 +149,27 @@ function Stat({
   );
 }
 
+/**
+ * Folds a run of consecutive same-type events into one row carrying the run's
+ * last event and its length. A scan that fans one `package.inventory.updated`
+ * out per project otherwise fills the stream with identical rows.
+ */
+export function collapseRuns(
+  events: readonly DashboardEvent[],
+): Array<{ event: DashboardEvent; count: number }> {
+  const runs: Array<{ event: DashboardEvent; count: number }> = [];
+  for (const event of events) {
+    const last = runs[runs.length - 1];
+    if (last !== undefined && last.event.type === event.type) {
+      last.event = event;
+      last.count += 1;
+    } else {
+      runs.push({ event, count: 1 });
+    }
+  }
+  return runs;
+}
+
 function SessionContext({ context }: { context: SessionContextEvidence }) {
   if (context.state === 'unavailable') return <Unavailable />;
   /*
@@ -156,7 +177,13 @@ function SessionContext({ context }: { context: SessionContextEvidence }) {
    * no contribution named this session — which is what the runtime observed,
    * and is also what a bounded read that never reached this session looks like.
    */
-  if (context.state === 'not-observed') return <span className="work-dim">Not observed</span>;
+  if (context.state === 'not-observed') {
+    return (
+      <span className="work-dim" aria-label="Context not observed">
+        —
+      </span>
+    );
+  }
   return (
     <>
       <span className="work-context">{`${String(context.loaded)} loaded · ${String(context.invoked)} invoked`}</span>
@@ -330,6 +357,9 @@ export function PulseView({
               <ul className="work-list">
                 {snapshot.activeSessions.map((session) => {
                   const selected = session.id === selectedSessionId;
+                  // Reported by the session at registration (`--model`), never
+                  // inferred by LUWI — absent stays absent.
+                  const model = session.metadata?.['model'];
                   const startedMs = Date.parse(session.startedAt);
                   const duration =
                     Number.isFinite(startedMs) &&
@@ -373,6 +403,9 @@ export function PulseView({
                               </span>
                             )}
                             <span className="work-dim">{session.projectName}</span>
+                            {typeof model === 'string' ? (
+                              <span className="work-dim">{model}</span>
+                            ) : null}
                           </span>
                           <span className="work-cell">
                             {/*
@@ -382,7 +415,9 @@ export function PulseView({
                              * row says so rather than naming one for it.
                              */}
                             {session.taskSummary === undefined ? (
-                              <span className="work-dim">No task reported</span>
+                              <span className="work-dim" aria-label="No task reported">
+                                —
+                              </span>
                             ) : (
                               <span className="work-task" title={session.taskSummary}>
                                 {session.taskSummary}
@@ -394,7 +429,9 @@ export function PulseView({
                              * this read can state.
                              */}
                             {session.branch === undefined ? (
-                              <span className="work-dim">No branch observed</span>
+                              <span className="work-dim" aria-label="No branch observed">
+                                —
+                              </span>
                             ) : (
                               <span className="work-dim">
                                 branch <span className="work-branch">{session.branch}</span>
@@ -536,7 +573,7 @@ export function PulseView({
             <p className="empty-state">No retained activity</p>
           ) : (
             <ol className="stream-list">
-              {snapshot.activity.map((event) => (
+              {collapseRuns(snapshot.activity).map(({ event, count }) => (
                 <li key={event.streamId} className="stream-row">
                   {/*
                    * The whole row is the control, like Active Work. The comp
@@ -558,6 +595,7 @@ export function PulseView({
                     </span>
                     <span className={`stream-row__type ${eventFamilyClass(event.type)}`}>
                       {event.type}
+                      {count > 1 ? ` ×${String(count)}` : ''}
                     </span>
                     <span className="stream-row__object">
                       {event.projectId ?? event.sessionId ?? event.id}

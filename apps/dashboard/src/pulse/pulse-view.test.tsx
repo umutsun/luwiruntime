@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildPulseSnapshot, type PulseInput, type PulseSession } from './model.js';
-import { PulseView } from './pulse-view.js';
+import { collapseRuns, PulseView } from './pulse-view.js';
 
 afterEach(cleanup);
 
@@ -242,8 +242,47 @@ describe('Active Work', () => {
     value.sessions = { state: 'ready', data: [session()] };
     renderPulse(value);
 
-    expect(screen.getByText('No task reported')).toBeTruthy();
-    expect(screen.getByText('No branch observed')).toBeTruthy();
+    // Rendered as a muted dash so an empty row stays quiet, with the statement
+    // kept for assistive tech rather than dropped.
+    expect(screen.getByLabelText('No task reported').textContent?.trim()).toBe('—');
+    expect(screen.getByLabelText('No branch observed').textContent?.trim()).toBe('—');
+  });
+
+  it('shows the model the session registered with, and nothing when it registered none', () => {
+    const value = withWork();
+    value.sessions = {
+      state: 'ready',
+      data: [session({ id: 's1', metadata: { model: 'claude-opus-4-8' } }), session({ id: 's2' })],
+    };
+    renderPulse(value);
+
+    expect(screen.getAllByText('claude-opus-4-8')).toHaveLength(1);
+  });
+
+  it('folds a run of same-type events into one row with its count', () => {
+    const value = input();
+    value.activity = {
+      state: 'ready',
+      data: [
+        activityEvent('2026-08-05T07:00:00.000Z'),
+        activityEvent('2026-08-05T07:00:01.000Z'),
+        activityEvent('2026-08-05T07:00:02.000Z'),
+      ],
+    };
+    renderPulse(value);
+
+    expect(screen.getByText('session.status_changed ×3')).toBeTruthy();
+    expect(document.querySelectorAll('.stream-row')).toHaveLength(1);
+    // A different type breaks the run rather than being absorbed into it.
+    const other = activityEvent('2026-08-05T07:00:01.000Z');
+    (other as { type: string }).type = 'session.registered';
+    expect(
+      collapseRuns([
+        activityEvent('2026-08-05T07:00:00.000Z'),
+        other,
+        activityEvent('2026-08-05T07:00:02.000Z'),
+      ]).map((run) => run.count),
+    ).toEqual([1, 1, 1]);
   });
 
   it('resolves the agent definition name and marks a bare id as an identifier', () => {
@@ -284,7 +323,7 @@ describe('Active Work', () => {
     renderPulse(value);
 
     expect(screen.getByText('2 loaded · 1 invoked')).toBeTruthy();
-    expect(screen.getByText('Not observed')).toBeTruthy();
+    expect(screen.getByLabelText('Context not observed').textContent?.trim()).toBe('—');
 
     cleanup();
     const failed = withWork();

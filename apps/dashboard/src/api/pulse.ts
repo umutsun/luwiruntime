@@ -39,6 +39,8 @@ const sessionCollectionBrowserSchema = z.object({
        * The Active Work row labels it as reported for exactly that reason.
        */
       taskSummary: z.string().optional(),
+      /** Free-form, as registered (e.g. `{ model }`). Declared so the parse keeps it. */
+      metadata: z.record(z.string(), z.unknown()).optional(),
     }),
   ),
 });
@@ -195,6 +197,7 @@ export async function loadPulseResources(
                 lastHeartbeatAt: session.lastHeartbeatAt,
                 ...(session.branch === undefined ? {} : { branch: session.branch }),
                 ...(session.taskSummary === undefined ? {} : { taskSummary: session.taskSummary }),
+                ...(session.metadata === undefined ? {} : { metadata: session.metadata }),
               })),
           ),
         );

@@ -21,6 +21,8 @@ export type PulseSession = {
   branch?: string;
   /** Reported by the session about itself; absent when it reported none. */
   taskSummary?: string;
+  /** Free-form, as registered (e.g. `{ model }`); optional so older reads still type. */
+  metadata?: Record<string, unknown>;
 };
 export type PulseUsageSource = {
   source: 'agent-exact' | 'agent-reported' | 'adapter-extracted' | 'luwi-estimated' | 'unavailable';

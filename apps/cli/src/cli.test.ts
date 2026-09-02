@@ -1765,6 +1765,51 @@ describe('session attach', () => {
     expect((bodies[0] as Record<string, unknown>)['native']).toBeUndefined();
   });
 
+  it('records --model as session metadata without inventing one otherwise', async () => {
+    const bodies: unknown[] = [];
+    let signalListener: (() => void) | undefined;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { CLAUDE_CODE_SESSION_ID: '64c3e219-18aa-4539-9104-89d3d2ac5629' },
+      canonicalizePath: async (path: string) => path,
+      fetch: async (_url, init) => {
+        if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
+        return response(registered);
+      },
+      setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+      clearInterval: (() => undefined) as never,
+      signals: {
+        once: (_signal: string, listener: () => void) => {
+          signalListener = listener;
+          return undefined;
+        },
+        off: () => undefined,
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    };
+
+    const run = runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'claude-code',
+        '--model',
+        'claude-opus-4-8',
+      ],
+      dependencies,
+    );
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    signalListener?.();
+    await run;
+
+    expect(bodies[0]).toMatchObject({ metadata: { model: 'claude-opus-4-8' } });
+  });
+
   it('prints what it would declare and exits under --dry-run', async () => {
     let output = '';
     let called = false;

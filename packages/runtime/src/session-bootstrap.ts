@@ -30,6 +30,7 @@ export type SessionBootstrapClient = {
     agentId: string;
     workingDirectory: string;
     native?: NativeSessionRef;
+    metadata?: Record<string, unknown>;
   }): Promise<{ id: string }>;
   heartbeat(sessionId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
@@ -68,6 +69,8 @@ export type SessionBootstrapOptions = {
    * to another session.
    */
   native?: NativeSessionRef;
+  /** Free-form session metadata to register with, e.g. `{ model }`. */
+  metadata?: Record<string, unknown>;
   /** Must stay well inside the presence TTL. Defaults to a third of 15 s. */
   heartbeatIntervalMs?: number;
   /** Caps exponential retry delay. Must be at least the heartbeat interval. */
@@ -150,6 +153,7 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
     agentId: options.agentId,
     workingDirectory: options.workingDirectory,
     ...(options.native === undefined ? {} : { native: options.native }),
+    ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
   };
 
   let sessionId: string | undefined;
