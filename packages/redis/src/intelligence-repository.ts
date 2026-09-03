@@ -195,6 +195,13 @@ export interface IntelligenceRepository {
   updateGraphRebuild(operation: GraphRebuildOperation): Promise<void>;
   activateGraphGeneration(operation: GraphRebuildOperation, event: RuntimeEvent): Promise<void>;
   failGraphRebuild(operation: GraphRebuildOperation, event: RuntimeEvent): Promise<void>;
+  /**
+   * Extends the rebuild lock while the operation holding it is still alive.
+   * `false` means the lock is gone or belongs to another operation, and the
+   * caller must stop writing: the transition that would activate its generation
+   * is refused without ownership.
+   */
+  renewGraphRebuildLock(operationId: string): Promise<boolean>;
   getGraphRebuild(operationId: string): Promise<GraphRebuildOperation | null>;
   putOptimizationFinding(finding: OptimizationFinding, event?: RuntimeEvent): Promise<void>;
   listOptimizationFindings(projectId?: string, limit?: number): Promise<OptimizationFinding[]>;
@@ -480,6 +487,17 @@ export function createIntelligenceRepository(
 
   const putRebuild = async (operation: GraphRebuildOperation): Promise<void> =>
     put(keys.graphRebuild(operation.id), keys.graphRebuildsIndex, operation.id, operation);
+
+  /**
+   * The rebuild lock's lifetime between renewals. A rebuild is minutes of work
+   * that grows with the projects it covers, so the holder renews the lock while
+   * it is alive — the same compare-and-expire the daemon owner lease uses —
+   * rather than a TTL guessed long enough for every machine. A holder that
+   * dies still frees the lock in this long, exactly as before.
+   */
+  const GRAPH_REBUILD_LOCK_TTL_MS = 300_000;
+  const renewRebuildLockScript =
+    "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('PEXPIRE', KEYS[1], ARGV[2]) else return 0 end";
 
   const transitionGraphRebuild = async (
     operation: GraphRebuildOperation,
@@ -1416,7 +1434,7 @@ export function createIntelligenceRepository(
         operation.id,
         'NX',
         'PX',
-        '300000',
+        String(GRAPH_REBUILD_LOCK_TTL_MS),
       ]);
       if (lock === null) {
         throw new RedisRepositoryError(
@@ -1444,6 +1462,17 @@ export function createIntelligenceRepository(
     },
     async failGraphRebuild(operation, event) {
       await transitionGraphRebuild(operation, event);
+    },
+    async renewGraphRebuildLock(operationId) {
+      const reply = await client.sendCommand([
+        'EVAL',
+        renewRebuildLockScript,
+        '1',
+        keys.graphRebuildLock,
+        operationId,
+        String(GRAPH_REBUILD_LOCK_TTL_MS),
+      ]);
+      return Number(reply) === 1;
     },
     getGraphRebuild: (operationId) =>
       read(keys.graphRebuild(operationId), graphRebuildOperationSchema, 'graph rebuild'),

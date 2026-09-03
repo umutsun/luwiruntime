@@ -15,6 +15,8 @@ import type { DaemonClient } from './client.js';
 
 /** ADR 0012's marker for edges and nodes the code-structure observer produced. */
 const CODE_STRUCTURE_PROVENANCE_PREFIX = 'code-structure-observer';
+/** ADR 0029's marker for what was read from graphify's own output. */
+const GRAPHIFY_PROVENANCE_PREFIX = 'graphify-graph-json';
 
 export const DEFAULT_MAX_DEPTH = 2;
 export const DEFAULT_NODE_LIMIT = 250;
@@ -61,8 +63,24 @@ export function subgraphPath(root: GraphRoot, bounds: SubgraphBounds): string {
   return `/api/v1/graph/subgraph?${query.toString()}`;
 }
 
+export type GraphOrigin = 'runtime' | 'code-structure' | 'graphify';
+
+/** Where a claim came from, by the provenance prefix each source stamps on its records. */
+export function originOf(provenance: string): GraphOrigin {
+  if (provenance.startsWith(CODE_STRUCTURE_PROVENANCE_PREFIX)) return 'code-structure';
+  if (provenance.startsWith(GRAPHIFY_PROVENANCE_PREFIX)) return 'graphify';
+  return 'runtime';
+}
+
+export const originLabels: Record<GraphOrigin, string> = {
+  runtime: 'Runtime events',
+  'code-structure': 'Code structure',
+  graphify: 'Graphify output',
+};
+
+/** Structure parsed from code rather than derived from events — by either observer. */
 function isStructural(provenance: string): boolean {
-  return provenance.startsWith(CODE_STRUCTURE_PROVENANCE_PREFIX);
+  return originOf(provenance) !== 'runtime';
 }
 
 /**

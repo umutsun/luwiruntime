@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { loadSubgraph, subgraphPath, type GraphRoot } from './graph-explorer.js';
+import {
+  loadSubgraph,
+  originLabels,
+  originOf,
+  subgraphPath,
+  type GraphRoot,
+} from './graph-explorer.js';
 import type { DaemonClient, ResourceResult } from './client.js';
 
 const root: GraphRoot = { kind: 'project', id: 'p1', label: 'Alpha' };
@@ -298,5 +304,35 @@ describe('loadSubgraph', () => {
     if (result.state !== 'ready') throw new Error('expected ready');
     expect(result.data.nodes[0]?.label).toBe('Alpha');
     expect(result.data.nodes[1]?.label).toBe('module-abc');
+  });
+
+  it('marks what was read from graphify output as structural too (ADR 0029)', async () => {
+    const graphify = {
+      ...subgraph,
+      nodes: subgraph.nodes.map((node) => ({ ...node, provenance: 'graphify-graph-json@1' })),
+      edges: subgraph.edges.map((edge) => ({ ...edge, provenance: 'graphify-graph-json@1' })),
+    };
+    const { client } = clientReturning({
+      state: 'ready',
+      data: graphify,
+      httpStatus: 200,
+      receivedAt: '2026-08-08T00:00:00.000Z',
+    });
+
+    const result = await loadSubgraph(client, root, {});
+
+    if (result.state !== 'ready') throw new Error('expected ready');
+    expect(result.data.edges[0]?.structural).toBe(true);
+    expect(result.data.edges[0]?.provenance).toBe('graphify-graph-json@1');
+  });
+});
+
+describe('originOf', () => {
+  it('separates the two structural sources from runtime events by provenance prefix', () => {
+    expect(originOf('code-structure-observer@1')).toBe('code-structure');
+    expect(originOf('graphify-graph-json@1')).toBe('graphify');
+    expect(originOf('git-commit-path')).toBe('runtime');
+    expect(originOf('session-projection')).toBe('runtime');
+    expect(originLabels[originOf('graphify-graph-json@1')]).toBe('Graphify output');
   });
 });

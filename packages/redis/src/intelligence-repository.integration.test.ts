@@ -328,6 +328,15 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         event('event-rebuild-started', 'graph.rebuild.started'),
       );
       expect(await repository.getActiveGraphGeneration()).toBe('generation-active');
+      // Only the holder can extend the lock; a stranger's renewal changes nothing.
+      await expect(repository.renewGraphRebuildLock('rebuild-integration')).resolves.toBe(true);
+      await expect(repository.renewGraphRebuildLock('rebuild-other')).resolves.toBe(false);
+      await expect(
+        repository.beginGraphRebuild(
+          started,
+          event('event-rebuild-twice', 'graph.rebuild.started'),
+        ),
+      ).rejects.toMatchObject({ code: 'GRAPH_REBUILD_IN_PROGRESS' });
 
       const completed: GraphRebuildOperation = {
         ...started,
@@ -340,6 +349,8 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         event('event-rebuild-complete', 'graph.rebuild.completed'),
       );
       expect(await repository.getActiveGraphGeneration()).toBe('generation-shadow');
+      // Activation released the lock, so there is nothing left to renew.
+      await expect(repository.renewGraphRebuildLock('rebuild-integration')).resolves.toBe(false);
       await expect(repository.readGraphGeneration()).resolves.toMatchObject({
         generation: 'generation-shadow',
         nodes: expect.arrayContaining([node, agentNode]),

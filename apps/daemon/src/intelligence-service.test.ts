@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type {
   ContextSource,
   GitObservation,
+  GraphEdge,
+  GraphNode,
   OptimizationProposal,
   Project,
   SessionView,
@@ -11,8 +13,10 @@ import type {
 import { graphEdgeKindSchema, graphNodeKindSchema } from '@luwi/protocol';
 import type { IntelligenceRepository } from '@luwi/redis';
 
+import type { CodeStructureObservation } from './code-structure-observer.js';
 import type { ConfigControlService } from './config-control-service.js';
 import type { ControlPlaneService } from './control-plane-service.js';
+import { GRAPHIFY_PROVENANCE, type GraphifyObservation } from './graphify-observer.js';
 import { createIntelligenceService } from './intelligence-service.js';
 import type { ProjectService } from './project-service.js';
 import type { SessionService } from './session-service.js';
@@ -707,5 +711,308 @@ describe('daemon intelligence service — session file changes (B2)', () => {
   it('reuses the existing SESSION_CHANGED_FILE edge kind and file node kind, adding none', () => {
     expect(graphEdgeKindSchema.options).toContain('SESSION_CHANGED_FILE');
     expect(graphNodeKindSchema.options).toContain('file');
+  });
+});
+
+describe('daemon intelligence service — graphify layer (ADR 0029)', () => {
+  const structure: CodeStructureObservation = {
+    files: ['src/a.ts', 'src/b.ts'],
+    imports: [
+      {
+        fromPath: 'src/a.ts',
+        toPath: 'src/b.ts',
+        specifier: './b.js',
+        confidence: 'high',
+        dynamic: false,
+        line: 1,
+      },
+    ],
+    exports: [{ path: 'src/a.ts', symbol: 'a', line: 1 }],
+    observedAt: timestamp,
+    evidenceScope: 'filesystem',
+    truncated: false,
+    skippedFileCount: 0,
+    externalImportCount: 0,
+  };
+  const graphify: GraphifyObservation = {
+    files: [
+      { relativePath: 'src/a.ts', symbolCount: 3, communityCount: 1, community: 'core' },
+      { relativePath: 'lib/legacy.php', symbolCount: 2, communityCount: 1, community: 'legacy' },
+    ],
+    imports: [
+      { fromPath: 'src/a.ts', toPath: 'src/b.ts', confidence: 'medium', line: 1 },
+      { fromPath: 'lib/legacy.php', toPath: 'src/a.ts', confidence: 'low', line: 4 },
+    ],
+    builtAtCommit: 'c'.repeat(40),
+    observedAt: '2026-07-29T00:00:00.000Z',
+    truncated: false,
+    skippedNodeCount: 0,
+    skippedLinkCount: 0,
+    externalImportCount: 0,
+    otherRelationCount: 0,
+  };
+  const commitTouching = (...changedPaths: string[]): GitObservation =>
+    ({
+      id: 'git-current',
+      projectId: project.id,
+      repositoryRoot: project.canonicalPath,
+      branch: 'main',
+      headSha: 'a'.repeat(40),
+      clean: true,
+      stagedCount: 0,
+      unstagedCount: 0,
+      untrackedCount: 0,
+      branches: ['main'],
+      tags: [],
+      worktrees: [],
+      recentCommits: [{ sha: 'd'.repeat(40), committedAt: timestamp, changedPaths, merge: false }],
+      observedAt: timestamp,
+      repositoryStateHash: 'b'.repeat(64),
+    }) as unknown as GitObservation;
+
+  /** The real service over the shared fakes plus the rebuild path's own repository calls. */
+  const harness = (
+    overrides: {
+      git?: GitObservation;
+      observe?: () => Promise<GraphifyObservation | null>;
+      repository?: Record<string, unknown>;
+      renewIntervalMs?: number;
+    } = {},
+  ) => {
+    const values = dependencies();
+    Object.assign(values.repository, {
+      listPackages: vi.fn(async () => []),
+      listTechnologies: vi.fn(async () => []),
+      listWorkspaceLocations: vi.fn(async () => []),
+      listAttributions: vi.fn(async () => []),
+      getCurrentGitObservation: vi.fn(async () => overrides.git ?? null),
+      beginGraphRebuild: vi.fn(async () => undefined),
+      updateGraphRebuild: vi.fn(async () => undefined),
+      validateGraphGeneration: vi.fn(async () => undefined),
+      activateGraphGeneration: vi.fn(async () => undefined),
+      failGraphRebuild: vi.fn(async () => undefined),
+      renewGraphRebuildLock: vi.fn(async () => true),
+      ...overrides.repository,
+    });
+    Object.assign(values.controlPlane, {
+      listAgents: vi.fn(async () => []),
+      listProjectAgentBindings: vi.fn(async () => []),
+    });
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      now: () => new Date(timestamp),
+      codeStructureObserver: { scan: vi.fn(async () => structure) },
+      graphifyObserver: { observe: overrides.observe ?? vi.fn(async () => graphify) },
+      ...(overrides.renewIntervalMs === undefined
+        ? {}
+        : { graphRebuildRenewIntervalMs: overrides.renewIntervalMs }),
+    });
+    return { service, values };
+  };
+
+  /** Runs the real rebuild path and hands back what it wrote. */
+  const rebuild = async (overrides: Parameters<typeof harness>[0] = {}) => {
+    const { service, values } = harness(overrides);
+    const operation = await service.rebuildGraph();
+    const nodes = vi.mocked(values.repository.putGraphNode).mock.calls.map(([, node]) => node);
+    const edges = vi.mocked(values.repository.putGraphEdge).mock.calls.map(([, edge]) => edge);
+    const file = (relativePath: string): GraphNode => {
+      const found = nodes.find(
+        (node) => node.kind === 'file' && node.metadata['relativePath'] === relativePath,
+      );
+      if (found === undefined) throw new Error(`no file node for ${relativePath}`);
+      return found;
+    };
+    const importsBetween = (from: GraphNode, to: GraphNode): GraphEdge[] =>
+      edges.filter(
+        (edge) =>
+          edge.kind === 'FILE_IMPORTS_FILE' &&
+          edge.source.id === from.entityId &&
+          edge.target.id === to.entityId,
+      );
+    return { operation, nodes, edges, file, importsBetween, values };
+  };
+
+  it('adds the files the structural observer could not see, with provenance and bounded metadata', async () => {
+    const { operation, file, importsBetween } = await rebuild();
+
+    expect(operation.state).toBe('completed');
+    const legacy = file('lib/legacy.php');
+    expect(legacy).toMatchObject({
+      provenance: GRAPHIFY_PROVENANCE,
+      confidence: 'high',
+      observedAt: graphify.observedAt,
+      evidenceIds: ['lib/legacy.php'],
+      metadata: {
+        relativePath: 'lib/legacy.php',
+        symbolCount: 2,
+        communityCount: 1,
+        community: 'legacy',
+        builtAtCommit: 'c'.repeat(40),
+      },
+    });
+    expect(importsBetween(legacy, file('src/a.ts'))).toEqual([
+      expect.objectContaining({
+        provenance: GRAPHIFY_PROVENANCE,
+        confidence: 'low',
+        evidenceIds: ['lib/legacy.php:4'],
+      }),
+    ]);
+  });
+
+  it('fills without replacing: the structural observer keeps its file and its import', async () => {
+    const { file, importsBetween } = await rebuild();
+
+    const a = file('src/a.ts');
+    expect(a).toMatchObject({
+      provenance: 'code-structure-observer@1',
+      metadata: { exportCount: 1 },
+    });
+    expect(a.metadata).not.toHaveProperty('symbolCount');
+    expect(importsBetween(a, file('src/b.ts'))).toEqual([
+      expect.objectContaining({ provenance: 'code-structure-observer@1', confidence: 'high' }),
+    ]);
+  });
+
+  it('lets a commit path prove a file no observer saw, without replacing one they did', async () => {
+    const { file } = await rebuild({
+      git: commitTouching('src/a.ts', 'lib/legacy.php', 'docs/notes.md'),
+    });
+
+    expect(file('src/a.ts').provenance).toBe('code-structure-observer@1');
+    expect(file('lib/legacy.php').provenance).toBe(GRAPHIFY_PROVENANCE);
+    expect(file('docs/notes.md').provenance).toBe('git-commit-path');
+  });
+
+  it('leaves the layer out when there is no output or the read fails; the rebuild still completes', async () => {
+    const unreadable = async (): Promise<GraphifyObservation | null> => {
+      throw new Error('unreadable');
+    };
+    for (const observe of [async () => null, unreadable]) {
+      const { operation, nodes, file } = await rebuild({ observe });
+
+      expect(operation.state).toBe('completed');
+      expect(nodes.some((node) => node.provenance === GRAPHIFY_PROVENANCE)).toBe(false);
+      expect(file('src/a.ts').provenance).toBe('code-structure-observer@1');
+    }
+  });
+});
+
+describe('daemon intelligence service — rebuild lock and failure reasons', () => {
+  const structure: CodeStructureObservation = {
+    files: ['src/a.ts'],
+    imports: [],
+    exports: [],
+    observedAt: timestamp,
+    evidenceScope: 'filesystem',
+    truncated: false,
+    skippedFileCount: 0,
+    externalImportCount: 0,
+  };
+  /** A graphify read slow enough for the renewal timer to fire several times. */
+  const slow = async (): Promise<GraphifyObservation | null> => {
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    return null;
+  };
+  const harness = (
+    overrides: { repository?: Record<string, unknown>; renewIntervalMs?: number } = {},
+  ) => {
+    const values = dependencies();
+    Object.assign(values.repository, {
+      listPackages: vi.fn(async () => []),
+      listTechnologies: vi.fn(async () => []),
+      listWorkspaceLocations: vi.fn(async () => []),
+      listAttributions: vi.fn(async () => []),
+      beginGraphRebuild: vi.fn(async () => undefined),
+      updateGraphRebuild: vi.fn(async () => undefined),
+      validateGraphGeneration: vi.fn(async () => undefined),
+      activateGraphGeneration: vi.fn(async () => undefined),
+      failGraphRebuild: vi.fn(async () => undefined),
+      renewGraphRebuildLock: vi.fn(async () => true),
+      ...overrides.repository,
+    });
+    Object.assign(values.controlPlane, {
+      listAgents: vi.fn(async () => []),
+      listProjectAgentBindings: vi.fn(async () => []),
+    });
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      now: () => new Date(timestamp),
+      codeStructureObserver: { scan: vi.fn(async () => structure) },
+      graphifyObserver: { observe: slow },
+      ...(overrides.renewIntervalMs === undefined
+        ? {}
+        : { graphRebuildRenewIntervalMs: overrides.renewIntervalMs }),
+    });
+    return { service, values };
+  };
+
+  it('renews the lock for as long as the rebuild runs, and not after', async () => {
+    const { service, values } = harness({ renewIntervalMs: 5 });
+
+    const operation = await service.rebuildGraph();
+
+    const renew = vi.mocked(values.repository.renewGraphRebuildLock);
+    expect(operation.state).toBe('completed');
+    expect(renew.mock.calls.length).toBeGreaterThan(0);
+    expect(renew).toHaveBeenCalledWith(operation.id);
+    const renewals = renew.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(renew.mock.calls.length).toBe(renewals);
+  });
+
+  it('stops before writing a generation it could not activate, and says why', async () => {
+    const { service, values } = harness({
+      renewIntervalMs: 5,
+      repository: { renewGraphRebuildLock: vi.fn(async () => false) },
+    });
+
+    await expect(service.rebuildGraph()).rejects.toMatchObject({
+      code: 'GRAPH_REBUILD_FAILED',
+      message: expect.stringContaining('lock was lost') as string,
+    });
+    expect(values.repository.putGraphNode).not.toHaveBeenCalled();
+    const [failed] = vi.mocked(values.repository.failGraphRebuild).mock.calls[0] ?? [];
+    expect(failed?.failureSummary[0]).toContain('lock was lost');
+  });
+
+  it('records the real reason for a failed rebuild instead of a constant', async () => {
+    const { service, values } = harness({
+      repository: {
+        validateGraphGeneration: vi.fn(async () => {
+          throw new Error('The shadow graph counts did not match the rebuild result.');
+        }),
+      },
+    });
+
+    await expect(service.rebuildGraph()).rejects.toMatchObject({
+      message:
+        'The graph rebuild failed: The shadow graph counts did not match the rebuild result.',
+    });
+    const [failed] = vi.mocked(values.repository.failGraphRebuild).mock.calls[0] ?? [];
+    expect(failed).toMatchObject({
+      state: 'failed',
+      failureSummary: ['The shadow graph counts did not match the rebuild result.'],
+    });
+  });
+
+  it('keeps the original reason when the failure itself cannot be recorded', async () => {
+    const { service } = harness({
+      repository: {
+        validateGraphGeneration: vi.fn(async () => {
+          throw new Error('counts did not match');
+        }),
+        failGraphRebuild: vi.fn(async () => {
+          throw new Error('Redis rejected the graph rebuild transition.');
+        }),
+      },
+    });
+
+    await expect(service.rebuildGraph()).rejects.toMatchObject({
+      message:
+        'The graph rebuild failed: counts did not match (recording the failure was refused: Redis rejected the graph rebuild transition.)',
+    });
   });
 });

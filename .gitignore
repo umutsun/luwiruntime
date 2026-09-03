@@ -1,4 +1,6 @@
 node_modules/
+# graphify output: a generated code knowledge graph, rebuilt from source
+graphify-out/
 dist/
 coverage/
 *.tsbuildinfo

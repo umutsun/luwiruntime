@@ -70,6 +70,12 @@ import {
 } from './code-structure-observer.js';
 import { createGitObserver, GitObservationError, type GitObserver } from './git-observer.js';
 import {
+  createGraphifyObserver,
+  GRAPHIFY_PROVENANCE,
+  type GraphifyObservation,
+  type GraphifyObserver,
+} from './graphify-observer.js';
+import {
   createPackageInventoryScanner,
   PackageInventoryError,
   type PackageInventoryScanner,
@@ -84,6 +90,12 @@ const DEFAULT_MAX_FINDINGS = 100;
 const DEFAULT_MAX_PROPOSALS = 25;
 const DEFAULT_OVERSIZED_CONTEXT_TOKENS = 8_000;
 const GRAPH_REBUILD_MAX_INPUTS = 100_000;
+/**
+ * The repository's rebuild lock lives five minutes between renewals. Renewing
+ * at a fifth of that survives a few slow Redis round trips without letting it
+ * lapse; a rebuild on real data has already been measured past five minutes.
+ */
+const DEFAULT_GRAPH_REBUILD_RENEW_INTERVAL_MS = 60_000;
 
 export type IntelligenceServiceOptions = {
   repository: IntelligenceRepository;
@@ -95,6 +107,8 @@ export type IntelligenceServiceOptions = {
   gitObserver?: GitObserver;
   packageScanner?: PackageInventoryScanner;
   codeStructureObserver?: CodeStructureObserver;
+  /** ADR 0029: reads graphify's own output; the default reads `graphify-out/graph.json`. */
+  graphifyObserver?: GraphifyObserver;
   createId?: () => string;
   now?: () => Date;
   optimizationMinimumBaselineSessions?: number;
@@ -104,6 +118,8 @@ export type IntelligenceServiceOptions = {
   optimizationMaximumProposals?: number;
   oversizedContextTokens?: number;
   readRebuildEvents?: () => Promise<RealtimeEventMessage[]>;
+  /** How often a running rebuild renews its lock; see `DEFAULT_GRAPH_REBUILD_RENEW_INTERVAL_MS`. */
+  graphRebuildRenewIntervalMs?: number;
   /**
    * Runs the operational-graph reprojection that follows a mutation.
    *
@@ -281,6 +297,19 @@ export function createIntelligenceService(
       return null;
     }
   };
+  const graphifyObserver = options.graphifyObserver ?? createGraphifyObserver();
+  /**
+   * The same rule for graphify's output (ADR 0029): read at rebuild from the
+   * project's own filesystem, never copied into Redis, and an absent or
+   * unreadable document contributes no layer rather than a wrong one.
+   */
+  const observeGraphify = async (localPath: string): Promise<GraphifyObservation | null> => {
+    try {
+      return await graphifyObserver.observe({ localPath });
+    } catch {
+      return null;
+    }
+  };
   const minimumBaselineSessions =
     options.optimizationMinimumBaselineSessions ?? DEFAULT_MINIMUM_BASELINE_SESSIONS;
   const minimumPostSessions =
@@ -290,6 +319,8 @@ export function createIntelligenceService(
   const maximumFindings = options.optimizationMaximumFindings ?? DEFAULT_MAX_FINDINGS;
   const maximumProposals = options.optimizationMaximumProposals ?? DEFAULT_MAX_PROPOSALS;
   const oversizedContextTokens = options.oversizedContextTokens ?? DEFAULT_OVERSIZED_CONTEXT_TOKENS;
+  const renewIntervalMs =
+    options.graphRebuildRenewIntervalMs ?? DEFAULT_GRAPH_REBUILD_RENEW_INTERVAL_MS;
   const completeGraphInputs = <Value>(values: Value[], description: string): Value[] => {
     if (values.length > GRAPH_REBUILD_MAX_INPUTS) {
       throw new ApplicationError(
@@ -391,6 +422,18 @@ export function createIntelligenceService(
     };
     const addEdge = (edge: GraphEdge): void => {
       edgeMap.set(edge.id, edge);
+    };
+    /**
+     * A claim that fills a gap and never replaces one. The structural observer
+     * resolves an import semantically, so its node or edge outranks graphify's
+     * name-based one, and either outranks the bare `file` a commit path proves.
+     */
+    const addNodeIfAbsent = (node: GraphNode): void => {
+      const key = `${node.kind}\0${node.entityId}`;
+      if (!nodeMap.has(key)) nodeMap.set(key, node);
+    };
+    const addEdgeIfAbsent = (edge: GraphEdge): void => {
+      if (!edgeMap.has(edge.id)) edgeMap.set(edge.id, edge);
     };
     const observedAt = now().toISOString();
     addNode(
@@ -817,12 +860,18 @@ export function createIntelligenceService(
       const structure = await observeCodeStructure(project.localPath);
       if (structure !== null) {
         const structuralFiles = new Map<string, string>();
+        // Counted once, not filtered per file: on a 20 000-file project the
+        // per-file filter was 8.7 s of synchronous work in one tick, long enough
+        // for the daemon owner lease (15 s, renewed every 5 s on this same loop)
+        // to lapse and the runtime to shut itself down mid-rebuild.
+        const exportCounts = new Map<string, number>();
+        for (const value of structure.exports) {
+          exportCounts.set(value.path, (exportCounts.get(value.path) ?? 0) + 1);
+        }
         for (const relativePath of structure.files) {
           const file = createFileIdentity(project.id, relativePath);
           structuralFiles.set(relativePath, file.id);
-          const exportCount = structure.exports.filter(
-            (value) => value.path === relativePath,
-          ).length;
+          const exportCount = exportCounts.get(relativePath) ?? 0;
           addNode(
             createGraphNode({
               kind: 'file',
@@ -889,6 +938,76 @@ export function createIntelligenceService(
         }
       }
 
+      // Graphify layer (ADR 0029). Read from graphify's own output, never
+      // produced by running it. It fills what the structural observer could not
+      // see — every language that is not TypeScript — and never overrides a
+      // claim that observer resolved: a file or import already in the snapshot
+      // keeps its provenance, confidence and metadata.
+      const graphify = await observeGraphify(project.localPath);
+      if (graphify !== null) {
+        const graphifyFiles = new Map<string, string>();
+        for (const file of graphify.files) {
+          const identity = createFileIdentity(project.id, file.relativePath);
+          graphifyFiles.set(file.relativePath, identity.id);
+          addNodeIfAbsent(
+            createGraphNode({
+              kind: 'file',
+              entityId: identity.id,
+              projectId: project.id,
+              observedAt: graphify.observedAt,
+              provenance: GRAPHIFY_PROVENANCE,
+              confidence: 'high',
+              evidenceIds: [file.relativePath],
+              metadata: {
+                relativePath: identity.relativePath,
+                symbolCount: file.symbolCount,
+                communityCount: file.communityCount,
+                ...(file.community === undefined ? {} : { community: file.community }),
+                ...(graphify.builtAtCommit === undefined
+                  ? {}
+                  : { builtAtCommit: graphify.builtAtCommit }),
+              },
+            }),
+          );
+          const module = mapFileToModule(file.relativePath, moduleRoots);
+          if (module !== null) {
+            addEdgeIfAbsent(
+              createGraphEdge({
+                source: { kind: 'file', id: identity.id },
+                target: { kind: 'module', id: module.id },
+                kind: 'FILE_BELONGS_TO_MODULE',
+                projectId: project.id,
+                observedAt: graphify.observedAt,
+                provenance: 'deterministic-module-mapping',
+                confidence: 'high',
+                evidenceIds: [file.relativePath],
+              }),
+            );
+          }
+        }
+        for (const value of graphify.imports) {
+          const source = graphifyFiles.get(value.fromPath);
+          const target = graphifyFiles.get(value.toPath);
+          if (source === undefined || target === undefined) continue;
+          addEdgeIfAbsent(
+            createGraphEdge({
+              source: { kind: 'file', id: source },
+              target: { kind: 'file', id: target },
+              kind: 'FILE_IMPORTS_FILE',
+              projectId: project.id,
+              observedAt: graphify.observedAt,
+              provenance: GRAPHIFY_PROVENANCE,
+              confidence: value.confidence,
+              evidenceIds: [
+                value.line === undefined
+                  ? value.fromPath
+                  : `${value.fromPath}:${String(value.line)}`,
+              ],
+            }),
+          );
+        }
+      }
+
       const git = await options.repository.getCurrentGitObservation(project.id);
       if (git !== null) {
         for (const worktree of git.worktrees) {
@@ -925,7 +1044,9 @@ export function createIntelligenceService(
           );
           for (const path of commit.changedPaths) {
             const file = createFileIdentity(project.id, path);
-            addNode(
+            // A commit proves the file existed; an observer above may already
+            // describe it. Fill, never replace (ADR 0029).
+            addNodeIfAbsent(
               createGraphNode({
                 kind: 'file',
                 entityId: file.id,
@@ -1885,6 +2006,34 @@ export function createIntelligenceService(
         operation,
         event('graph.rebuild.started', {}, { operationId, shadowGeneration }),
       );
+      // The lock is renewed for as long as this operation is alive: a rebuild is
+      // minutes of work that grows with the data, and a lock that lapsed
+      // mid-rebuild once let the activation — and then the failure record — be
+      // refused as `GRAPH_REBUILD_OWNERSHIP_LOST`, leaving the operation
+      // `running` forever with its real reason unrecorded. A renewal that fails
+      // means another holder may own the pointer, so the write loop stops
+      // rather than spending minutes on a generation it cannot activate.
+      let lockLost = false;
+      const keepAlive = setInterval(() => {
+        void options.repository
+          .renewGraphRebuildLock(operationId)
+          .then((renewed) => {
+            if (!renewed) lockLost = true;
+          })
+          .catch(() => {
+            lockLost = true;
+          });
+      }, renewIntervalMs);
+      keepAlive.unref();
+      const requireLock = (): void => {
+        if (lockLost) {
+          throw new ApplicationError(
+            'GRAPH_REBUILD_FAILED',
+            'The graph rebuild lock was lost before the generation could be written.',
+            503,
+          );
+        }
+      };
       try {
         const retainedEvents = (await options.readRebuildEvents?.()) ?? [];
         const sourceStreamId = retainedEvents.at(-1)?.streamId;
@@ -1896,9 +2045,11 @@ export function createIntelligenceService(
         await options.repository.updateGraphRebuild(operation);
         const snapshot = await projectGraphSnapshot(retainedEvents);
         for (const node of snapshot.nodes) {
+          requireLock();
           await options.repository.putGraphNode(shadowGeneration, node);
         }
         for (const edge of snapshot.edges) {
+          requireLock();
           await options.repository.putGraphEdge(shadowGeneration, edge);
         }
         operation = graphRebuildOperationSchema.parse({
@@ -1909,6 +2060,7 @@ export function createIntelligenceService(
           edgeCount: snapshot.edges.length,
           completedAt: now().toISOString(),
         });
+        requireLock();
         await options.repository.validateGraphGeneration(
           shadowGeneration,
           snapshot.nodes.length,
@@ -1928,19 +2080,41 @@ export function createIntelligenceService(
           ),
         );
         return operation;
-      } catch {
+      } catch (error) {
+        // The reason is the one thing worth acting on, so it is recorded on the
+        // operation and carried in the thrown error rather than replaced by a
+        // constant. These messages name codes and counts, never data.
+        const reason =
+          error instanceof Error && error.message.length > 0
+            ? error.message.slice(0, 1000)
+            : 'Graph rebuild failed.';
         const failed = graphRebuildOperationSchema.parse({
           ...operation,
           state: 'failed',
           failureCount: 1,
-          failureSummary: ['Graph rebuild failed.'],
+          failureSummary: [reason],
           completedAt: now().toISOString(),
         });
-        await options.repository.failGraphRebuild(
-          failed,
-          event('graph.rebuild.failed', {}, { operationId, failureCount: 1 }),
+        try {
+          await options.repository.failGraphRebuild(
+            failed,
+            event('graph.rebuild.failed', {}, { operationId, failureCount: 1 }),
+          );
+        } catch (transition) {
+          const detail = transition instanceof Error ? transition.message : 'unknown';
+          throw new ApplicationError(
+            'GRAPH_REBUILD_FAILED',
+            `The graph rebuild failed: ${reason} (recording the failure was refused: ${detail})`,
+            503,
+          );
+        }
+        throw new ApplicationError(
+          'GRAPH_REBUILD_FAILED',
+          `The graph rebuild failed: ${reason}`,
+          503,
         );
-        throw new ApplicationError('GRAPH_REBUILD_FAILED', 'The graph rebuild failed.', 503);
+      } finally {
+        clearInterval(keepAlive);
       }
     },
     async getGraphRebuild(operationId) {
