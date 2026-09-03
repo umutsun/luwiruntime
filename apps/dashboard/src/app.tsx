@@ -11,7 +11,7 @@ import { DetailDrawer } from './components/detail-drawer.js';
 import { NavIcon } from './components/nav-icon.js';
 import type { ResourceState } from './components/panel.js';
 import { StatusChip } from './components/status-chip.js';
-import { nextTheme, THEME_LABELS, useTheme } from './components/use-theme.js';
+import { THEME_OPTIONS, useTheme, type ThemeChoice } from './components/use-theme.js';
 import {
   InspectorPanel,
   inspectorTitle,
@@ -33,6 +33,7 @@ import type { MessageResources } from './api/messages-scope.js';
 import type { MessageMutations } from './api/message-mutations.js';
 import { MessagesView } from './routes/messages-view.js';
 import { OptimizationView } from './routes/optimization-view.js';
+import type { RuntimeResources } from './api/runtime-resources.js';
 import { RuntimeView } from './routes/runtime-view.js';
 import { SessionsView } from './routes/sessions-view.js';
 import { UsageView } from './routes/usage-view.js';
@@ -41,6 +42,8 @@ import { PulseView } from './pulse/pulse-view.js';
 import {
   acceptActivityEvent,
   createActivityState,
+  resumeActivity,
+  setActivityFollowing,
   type ActivityState,
 } from './realtime/activity-store.js';
 import type { RealtimeConnectionState } from './realtime/observer.js';
@@ -180,12 +183,50 @@ function navBadge(route: DashboardRouteName, snapshot: PulseSnapshot) {
   );
 }
 
-function connectionLabel(state: WebSocketState): string {
-  if (state === 'live') return 'Realtime live';
-  if (state === 'connecting') return 'Realtime connecting';
-  if (state === 'reconnecting') return 'Realtime reconnecting';
-  if (state === 'unavailable') return 'Realtime unavailable';
-  return 'Realtime disconnected';
+/**
+ * The realtime switch's face. Pressed (following) shows the connection as it
+ * is — "Live" only when the socket is live, and the fault otherwise, because a
+ * pressed switch reading "Live" over a dead socket would be the one lie this
+ * control exists to prevent. Released shows what arrived while it was held.
+ */
+function realtimeFace(
+  state: WebSocketState,
+  following: boolean,
+  pendingCount: number,
+): { label: string; tone: 'live' | 'warning' | 'danger' | 'paused' } {
+  if (!following) return { label: `Paused · ${String(pendingCount)} new · resume`, tone: 'paused' };
+  if (state === 'live') return { label: 'Live', tone: 'live' };
+  if (state === 'connecting') return { label: 'Realtime connecting', tone: 'warning' };
+  if (state === 'reconnecting') return { label: 'Realtime reconnecting', tone: 'warning' };
+  if (state === 'unavailable') return { label: 'Realtime unavailable', tone: 'danger' };
+  return { label: 'Realtime disconnected', tone: 'danger' };
+}
+
+function ThemeGlyph({ choice }: { choice: ThemeChoice }) {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      aria-hidden="true"
+    >
+      {choice === 'system' ? (
+        <>
+          <rect x="1.5" y="2.5" width="13" height="8.5" rx="1.5" />
+          <path d="M5.5 13.5h5M8 11v2.5" />
+        </>
+      ) : choice === 'light' ? (
+        <>
+          <circle cx="8" cy="8" r="3" />
+          <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" />
+        </>
+      ) : (
+        <path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" />
+      )}
+    </svg>
+  );
 }
 
 export function DashboardApp({
@@ -212,6 +253,7 @@ export function DashboardApp({
   leaseResources = {},
   intelligenceLoading = false,
   loadSubgraph,
+  loadResources,
   onRetry,
   onActivityStateChange,
 }: {
@@ -252,6 +294,8 @@ export function DashboardApp({
     bounds: SubgraphBounds,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<Subgraph>>;
+  /** Absent keeps the Runtime route to identity and health, with no machine figures. */
+  loadResources?: (options?: { signal?: AbortSignal }) => Promise<ResourceState<RuntimeResources>>;
   onRetry: () => void;
   onActivityStateChange?: (state: ActivityState) => void;
 }) {
@@ -264,10 +308,6 @@ export function DashboardApp({
    * and reads without a per-project shape stay runtime-wide.
    */
   const [scopeProjectId, setScopeProjectId] = useState<string>();
-  const scoped = useMemo(
-    () => scopePulseSnapshot(snapshot, scopeProjectId),
-    [snapshot, scopeProjectId],
-  );
   const { choice: themeChoice, setChoice: setThemeChoice } = useTheme();
   const mainRegion = useRef<HTMLElement>(null);
   const fallbackActivity = useMemo(
@@ -279,6 +319,30 @@ export function DashboardApp({
     [snapshot.activity],
   );
   const displayedActivity = activityState ?? fallbackActivity;
+  const following = displayedActivity.following;
+  /*
+   * Released, the realtime switch holds the retained activity Pulse was showing
+   * at that moment — the stream and both traces — while the store keeps
+   * accepting events and counting them on the switch. Resuming drops the hold.
+   */
+  const [heldActivity, setHeldActivity] = useState<PulseSnapshot['activity']>();
+  useEffect(() => {
+    if (following) setHeldActivity(undefined);
+    else setHeldActivity((current) => current ?? snapshot.activity);
+  }, [following, snapshot.activity]);
+  const pulseSource = useMemo(
+    () => (heldActivity === undefined ? snapshot : { ...snapshot, activity: heldActivity }),
+    [snapshot, heldActivity],
+  );
+  const scoped = useMemo(
+    () => scopePulseSnapshot(pulseSource, scopeProjectId),
+    [pulseSource, scopeProjectId],
+  );
+  const setFollowing = (next: boolean) => {
+    onActivityStateChange?.(
+      next ? resumeActivity(displayedActivity) : setActivityFollowing(displayedActivity, false),
+    );
+  };
   const graphSeeds = useMemo(() => graphSeedsOf(snapshot), [snapshot]);
 
   useEffect(() => {
@@ -294,18 +358,25 @@ export function DashboardApp({
   }, []);
 
   const titles = routeTitles[route.name];
+  /*
+   * The eyebrow repeats the scope on the routes the scope narrows, so a
+   * narrowed Pulse is never mistaken for the whole runtime. The other routes
+   * read runtime-wide whatever the select says, and their eyebrow says nothing
+   * it cannot back.
+   */
+  const scopeProject = snapshot.projects.find((project) => project.id === scopeProjectId);
+  const eyebrow =
+    scopeProject !== undefined && (route.name === 'pulse' || route.name === 'sessions')
+      ? `${titles.eyebrow} · ${scopeProject.name}`
+      : titles.eyebrow;
+  const health = snapshot.health.state === 'ready' ? snapshot.health.data : undefined;
+  const realtime = realtimeFace(websocketState, following, displayedActivity.pendingCount);
 
   const openInspector = (next: InspectorSelection, opener: HTMLElement) => {
     opener.focus();
     setSelection(next);
   };
   const closeInspector = () => setSelection(undefined);
-  const websocketTone =
-    websocketState === 'live'
-      ? 'success'
-      : websocketState === 'connecting' || websocketState === 'reconnecting'
-        ? 'warning'
-        : 'danger';
 
   return (
     <div className={`app-shell${railCollapsed ? ' app-shell--rail-collapsed' : ''}`}>
@@ -403,10 +474,32 @@ export function DashboardApp({
             </>
           )}
         </nav>
+        {/*
+         * Runtime health lives here rather than in the Pulse stat strip, which
+         * keeps only work counts. The daemon and Redis lines used to sit beside
+         * "waiting" and "blocked" as if they were the same kind of number.
+         */}
         <div className="runtime-footer">
-          <StatusChip tone={snapshot.health.state === 'ready' ? 'success' : 'danger'}>
-            {snapshot.health.state === 'ready' ? 'Daemon online' : 'Daemon offline'}
+          <StatusChip
+            tone={health === undefined ? 'danger' : health.status === 'ok' ? 'success' : 'warning'}
+          >
+            <span className="rail-health__label">
+              {health === undefined
+                ? 'Daemon offline'
+                : health.status === 'ok'
+                  ? 'Daemon online'
+                  : 'Daemon degraded'}
+            </span>
           </StatusChip>
+          {health === undefined ? null : (
+            <StatusChip tone={health.redis.connected ? 'success' : 'danger'}>
+              <span className="rail-health__label">
+                {health.redis.connected
+                  ? `Redis connected · ${String(health.redis.latencyMs)} ms`
+                  : 'Redis disconnected'}
+              </span>
+            </StatusChip>
+          )}
           <small>Loopback only</small>
         </div>
       </aside>
@@ -416,6 +509,9 @@ export function DashboardApp({
       <main id="main-content" className="workspace" ref={mainRegion} tabIndex={-1}>
         <header className="command-bar">
           <div className="command-bar__left">
+            {/* The glyph changes with the state and the tooltip names the
+                action, so collapsed and expanded are told apart before the
+                click rather than only by the rail's width. */}
             <button
               type="button"
               className="icon-button"
@@ -423,6 +519,7 @@ export function DashboardApp({
               aria-label={
                 railCollapsed ? 'Expand the navigation rail' : 'Collapse the navigation rail'
               }
+              title={railCollapsed ? 'Expand the navigation rail' : 'Collapse the navigation rail'}
               onClick={() => setRailCollapsed((collapsed) => !collapsed)}
             >
               <svg
@@ -432,54 +529,91 @@ export function DashboardApp({
                 strokeWidth="1.4"
                 aria-hidden="true"
               >
-                <path d="M2 4h12M2 8h12M2 12h12" strokeLinecap="round" />
+                <path
+                  d={railCollapsed ? 'M2 4h12M2 8h7M2 12h12' : 'M2 4h12M2 8h12M2 12h12'}
+                  strokeLinecap="round"
+                />
               </svg>
             </button>
             <div>
-              <p className="eyebrow">{titles.eyebrow}</p>
+              <p className="eyebrow">{eyebrow}</p>
               <h1>{titles.heading}</h1>
             </div>
           </div>
           <div className="command-bar__right">
             <CommandPalette snapshot={snapshot} scopeSummary={scopeSummary(route.name, scoped)} />
             {/* A native select: eleven projects do not cycle well, and a
-                custom dropdown would be accessibility work for no gain. */}
-            <select
-              className="scope-select"
-              aria-label="Project scope"
-              value={scopeProjectId ?? ''}
-              onChange={(event) =>
-                setScopeProjectId(event.target.value === '' ? undefined : event.target.value)
-              }
-            >
-              <option value="">All projects</option>
-              {snapshot.projects.map((project) => (
-                <option key={project.id} value={project.id}>
-                  {project.name}
+                custom dropdown would be accessibility work for no gain. It
+                carries the count in its resting label and a one-click way
+                back once narrowed. */}
+            <div className="scope-group">
+              <select
+                className="scope-select"
+                aria-label="Project scope"
+                value={scopeProjectId ?? ''}
+                onChange={(event) =>
+                  setScopeProjectId(event.target.value === '' ? undefined : event.target.value)
+                }
+              >
+                <option value="">
+                  {snapshot.projectCount.state === 'unavailable'
+                    ? 'All projects'
+                    : `All projects · ${String(snapshot.projectCount.value)}`}
                 </option>
-              ))}
-            </select>
-            <StatusChip tone={websocketTone}>{connectionLabel(websocketState)}</StatusChip>
-            {/* Three states, not two: the stylesheet has always had a
-                system-following mode, and collapsing it into a light/dark
-                switch would take away the default that tracks the OS. */}
+                {snapshot.projects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+              {scopeProjectId === undefined ? null : (
+                <button
+                  type="button"
+                  className="scope-clear"
+                  aria-label="Back to all projects"
+                  title="Back to all projects"
+                  onClick={() => setScopeProjectId(undefined)}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            {/* One switch for the whole console: pressed follows the feed,
+                released holds it and counts what arrives. It replaces the
+                connection chip here and the follow label and resume button
+                the Activity route used to carry apart from it. */}
             <button
               type="button"
-              className="icon-button"
-              aria-label={`${THEME_LABELS[themeChoice]}. Activate to change.`}
-              onClick={() => setThemeChoice(nextTheme(themeChoice))}
+              className={`live-switch live-switch--${realtime.tone}`}
+              aria-pressed={following}
+              title={
+                following
+                  ? 'Pause the realtime feed; new events are counted until you resume'
+                  : 'Resume the realtime feed'
+              }
+              onClick={() => setFollowing(!following)}
             >
-              <svg
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.3"
-                aria-hidden="true"
-              >
-                <circle cx="8" cy="8" r="5.25" />
-                <path d="M8 2.75v10.5a5.25 5.25 0 0 0 0-10.5z" fill="currentColor" stroke="none" />
-              </svg>
+              <span className="live-switch__dot" aria-hidden="true" />
+              {realtime.label}
             </button>
+            {/* Three states, not two: the stylesheet has always had a
+                system-following mode, and a segmented control keeps that
+                default visible instead of hiding it behind a cycling icon. */}
+            <div className="segmented" role="group" aria-label="Theme">
+              {THEME_OPTIONS.map((option) => (
+                <button
+                  key={option.choice}
+                  type="button"
+                  className="segmented__option"
+                  aria-pressed={themeChoice === option.choice}
+                  title={option.title}
+                  onClick={() => setThemeChoice(option.choice)}
+                >
+                  <ThemeGlyph choice={option.choice} />
+                  {option.label}
+                </button>
+              ))}
+            </div>
             {invalidEventCount > 0 ? (
               <span className="sr-only" role="status">
                 {invalidEventCount} invalid realtime messages ignored
@@ -523,7 +657,11 @@ export function DashboardApp({
               }
             />
           ) : route.name === 'runtime' ? (
-            <RuntimeView snapshot={snapshot} websocketState={websocketState} />
+            <RuntimeView
+              snapshot={snapshot}
+              websocketState={websocketState}
+              {...(loadResources === undefined ? {} : { loadResources })}
+            />
           ) : route.name === 'sessions' ? (
             <SessionsView
               snapshot={scoped}
@@ -621,6 +759,7 @@ export function DashboardApp({
             <PulseView
               snapshot={scoped}
               websocketState={websocketState}
+              following={following}
               {...(selection?.kind === 'session' ? { selectedSessionId: selection.sessionId } : {})}
               {...(selection?.kind === 'project' ? { selectedProjectId: selection.projectId } : {})}
               onOpenProject={(project, opener) =>

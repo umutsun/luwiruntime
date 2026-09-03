@@ -291,3 +291,41 @@ tokenising values that already exist and adding a new visual layer:
   Reduced motion is already respected (`shell.css` honours `prefers-reduced-motion`). If a depth layer
   is wanted later it is a small, isolated addition of two shadow tokens applied to the overlays only.
   This is the recorded rejection G2 asked for, not a silent omission.
+
+## Control simplification (2026-09-03)
+
+Designed on a Claude Design canvas from the production tokens, chosen by the owner as the "balanced
+console" direction, then built and verified live on db0 at 1440×900. Every toggle now shows its state
+and its alternatives:
+
+- **Theme** is a segmented Auto / Light / Dark control (`role="group"`, `aria-pressed`) instead of one
+  icon that cycled three states. `use-theme.ts` keeps the storage and attribute logic; only the
+  cycling helpers went.
+- **Realtime** is one pressed switch in the command bar. Pressed follows the feed and shows the
+  connection as it is — "Live" only when the socket is live, the fault otherwise. Released reads
+  "Paused · N new · resume", holds the retained activity Pulse was showing (stream and both traces)
+  and counts what arrives. It replaces the connection chip beside it and the "Following live" label
+  and "Resume · N new" button the Activity route carried apart from it; Activity returns to its live
+  edge when following resumes.
+- **Scope** keeps the native select, gains the count in its resting label ("All projects · 10"), a
+  one-click way back once narrowed, and repeats the scope in the eyebrow on the two routes it
+  narrows (Pulse and Sessions). The eyebrow truncates rather than wrapping the bar.
+- **Fold repeats** is a small switch in the Realtime Stream header; on is the quiet default.
+- **Graph explorer bounds** are segmented Depth and Node limit groups; the reached-limit note is
+  unchanged.
+- **Rail toggle** changes its glyph with the state and carries a tooltip.
+- **Stat strip** keeps only work counts. Daemon and Redis health (with the Redis round-trip) moved to
+  the rail footer, where a collapsed rail keeps the dots and hides the words.
+- **Pulse grid** is two equal rows on the same column edges: Active Work | Project Pulse, then
+  Realtime Stream | Context Efficiency over Repository facts, the narrow track a single scroll
+  container.
+
+One pre-existing defect surfaced in the live check and is fixed: the Pulse rows were declared as their
+own query containers (`.pulse-stack > * { container: pulse / inline-size }`), and a container query
+resolves against an ancestor, never the element itself — so the wide-layout row rules never matched.
+Row 1 sat side by side only because `grid-column: 2` on the projects panel forced an implicit column,
+and every list inside collapsed to zero height. The stack is the container now.
+
+Two traps for the next live check: the daemon caches `index.html`, so a new build needs a daemon
+restart (and the ~15 s owner-lease wait), and the browser caches it too, so reload with a query
+string. A screenshot of the old bundle looks like a layout bug.

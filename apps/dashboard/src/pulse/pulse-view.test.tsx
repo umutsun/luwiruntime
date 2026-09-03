@@ -121,6 +121,24 @@ describe('stat strip', () => {
     expect(within(strip).queryByRole('link', { name: '0 waiting' })).toBeNull();
     expect(within(strip).queryByRole('link', { name: '0 blocked' })).toBeNull();
   });
+
+  it('keeps to work counts; runtime health moved to the rail footer', () => {
+    renderPulse(input());
+
+    const strip = screen.getByRole('region', { name: 'Current runtime snapshot' });
+    expect(within(strip).queryByText(/latency|redis|runtime/i)).toBeNull();
+  });
+});
+
+describe('realtime stream while paused', () => {
+  it('says the stream is held rather than claiming a connection state', () => {
+    const value = input();
+    value.activity = { state: 'ready', data: [activityEvent('2026-08-05T07:00:00.000Z')] };
+    renderPulse(value, { following: false });
+
+    expect(screen.getByText('1 retained · held while paused')).toBeTruthy();
+    expect(screen.queryByText(/realtime live/)).toBeNull();
+  });
 });
 
 describe('retained window sparkline', () => {
@@ -273,6 +291,13 @@ describe('Active Work', () => {
 
     expect(screen.getByText('session.status_changed ×3')).toBeTruthy();
     expect(document.querySelectorAll('.stream-row')).toHaveLength(1);
+    // The header switch opens the run; off shows every retained event.
+    const fold = screen.getByRole('button', { name: 'Fold repeats' });
+    expect(fold.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(fold);
+    expect(fold.getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelectorAll('.stream-row')).toHaveLength(3);
+    expect(screen.queryByText(/×3/)).toBeNull();
     // A different type breaks the run rather than being absorbed into it.
     const other = activityEvent('2026-08-05T07:00:01.000Z');
     (other as { type: string }).type = 'session.registered';

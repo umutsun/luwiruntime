@@ -24,11 +24,6 @@
   margin-top: 4px;
   color: var(--text-muted);
 }
-.activity-follow {
-  color: var(--success);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-}
 .activity-filters {
   display: grid;
   grid-template-columns: repeat(3, minmax(150px, 0.7fr)) minmax(220px, 1fr);
@@ -372,6 +367,19 @@
  * Taller than the old 260px: that cut most tables to three or four rows, so
  * the reader scrolled inside a box *and* down the drawer to see one table.
  */
+/* The graph route's paired panels sit side by side where the width allows,
+   which halves the route's height instead of stacking four tables. */
+.graph-two-up {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+@media (min-width: 1300px) {
+  .graph-two-up {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
 .detail-drawer .table-wrap {
   max-height: 340px;
   overflow-y: auto;

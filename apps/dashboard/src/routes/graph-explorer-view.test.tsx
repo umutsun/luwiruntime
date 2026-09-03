@@ -155,10 +155,23 @@ describe('GraphExplorerView', () => {
     render(<GraphExplorerView seeds={seeds} loadSubgraph={load} />);
     await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
 
-    fireEvent.change(screen.getByLabelText('Depth'), { target: { value: '4' } });
+    // A segmented group: every bound is visible and the pressed one is current.
+    const depth = screen.getByRole('group', { name: 'Depth' });
+    expect(within(depth).getByRole('button', { name: '2' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    fireEvent.click(within(depth).getByRole('button', { name: '4' }));
 
     await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
     expect(load.mock.calls[1]?.[1]).toMatchObject({ maxDepth: 4 });
+    expect(within(depth).getByRole('button', { name: '4' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+
+    const limit = screen.getByRole('group', { name: 'Node limit' });
+    fireEvent.click(within(limit).getByRole('button', { name: '1000' }));
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(3));
+    expect(load.mock.calls[2]?.[1]).toMatchObject({ maxDepth: 4, nodeLimit: 1000 });
   });
 
   it('states truncation and names the bound that produced it', async () => {
@@ -220,5 +233,51 @@ describe('GraphExplorerView', () => {
     await waitFor(() => expect(screen.getByRole('img', { name: /bounded/i })).toBeTruthy());
 
     expect(screen.queryByRole('button', { name: /rebuild/i })).toBeNull();
+  });
+
+  it('names graphify output as its own origin, in the tables and the legend (ADR 0029)', async () => {
+    const graphify: Subgraph = {
+      truncated: false,
+      nodes: [
+        {
+          id: 'file-1',
+          kind: 'file',
+          label: 'lib/legacy.php',
+          confidence: 'high',
+          provenance: 'graphify-graph-json@1',
+          structural: true,
+        },
+        {
+          id: 'file-2',
+          kind: 'file',
+          label: 'src/a.ts',
+          confidence: 'high',
+          provenance: 'graphify-graph-json@1',
+          structural: true,
+        },
+      ],
+      edges: [
+        {
+          id: 'e1',
+          source: 'file-1',
+          target: 'file-2',
+          kind: 'FILE_IMPORTS_FILE',
+          confidence: 'medium',
+          provenance: 'graphify-graph-json@1',
+          structural: true,
+        },
+      ],
+    };
+    render(<GraphExplorerView seeds={seeds} loadSubgraph={loaderFor(graphify)} />);
+    await waitFor(() => expect(screen.getByRole('img', { name: /bounded/i })).toBeTruthy());
+
+    const legend = screen.getByRole('region', { name: /legend/i });
+    expect(within(legend).getByText(/graphify output/i)).toBeTruthy();
+    // Only the sources actually present are explained.
+    expect(within(legend).queryByText(/code structure/i)).toBeNull();
+    const edgeTable = screen.getByRole('region', { name: /edges in view/i });
+    expect(within(edgeTable).getByText('Graphify output')).toBeTruthy();
+    const nodeTable = screen.getByRole('region', { name: /nodes in view/i });
+    expect(within(nodeTable).getAllByText('Graphify output')).toHaveLength(2);
   });
 });

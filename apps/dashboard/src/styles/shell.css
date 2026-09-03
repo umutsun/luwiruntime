@@ -11,6 +11,23 @@ html {
   overflow-x: hidden;
   background: var(--bg);
 }
+/* Scrollbars stay out of the way: thin, a muted thumb, no track. The standard
+   properties cover current engines; the -webkit- rules are the fallback. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
 body {
   min-width: 0;
   overflow-x: hidden;
@@ -60,10 +77,15 @@ button:focus-visible {
  * are the same token because they drifted apart once and the content sat under
  * the rail.
  */
+/*
+ * The shell is the viewport, not a document: the page never scrolls. Each route
+ * fills the workspace body and its panels scroll inside themselves, so what is
+ * on screen is sized by the screen rather than by whichever list is longest.
+ */
 .app-shell {
   display: grid;
   grid-template-columns: var(--rail-width) minmax(0, 1fr);
-  min-height: 100vh;
+  height: 100vh;
 }
 .app-shell--rail-collapsed {
   grid-template-columns: var(--rail-width-collapsed) minmax(0, 1fr);
@@ -218,9 +240,29 @@ button:focus-visible {
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
 }
+/* Collapsed, each health chip keeps its dot and hides its words; the words
+   stay in the accessibility tree like the nav labels above them. */
+.app-shell--rail-collapsed .runtime-footer {
+  justify-items: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.app-shell--rail-collapsed .rail-health__label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
 .workspace {
-  grid-column: 2;
+  display: grid;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
+  grid-column: 2;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 .command-bar {
   position: sticky;
@@ -247,6 +289,16 @@ button:focus-visible {
   margin: 0;
   font-size: var(--font-size-lg);
   letter-spacing: -0.02em;
+}
+/* The eyebrow carries the scope name; it truncates rather than wrapping the
+   52px bar into two lines beside a 300px search field. */
+.command-bar__left > div {
+  min-width: 0;
+}
+.command-bar .eyebrow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .command-bar__right {
   display: flex;
@@ -292,11 +344,17 @@ button:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* The one scroll container. A route that fits stays put; one that cannot fit
+   the viewport (stacked narrow layouts, long stacked routes) scrolls here. */
 .workspace__body {
+  display: flex;
   width: 100%;
   max-width: 1680px;
+  min-height: 0;
+  flex-direction: column;
   margin: 0 auto;
   padding: var(--space-4) var(--space-5) var(--space-7);
+  overflow: auto;
 }
 .snapshot-line {
   display: flex;
@@ -406,7 +464,7 @@ button:focus-visible {
 .route-error {
   display: grid;
   width: min(560px, calc(100% - 48px));
-  min-height: 100vh;
+  min-height: 100%;
   margin: 0 auto;
   place-content: center;
   color: var(--text-secondary);
@@ -554,4 +612,131 @@ button:focus-visible {
 .scope-select:focus-visible {
   outline: none;
   box-shadow: var(--focus);
+}
+.scope-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0);
+}
+/* The one-click way back from a narrowed scope; absent when nothing is narrowed. */
+.scope-clear {
+  display: grid;
+  width: 26px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: var(--text-muted);
+  background: none;
+  font-size: var(--font-size-base);
+  cursor: pointer;
+}
+.scope-clear:hover {
+  color: var(--text);
+}
+/*
+ * Segmented control: every alternative visible, the chosen one raised. Used for
+ * the theme and for the graph explorer's bounds. The pressed state is the ARIA
+ * attribute itself, so the style cannot disagree with what is announced.
+ */
+.segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-0);
+  padding: var(--space-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+.segmented__option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  height: 26px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  background: none;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.segmented__option:hover {
+  color: var(--text);
+}
+.segmented__option[aria-pressed='true'] {
+  color: var(--text);
+  background: var(--surface-3);
+}
+.segmented__option svg {
+  width: 14px;
+  height: 14px;
+}
+/*
+ * The realtime switch. Pressed means the console follows the feed; released
+ * holds what is on screen and counts what arrives. The connection state rides
+ * on the same control rather than a chip beside it, and each state changes the
+ * dot's border as well as its colour — the same dual encoding as the status
+ * chips, because a "Live" that only differs by hue is not a state a reader can
+ * check at a glance.
+ */
+.live-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 30px;
+  padding: 0 var(--space-2h) 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--tone);
+  background: var(--surface-1);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.live-switch__dot {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  background: currentColor;
+}
+.live-switch--live {
+  --tone: var(--success);
+}
+.live-switch--live .live-switch__dot {
+  animation: live-pulse 1.6s var(--ease) infinite;
+}
+.live-switch--warning {
+  --tone: var(--warning);
+}
+.live-switch--warning .live-switch__dot {
+  background: none;
+  border-style: dashed;
+}
+.live-switch--danger {
+  --tone: var(--danger);
+}
+.live-switch--danger .live-switch__dot {
+  background: none;
+}
+.live-switch--paused {
+  --tone: var(--text-muted);
+  border-style: dashed;
+}
+.live-switch--paused .live-switch__dot {
+  background: none;
+  border-style: dashed;
+}
+@keyframes live-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }

@@ -58,16 +58,13 @@ export function useTheme(): { choice: ThemeChoice; setChoice: (next: ThemeChoice
   return { choice, setChoice };
 }
 
-/** The order the toggle cycles through, and the label each state announces. */
-export const THEME_SEQUENCE: readonly ThemeChoice[] = ['system', 'light', 'dark'];
-
-export const THEME_LABELS: Record<ThemeChoice, string> = {
-  system: 'Theme: following the system',
-  light: 'Theme: light',
-  dark: 'Theme: dark',
-};
-
-export function nextTheme(current: ThemeChoice): ThemeChoice {
-  const index = THEME_SEQUENCE.indexOf(current);
-  return THEME_SEQUENCE[(index + 1) % THEME_SEQUENCE.length] ?? 'system';
-}
+/**
+ * The three choices as a segmented control shows them. A segment, not a cycling
+ * icon: the system-following default stays visible instead of being one of
+ * three states hidden behind a single glyph.
+ */
+export const THEME_OPTIONS: ReadonlyArray<{ choice: ThemeChoice; label: string; title: string }> = [
+  { choice: 'system', label: 'Auto', title: 'Follow the operating system' },
+  { choice: 'light', label: 'Light', title: 'Light theme' },
+  { choice: 'dark', label: 'Dark', title: 'Dark theme' },
+];

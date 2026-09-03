@@ -7,6 +7,7 @@ import { createConfigMutations } from './api/config-mutations.js';
 import type { AgentMessage } from './api/messages-scope.js';
 import { DashboardApp } from './app.js';
 import { buildPulseSnapshot, type PulseInput } from './pulse/model.js';
+import { createActivityState } from './realtime/activity-store.js';
 
 afterEach(() => {
   cleanup();
@@ -1077,5 +1078,212 @@ describe('project evidence drawer', () => {
 
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     expect(screen.getByRole('dialog', { name: 'Message detail' })).toBeTruthy();
+  });
+});
+
+/**
+ * The shell's controls after the 2026-09-02 simplification: every toggle shows
+ * its state and its alternatives, and runtime health left the Pulse stat strip
+ * for the rail footer.
+ */
+describe('shell controls', () => {
+  const activityEvent = (streamId: string, type = 'session.updated') => ({
+    streamId,
+    id: `evt-${streamId}`,
+    type,
+    version: 1 as const,
+    occurredAt: '2026-08-05T07:00:00.000Z',
+    workspaceId: 'local',
+    payload: {},
+  });
+
+  it('offers the three theme choices as a segmented control and applies the pressed one', () => {
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+
+    const theme = screen.getByRole('group', { name: 'Theme' });
+    expect(within(theme).getByRole('button', { name: 'Auto' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    fireEvent.click(within(theme).getByRole('button', { name: 'Dark' }));
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    expect(within(theme).getByRole('button', { name: 'Dark' }).getAttribute('aria-pressed')).toBe(
+      'true',
+    );
+    expect(within(theme).getByRole('button', { name: 'Auto' }).getAttribute('aria-pressed')).toBe(
+      'false',
+    );
+    fireEvent.click(within(theme).getByRole('button', { name: 'Auto' }));
+    expect(document.documentElement.getAttribute('data-theme')).toBeNull();
+  });
+
+  it('pauses and resumes the feed on one pressed switch that counts what arrived', () => {
+    const onActivityStateChange = vi.fn();
+    const state = createActivityState();
+    const view = render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        activityState={state}
+        onActivityStateChange={onActivityStateChange}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    const live = screen.getByRole('button', { name: 'Live' });
+    expect(live.getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(live);
+    expect(onActivityStateChange.mock.lastCall?.[0]).toMatchObject({ following: false });
+
+    view.rerender(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        activityState={{ ...state, following: false, pendingCount: 3 }}
+        onActivityStateChange={onActivityStateChange}
+        onRetry={vi.fn()}
+      />,
+    );
+    const paused = screen.getByRole('button', { name: 'Paused · 3 new · resume' });
+    expect(paused.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(paused);
+    expect(onActivityStateChange.mock.lastCall?.[0]).toMatchObject({
+      following: true,
+      pendingCount: 0,
+    });
+  });
+
+  it('keeps a connection fault on the switch rather than reading Live over a dead socket', () => {
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="reconnecting"
+        onRetry={vi.fn()}
+      />,
+    );
+
+    const toggle = screen.getByRole('button', { name: 'Realtime reconnecting' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByRole('button', { name: 'Live' })).toBeNull();
+  });
+
+  it('holds the Pulse stream while paused and releases it on resume', () => {
+    const paused = { ...createActivityState(), following: false, pendingCount: 0 };
+    const one = input();
+    one.activity = { state: 'ready', data: [activityEvent('1-0')] };
+    const view = render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(one)}
+        websocketState="live"
+        activityState={paused}
+        onActivityStateChange={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('1 retained · held while paused')).toBeTruthy();
+
+    const two = input();
+    two.activity = {
+      state: 'ready',
+      data: [activityEvent('1-0'), activityEvent('2-0', 'project.updated')],
+    };
+    view.rerender(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(two)}
+        websocketState="live"
+        activityState={{ ...paused, pendingCount: 1 }}
+        onActivityStateChange={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+    // The new event is counted on the switch, not painted into the held stream.
+    expect(screen.getByText('1 retained · held while paused')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Paused · 1 new · resume' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Inspect project.updated event' })).toBeNull();
+
+    view.rerender(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(two)}
+        websocketState="live"
+        activityState={{ ...paused, following: true }}
+        onActivityStateChange={vi.fn()}
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('2 retained · realtime live')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Inspect project.updated event' })).toBeTruthy();
+  });
+
+  it('names the narrowed scope in the eyebrow and offers a one-click way back', () => {
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [{ id: 'p1', name: 'Scoped Project', localPath: 'C:/work/scoped' }],
+    };
+    render(
+      <DashboardApp snapshot={buildPulseSnapshot(value)} websocketState="live" onRetry={vi.fn()} />,
+    );
+
+    expect(screen.getByRole('option', { name: 'All projects · 1' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Back to all projects' })).toBeNull();
+    expect(screen.getByText('Operational snapshot')).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('Project scope'), { target: { value: 'p1' } });
+    expect(screen.getByText('Operational snapshot · Scoped Project')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to all projects' }));
+    expect(screen.getByText('Operational snapshot')).toBeTruthy();
+    expect((screen.getByLabelText('Project scope') as HTMLSelectElement).value).toBe('');
+  });
+
+  it('changes the rail toggle glyph and tooltip with its state', () => {
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+
+    const expanded = screen.getByRole('button', { name: 'Collapse the navigation rail' });
+    const expandedGlyph = expanded.querySelector('path')?.getAttribute('d');
+    expect(expanded.getAttribute('title')).toBe('Collapse the navigation rail');
+    fireEvent.click(expanded);
+
+    const collapsed = screen.getByRole('button', { name: 'Expand the navigation rail' });
+    expect(collapsed.getAttribute('aria-pressed')).toBe('true');
+    expect(collapsed.getAttribute('title')).toBe('Expand the navigation rail');
+    expect(collapsed.querySelector('path')?.getAttribute('d')).not.toBe(expandedGlyph);
+  });
+
+  it('states daemon and Redis health in the rail footer, and no Redis line when the daemon is offline', () => {
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(input())}
+        websocketState="live"
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Daemon online')).toBeTruthy();
+    expect(screen.getByText('Redis connected · 2 ms')).toBeTruthy();
+    cleanup();
+
+    const offline = input();
+    offline.health = { state: 'unavailable' };
+    render(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(offline)}
+        websocketState="disconnected"
+        onRetry={vi.fn()}
+      />,
+    );
+    expect(screen.getByText('Daemon offline')).toBeTruthy();
+    // A Redis verdict needs a daemon answer behind it.
+    expect(screen.queryByText(/Redis (connected|disconnected)/)).toBeNull();
   });
 });

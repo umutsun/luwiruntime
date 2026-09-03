@@ -7,6 +7,7 @@ import { createDaemonClient } from './api/client.js';
 import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
 import { createMessageMutations, type MessageMutations } from './api/message-mutations.js';
 import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
+import { loadRuntimeResources } from './api/runtime-resources.js';
 import {
   intelligenceResourceKeys,
   intelligenceResourcesForEvent,
@@ -112,6 +113,9 @@ const fetchSubgraph = (
   bounds: SubgraphBounds,
   options?: { signal?: AbortSignal },
 ) => loadSubgraph(client, root, bounds, options);
+/** Same reason: the Runtime route's refresh timer keys on this identity. */
+const fetchResources = (options?: { signal?: AbortSignal }) =>
+  loadRuntimeResources(client, options);
 
 function DashboardRoute() {
   const [input, setInput] = useState<PulseInput>();
@@ -518,6 +522,7 @@ function DashboardRoute() {
       agentPairLoading={agentPairLoading}
       leaseResources={leaseResources}
       loadSubgraph={fetchSubgraph}
+      loadResources={fetchResources}
       onRetry={retry}
       onActivityStateChange={(next) => {
         activityRef.current = next;

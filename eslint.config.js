@@ -3,7 +3,16 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/coverage/**', '**/node_modules/**', 'temp/**'],
+    // `.claude/worktrees/` holds git worktrees Claude Code creates for isolated
+    // sessions; each carries its own tsconfig root, and typed linting refuses
+    // to pick between two.
+    ignores: [
+      '**/dist/**',
+      '**/coverage/**',
+      '**/node_modules/**',
+      'temp/**',
+      '.claude/worktrees/**',
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

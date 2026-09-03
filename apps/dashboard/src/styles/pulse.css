@@ -7,11 +7,27 @@
  * about 620 px, so a viewport-driven layout put it side by side with Project
  * Pulse at 511 px and clipped two of its columns.
  */
+/* Fills the workspace body; the two panel rows share whatever the stat strip
+   leaves, so their panels are sized by the screen and scroll inside.
+
+   The stack is the query container, not its rows. A container query resolves
+   against an ancestor, never the element itself, so with the rows declared as
+   containers the row rules below never matched: row 1 sat side by side only
+   because `grid-column: 2` on the projects panel forced an implicit column,
+   and every list inside collapsed to zero height. */
 .pulse-stack {
-  display: grid;
-  gap: var(--space-2h);
+  display: flex;
   min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-2h);
   container: pulse / inline-size;
+}
+/* Nothing in the stack shrinks below its content; only the wide-layout rows
+   below opt into filling, and a stack that does not fit scrolls in the body. */
+.pulse-stack > * {
+  flex: 0 0 auto;
 }
 .state-banner {
   display: flex;
@@ -131,9 +147,10 @@ a.stat:focus-visible {
 }
 .pulse-grid {
   display: grid;
+  min-width: 0;
+  flex: 0 0 auto;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-2h);
-  min-width: 0;
   align-items: start;
 }
 /*
@@ -142,11 +159,37 @@ a.stat:focus-visible {
  * side by side only to fold each row into two by two. Below this the two panels
  * stack, which gives the work row the whole content width.
  */
+/*
+ * Long lists scroll inside their card, page height stays fixed. This
+ * supersedes the 2026-08-05 audit's "panels never scroll" rule at the
+ * owner's request: with eleven registered projects the cards grew to page
+ * length, which was the worse outcome. The stream already worked this way.
+ * Stated before the wide layout so the wide rule's `max-height: none` wins.
+ */
+.work-list,
+.project-list,
+.stream-list,
+.repo-list {
+  max-height: 360px;
+  overflow-y: auto;
+}
 @container pulse (min-width: 1060px) {
+  /* Side by side, each row takes an equal share of the viewport and its lists
+     fill and scroll; stacked (below), panels keep their natural, capped height. */
   .pulse-grid {
+    min-height: 240px;
+    flex: 1 1 0;
     grid-template-columns: minmax(0, 1.62fr) minmax(300px, 1fr);
+    align-items: stretch;
   }
-  /* Explicit placement, so the two row-2 panels cannot swap when one of them
+  .work-list,
+  .project-list,
+  .stream-list {
+    min-height: 0;
+    flex: 1 1 0;
+    max-height: none;
+  }
+  /* Explicit placement, so the two row-1 panels cannot swap when one of them
      renders an empty state shorter than the other's header. */
   .panel--work {
     grid-column: 1;
@@ -154,12 +197,26 @@ a.stat:focus-visible {
   .panel--projects {
     grid-column: 2;
   }
+  /* Row 2's narrow track is one scroll container: both panels keep their
+     natural height and the column scrolls when the row is shorter than the
+     two together. At 900 px tall the context bars alone fill the row, and a
+     repository panel squeezed to its header would have said nothing. */
+  .pulse-side {
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .pulse-side .repo-list {
+    max-height: none;
+  }
 }
 .pulse-grid--secondary {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 .panel {
+  display: flex;
   min-width: 0;
+  min-height: 0;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -194,9 +251,12 @@ a.stat:focus-visible {
 .panel__body {
   display: flex;
   min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--panel-pad-y) var(--panel-pad-x) var(--space-4);
+  overflow: auto;
 }
 .panel__body > * {
   margin-top: 0;
@@ -727,20 +787,79 @@ td small {
   }
 }
 /*
- * Row 3, per the mockup: the stream takes the wide track. Same container
- * discipline as row 2 — below the threshold the three panels stack.
+ * Row 2 mirrors row 1 — the same `.pulse-grid` rules — with the stream in the
+ * wide track and the two smaller panels stacked in the narrow one, so the rows
+ * share their column edges and fill the viewport as equals. The context panel
+ * never shrinks; whatever the row leaves goes to the repository list.
  */
-.pulse-grid--tertiary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-2h);
+.pulse-side {
+  display: flex;
   min-width: 0;
-  align-items: start;
+  flex-direction: column;
+  gap: var(--space-2h);
 }
-@container pulse (min-width: 1060px) {
-  .pulse-grid--tertiary {
-    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.05fr) minmax(0, 1.05fr);
-  }
+.pulse-side > .panel {
+  flex: 0 0 auto;
+}
+/* A shorter header for the stacked side panels, which have less room to give. */
+.panel--compact .panel__header {
+  min-height: 44px;
+  padding: var(--space-2) var(--panel-pad-x);
+}
+.panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+/*
+ * Fold repeats: a small switch in the stream header. On folds a run of one
+ * event type into a single row with its count; off shows every retained event.
+ * The pressed state is the ARIA attribute, so the track cannot disagree with
+ * what is announced.
+ */
+.fold-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  height: 24px;
+  padding: 0 var(--space-1);
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.fold-switch:hover {
+  color: var(--text);
+}
+.fold-switch__track {
+  position: relative;
+  display: inline-block;
+  width: 26px;
+  height: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  transition: background var(--dur-1) var(--ease);
+}
+.fold-switch__knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: left var(--dur-1) var(--ease);
+}
+.fold-switch[aria-pressed='true'] .fold-switch__track {
+  border-color: var(--selection);
+  background: var(--selection);
+}
+.fold-switch[aria-pressed='true'] .fold-switch__knob {
+  left: 13px;
+  background: var(--brand-mark-text);
 }
 /* The stream owns the wide first track and never swaps on reflow. */
 .panel--stream {
@@ -749,8 +868,6 @@ td small {
 .stream-list {
   margin: 0;
   padding: 0;
-  max-height: 280px;
-  overflow-y: auto;
   list-style: none;
 }
 .stream-row {
@@ -920,16 +1037,4 @@ td small {
   grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
   gap: var(--space-4);
   min-width: 0;
-}
-/*
- * Long lists scroll inside their card, page height stays fixed. This
- * supersedes the 2026-08-05 audit's "panels never scroll" rule at the
- * owner's request: with eleven registered projects the cards grew to page
- * length, which was the worse outcome. The stream already worked this way.
- */
-.work-list,
-.project-list,
-.repo-list {
-  max-height: 360px;
-  overflow-y: auto;
 }

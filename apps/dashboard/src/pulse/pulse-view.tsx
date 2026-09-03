@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import type { PulseSnapshot, SessionContextEvidence } from './model.js';
 import {
@@ -195,6 +195,7 @@ function SessionContext({ context }: { context: SessionContextEvidence }) {
 export function PulseView({
   snapshot,
   websocketState,
+  following = true,
   selectedSessionId,
   selectedProjectId,
   onOpenProject,
@@ -203,6 +204,8 @@ export function PulseView({
 }: {
   snapshot: PulseSnapshot;
   websocketState: WebSocketState;
+  /** False while the realtime switch is released and the activity is held. */
+  following?: boolean;
   /** What the detail drawer is showing, so the row it came from is marked. */
   selectedSessionId?: string;
   selectedProjectId?: string;
@@ -211,6 +214,12 @@ export function PulseView({
   onOpenEvent: (event: DashboardEvent, opener: HTMLElement) => void;
 }) {
   const health = snapshot.health.state === 'ready' ? snapshot.health.data : undefined;
+  /*
+   * On by default: a scan that fans one `package.inventory.updated` out per
+   * project otherwise fills the stream with identical rows. Off when a reader
+   * is looking for one event in particular.
+   */
+  const [foldRepeats, setFoldRepeats] = useState(true);
   /*
    * Ages and durations are stated against the snapshot they were read with,
    * not against the wall clock. A row that ticks between refreshes would be
@@ -240,10 +249,10 @@ export function PulseView({
       ) : null}
 
       {/*
-       * One line of counters, each a link into the route that holds the
-       * authoritative list. Latency, runtime state and Redis carry no link:
-       * there is no Runtime route yet, and a link to a destination that does
-       * not exist is worse than no link at all.
+       * One line of work counters, each a link into the route that holds the
+       * authoritative list. Runtime state, latency and Redis left this line for
+       * the rail footer: they are health, not work, and beside "waiting" and
+       * "blocked" they read as the same kind of number.
        */}
       <section className="stat-strip" aria-label="Current runtime snapshot">
         <Stat
@@ -277,28 +286,6 @@ export function PulseView({
           label="blocked"
           href={routeHref({ name: 'sessions' })}
           {...(snapshot.blockedCount.state === 'ready' ? { tone: 'danger' as const } : {})}
-        />
-        <Stat
-          value={health?.runtimeState ?? <Unavailable />}
-          label="runtime"
-          href={routeHref({ name: 'runtime' })}
-        />
-        <Stat
-          value={`${String(snapshot.measuredLatencyMs)} ms`}
-          label="daemon latency"
-          href={routeHref({ name: 'runtime' })}
-        />
-        <Stat
-          value="Redis"
-          label={
-            health === undefined
-              ? 'unavailable'
-              : health.redis.connected
-                ? 'connected'
-                : 'disconnected'
-          }
-          href={routeHref({ name: 'runtime' })}
-          {...(health?.redis.connected === false ? { tone: 'danger' as const } : {})}
         />
         <div className="stat-strip__window">
           {snapshot.activityState === 'unavailable' ? (
@@ -554,18 +541,37 @@ export function PulseView({
         </section>
       </div>
 
-      <div className="pulse-grid pulse-grid--tertiary">
+      <div className="pulse-grid">
         <section className="panel panel--stream" aria-labelledby="realtime-stream-title">
           <header className="panel__header">
             <div>
               <p className="eyebrow">Normalized events</p>
               <h2 id="realtime-stream-title">Realtime Stream</h2>
             </div>
-            <span className="panel__meta">
-              {snapshot.activityState === 'ready'
-                ? `${String(snapshot.activity.length)} retained · realtime ${websocketState}`
-                : `realtime ${websocketState}`}
-            </span>
+            <div className="panel__header-actions">
+              <span className="panel__meta">
+                {[
+                  snapshot.activityState === 'ready'
+                    ? `${String(snapshot.activity.length)} retained`
+                    : undefined,
+                  following ? `realtime ${websocketState}` : 'held while paused',
+                ]
+                  .filter((part) => part !== undefined)
+                  .join(' · ')}
+              </span>
+              <button
+                type="button"
+                className="fold-switch"
+                aria-pressed={foldRepeats}
+                title="Fold consecutive events of one type into a single row"
+                onClick={() => setFoldRepeats((value) => !value)}
+              >
+                <span className="fold-switch__track" aria-hidden="true">
+                  <span className="fold-switch__knob" />
+                </span>
+                Fold repeats
+              </button>
+            </div>
           </header>
           {snapshot.activityState === 'unavailable' ? (
             <p className="empty-state">Activity snapshot unavailable</p>
@@ -573,7 +579,10 @@ export function PulseView({
             <p className="empty-state">No retained activity</p>
           ) : (
             <ol className="stream-list">
-              {collapseRuns(snapshot.activity).map(({ event, count }) => (
+              {(foldRepeats
+                ? collapseRuns(snapshot.activity)
+                : snapshot.activity.map((event) => ({ event, count: 1 }))
+              ).map(({ event, count }) => (
                 <li key={event.streamId} className="stream-row">
                   {/*
                    * The whole row is the control, like Active Work. The comp
@@ -607,127 +616,135 @@ export function PulseView({
           )}
         </section>
 
-        <section className="panel" aria-labelledby="context-efficiency-title">
-          <header className="panel__header">
-            <div>
-              <p className="eyebrow">Context path</p>
-              <h2 id="context-efficiency-title">Context Efficiency</h2>
-            </div>
-            <a className="panel__meta panel__meta--link" href="#/context">
-              source →
-            </a>
-          </header>
-          {snapshot.contextState === 'unavailable' ? (
-            <p className="empty-state">Context observations unavailable</p>
-          ) : (
-            <div className="context-stages">
-              {(
-                [
-                  ['Assigned', snapshot.context.assigned],
-                  ['Effective', snapshot.context.effective],
-                  ['Loaded', snapshot.context.loaded],
-                  ['Invoked', snapshot.context.invoked],
-                  ['Unknown', snapshot.context.unknown],
-                ] as const
-              ).map(([label, value]) => {
-                const peak = Math.max(
-                  snapshot.context.assigned,
-                  snapshot.context.effective,
-                  snapshot.context.loaded,
-                  snapshot.context.invoked,
-                  snapshot.context.unknown,
-                  1,
-                );
-                return (
-                  <div className="context-stage" key={label}>
-                    <span className="context-stage__label">{label}</span>
-                    {/* Five independent counts — deliberately not a funnel:
+        {/* The narrow track of row 2, stacked so the two rows share their
+            column edges. The context bars keep their height; the repository
+            list takes what is left and scrolls. */}
+        <div className="pulse-side">
+          <section className="panel panel--compact" aria-labelledby="context-efficiency-title">
+            <header className="panel__header">
+              <div>
+                <p className="eyebrow">Context path</p>
+                <h2 id="context-efficiency-title">Context Efficiency</h2>
+              </div>
+              <a className="panel__meta panel__meta--link" href="#/context">
+                source →
+              </a>
+            </header>
+            {snapshot.contextState === 'unavailable' ? (
+              <p className="empty-state">Context observations unavailable</p>
+            ) : (
+              <div className="context-stages">
+                {(
+                  [
+                    ['Assigned', snapshot.context.assigned],
+                    ['Effective', snapshot.context.effective],
+                    ['Loaded', snapshot.context.loaded],
+                    ['Invoked', snapshot.context.invoked],
+                    ['Unknown', snapshot.context.unknown],
+                  ] as const
+                ).map(([label, value]) => {
+                  const peak = Math.max(
+                    snapshot.context.assigned,
+                    snapshot.context.effective,
+                    snapshot.context.loaded,
+                    snapshot.context.invoked,
+                    snapshot.context.unknown,
+                    1,
+                  );
+                  return (
+                    <div className="context-stage" key={label}>
+                      <span className="context-stage__label">{label}</span>
+                      {/* Five independent counts — deliberately not a funnel:
                         Assigned and Effective are equal at every writer site
                         today, and equal bars are the normal case. */}
-                    <span className="context-stage__track" aria-hidden="true">
-                      <span
-                        className="context-stage__fill"
-                        style={{ width: `${String((value / peak) * 100)}%` }}
-                      />
-                    </span>
-                    <span className="context-stage__value">{value}</span>
-                  </div>
-                );
-              })}
-              <div className="context-divider" aria-hidden="true" />
-              {/* Counted only over pairs where both sides are observed
+                      <span className="context-stage__track" aria-hidden="true">
+                        <span
+                          className="context-stage__fill"
+                          style={{ width: `${String((value / peak) * 100)}%` }}
+                        />
+                      </span>
+                      <span className="context-stage__value">{value}</span>
+                    </div>
+                  );
+                })}
+                <div className="context-divider" aria-hidden="true" />
+                {/* Counted only over pairs where both sides are observed
                   booleans; an `unknown` is never counted as unused. */}
-              <p className="context-insight">
-                {`${String(snapshot.contextInsights.assignedNeverLoaded)} assigned ${
-                  snapshot.contextInsights.assignedNeverLoaded === 1 ? 'source was' : 'sources were'
-                } never loaded`}
-              </p>
-              <p className="context-insight">
-                {`${String(snapshot.contextInsights.loadedNotInvoked)} loaded ${
-                  snapshot.contextInsights.loadedNotInvoked === 1 ? 'source was' : 'sources were'
-                } not invoked`}
-              </p>
-            </div>
-          )}
-        </section>
+                <p className="context-insight">
+                  {`${String(snapshot.contextInsights.assignedNeverLoaded)} assigned ${
+                    snapshot.contextInsights.assignedNeverLoaded === 1
+                      ? 'source was'
+                      : 'sources were'
+                  } never loaded`}
+                </p>
+                <p className="context-insight">
+                  {`${String(snapshot.contextInsights.loadedNotInvoked)} loaded ${
+                    snapshot.contextInsights.loadedNotInvoked === 1 ? 'source was' : 'sources were'
+                  } not invoked`}
+                </p>
+              </div>
+            )}
+          </section>
 
-        <section className="panel" aria-labelledby="repository-facts-title">
-          <header className="panel__header">
-            <div>
-              <p className="eyebrow">Stated Git facts</p>
-              <h2 id="repository-facts-title">Repository facts</h2>
-            </div>
-            {snapshot.gitTruncated ? (
-              <span className="panel__meta">first {snapshot.repositoryFacts.length} shown</span>
-            ) : null}
-          </header>
-          {/*
-           * The comp drew Release Readiness here — tests, build, secrets and a
-           * verdict. No such observer exists and section 21 bans release
-           * scoring, so this panel states only what the read-only Git
-           * observation recorded, per project, and passes no judgement.
-           */}
-          {snapshot.projectCount.state === 'unavailable' || snapshot.gitState === 'unavailable' ? (
-            <p className="empty-state">Unavailable</p>
-          ) : snapshot.repositoryFacts.length === 0 ? (
-            <p className="empty-state">No registered projects</p>
-          ) : (
-            <ul className="repo-list">
-              {snapshot.repositoryFacts.map((row) => (
-                <li className="repo-row" key={row.projectId}>
-                  <span className="repo-row__name">{row.name}</span>
-                  {row.git.state === 'ready' ? (
-                    <span className="repo-row__facts">
-                      {row.git.data.branch === undefined ? null : (
-                        <span className="repo-row__branch">{row.git.data.branch}</span>
-                      )}
-                      {row.git.data.headSha === undefined ? null : (
-                        <span className="repo-row__sha" title={row.git.data.headSha}>
-                          {abbreviateSha(row.git.data.headSha)}
+          <section className="panel panel--compact" aria-labelledby="repository-facts-title">
+            <header className="panel__header">
+              <div>
+                <p className="eyebrow">Stated Git facts</p>
+                <h2 id="repository-facts-title">Repository facts</h2>
+              </div>
+              {snapshot.gitTruncated ? (
+                <span className="panel__meta">first {snapshot.repositoryFacts.length} shown</span>
+              ) : null}
+            </header>
+            {/*
+             * The comp drew Release Readiness here — tests, build, secrets and a
+             * verdict. No such observer exists and section 21 bans release
+             * scoring, so this panel states only what the read-only Git
+             * observation recorded, per project, and passes no judgement.
+             */}
+            {snapshot.projectCount.state === 'unavailable' ||
+            snapshot.gitState === 'unavailable' ? (
+              <p className="empty-state">Unavailable</p>
+            ) : snapshot.repositoryFacts.length === 0 ? (
+              <p className="empty-state">No registered projects</p>
+            ) : (
+              <ul className="repo-list">
+                {snapshot.repositoryFacts.map((row) => (
+                  <li className="repo-row" key={row.projectId}>
+                    <span className="repo-row__name">{row.name}</span>
+                    {row.git.state === 'ready' ? (
+                      <span className="repo-row__facts">
+                        {row.git.data.branch === undefined ? null : (
+                          <span className="repo-row__branch">{row.git.data.branch}</span>
+                        )}
+                        {row.git.data.headSha === undefined ? null : (
+                          <span className="repo-row__sha" title={row.git.data.headSha}>
+                            {abbreviateSha(row.git.data.headSha)}
+                          </span>
+                        )}
+                        <StatusChip tone={row.git.data.clean ? 'success' : 'warning'}>
+                          {row.git.data.clean ? 'clean' : 'dirty'}
+                        </StatusChip>
+                        <span className="repo-row__counts">
+                          {`${String(row.git.data.untrackedCount)} untracked · ${String(
+                            row.git.data.tagCount,
+                          )} tags`}
                         </span>
-                      )}
-                      <StatusChip tone={row.git.data.clean ? 'success' : 'warning'}>
-                        {row.git.data.clean ? 'clean' : 'dirty'}
-                      </StatusChip>
-                      <span className="repo-row__counts">
-                        {`${String(row.git.data.untrackedCount)} untracked · ${String(
-                          row.git.data.tagCount,
-                        )} tags`}
+                        <span className="repo-row__age">
+                          {formatRelativeTime(row.git.data.observedAt, snapshotMs)}
+                        </span>
                       </span>
-                      <span className="repo-row__age">
-                        {formatRelativeTime(row.git.data.observedAt, snapshotMs)}
-                      </span>
-                    </span>
-                  ) : row.git.state === 'not-observed' ? (
-                    <span className="work-dim">No Git scan recorded for this project</span>
-                  ) : (
-                    <Unavailable />
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+                    ) : row.git.state === 'not-observed' ? (
+                      <span className="work-dim">No Git scan recorded for this project</span>
+                    ) : (
+                      <Unavailable />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        </div>
       </div>
     </div>
   );

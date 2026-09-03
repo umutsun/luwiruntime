@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   activitySource,
   filterActivityEvents,
-  resumeActivity,
   setActivityFollowing,
   type ActivityState,
 } from '../realtime/activity-store.js';
@@ -82,6 +81,19 @@ export function ActivityView({
     [],
   );
 
+  /*
+   * Resuming is the shell's realtime switch, not a control here. When it flips
+   * following back on, the feed returns to its live edge — otherwise the reader
+   * who scrolled away resumes into the middle of a list that is moving again.
+   */
+  const wasFollowing = useRef(state.following);
+  useEffect(() => {
+    if (state.following && !wasFollowing.current) {
+      streamRef.current?.scrollTo({ top: 0, behavior: 'instant' });
+    }
+    wasFollowing.current = state.following;
+  }, [state.following]);
+
   const pauseIfScrolledAway = (element: HTMLElement) => {
     const isAtLiveEdge = element.scrollTop <= 24;
     if (!isAtLiveEdge && state.following) {
@@ -89,36 +101,19 @@ export function ActivityView({
     }
   };
 
-  const resumeFollowing = () => {
-    streamRef.current?.scrollTo({ top: 0, behavior: 'instant' });
-    onStateChange(resumeActivity(state));
-  };
-
   return (
     <section className="activity-workspace" aria-labelledby="activity-title">
       <span className="sr-only" aria-label="Activity updates" aria-live="polite" aria-atomic="true">
         {announcement}
       </span>
+      {/* Following and resuming live on the shell's realtime switch, which
+          this route shares with Pulse. */}
       <header className="activity-heading">
         <div>
           <p className="eyebrow">Durable normalized events</p>
           <h2 id="activity-title">Activity</h2>
           <p>Validated realtime observations. Newest retained event appears first.</p>
         </div>
-        {state.following ? (
-          <span className="activity-follow" role="status">
-            Following live
-          </span>
-        ) : (
-          <button
-            className="retry-button"
-            type="button"
-            onClick={resumeFollowing}
-            aria-label={`Resume live activity (${state.pendingCount} new)`}
-          >
-            Resume · {state.pendingCount} new
-          </button>
-        )}
       </header>
 
       <div className="activity-filters" aria-label="Activity filters">

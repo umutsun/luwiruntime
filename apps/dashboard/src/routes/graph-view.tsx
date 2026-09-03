@@ -110,42 +110,44 @@ export function GraphView({
         )}
       </ResourcePanel>
 
-      <ResourcePanel<KindCount[]>
-        title="Nodes by kind"
-        collapsible
-        {...(generation === undefined ? {} : { meta: generation })}
-        resource={
-          summary?.state === 'ready'
-            ? perKind(summary.data, summary.data.nodeCountsByKind)
-            : summary
-        }
-        loading={loading}
-        notObservedMessage="The graph has not been built"
-        emptyMessage="No nodes in the active generation"
-        isEmpty={(rows) => rows.length === 0}
-      >
-        {(rows) => (
-          <KindTable caption="Graph node counts by kind" heading="Node kind" rows={rows} />
-        )}
-      </ResourcePanel>
+      <div className="graph-two-up">
+        <ResourcePanel<KindCount[]>
+          title="Nodes by kind"
+          collapsible
+          {...(generation === undefined ? {} : { meta: generation })}
+          resource={
+            summary?.state === 'ready'
+              ? perKind(summary.data, summary.data.nodeCountsByKind)
+              : summary
+          }
+          loading={loading}
+          notObservedMessage="The graph has not been built"
+          emptyMessage="No nodes in the active generation"
+          isEmpty={(rows) => rows.length === 0}
+        >
+          {(rows) => (
+            <KindTable caption="Graph node counts by kind" heading="Node kind" rows={rows} />
+          )}
+        </ResourcePanel>
 
-      <ResourcePanel<KindCount[]>
-        title="Edges by kind"
-        collapsible
-        resource={
-          summary?.state === 'ready'
-            ? perKind(summary.data, summary.data.edgeCountsByKind)
-            : summary
-        }
-        loading={loading}
-        notObservedMessage="The graph has not been built"
-        emptyMessage="No edges in the active generation"
-        isEmpty={(rows) => rows.length === 0}
-      >
-        {(rows) => (
-          <KindTable caption="Graph edge counts by kind" heading="Edge kind" rows={rows} />
-        )}
-      </ResourcePanel>
+        <ResourcePanel<KindCount[]>
+          title="Edges by kind"
+          collapsible
+          resource={
+            summary?.state === 'ready'
+              ? perKind(summary.data, summary.data.edgeCountsByKind)
+              : summary
+          }
+          loading={loading}
+          notObservedMessage="The graph has not been built"
+          emptyMessage="No edges in the active generation"
+          isEmpty={(rows) => rows.length === 0}
+        >
+          {(rows) => (
+            <KindTable caption="Graph edge counts by kind" heading="Edge kind" rows={rows} />
+          )}
+        </ResourcePanel>
+      </div>
     </div>
   );
 }

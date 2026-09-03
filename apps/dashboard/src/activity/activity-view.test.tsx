@@ -44,7 +44,7 @@ describe('Activity view', () => {
     expect(screen.queryByRole('button', { name: 'Inspect session.heartbeat event' })).toBeNull();
   });
 
-  it('pauses following on manual scroll and resumes with the bounded pending count', () => {
+  it('pauses following on manual scroll and returns to the live edge when following resumes', () => {
     const onStateChange = vi.fn();
     const state = createActivityState();
     const view = render(
@@ -56,6 +56,8 @@ describe('Activity view', () => {
     fireEvent.scroll(stream);
     expect(onStateChange.mock.lastCall?.[0].following).toBe(false);
 
+    const scrollTo = vi.fn();
+    Object.defineProperty(stream, 'scrollTo', { configurable: true, value: scrollTo });
     view.rerender(
       <ActivityView
         state={{ ...state, following: false, pendingCount: 3 }}
@@ -63,11 +65,19 @@ describe('Activity view', () => {
         onOpenEvent={vi.fn()}
       />,
     );
-    const scrollTo = vi.fn();
-    Object.defineProperty(stream, 'scrollTo', { configurable: true, value: scrollTo });
-    fireEvent.click(screen.getByRole('button', { name: 'Resume live activity (3 new)' }));
+    // Resuming is the shell's realtime switch now; this route carries no
+    // control of its own and does not move until following is back on.
+    expect(screen.queryByRole('button', { name: /resume/i })).toBeNull();
+    expect(scrollTo).not.toHaveBeenCalled();
+
+    view.rerender(
+      <ActivityView
+        state={{ ...state, following: true, pendingCount: 0 }}
+        onStateChange={onStateChange}
+        onOpenEvent={vi.fn()}
+      />,
+    );
     expect(scrollTo).toHaveBeenCalledWith({ behavior: 'instant', top: 0 });
-    expect(onStateChange.mock.lastCall?.[0]).toMatchObject({ following: true, pendingCount: 0 });
   });
 
   it('opens an event through a keyboard-accessible button', () => {

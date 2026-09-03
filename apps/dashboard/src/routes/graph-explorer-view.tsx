@@ -4,7 +4,10 @@ import {
   DEFAULT_MAX_DEPTH,
   DEFAULT_NODE_LIMIT,
   type GraphConfidence,
+  type GraphOrigin,
   type GraphRoot,
+  originLabels,
+  originOf,
   type Subgraph,
   type SubgraphBounds,
 } from '../api/graph-explorer.js';
@@ -55,7 +58,13 @@ function LegendMark({ kind }: { kind: string }) {
   );
 }
 
-function Legend({ kinds, hasStructural }: { kinds: readonly string[]; hasStructural: boolean }) {
+function Legend({
+  kinds,
+  origins,
+}: {
+  kinds: readonly string[];
+  origins: ReadonlySet<GraphOrigin>;
+}) {
   return (
     <section className="graph-legend" aria-label="Legend">
       <div>
@@ -98,10 +107,16 @@ function Legend({ kinds, hasStructural }: { kinds: readonly string[]; hasStructu
             <span className="legend-line" data-origin="operational" aria-hidden="true" />
             Observed from runtime events
           </li>
-          {hasStructural ? (
+          {origins.has('code-structure') ? (
             <li>
               <span className="legend-line" data-origin="structural" aria-hidden="true" />
               Code structure — parsed, never executed
+            </li>
+          ) : null}
+          {origins.has('graphify') ? (
+            <li>
+              <span className="legend-line" data-origin="structural" aria-hidden="true" />
+              Graphify output — read, never run
             </li>
           ) : null}
         </ul>
@@ -163,7 +178,13 @@ export function GraphExplorerView({
     () => [...new Set(data?.nodes.map((node) => node.kind) ?? [])].sort(),
     [data],
   );
-  const hasStructural = data?.edges.some((edge) => edge.structural) === true;
+  const origins = useMemo(
+    () =>
+      new Set<GraphOrigin>(
+        [...(data?.nodes ?? []), ...(data?.edges ?? [])].map((value) => originOf(value.provenance)),
+      ),
+    [data],
+  );
 
   if (seeds.length === 0) {
     return (
@@ -207,32 +228,46 @@ export function GraphExplorerView({
               ))}
             </select>
           </label>
-          <label>
-            Depth
-            <select
-              value={String(maxDepth)}
-              onChange={(event) => setMaxDepth(Number(event.target.value))}
-            >
+          {/* Bounds you can read without opening anything: every choice is
+              visible and the pressed one is the current bound. The
+              reached-limit note below stays exactly as the daemon reports
+              it — the control never claims a subgraph is complete. */}
+          <div className="table-filters__field">
+            <span className="table-filters__name" id="graph-depth-label">
+              Depth
+            </span>
+            <div className="segmented" role="group" aria-labelledby="graph-depth-label">
               {DEPTH_CHOICES.map((choice) => (
-                <option key={choice} value={String(choice)}>
+                <button
+                  key={choice}
+                  type="button"
+                  className="segmented__option"
+                  aria-pressed={maxDepth === choice}
+                  onClick={() => setMaxDepth(choice)}
+                >
                   {choice}
-                </option>
+                </button>
               ))}
-            </select>
-          </label>
-          <label>
-            Node limit
-            <select
-              value={String(nodeLimit)}
-              onChange={(event) => setNodeLimit(Number(event.target.value))}
-            >
+            </div>
+          </div>
+          <div className="table-filters__field">
+            <span className="table-filters__name" id="graph-node-limit-label">
+              Node limit
+            </span>
+            <div className="segmented" role="group" aria-labelledby="graph-node-limit-label">
               {NODE_LIMIT_CHOICES.map((choice) => (
-                <option key={choice} value={String(choice)}>
+                <button
+                  key={choice}
+                  type="button"
+                  className="segmented__option"
+                  aria-pressed={nodeLimit === choice}
+                  onClick={() => setNodeLimit(choice)}
+                >
                   {choice}
-                </option>
+                </button>
               ))}
-            </select>
-          </label>
+            </div>
+          </div>
         </div>
 
         {result === undefined || loading ? (
@@ -258,13 +293,13 @@ export function GraphExplorerView({
               {...(selectedId === undefined ? {} : { selectedId })}
               onSelect={setSelectedId}
             />
-            <Legend kinds={kindsPresent} hasStructural={hasStructural} />
+            <Legend kinds={kindsPresent} origins={origins} />
           </>
         )}
       </Panel>
 
       {data === undefined ? null : (
-        <>
+        <div className="graph-two-up">
           <Panel title="Nodes in view" meta={`${String(data.nodes.length)} nodes`}>
             <TableWrap caption="Nodes in the current bounded subgraph">
               <thead>
@@ -285,7 +320,7 @@ export function GraphExplorerView({
                       {node.label}
                     </td>
                     <td>{node.kind}</td>
-                    <td>{node.structural ? 'Code structure' : 'Runtime events'}</td>
+                    <td>{originLabels[originOf(node.provenance)]}</td>
                     <td>
                       {node.id === root?.id ? (
                         <span className="graph-root-tag">Root</span>
@@ -334,14 +369,14 @@ export function GraphExplorerView({
                         <code>{edge.target}</code>
                       </td>
                       <td>{confidenceLabels[edge.confidence]}</td>
-                      <td>{edge.structural ? 'Code structure' : 'Runtime events'}</td>
+                      <td>{originLabels[originOf(edge.provenance)]}</td>
                     </tr>
                   ))}
                 </tbody>
               </TableWrap>
             )}
           </Panel>
-        </>
+        </div>
       )}
     </div>
   );
