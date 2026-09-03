@@ -1181,6 +1181,38 @@ with no session id), so it stays honestly unbound; binding a project as a sessio
 it would collide and refuse a normal second session. No daemon, protocol, datastore or `luwi_v1`
 change — a client-side resolver plus two injected `session attach` dependencies.
 
+**Built under ADR 0029 (2026-09-02): graphify output as a read-only structural source.** ADR 0012's
+rejection of graphify as a dependency or an executed scanner stands; what changed is that the owner
+installed graphify themselves, built every registered project's graph offline, and asked for that
+structure joined with LUWI's session, commit and agent edges. `apps/daemon/src/graphify-observer.ts`
+reads one file per project, `graphify-out/graph.json`, at rebuild time beside the ADR 0012 scan — no
+Redis copy, no record type, no Lua, no `luwi_v1` bump, no new kind (`file`, `FILE_IMPORTS_FILE` and
+`FILE_BELONGS_TO_MODULE` are reused). It reads four node and five link fields, validates every entry
+and skips the rest, joins on `source_file` (graphify writes no file node), accepts a path only if it
+names a real file inside the project, maps `EXTRACTED` to `medium` and `INFERRED` to `low` (never
+`high`: graphify resolves by name and LUWI did not verify it), and **fills without replacing** through
+`addNodeIfAbsent`/`addEdgeIfAbsent` — the same rule now stops a commit path's bare `file` node from
+overwriting the structural one, a pre-existing defect. Provenance is `graphify-graph-json@1`; the
+Graph explorer names it "Graphify output — read, never run". LUWI never runs graphify, its MCP server,
+or its model backends. The first live rebuild with the layer exposed a pre-existing defect: the rebuild
+lock was a fixed five-minute `SET NX PX` that nothing renewed, so a rebuild longer than that (measured
+on this machine, twice before the layer existed) lost the lock, was refused at activation and again at
+the failure transition, and stayed `running` with its real reason replaced by a constant.
+`renewGraphRebuildLock` — the owner lease's compare-and-expire — is now renewed every minute for as long
+as a rebuild runs, a failed renewal stops the write loop, and `failureSummary` carries the real reason.
+The same rebuild then exposed a second pre-existing stall: ADR 0012's projection filtered the whole
+export list once per file — 8.7 s of synchronous work on a 20 000-file project, longer than the
+15-second daemon owner lease tolerates before the recovery path stops the runtime — and it is now a
+single map lookup.
+
+**Built 2026-09-02: host and footprint figures on the Runtime route.**
+`apps/daemon/src/host-resources.ts` answers `GET /api/v1/runtime/resources` from `node:os`,
+`fs.statfs`, `process`, and the Redis `INFO memory`/`DBSIZE` replies; the only command it runs is
+`nvidia-smi` with a fixed query — a system utility in the class of `git` and `schtasks`, cached for
+ten seconds, absent when the tool is not there. Rates (host and daemon CPU) are computed against the
+previous read and are absent on the first; nothing reports a zero it did not measure. No record,
+datastore or `luwi_v1` change — one response schema in `@luwi/protocol` and one read-only route.
+
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers
 `POST /api/v1/config/reconcile`), lifecycle/release scoring, task orchestration, a semantic or

@@ -273,6 +273,32 @@ the existing command seam with a constant task name and the CLI entry derived fr
 root, so no user-controlled string reaches the scheduler. It is Windows-only and reports `unsupported`
 elsewhere rather than pretending to succeed.
 
+ADR 0028 then recovered **Codex's native session identity from disk**. Codex Desktop and the VSCode
+extension export no session-id variable, so after the environment resolver returns nothing a strict
+filesystem fallback matches the freshest Codex rollout for the working directory and binds its stable
+`session_id`; a stale, absent or foreign match binds nothing. Gemini CLI has no per-session identity
+and stays honestly unbound. No daemon, protocol or datastore change.
+
+ADR 0029 then made **graphify's output a read-only structural source**. Where a registered project
+holds `graphify-out/graph.json` — built by the developer with graphify's offline extractor, refreshed
+by graphify's own git hooks — the graph rebuild reads it beside the TypeScript observer and projects
+file nodes and file-level import edges into the existing kinds, so sessions, commits and agents join
+code structure in every language graphify covers. LUWI never runs graphify, its MCP server or its
+model backends; the reader validates every entry, drops any path that is not a real file inside the
+project, carries imports at `medium` or `low` (never `high`, since graphify resolves by name), and
+fills gaps without replacing what the structural observer resolved. The Graph explorer names the
+origin "Graphify output — read, never run". Its first live rebuild also fixed two latent defects: the
+rebuild lock is now renewed for as long as a rebuild runs and a failed rebuild records why, and the
+projection no longer stalls the event loop long enough to lose the daemon owner lease on a
+20 000-file project.
+
+The Runtime route then gained **what the machine has and what LUWI costs on it**: CPU model, cores
+and busy share, memory, the free space on the volume holding LUWI's state, NVIDIA GPUs when
+`nvidia-smi` answers, the daemon's own resident memory and CPU share, and Redis memory and key count
+— over `GET /api/v1/runtime/resources`, refreshed every ten seconds. Everything is read from the
+standard library, the daemon's own process and two Redis replies; the one command is a fixed
+`nvidia-smi` query, and a source that is absent leaves its field absent rather than reporting a zero.
+
 ## Architecture and security
 
 Redis is the only runtime datastore. It is the operational database, durable event bus,

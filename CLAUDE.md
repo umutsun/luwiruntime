@@ -295,6 +295,28 @@ still drained at shutdown — and the same request answers in ~47 ms while daemo
 42 s to about 1 s. It is best-effort by construction (it swallows failures into a projection-failure
 record and returns `void`), so awaiting it never told the caller anything.
 
+**ADR 0029 (2026-09-02) reads graphify's output into the operational graph.** Graphify (Python,
+tree-sitter) was installed on this machine by the owner, has built `graphify-out/graph.json` for all
+ten registered projects, and refreshes them through its own git hooks; its MCP server is registered
+at user scope in `~/.claude.json` as `graphify`. LUWI's part is `apps/daemon/src/graphify-observer.ts`,
+read at rebuild beside the ADR 0012 scan, and it never runs graphify. Three measured traps: **graphify
+writes no file node** — every node is a symbol, heading or page carrying `source_file`, so the join is
+on that field, never on node ids; external targets are nodes too (`node:net`, manifest dependencies)
+and are dropped by the "must be a real file inside the project" check; and the snapshot's `addNode`
+is last-writer-wins, so a second structural layer must go through `addNodeIfAbsent`/`addEdgeIfAbsent`
+or it silently replaces the ADR 0012 node (a commit path used to do exactly that; fixed). `graphify-out/`
+is gitignored; `graphify install --platform codex` writes into `AGENTS.md` and is never run unasked.
+**The live rebuild exposed a latent trap:** the rebuild lock (`luwi:v1:graph:rebuild:lock`, a
+five-minute `SET NX PX`) was never renewed, and a rebuild on this machine can take longer than that —
+the lock lapsed, activation and then the failure record were refused as `GRAPH_REBUILD_OWNERSHIP_LOST`,
+and the operation stayed `running` with "Graph rebuild failed." as its only trace. The running rebuild
+now renews the lock every 60 s, a failed renewal aborts the write loop, and `failureSummary` carries the
+real reason. **And a second one:** `runtime.stopping` is not only a signal — the recovery path stops the
+runtime when the daemon owner lease (15 s, renewed every 5 s) is gone, so one synchronous stall longer
+than that kills the daemon mid-rebuild. The projection's per-file `exportCount` filter was such a stall
+(8.7 s on the 20 000-file `flybydeniz` scan) and is now a map; keep the projection's synchronous work
+per project well under the lease.
+
 Two capture traps worth knowing. `chrome --virtual-time-budget` accelerates timers while the
 network stays real, so the dashboard's reconnect timer aborts every on-demand read and the panels
 never leave "Loading" — that is the screenshot lying, not the page. Capture over the DevTools
