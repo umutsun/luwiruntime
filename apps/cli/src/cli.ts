@@ -27,6 +27,7 @@ import {
   sessionResponseSchema,
   sessionStatusTargetSchema,
   workLeaseSchema,
+  type AgentKind,
   type AgentMessage,
   type InboxEnvelope,
   type NativeSessionRef,
@@ -50,6 +51,7 @@ import {
   agentProvider,
   resolveAgentRunContext,
   type NativeAgentProcessRunner,
+  resolveProject,
 } from './agent-runner.js';
 import { createDeepSeekAcpFactory, type DeepSeekAcpFactoryOptions } from './deepseek-acp-client.js';
 import {
@@ -1835,12 +1837,20 @@ export function createCli(dependencies: CliDependencies): Command {
    * given: an identity that cannot be resolved registers with no native block
    * rather than a fabricated one.
    */
+  /** Kinds whose identity LUWI can recognise unprompted, in resolution order. */
+  const DETECTABLE_AGENT_KINDS: readonly AgentKind[] = ['claude-code', 'codex'];
   sessions
     .command('attach')
-    .requiredOption('--project <projectId>', 'Registered project ID')
-    .requiredOption('--agent <agentId>', 'Opaque agent ID')
+    .option(
+      '--project <projectId>',
+      'Registered project ID (default: the registered project containing the working directory)',
+    )
+    .option('--agent <agentId>', 'Opaque agent ID (default: the agent kind)')
     .option('--working-directory <path>', 'Working directory', dependencies.cwd())
-    .option('--agent-kind <kind>', 'Vendor whose identity to resolve', 'claude-code')
+    .option(
+      '--agent-kind <kind>',
+      'Vendor whose identity to resolve (default: whichever identity resolves here, else claude-code)',
+    )
     .option('--model <model>', 'Model the agent runs, recorded as session metadata')
     .option('--heartbeat-ms <milliseconds>', 'Heartbeat interval', '5000')
     .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
@@ -1848,17 +1858,16 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
     .action(
       async (options: {
-        project: string;
-        agent: string;
+        project?: string;
+        agent?: string;
         workingDirectory: string;
-        agentKind: string;
+        agentKind?: string;
         model?: string;
         heartbeatMs: string;
         leaseRenewMs: string;
         dryRun?: boolean;
         url: string;
       }) => {
-        const kind = agentKindSchema.parse(options.agentKind);
         // Canonicalize the working directory so the Codex cwd-match compares like
         // for like against the absolute path the rollout records (a junction,
         // subst drive, or relative value would otherwise never match). Best-effort:
@@ -1870,22 +1879,55 @@ export function createCli(dependencies: CliDependencies): Command {
         } catch {
           workingDirectory = options.workingDirectory;
         }
-        // Environment first (deterministic, no guess); the disk fallback recovers
-        // a vendor whose id lives only in a session file, e.g. a Codex rollout
-        // (ADR 0028). An identity that resolves neither way registers with no
-        // native block rather than a fabricated one.
-        const native =
-          resolveNativeIdentity(kind, dependencies.environment) ??
-          (await resolveNativeIdentityFromDisk(kind, {
+        // Which vendor this is, and its native identity. With --agent-kind that
+        // kind is resolved environment-first (deterministic), then from disk
+        // (ADR 0028). Without it, the kinds LUWI can recognise are tried in the
+        // same order and the first identity that resolves names the kind; nothing
+        // resolving keeps the previous default, unattributed — an absent binding
+        // is honest, a fabricated one is not.
+        const resolve = async (candidate: AgentKind) =>
+          resolveNativeIdentity(candidate, dependencies.environment) ??
+          (await resolveNativeIdentityFromDisk(candidate, {
             environment: dependencies.environment,
             workingDirectory,
             platform: dependencies.platform,
             fileSystem: dependencies.transcriptFileSystem,
             now: dependencies.now,
           }));
+        let kind: AgentKind = 'claude-code';
+        let native: NativeSessionRef | undefined;
+        for (const candidate of options.agentKind === undefined
+          ? DETECTABLE_AGENT_KINDS
+          : [agentKindSchema.parse(options.agentKind)]) {
+          native = await resolve(candidate);
+          if (native !== undefined || options.agentKind !== undefined) {
+            kind = candidate;
+            break;
+          }
+        }
+        // The project is derived from where the agent runs unless named; the
+        // daemon already knows every registered path.
+        const projectId = await resolveProject(
+          {
+            workingDirectory,
+            ...(options.project === undefined ? {} : { projectId: options.project }),
+            client: {
+              listProjects: async () =>
+                (
+                  await request(
+                    dependencies,
+                    options.url,
+                    '/api/v1/projects',
+                    projectCollectionResponseSchema,
+                  )
+                ).projects.map((project) => ({ id: project.id, localPath: project.canonicalPath })),
+            },
+          },
+          dependencies.platform,
+        );
         const request_ = {
-          projectId: options.project,
-          agentId: options.agent,
+          projectId,
+          agentId: options.agent ?? kind,
           workingDirectory,
           ...(native === undefined ? {} : { native }),
           ...(options.model === undefined ? {} : { metadata: { model: options.model } }),

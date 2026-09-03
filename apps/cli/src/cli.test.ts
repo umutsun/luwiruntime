@@ -1424,6 +1424,9 @@ describe('session attach', () => {
         CLAUDECODE: '1',
         CLAUDE_CODE_SESSION_ID: '64c3e219-18aa-4539-9104-89d3d2ac5629',
       },
+      // No real filesystem: the default realpath is genuine IO that, under full
+      // suite load, can outlast the single tick this test waits for registration.
+      canonicalizePath: async (path: string) => path,
       fetch: async (url, init) => {
         urls.push(url);
         if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
@@ -1484,6 +1487,7 @@ describe('session attach', () => {
     let signalListener: (() => void) | undefined;
     const dependencies: Partial<CliDependencies> = {
       environment: {},
+      canonicalizePath: async (path: string) => path,
       fetch: async (_url, init) => {
         if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
         return response(registered);
@@ -1763,6 +1767,84 @@ describe('session attach', () => {
 
     expect(bodies[0]).toMatchObject({ projectId: 'project-1', agentId: 'codex-agent' });
     expect((bodies[0] as Record<string, unknown>)['native']).toBeUndefined();
+  });
+
+  it('attaches with no arguments: project from the working directory, kind from the identity present', async () => {
+    const project = {
+      id: 'project-1',
+      name: 'Work',
+      localPath: 'C:/work',
+      canonicalPath: 'C:/work',
+      createdAt: '2026-07-28T12:00:00.000Z',
+      updatedAt: '2026-07-28T12:00:00.000Z',
+    };
+    const attachWith = async (
+      environment: Record<string, string>,
+      transcriptFileSystem: CliDependencies['transcriptFileSystem'],
+    ) => {
+      const bodies: unknown[] = [];
+      let signalListener: (() => void) | undefined;
+      const run = runCli(['session', 'attach', '--working-directory', 'C:/work/app'], {
+        environment,
+        platform: 'win32',
+        now: () => new Date(CODEX_NOW),
+        canonicalizePath: async (path: string) => path,
+        transcriptFileSystem,
+        fetch: async (url, init) => {
+          if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+          if (init?.body !== undefined) bodies.push(JSON.parse(String(init.body)));
+          return response(registered);
+        },
+        setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+        clearInterval: (() => undefined) as never,
+        signals: {
+          once: (_signal: string, listener: () => void) => {
+            signalListener = listener;
+            return undefined;
+          },
+          off: () => undefined,
+        },
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      });
+      await new Promise((resolve) => {
+        setTimeout(resolve, 0);
+      });
+      signalListener?.();
+      await run;
+      return bodies[0];
+    };
+
+    // A Claude session: the environment names it, so the project comes from the
+    // directory and the kind from the identity — nothing typed.
+    expect(
+      await attachWith(
+        { CLAUDE_CODE_SESSION_ID: '64c3e219-18aa-4539-9104-89d3d2ac5629' },
+        rolloutFileSystem({}),
+      ),
+    ).toMatchObject({
+      projectId: 'project-1',
+      agentId: 'claude-code',
+      native: { adapterId: 'claude-code' },
+    });
+
+    // No environment identity, but a fresh Codex rollout for this directory:
+    // the disk resolver names the kind.
+    expect(
+      await attachWith(
+        { USERPROFILE: 'C:\\Users\\umuts' },
+        rolloutFileSystem({
+          'C:/Users/umuts/.codex/sessions/2026/09/01/rollout-x.jsonl': {
+            content: codexRollout('01a0577b-9555-7741-b8f1-395df30a7003', 'C:\\work\\app'),
+            modifiedAtMs: CODEX_NOW - 1_000,
+          },
+        }),
+      ),
+    ).toMatchObject({
+      projectId: 'project-1',
+      agentId: 'codex',
+      native: { adapterId: 'codex', nativeSessionId: '01a0577b-9555-7741-b8f1-395df30a7003' },
+    });
   });
 
   it('records --model as session metadata without inventing one otherwise', async () => {

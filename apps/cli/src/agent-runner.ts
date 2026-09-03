@@ -413,8 +413,17 @@ function projectDepth(path: string, platform: NodeJS.Platform): number {
   return path.split(separator).filter(Boolean).length;
 }
 
-async function resolveProject(
-  input: ResolveAgentRunContextInput,
+/**
+ * The registered project that contains a working directory — the deepest one,
+ * and exactly one. Shared with `session attach`, so an agent never has to be
+ * told a project id the daemon can derive from where it is running.
+ */
+export async function resolveProject(
+  input: {
+    workingDirectory: string;
+    projectId?: string;
+    client: Pick<AgentRunDiscoveryClient, 'listProjects'>;
+  },
   platform: NodeJS.Platform,
 ): Promise<string> {
   if (input.projectId !== undefined) return input.projectId;
