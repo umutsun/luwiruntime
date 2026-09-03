@@ -57,6 +57,7 @@ import { createLeaseService } from './lease-service.js';
 import { createMessageService } from './message-service.js';
 import { createIntelligenceService, type IntelligenceService } from './intelligence-service.js';
 import { createGitObserver } from './git-observer.js';
+import { createHostResourcesReader } from './host-resources.js';
 import { createProjectService } from './project-service.js';
 import { createRealtimeRelay } from './realtime-relay.js';
 import { createSessionService, isVersionConflict } from './session-service.js';
@@ -917,9 +918,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     await reconcileCanonicalControlPlane();
     await ensureIntelligenceHealthy();
 
+    const hostResources = createHostResourcesReader({
+      diskPath: canonicalStore.globalRoot,
+      redis: connections.admin,
+    });
     app = buildDaemon({
       config,
       redis: new ConnectionHealthGateway(connections.command),
+      resources: () => hostResources.read(),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       runtimeInstanceId,
       runtimeState: () => readiness.state,

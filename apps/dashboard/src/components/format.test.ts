@@ -4,6 +4,7 @@ import {
   abbreviateId,
   abbreviatePath,
   abbreviateSha,
+  formatBytes,
   formatRelativeTime,
   monogramInitials,
   paletteIndex,
@@ -119,5 +120,21 @@ describe('paletteIndex', () => {
     // Ids here are sequential fixtures far more often than they are random, so
     // a hash that ignores position would paint a whole registry one colour.
     expect(paletteIndex('project-1', 5)).not.toBe(paletteIndex('project-2', 5));
+  });
+});
+
+describe('formatBytes', () => {
+  it('counts in the binary units the operating system reports', () => {
+    expect(formatBytes(0)).toBe('0 B');
+    expect(formatBytes(1023)).toBe('1023 B');
+    expect(formatBytes(1024)).toBe('1.0 KiB');
+    expect(formatBytes(64 * 1024 ** 2)).toBe('64.0 MiB');
+    expect(formatBytes(1.5 * 1024 ** 4)).toBe('1.5 TiB');
+    expect(formatBytes(3000 * 1024 ** 4)).toBe('3000.0 TiB');
+  });
+
+  it('reports a figure it cannot format rather than inventing one', () => {
+    expect(formatBytes(-1)).toBe('unavailable');
+    expect(formatBytes(Number.NaN)).toBe('unavailable');
   });
 });

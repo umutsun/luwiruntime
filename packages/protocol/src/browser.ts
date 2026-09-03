@@ -48,4 +48,5 @@ export {
   healthResponseSchema,
   lifecycleStopResponseSchema,
   runtimeInfoResponseSchema,
+  runtimeResourcesResponseSchema,
 } from './runtime-http.js';

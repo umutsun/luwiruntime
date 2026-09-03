@@ -1,4 +1,4 @@
-import type { RuntimeEvent } from '@luwi/protocol';
+import type { RuntimeEvent, RuntimeResourcesResponse } from '@luwi/protocol';
 import type { RedisGateway, RedisHealth } from '@luwi/redis';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -301,6 +301,46 @@ describe('LUWI daemon HTTP API', () => {
       },
     });
     expect(response.body).not.toContain(config.redisUrl);
+  });
+
+  it('serves the machine and footprint figures a wired reader measured', async () => {
+    const resources: RuntimeResourcesResponse = {
+      observedAt: '2026-07-28T08:00:02.500Z',
+      host: {
+        platform: 'win32',
+        cpu: { model: 'Fake CPU', cores: 4, utilizationPercent: 12.5 },
+        memory: { totalBytes: 8, freeBytes: 4 },
+      },
+      daemon: { pid: 1, rssBytes: 2, heapUsedBytes: 1 },
+    };
+    app = buildDaemon({
+      config,
+      redis: new FakeRedisGateway(),
+      logger: false,
+      runtimeInstanceId: 'runtime-1',
+      runtimeState: () => 'ready',
+      resources: async () => resources,
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/runtime/resources' });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(resources);
+    expect(response.body).not.toContain(config.redisUrl);
+  });
+
+  it('has no resources route at all when no reader is wired', async () => {
+    app = buildDaemon({
+      config,
+      redis: new FakeRedisGateway(),
+      logger: false,
+      runtimeInstanceId: 'runtime-1',
+      runtimeState: () => 'ready',
+    });
+
+    const response = await app.inject({ method: 'GET', url: '/api/v1/runtime/resources' });
+
+    expect(response.statusCode).toBe(404);
   });
 
   it('converts unexpected handler failures into a safe machine-readable error', async () => {

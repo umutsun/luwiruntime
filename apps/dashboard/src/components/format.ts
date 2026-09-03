@@ -86,3 +86,19 @@ export function formatRelativeTime(isoTimestamp: string, nowMs: number): string 
   if (hours < 24) return `${String(hours)}h ago`;
   return `${String(Math.floor(hours / 24))}d ago`;
 }
+
+/**
+ * Binary units, one decimal above bytes. Memory and disk figures are what the
+ * operating system reports, so they are shown in the units it counts in.
+ */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return 'unavailable';
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let value = bytes;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${unit === 0 ? String(value) : value.toFixed(1)} ${units[unit] ?? 'B'}`;
+}

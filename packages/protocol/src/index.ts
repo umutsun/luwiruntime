@@ -83,6 +83,7 @@ export {
   redisDisconnectedSchema,
   redisHealthSchema,
   runtimeInfoResponseSchema,
+  runtimeResourcesResponseSchema,
 } from './runtime-http.js';
 export type {
   HealthResponse,
@@ -91,6 +92,7 @@ export type {
   RedisDisconnected,
   RedisHealthResponse,
   RuntimeInfoResponse,
+  RuntimeResourcesResponse,
 } from './runtime-http.js';
 export { LUWI_PROTOCOL_VERSION, LUWI_RUNTIME_VERSION } from './version.js';
 export { canonicalJsonStringify } from './canonical-json.js';

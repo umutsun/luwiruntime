@@ -81,6 +81,7 @@ import {
   projectAgentBindingSchema,
   type RuntimeEvent,
   type RuntimeInfoResponse,
+  type RuntimeResourcesResponse,
   type RuntimeStateName,
   sessionCollectionResponseSchema,
   sessionRegistrationRequestSchema,
@@ -176,6 +177,8 @@ export type BuildDaemonOptions = {
   closeRedisOnClose?: boolean;
   onRedisUnavailable?: (error: RedisRepositoryError) => void;
   dashboardDistRoot?: string;
+  /** What the machine has and what this runtime costs on it; no route without it. */
+  resources?: () => Promise<RuntimeResourcesResponse>;
   lifecycle?: {
     token: string;
     requestStop: () => Promise<void>;
@@ -404,6 +407,11 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
 
     return response;
   });
+
+  const readResources = options.resources;
+  if (readResources !== undefined) {
+    app.get('/api/v1/runtime/resources', async () => readResources());
+  }
 
   app.post('/api/v1/runtime/stop', async (request, reply) => {
     parseRequestInput(controlPlaneEmptyRequestSchema, request.body ?? {});
