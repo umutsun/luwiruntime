@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import { realpath } from 'node:fs/promises';
 import { extname, isAbsolute, posix, win32 } from 'node:path';
 
-export type NativeAgentName = 'claude' | 'codex' | 'gemini';
+export type NativeAgentName = 'claude' | 'codex' | 'gemini' | 'antigravity';
 
 export type NativeAgentProvider = {
   name: NativeAgentName;
@@ -24,15 +24,19 @@ const AGENT_PROVIDERS: Record<NativeAgentName, NativeAgentProvider> = {
   claude: { name: 'claude', kind: 'claude-code', executable: 'claude' },
   codex: { name: 'codex', kind: 'codex', executable: 'codex' },
   gemini: { name: 'gemini', kind: 'gemini-cli', executable: 'gemini' },
+  // Google Antigravity's `agy` CLI (kind 'other'): Claude-Code-flavoured headless
+  // (`--print`, `--dangerously-skip-permissions`) and it forwards LUWI_SESSION_ID
+  // to its MCP subprocess, so it binds through antigravity-mcp-launch.mjs unchanged.
+  antigravity: { name: 'antigravity', kind: 'other', executable: 'agy' },
 };
 
 export function agentProvider(value: string): NativeAgentProvider {
-  if (value === 'claude' || value === 'codex' || value === 'gemini') {
+  if (value === 'claude' || value === 'codex' || value === 'gemini' || value === 'antigravity') {
     return AGENT_PROVIDERS[value];
   }
   throw new ApplicationError(
     'AGENT_PROVIDER_UNSUPPORTED',
-    'Agent provider must be claude, codex, or gemini.',
+    'Agent provider must be claude, codex, gemini, or antigravity.',
     400,
   );
 }

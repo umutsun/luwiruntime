@@ -69,8 +69,16 @@ describe('native agent process runner', () => {
     expect(agentProvider(name)).toMatchObject({ name, ...expected });
   });
 
-  it('rejects providers outside the three-agent MVP surface', () => {
-    expect(() => agentProvider('kimi')).toThrow(/claude, codex, or gemini/);
+  it('rejects providers outside the supported surface', () => {
+    expect(() => agentProvider('kimi')).toThrow(/claude, codex, gemini, or antigravity/);
+  });
+
+  it('resolves antigravity to the agy executable and the other agent kind', () => {
+    expect(agentProvider('antigravity')).toEqual({
+      name: 'antigravity',
+      kind: 'other',
+      executable: 'agy',
+    });
   });
 
   it('inherits stdio, preserves native arguments and environment, and returns the exit code', async () => {

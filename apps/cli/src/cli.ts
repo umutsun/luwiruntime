@@ -2376,7 +2376,9 @@ export function createCli(dependencies: CliDependencies): Command {
     );
   sessionBridge
     .command('native <provider> [nativeArgs...]')
-    .description('Serve one agent inbox unattended by running Claude, Codex, or Gemini headless')
+    .description(
+      'Serve one agent inbox unattended by running Claude, Codex, Gemini, or Antigravity headless',
+    )
     .option('--project <projectId>', 'Explicit registered project ID')
     .option('--agent-id <agentId>', 'Explicit LUWI AgentDefinition ID')
     .option('--working-directory <path>', 'Native agent working directory', dependencies.cwd())

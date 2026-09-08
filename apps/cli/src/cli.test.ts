@@ -2969,4 +2969,87 @@ describe('session bridge native', () => {
       expect.stringContaining('LUWI message'),
     ]);
   });
+
+  it('runs an antigravity child headless and binds the session through inherited env', async () => {
+    const agyAgent = { ...agent, id: 'antigravity', kind: 'other', adapterId: 'antigravity' };
+    const agyBinding = { ...binding, id: 'binding-agy', agentId: 'antigravity' };
+    const agySession = { ...session, id: 'agy-session-1', agentId: 'antigravity' };
+    const signalSource = new EventEmitter();
+    let recorded: { args: string[]; environment: Record<string, string> } | undefined;
+    let claims = 0;
+    let getMessageCalls = 0;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: {
+        run: vi.fn(async (input: unknown) => {
+          recorded = input as { args: string[]; environment: Record<string, string> };
+          signalSource.emit('SIGINT');
+          return { exitCode: 0 };
+        }),
+      } as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (s: 'SIGINT' | 'SIGTERM', l: () => void) => signalSource.once(s, l),
+        off: (s: 'SIGINT' | 'SIGTERM', l: () => void) => signalSource.off(s, l),
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      wait: async () => undefined,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: async (url, init) => {
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [agyAgent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [agyBinding] });
+        }
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(agySession, { status: 201 });
+        }
+        if (url.includes('/inbox/claim')) {
+          claims += 1;
+          return response({
+            items: claims === 1 ? [{ ...requestItem, targetSessionId: 'agy-session-1' }] : [],
+          });
+        }
+        if (url.includes('/status')) return response(agySession);
+        if (url.includes('/heartbeat')) return response({ acknowledgedAt: timestamp });
+        if (url.includes('/close'))
+          return response({ ...agySession, status: 'completed', presence: 'offline' });
+        if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        if (url.endsWith('/acknowledge')) return response(message('acknowledged'));
+        if (url.endsWith('/processing')) return response(message('processing'));
+        if (url.endsWith('/api/v1/messages/correlation-1')) {
+          getMessageCalls += 1;
+          return response(message(getMessageCalls === 1 ? 'delivered' : 'responded'));
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(
+      [
+        'session',
+        'bridge',
+        'native',
+        'antigravity',
+        '--working-directory',
+        'C:/work/app',
+        '--',
+        '--dangerously-skip-permissions',
+      ],
+      dependencies,
+    );
+
+    const args = recorded?.args ?? [];
+    expect(args[0]).toBe('--print');
+    expect(args[1]).toContain('LUWI message');
+    expect(args).toContain('--dangerously-skip-permissions');
+    // Antigravity binds through the inherited env like claude — no codex-style -c injection.
+    expect(args.some((a) => a.includes('mcp_servers.luwi-runtime'))).toBe(false);
+    expect(recorded?.environment.LUWI_SESSION_ID).toBe('agy-session-1');
+  });
 });

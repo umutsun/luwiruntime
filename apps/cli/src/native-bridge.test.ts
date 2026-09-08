@@ -124,6 +124,9 @@ describe('nativeHeadlessArguments', () => {
       'P',
     ]);
     expect(nativeHeadlessArguments('gemini', 'P', [])).toEqual(['--prompt', 'P']);
+    expect(nativeHeadlessArguments('antigravity', 'P', ['--dangerously-skip-permissions'])).toEqual(
+      ['--print', 'P', '--dangerously-skip-permissions'],
+    );
   });
 });
 

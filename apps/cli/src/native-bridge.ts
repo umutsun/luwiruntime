@@ -57,6 +57,11 @@ export function nativeHeadlessArguments(
       return ['exec', ...nativeArgs, prompt];
     case 'gemini':
       return ['--prompt', prompt, ...nativeArgs];
+    case 'antigravity':
+      // agy is Claude-Code-flavoured: `--print <prompt>`, and its only headless
+      // auto-approve is `--dangerously-skip-permissions` (no --allowed-tools), which
+      // the operator passes after `--`.
+      return ['--print', prompt, ...nativeArgs];
   }
 }
 
