@@ -60,6 +60,25 @@ export function nativeHeadlessArguments(
   }
 }
 
+/**
+ * codex exec needs two things claude does not (both measured 2026-09-08): it does not
+ * forward the bridge's `LUWI_SESSION_ID` to an MCP server subprocess, and its default
+ * `approval: never` policy denies MCP tool calls outright. So the session binding is
+ * injected straight into the `luwi-runtime` MCP server's own env with `-c`, and
+ * `--approve-for-me` auto-approves the tool call through codex's automatic review.
+ * Requires a `[mcp_servers.luwi-runtime]` entry in the user's codex config.
+ */
+export function codexMcpBindingArgs(sessionId: string, daemonUrl: string): string[] {
+  return [
+    '--approve-for-me',
+    '--skip-git-repo-check',
+    '-c',
+    `mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="${sessionId}"`,
+    '-c',
+    `mcp_servers.luwi-runtime.env.LUWI_DAEMON_URL="${daemonUrl}"`,
+  ];
+}
+
 export function framePrompt(input: {
   correlationId: string;
   kind: MessageKind;

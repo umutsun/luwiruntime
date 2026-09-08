@@ -2883,4 +2883,90 @@ describe('session bridge native', () => {
       requests.some((entry) => entry.url.endsWith('/respond') || entry.url.endsWith('/fail')),
     ).toBe(false);
   });
+
+  it('injects the LUWI MCP session binding and auto-approval into a codex child', async () => {
+    const codexAgent = { ...agent, id: 'codex', kind: 'codex', adapterId: 'codex' };
+    const codexBinding = { ...binding, id: 'binding-codex', agentId: 'codex' };
+    const codexSession = { ...session, id: 'codex-session-1', agentId: 'codex' };
+    const signalSource = new EventEmitter();
+    let recorded: { args: string[] } | undefined;
+    let claims = 0;
+    let getMessageCalls = 0;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: {
+        run: vi.fn(async (input: unknown) => {
+          recorded = input as { args: string[] };
+          signalSource.emit('SIGINT');
+          return { exitCode: 0 };
+        }),
+      } as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (s: 'SIGINT' | 'SIGTERM', l: () => void) => signalSource.once(s, l),
+        off: (s: 'SIGINT' | 'SIGTERM', l: () => void) => signalSource.off(s, l),
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      wait: async () => undefined,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: async (url, init) => {
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [codexAgent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [codexBinding] });
+        }
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(codexSession, { status: 201 });
+        }
+        if (url.includes('/inbox/claim')) {
+          claims += 1;
+          return response({
+            items: claims === 1 ? [{ ...requestItem, targetSessionId: 'codex-session-1' }] : [],
+          });
+        }
+        if (url.includes('/status')) return response(codexSession);
+        if (url.includes('/heartbeat')) return response({ acknowledgedAt: timestamp });
+        if (url.includes('/close'))
+          return response({ ...codexSession, status: 'completed', presence: 'offline' });
+        if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        if (url.endsWith('/acknowledge')) return response(message('acknowledged'));
+        if (url.endsWith('/processing')) return response(message('processing'));
+        if (url.endsWith('/api/v1/messages/correlation-1')) {
+          getMessageCalls += 1;
+          return response(message(getMessageCalls === 1 ? 'delivered' : 'responded'));
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(
+      [
+        'session',
+        'bridge',
+        'native',
+        'codex',
+        '--working-directory',
+        'C:/work/app',
+        '--',
+        '--sandbox',
+        'read-only',
+      ],
+      dependencies,
+    );
+
+    const args = recorded?.args ?? [];
+    expect(args[0]).toBe('exec');
+    expect(args).toContain('--approve-for-me');
+    expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="codex-session-1"');
+    expect(args.slice(-3)).toEqual([
+      '--sandbox',
+      'read-only',
+      expect.stringContaining('LUWI message'),
+    ]);
+  });
 });

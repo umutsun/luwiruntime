@@ -64,6 +64,7 @@ import {
   type DeepSeekBridgeDaemonClient,
 } from './deepseek-bridge.js';
 import {
+  codexMcpBindingArgs,
   createNativeBridge,
   nativeHeadlessArguments,
   type NativeBridgeExecutor,
@@ -1487,10 +1488,16 @@ async function runNativeBridge(
       delete inherited['LUWI_DAEMON_URL'];
       delete inherited['LUWI_SESSION_ID'];
       let tail = '';
+      // codex needs the LUWI session injected into its MCP server's env and its tool
+      // calls auto-approved; claude/gemini bind through the inherited LUWI_SESSION_ID.
+      const providerNativeArgs =
+        provider.name === 'codex' && bootstrap.sessionId !== undefined
+          ? [...codexMcpBindingArgs(bootstrap.sessionId, daemonUrl), ...nativeArgs]
+          : nativeArgs;
       try {
         const result = await dependencies.agentProcessRunner.run({
           executable: options.executable ?? context.executable ?? provider.executable,
-          args: nativeHeadlessArguments(provider.name, prompt, nativeArgs),
+          args: nativeHeadlessArguments(provider.name, prompt, providerNativeArgs),
           workingDirectory,
           environment: {
             ...inherited,

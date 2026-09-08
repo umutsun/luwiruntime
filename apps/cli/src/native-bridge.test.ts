@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { BridgeDaemonClient } from './bridge-daemon.js';
 import {
+  codexMcpBindingArgs,
   createNativeBridge,
   framePrompt,
   nativeHeadlessArguments,
@@ -123,6 +124,16 @@ describe('nativeHeadlessArguments', () => {
       'P',
     ]);
     expect(nativeHeadlessArguments('gemini', 'P', [])).toEqual(['--prompt', 'P']);
+  });
+});
+
+describe('codexMcpBindingArgs', () => {
+  it('injects the session into the codex MCP server env and auto-approves tool calls', () => {
+    const args = codexMcpBindingArgs('sess-9', 'http://127.0.0.1:4782');
+    expect(args).toContain('--approve-for-me');
+    expect(args).toContain('-c');
+    expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="sess-9"');
+    expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_DAEMON_URL="http://127.0.0.1:4782"');
   });
 });
 
