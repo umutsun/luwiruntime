@@ -23,6 +23,7 @@ export interface DaemonOwnershipLease {
   acquire(): Promise<void>;
   renewOnce(): Promise<boolean>;
   ownsLease(): Promise<boolean>;
+  reacquire(): Promise<boolean>;
   release(): Promise<boolean>;
 }
 
@@ -46,6 +47,9 @@ class RedisDaemonOwnershipLease implements DaemonOwnershipLease {
     Omit<DaemonOwnershipOptions, 'createNonce' | 'setInterval' | 'clearInterval'>;
   #isOwned = false;
   #lostNotified = false;
+  #lifecycleActive = false;
+  #lifecycleGeneration = 0;
+  #reacquireInFlight: Promise<boolean> | undefined;
   #timer: NodeJS.Timeout | undefined;
 
   constructor(options: DaemonOwnershipOptions) {
@@ -70,7 +74,7 @@ class RedisDaemonOwnershipLease implements DaemonOwnershipLease {
     }
   }
 
-  async acquire(): Promise<void> {
+  async #claimVacant(): Promise<boolean> {
     const reply = await this.#options.client.sendCommand([
       'SET',
       this.#options.key,
@@ -79,9 +83,27 @@ class RedisDaemonOwnershipLease implements DaemonOwnershipLease {
       'PX',
       String(this.#options.ttlMs),
     ]);
-    if (reply !== 'OK') {
+    return reply === 'OK';
+  }
+
+  async #releaseOwnedToken(): Promise<boolean> {
+    const reply = await this.#options.client.sendCommand([
+      'EVAL',
+      releaseScript,
+      '1',
+      this.#options.key,
+      this.ownerToken,
+    ]);
+    return Number(reply) === 1;
+  }
+
+  async acquire(): Promise<void> {
+    await this.#reacquireInFlight;
+    if (!(await this.#claimVacant())) {
       throw new DaemonOwnershipError();
     }
+    this.#lifecycleActive = true;
+    this.#lifecycleGeneration += 1;
     this.#isOwned = true;
     this.#lostNotified = false;
     this.#timer = this.#options.setInterval(() => {
@@ -120,6 +142,7 @@ class RedisDaemonOwnershipLease implements DaemonOwnershipLease {
       const owned = reply === this.ownerToken;
       if (owned) {
         this.#isOwned = true;
+        this.#lostNotified = false;
       } else {
         this.#markLost();
       }
@@ -130,20 +153,55 @@ class RedisDaemonOwnershipLease implements DaemonOwnershipLease {
     }
   }
 
+  reacquire(): Promise<boolean> {
+    if (!this.#lifecycleActive) {
+      return Promise.reject(
+        new Error('Daemon ownership cannot be reacquired outside an active ownership lifecycle.'),
+      );
+    }
+    if (this.#reacquireInFlight !== undefined) {
+      return this.#reacquireInFlight;
+    }
+    const attempt = this.#reacquire();
+    this.#reacquireInFlight = attempt.finally(() => {
+      this.#reacquireInFlight = undefined;
+    });
+    return this.#reacquireInFlight;
+  }
+
+  async #reacquire(): Promise<boolean> {
+    if (!this.#lifecycleActive) {
+      throw new Error(
+        'Daemon ownership cannot be reacquired outside an active ownership lifecycle.',
+      );
+    }
+    const lifecycleGeneration = this.#lifecycleGeneration;
+    const reacquired = await this.#claimVacant();
+    if (!this.#lifecycleActive || lifecycleGeneration !== this.#lifecycleGeneration) {
+      if (reacquired) {
+        await this.#releaseOwnedToken();
+      }
+      return false;
+    }
+    if (reacquired) {
+      this.#isOwned = true;
+      this.#lostNotified = false;
+    } else {
+      this.#markLost();
+    }
+    return reacquired;
+  }
+
   async release(): Promise<boolean> {
+    this.#lifecycleActive = false;
+    this.#lifecycleGeneration += 1;
+    this.#isOwned = false;
     if (this.#timer !== undefined) {
       this.#options.clearInterval(this.#timer);
       this.#timer = undefined;
     }
     try {
-      const reply = await this.#options.client.sendCommand([
-        'EVAL',
-        releaseScript,
-        '1',
-        this.#options.key,
-        this.ownerToken,
-      ]);
-      return Number(reply) === 1;
+      return await this.#releaseOwnedToken();
     } finally {
       this.#isOwned = false;
     }

@@ -88,9 +88,12 @@ If another valid owner exists, startup returns `DAEMON_ALREADY_RUNNING` before F
 consumer, or listener mutation. The owner lease is renewed periodically. Ownership loss or
 Redis loss makes the runtime degraded and rejects new mutations.
 
-Recovery uses bounded exponential backoff. After Redis returns, the daemon revalidates
-ownership, Functions, Stream/group state, and stale pending work before returning to ready.
-Read-only requests never label unavailable Redis state as current.
+Recovery uses bounded exponential backoff. After Redis returns, the daemon first verifies its
+current owner token. A lease instance that previously owned an absent key may atomically reclaim it
+with its existing token through `SET NX PX`; an existing competing token still forces the old daemon
+to drain. Reacquisition is recovery by the same runtime instance, not a second startup. Function
+verification, Stream/group recovery, pending-work recovery, and canonical-state reconciliation still
+precede a return to ready. Read-only requests never label unavailable Redis state as current.
 
 Shutdown changes to `draining`, rejects new mutations, immediately stops scheduling new
 sweeps/retention, boundedly waits for tracked background and accepted work, and lets the
@@ -403,6 +406,16 @@ The CLI's `manual`, `echo`, and `status-responder` modes simulate a Session Brid
 daemon APIs. Status responder evidence is explicitly labeled simulated and describes only
 the LUWI project/session snapshot it actually read. The simulator never closes the
 underlying coding session unless a separate session-close command is issued.
+
+The native inbox bridge (`session bridge native <claude|codex|gemini>`, ADR 0031) is the same
+pattern for the three vendors LUWI coordinates: one long-lived LUWI session owned by the shared
+session bootstrap, and one headless native run per claimed message (`claude --print`, `codex exec`,
+`gemini --prompt`) that inherits `LUWI_SESSION_ID` so the child's own MCP server completes the
+message. The bridge completes only what the child left unfinished, as a `failed` naming the cause,
+and never `answered`. It uses only the existing session, status, inbox, message-transition, and
+response routes; it shares the DeepSeek bridge's daemon-client and adds no daemon route, Redis
+representation, event type, dependency, or terminal injection. Arguments after `--` reach the native
+CLI unchanged and are its whole permission model.
 
 The experimental DeepSeek Harness bridge is a real but deliberately thin Session Bridge in
 `@luwi/cli`. One bridge process owns exactly one LUWI session, one ACP subprocess, and one

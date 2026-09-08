@@ -1,11 +1,10 @@
-import type {
-  AgentMessage,
-  AgentMessageResponse,
-  InboxClaimResponse,
-  NativeSessionRef,
-  SessionStatusTarget,
-} from '@luwi/protocol';
-import { MESSAGE_MAX_RESPONSE_BYTES } from '@luwi/protocol';
+import type { AgentMessageResponse, NativeSessionRef } from '@luwi/protocol';
+
+import {
+  boundedAnswer,
+  isTerminalMessageState as terminal,
+  type BridgeDaemonClient,
+} from './bridge-daemon.js';
 
 export type DeepSeekAcpPromptResult = {
   text: string;
@@ -48,38 +47,8 @@ export class DeepSeekBridgeStartupCleanupError extends AggregateError {
   }
 }
 
-export interface DeepSeekBridgeDaemonClient {
-  registerSession(input: {
-    projectId: string;
-    agentId: string;
-    workingDirectory: string;
-    metadata: Record<string, unknown>;
-  }): Promise<{ id: string }>;
+export interface DeepSeekBridgeDaemonClient extends BridgeDaemonClient {
   declareNative(sessionId: string, native: NativeSessionRef): Promise<void>;
-  heartbeatSession(sessionId: string): Promise<void>;
-  setSessionStatus(sessionId: string, status: SessionStatusTarget): Promise<void>;
-  closeSession(sessionId: string): Promise<void>;
-  claimInbox(
-    sessionId: string,
-    request: {
-      bridgeInstanceId: string;
-      limit: number;
-      blockMs: number;
-      minIdleMs: number;
-    },
-  ): Promise<InboxClaimResponse>;
-  getMessage(correlationId: string): Promise<AgentMessage>;
-  transitionMessage(
-    action: 'acknowledge' | 'processing',
-    sessionId: string,
-    correlationId: string,
-  ): Promise<AgentMessage>;
-  completeMessage(
-    action: 'respond' | 'reject' | 'fail',
-    sessionId: string,
-    correlationId: string,
-    response: AgentMessageResponse,
-  ): Promise<AgentMessage>;
 }
 
 export type DeepSeekBridgeOptions = {
@@ -105,25 +74,6 @@ export interface DeepSeekBridge {
 }
 
 const NATIVE_ADAPTER_ID = 'deepseek-harness-acp-v1';
-
-function terminal(state: AgentMessage['state']): boolean {
-  return (
-    state === 'responded' || state === 'rejected' || state === 'failed' || state === 'timed_out'
-  );
-}
-
-function boundedAnswer(value: string): string {
-  if (Buffer.byteLength(value, 'utf8') <= MESSAGE_MAX_RESPONSE_BYTES) return value;
-  let bytes = 0;
-  let result = '';
-  for (const character of value) {
-    const characterBytes = Buffer.byteLength(character, 'utf8');
-    if (bytes + characterBytes > MESSAGE_MAX_RESPONSE_BYTES) break;
-    result += character;
-    bytes += characterBytes;
-  }
-  return result;
-}
 
 function terminalResponse(
   result: DeepSeekAcpPromptResult,

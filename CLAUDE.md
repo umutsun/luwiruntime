@@ -317,6 +317,24 @@ than that kills the daemon mid-rebuild. The projection's per-file `exportCount` 
 (8.7 s on the 20 000-file `flybydeniz` scan) and is now a map; keep the projection's synchronous work
 per project well under the lease.
 
+**ADR 0031 (2026-09-08) makes an agent's inbox answer itself.** `luwi session bridge native
+<claude|codex|gemini>` holds one long-lived LUWI session via the same bootstrap `agent run` uses, and
+runs the native CLI once headless per claimed message (`claude --print` / `codex exec` /
+`gemini --prompt`) with `LUWI_SESSION_ID` inherited so the child's own MCP server completes the
+message. The bridge completes only what the child left unfinished — an honest `failed` naming the exit
+code, deadline, or operator stop — and never `answered`. Everything after `--` reaches the native CLI
+unchanged as its whole permission model; the bridge spawns a process and injects into no terminal, so
+§3 and §21 both hold. No daemon, protocol, Redis, `luwi_v1`, or dependency change: it lives in
+`@luwi/cli` beside the DeepSeek bridge and shares its daemon-client (`bridge-daemon.ts`). Two supporting
+facts landed with it: both attach hooks now exit when they inherit a `LUWI_SESSION_ID` (headless
+`claude -p` fires `SessionStart` too, and `agent run` strips the inherited id before spawning — together
+that produced reader-less ghost sessions), and the process runner grew a `captureOutput` seam that pipes
+stdout/stderr for the bridge's failure tail. Measured motive: the 2026-09-08 Albanoosh run delivered all
+14 messages with zero daemon errors yet timed out 4, every one on a 3–5 min deadline a human had to feed;
+and `selectMessageTarget` ranks by status before heartbeat while nothing left `starting`, so a reader-less
+manual attach was a guaranteed-timeout target. `agy` is not installed here, so claude and codex are proven
+live and the `gemini` shape is carried, not verified.
+
 Two capture traps worth knowing. `chrome --virtual-time-budget` accelerates timers while the
 network stays real, so the dashboard's reconnect timer aborts every on-demand read and the panels
 never leave "Loading" — that is the screenshot lying, not the page. Capture over the DevTools

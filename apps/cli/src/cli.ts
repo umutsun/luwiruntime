@@ -7,6 +7,7 @@ import {
   gitObservationSchema,
   heartbeatResponseSchema,
   inboxClaimResponseSchema,
+  INBOX_MAX_CLAIM_LIMIT,
   leaseAcquireResponseSchema,
   leaseCollectionSchema,
   LUWI_RUNTIME_VERSION,
@@ -15,6 +16,7 @@ import {
   messageKindSchema,
   messageResponseSchema,
   messageStateSchema,
+  MESSAGE_MAX_WAIT_MS,
   nativeDeclarationResponseSchema,
   nativeSessionRefSchema,
   projectCollectionResponseSchema,
@@ -41,6 +43,7 @@ import {
 } from '@luwi/adapters';
 import { ApplicationError, createSessionBootstrap } from '@luwi/runtime';
 import { Command } from 'commander';
+import { EventEmitter } from 'node:events';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -53,12 +56,19 @@ import {
   type NativeAgentProcessRunner,
   resolveProject,
 } from './agent-runner.js';
+import type { BridgeDaemonClient } from './bridge-daemon.js';
 import { createDeepSeekAcpFactory, type DeepSeekAcpFactoryOptions } from './deepseek-acp-client.js';
 import {
   DeepSeekBridgeStartupCancelledError,
   createDeepSeekBridge,
   type DeepSeekBridgeDaemonClient,
 } from './deepseek-bridge.js';
+import {
+  createNativeBridge,
+  nativeHeadlessArguments,
+  type NativeBridgeExecutor,
+  type NativeBridgeRunResult,
+} from './native-bridge.js';
 import { registerIntelligenceCli } from './intelligence-cli.js';
 import {
   createNodeLifecycleService,
@@ -971,57 +981,18 @@ function exactLoopbackUrl(value: string): string {
   return parsed.origin;
 }
 
-async function runDeepSeekBridge(
+/**
+ * The loopback daemon surface every CLI bridge drives (ADR 0025, ADR 0031). Message
+ * claims long-poll for up to 30 s, so these are deliberately unbounded `request`s, not
+ * the 2 s bounded ones the session bootstrap uses for register/heartbeat/close.
+ */
+function createBridgeDaemonClient(
   dependencies: CliDependencies,
-  options: {
-    url: string;
-    project: string;
-    agent: string;
-    workingDirectory: string;
-    bridgeInstance: string;
-    command: string;
-    argsJson: string;
-    permission: string;
-    limit: string;
-    blockMs: string;
-    minIdleMs: string;
-    heartbeatMs: string;
-    closeGraceMs: string;
-  },
-): Promise<void> {
-  if (!isAbsolute(options.workingDirectory)) {
-    throw new ApplicationError(
-      'CLI_OPTION_INVALID',
-      '--working-directory must be absolute for ACP.',
-      400,
-    );
-  }
-  if (options.permission !== 'reject' && options.permission !== 'allow-once') {
-    throw new ApplicationError(
-      'CLI_OPTION_INVALID',
-      '--permission must be reject or allow-once.',
-      400,
-    );
-  }
-  const daemonUrl = exactLoopbackUrl(options.url);
-  const claimLimit = parseBridgeInteger(options.limit, '--limit', 1, 100);
-  const claimBlockMs = parseBridgeInteger(options.blockMs, '--block-ms', 0, 30_000);
-  const claimMinIdleMs = parseBridgeInteger(options.minIdleMs, '--min-idle-ms', 0, 86_400_000);
-  const heartbeatMs = parseBridgeInteger(options.heartbeatMs, '--heartbeat-ms', 100);
-  const closeGraceMs = parseBridgeInteger(options.closeGraceMs, '--close-grace-ms', 100, 60_000);
-
-  const daemon: DeepSeekBridgeDaemonClient = {
+  daemonUrl: string,
+): BridgeDaemonClient {
+  return {
     registerSession: async (input) =>
       request(dependencies, daemonUrl, '/api/v1/sessions', sessionResponseSchema, jsonBody(input)),
-    declareNative: async (sessionId, native) => {
-      await request(
-        dependencies,
-        daemonUrl,
-        `/api/v1/sessions/${encodeURIComponent(sessionId)}/native`,
-        nativeDeclarationResponseSchema,
-        jsonBody({ native }),
-      );
-    },
     heartbeatSession: async (sessionId) => {
       await request(
         dependencies,
@@ -1080,6 +1051,59 @@ async function runDeepSeekBridge(
         messageResponseSchema,
         jsonBody({ responderSessionId: sessionId, response }),
       ),
+  };
+}
+
+async function runDeepSeekBridge(
+  dependencies: CliDependencies,
+  options: {
+    url: string;
+    project: string;
+    agent: string;
+    workingDirectory: string;
+    bridgeInstance: string;
+    command: string;
+    argsJson: string;
+    permission: string;
+    limit: string;
+    blockMs: string;
+    minIdleMs: string;
+    heartbeatMs: string;
+    closeGraceMs: string;
+  },
+): Promise<void> {
+  if (!isAbsolute(options.workingDirectory)) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      '--working-directory must be absolute for ACP.',
+      400,
+    );
+  }
+  if (options.permission !== 'reject' && options.permission !== 'allow-once') {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      '--permission must be reject or allow-once.',
+      400,
+    );
+  }
+  const daemonUrl = exactLoopbackUrl(options.url);
+  const claimLimit = parseBridgeInteger(options.limit, '--limit', 1, 100);
+  const claimBlockMs = parseBridgeInteger(options.blockMs, '--block-ms', 0, 30_000);
+  const claimMinIdleMs = parseBridgeInteger(options.minIdleMs, '--min-idle-ms', 0, 86_400_000);
+  const heartbeatMs = parseBridgeInteger(options.heartbeatMs, '--heartbeat-ms', 100);
+  const closeGraceMs = parseBridgeInteger(options.closeGraceMs, '--close-grace-ms', 100, 60_000);
+
+  const daemon: DeepSeekBridgeDaemonClient = {
+    ...createBridgeDaemonClient(dependencies, daemonUrl),
+    declareNative: async (sessionId, native) => {
+      await request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/native`,
+        nativeDeclarationResponseSchema,
+        jsonBody({ native }),
+      );
+    },
   };
   const acp = dependencies.createDeepSeekAcpFactory({
     command: options.command,
@@ -1279,6 +1303,258 @@ async function watchEvents(dependencies: CliDependencies, options: { url: string
   }
 }
 
+/** Project/agent/binding discovery `agent run` and the native bridge share to resolve context. */
+function createAgentRunDiscoveryClient(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+  connectTimeoutMs: number,
+) {
+  const get = <Output>(path: string, parser: Parser<Output>) =>
+    boundedRequest(dependencies, daemonUrl, path, parser, connectTimeoutMs);
+  return {
+    listProjects: async () =>
+      (await get('/api/v1/projects', projectCollectionResponseSchema)).projects.map((project) => ({
+        id: project.id,
+        localPath: project.canonicalPath,
+      })),
+    listAgents: async () =>
+      (await get('/api/v1/agents', agentDefinitionCollectionSchema)).agents.map((agent) => ({
+        id: agent.id,
+        kind: agent.kind,
+        enabled: agent.enabled,
+        ...(agent.executable === undefined ? {} : { executable: agent.executable }),
+      })),
+    listProjectAgentBindings: async (projectId: string) =>
+      (
+        await get(
+          `/api/v1/projects/${encodeURIComponent(projectId)}/agents`,
+          projectAgentBindingCollectionSchema,
+        )
+      ).bindings,
+  };
+}
+
+/** The bounded register/heartbeat/close client `createSessionBootstrap` drives (ADR 0030). */
+function createBootstrapSessionClient(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+  connectTimeoutMs: number,
+) {
+  return {
+    register: (input: unknown) =>
+      boundedRequest(
+        dependencies,
+        daemonUrl,
+        '/api/v1/sessions',
+        sessionResponseSchema,
+        connectTimeoutMs,
+        jsonBody(input),
+      ),
+    heartbeat: async (sessionId: string) => {
+      await boundedRequest(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+        heartbeatResponseSchema,
+        connectTimeoutMs,
+        jsonBody({}),
+      );
+    },
+    close: async (sessionId: string) => {
+      await boundedRequest(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
+        sessionResponseSchema,
+        connectTimeoutMs,
+        jsonBody({}),
+      );
+    },
+  };
+}
+
+/** The bounded held-lease renewal client the bootstrap runs on its second timer (ADR 0026). */
+function createBootstrapLeaseClient(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+  connectTimeoutMs: number,
+) {
+  return {
+    listSessionLeases: async (sessionId: string) =>
+      (
+        await boundedRequest(
+          dependencies,
+          daemonUrl,
+          `/api/v1/leases?sessionId=${encodeURIComponent(sessionId)}&limit=1000`,
+          leaseCollectionSchema,
+          connectTimeoutMs,
+        )
+      ).leases.map((lease) => ({
+        id: lease.id,
+        acquiredAt: lease.acquiredAt,
+        expiresAt: lease.expiresAt,
+        ...(lease.renewedAt === undefined ? {} : { renewedAt: lease.renewedAt }),
+      })),
+    renewLease: async (leaseId: string, sessionId: string, durationMs: number) => {
+      await boundedRequest(
+        dependencies,
+        daemonUrl,
+        `/api/v1/leases/${encodeURIComponent(leaseId)}/renew`,
+        workLeaseSchema,
+        connectTimeoutMs,
+        jsonBody({ sessionId, durationMs }),
+      );
+    },
+  };
+}
+
+/**
+ * ADR 0031: `luwi session bridge native <provider>` serves one agent's inbox unattended.
+ * The session bootstrap owns identity, heartbeat, rotation, lease renewal and close; the
+ * native bridge claims the inbox and runs the native CLI headless once per message, with
+ * everything after `--` passed to that CLI unchanged as its permission model.
+ */
+async function runNativeBridge(
+  dependencies: CliDependencies,
+  providerValue: string,
+  nativeArgs: string[],
+  options: {
+    project?: string;
+    agentId?: string;
+    workingDirectory: string;
+    executable?: string;
+    bridgeInstance: string;
+    limit: number;
+    blockMs: number;
+    minIdleMs: number;
+    heartbeatMs: number;
+    leaseRenewMs: number;
+    connectTimeoutMs: number;
+    url: string;
+  },
+): Promise<void> {
+  const provider = agentProvider(providerValue);
+  const daemonUrl = loopbackDaemonUrl(options.url);
+  let workingDirectory: string;
+  try {
+    workingDirectory = await dependencies.canonicalizePath(options.workingDirectory);
+  } catch {
+    throw new ApplicationError(
+      'AGENT_WORKING_DIRECTORY_INVALID',
+      'The native agent working directory could not be canonicalized.',
+      400,
+    );
+  }
+
+  const context = await resolveAgentRunContext({
+    provider,
+    workingDirectory,
+    ...(options.project === undefined ? {} : { projectId: options.project }),
+    ...(options.agentId === undefined ? {} : { agentId: options.agentId }),
+    ...(options.executable === undefined ? {} : { executable: options.executable }),
+    platform: dependencies.platform,
+    client: createAgentRunDiscoveryClient(dependencies, daemonUrl, options.connectTimeoutMs),
+  });
+
+  const bootstrap = createSessionBootstrap({
+    client: createBootstrapSessionClient(dependencies, daemonUrl, options.connectTimeoutMs),
+    projectId: context.projectId,
+    agentId: context.agentId,
+    workingDirectory,
+    metadata: { bridge: 'native-headless', provider: provider.name },
+    heartbeatIntervalMs: options.heartbeatMs,
+    leaseRenewIntervalMs: options.leaseRenewMs,
+    leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, options.connectTimeoutMs),
+    onError: (error) => printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
+    setInterval: dependencies.setInterval,
+    clearInterval: dependencies.clearInterval,
+  });
+
+  await bootstrap.start();
+
+  let activeRun: EventEmitter | undefined;
+  const executor: NativeBridgeExecutor = {
+    run: async ({ prompt, deadlineAt }): Promise<NativeBridgeRunResult> => {
+      const runSignals = new EventEmitter();
+      activeRun = runSignals;
+      let deadlineFired = false;
+      const delayMs = Math.max(0, Date.parse(deadlineAt) - Date.now());
+      const timer = dependencies.setTimeout(() => {
+        deadlineFired = true;
+        runSignals.emit('SIGTERM');
+      }, delayMs);
+      const inherited: Record<string, string | undefined> = { ...dependencies.environment };
+      delete inherited['LUWI_DAEMON_URL'];
+      delete inherited['LUWI_SESSION_ID'];
+      let tail = '';
+      try {
+        const result = await dependencies.agentProcessRunner.run({
+          executable: options.executable ?? context.executable ?? provider.executable,
+          args: nativeHeadlessArguments(provider.name, prompt, nativeArgs),
+          workingDirectory,
+          environment: {
+            ...inherited,
+            LUWI_DAEMON_URL: daemonUrl,
+            ...(bootstrap.sessionId === undefined ? {} : { LUWI_SESSION_ID: bootstrap.sessionId }),
+          },
+          signals: runSignals,
+          captureOutput: (chunk) => {
+            tail = (tail + chunk).slice(-4096);
+          },
+          onDiagnostic: (error) =>
+            printAgentDiagnostic(dependencies, 'AGENT_PROCESS_DIAGNOSTIC', error),
+        });
+        return {
+          result: deadlineFired ? 'deadline' : 'completed',
+          exitCode: result.exitCode,
+          outputTail: tail,
+        };
+      } finally {
+        dependencies.clearTimeout(timer);
+        if (activeRun === runSignals) activeRun = undefined;
+      }
+    },
+  };
+
+  const bridge = createNativeBridge({
+    daemon: createBridgeDaemonClient(dependencies, daemonUrl),
+    executor,
+    currentSessionId: () => bootstrap.sessionId,
+    agentId: context.agentId,
+    bridgeInstanceId: options.bridgeInstance,
+    claimLimit: options.limit,
+    claimBlockMs: options.blockMs,
+    claimMinIdleMs: options.minIdleMs,
+    report: (line) => printJson(dependencies, { bridge: 'native-headless', ...line }),
+  });
+
+  let stopped = false;
+  const stop = (): void => {
+    stopped = true;
+    void bridge.stop();
+    activeRun?.emit('SIGTERM');
+  };
+  dependencies.signals.once('SIGINT', stop);
+  dependencies.signals.once('SIGTERM', stop);
+  printJson(dependencies, {
+    bridge: 'native-headless',
+    provider: provider.name,
+    sessionId: bootstrap.sessionId,
+    agentId: context.agentId,
+    projectId: context.projectId,
+  });
+  try {
+    while (!stopped) {
+      const count = await bridge.pollOnce();
+      if (count === 0 && options.blockMs === 0 && !stopped) await dependencies.wait(100);
+    }
+  } finally {
+    dependencies.signals.off('SIGINT', stop);
+    dependencies.signals.off('SIGTERM', stop);
+    await bootstrap.stop();
+  }
+}
+
 function registerAgentRunCli(agents: Command, dependencies: CliDependencies): void {
   agents
     .command('run <provider> [nativeArgs...]')
@@ -1337,29 +1613,6 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
           );
         }
 
-        const get = <Output>(path: string, parser: Parser<Output>) =>
-          boundedRequest(dependencies, daemonUrl, path, parser, connectTimeoutMs);
-        const discoveryClient = {
-          listProjects: async () =>
-            (await get('/api/v1/projects', projectCollectionResponseSchema)).projects.map(
-              (project) => ({ id: project.id, localPath: project.canonicalPath }),
-            ),
-          listAgents: async () =>
-            (await get('/api/v1/agents', agentDefinitionCollectionSchema)).agents.map((agent) => ({
-              id: agent.id,
-              kind: agent.kind,
-              enabled: agent.enabled,
-              ...(agent.executable === undefined ? {} : { executable: agent.executable }),
-            })),
-          listProjectAgentBindings: async (projectId: string) =>
-            (
-              await get(
-                `/api/v1/projects/${encodeURIComponent(projectId)}/agents`,
-                projectAgentBindingCollectionSchema,
-              )
-            ).bindings,
-        };
-
         let context: { projectId: string; agentId: string; executable: string } | undefined;
         try {
           context = await resolveAgentRunContext({
@@ -1369,7 +1622,7 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
             ...(options.agentId === undefined ? {} : { agentId: options.agentId }),
             ...(options.executable === undefined ? {} : { executable: options.executable }),
             platform: dependencies.platform,
-            client: discoveryClient,
+            client: createAgentRunDiscoveryClient(dependencies, daemonUrl, connectTimeoutMs),
           });
         } catch (error) {
           printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error);
@@ -1380,69 +1633,13 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
           context === undefined
             ? undefined
             : createSessionBootstrap({
-                client: {
-                  register: (input) =>
-                    boundedRequest(
-                      dependencies,
-                      daemonUrl,
-                      '/api/v1/sessions',
-                      sessionResponseSchema,
-                      connectTimeoutMs,
-                      jsonBody(input),
-                    ),
-                  heartbeat: async (sessionId) => {
-                    await boundedRequest(
-                      dependencies,
-                      daemonUrl,
-                      `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
-                      heartbeatResponseSchema,
-                      connectTimeoutMs,
-                      jsonBody({}),
-                    );
-                  },
-                  close: async (sessionId) => {
-                    await boundedRequest(
-                      dependencies,
-                      daemonUrl,
-                      `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
-                      sessionResponseSchema,
-                      connectTimeoutMs,
-                      jsonBody({}),
-                    );
-                  },
-                },
+                client: createBootstrapSessionClient(dependencies, daemonUrl, connectTimeoutMs),
                 projectId: context.projectId,
                 agentId: context.agentId,
                 workingDirectory,
                 heartbeatIntervalMs: heartbeatMs,
                 leaseRenewIntervalMs: leaseRenewMs,
-                leaseClient: {
-                  listSessionLeases: async (sessionId) =>
-                    (
-                      await boundedRequest(
-                        dependencies,
-                        daemonUrl,
-                        `/api/v1/leases?sessionId=${encodeURIComponent(sessionId)}&limit=1000`,
-                        leaseCollectionSchema,
-                        connectTimeoutMs,
-                      )
-                    ).leases.map((lease) => ({
-                      id: lease.id,
-                      acquiredAt: lease.acquiredAt,
-                      expiresAt: lease.expiresAt,
-                      ...(lease.renewedAt === undefined ? {} : { renewedAt: lease.renewedAt }),
-                    })),
-                  renewLease: async (leaseId, sessionId, durationMs) => {
-                    await boundedRequest(
-                      dependencies,
-                      daemonUrl,
-                      `/api/v1/leases/${encodeURIComponent(leaseId)}/renew`,
-                      workLeaseSchema,
-                      connectTimeoutMs,
-                      jsonBody({ sessionId, durationMs }),
-                    );
-                  },
-                },
+                leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, connectTimeoutMs),
                 onError: (error) =>
                   printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
                 onSessionChanged: (change) => {
@@ -1852,10 +2049,17 @@ export function createCli(dependencies: CliDependencies): Command {
       'Vendor whose identity to resolve (default: whichever identity resolves here, else claude-code)',
     )
     .option('--model <model>', 'Model the agent runs, recorded as session metadata')
+    .option(
+      '--native-adapter <adapterId>',
+      'Adapter namespace of a native session reference the launcher already knows',
+    )
+    .option('--native-session <nativeSessionId>', 'Vendor-native session identifier')
+    .option('--native-subagent <nativeSubagentId>', 'Vendor-native subagent identifier')
     .option('--heartbeat-ms <milliseconds>', 'Heartbeat interval', '5000')
     .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
+    .option('--connect-timeout-ms <milliseconds>', 'Per-request LUWI connection timeout', '2000')
     .option('--dry-run', 'Print what would be declared and exit without registering')
-    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
     .action(
       async (options: {
         project?: string;
@@ -1863,11 +2067,28 @@ export function createCli(dependencies: CliDependencies): Command {
         workingDirectory: string;
         agentKind?: string;
         model?: string;
+        nativeAdapter?: string;
+        nativeSession?: string;
+        nativeSubagent?: string;
         heartbeatMs: string;
         leaseRenewMs: string;
+        connectTimeoutMs: string;
         dryRun?: boolean;
         url: string;
       }) => {
+        const daemonUrl = loopbackDaemonUrl(options.url);
+        const connectTimeoutMs = positiveIntegerOption(
+          options.connectTimeoutMs,
+          '--connect-timeout-ms',
+          100,
+          30_000,
+        );
+        const callDaemon = <Output>(
+          path: string,
+          parser: Parser<Output>,
+          init?: FetchInitLike,
+        ): Promise<Output> =>
+          boundedRequest(dependencies, daemonUrl, path, parser, connectTimeoutMs, init);
         // Canonicalize the working directory so the Codex cwd-match compares like
         // for like against the absolute path the rollout records (a junction,
         // subst drive, or relative value would otherwise never match). Best-effort:
@@ -1894,15 +2115,25 @@ export function createCli(dependencies: CliDependencies): Command {
             fileSystem: dependencies.transcriptFileSystem,
             now: dependencies.now,
           }));
-        let kind: AgentKind = 'claude-code';
-        let native: NativeSessionRef | undefined;
-        for (const candidate of options.agentKind === undefined
-          ? DETECTABLE_AGENT_KINDS
-          : [agentKindSchema.parse(options.agentKind)]) {
-          native = await resolve(candidate);
-          if (native !== undefined || options.agentKind !== undefined) {
-            kind = candidate;
-            break;
+        // A launcher that already holds the vendor's own id — an Antigravity hook
+        // is handed its conversationId — declares it outright, and nothing is
+        // resolved on its behalf. The kind then defaults to `other`: an explicit
+        // reference says which adapter namespace it lives in, not which of the
+        // kinds LUWI can recognise unprompted this is.
+        const declared = parseNativeRef(options);
+        let kind: AgentKind = declared === undefined ? 'claude-code' : 'other';
+        let native: NativeSessionRef | undefined = declared;
+        if (declared !== undefined) {
+          if (options.agentKind !== undefined) kind = agentKindSchema.parse(options.agentKind);
+        } else {
+          for (const candidate of options.agentKind === undefined
+            ? DETECTABLE_AGENT_KINDS
+            : [agentKindSchema.parse(options.agentKind)]) {
+            native = await resolve(candidate);
+            if (native !== undefined || options.agentKind !== undefined) {
+              kind = candidate;
+              break;
+            }
           }
         }
         // The project is derived from where the agent runs unless named; the
@@ -1914,12 +2145,7 @@ export function createCli(dependencies: CliDependencies): Command {
             client: {
               listProjects: async () =>
                 (
-                  await request(
-                    dependencies,
-                    options.url,
-                    '/api/v1/projects',
-                    projectCollectionResponseSchema,
-                  )
+                  await callDaemon('/api/v1/projects', projectCollectionResponseSchema)
                 ).projects.map((project) => ({ id: project.id, localPath: project.canonicalPath })),
             },
           },
@@ -1941,26 +2167,16 @@ export function createCli(dependencies: CliDependencies): Command {
         const bootstrap = createSessionBootstrap({
           client: {
             register: async (input) =>
-              request(
-                dependencies,
-                options.url,
-                '/api/v1/sessions',
-                sessionResponseSchema,
-                jsonBody(input),
-              ),
+              callDaemon('/api/v1/sessions', sessionResponseSchema, jsonBody(input)),
             heartbeat: async (sessionId) => {
-              await request(
-                dependencies,
-                options.url,
+              await callDaemon(
                 `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
                 heartbeatResponseSchema,
                 jsonBody({}),
               );
             },
             close: async (sessionId) => {
-              await request(
-                dependencies,
-                options.url,
+              await callDaemon(
                 `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
                 sessionResponseSchema,
                 jsonBody({}),
@@ -1973,9 +2189,7 @@ export function createCli(dependencies: CliDependencies): Command {
           leaseClient: {
             listSessionLeases: async (sessionId) =>
               (
-                await request(
-                  dependencies,
-                  options.url,
+                await callDaemon(
                   `/api/v1/leases?sessionId=${encodeURIComponent(sessionId)}&limit=1000`,
                   leaseCollectionSchema,
                 )
@@ -1986,9 +2200,7 @@ export function createCli(dependencies: CliDependencies): Command {
                 ...(lease.renewedAt === undefined ? {} : { renewedAt: lease.renewedAt }),
               })),
             renewLease: async (leaseId, sessionId, durationMs) => {
-              await request(
-                dependencies,
-                options.url,
+              await callDaemon(
                 `/api/v1/leases/${encodeURIComponent(leaseId)}/renew`,
                 workLeaseSchema,
                 jsonBody({ sessionId, durationMs }),
@@ -2003,21 +2215,32 @@ export function createCli(dependencies: CliDependencies): Command {
           clearInterval: dependencies.clearInterval,
         });
 
-        await bootstrap.start();
-        if (bootstrap.sessionId !== undefined) {
-          printJson(dependencies, { attached: bootstrap.sessionId, ...request_ });
-        }
-
-        await new Promise<void>((resolve) => {
-          const stop = (): void => {
-            dependencies.signals.off('SIGINT', stop);
-            dependencies.signals.off('SIGTERM', stop);
-            resolve();
-          };
-          dependencies.signals.once('SIGINT', stop);
-          dependencies.signals.once('SIGTERM', stop);
+        let stopRequested = false;
+        let resolveStop: (() => void) | undefined;
+        const stopped = new Promise<void>((resolve) => {
+          resolveStop = resolve;
         });
-        await bootstrap.stop();
+        const stop = (): void => {
+          if (stopRequested) return;
+          stopRequested = true;
+          dependencies.signals.off('SIGINT', stop);
+          dependencies.signals.off('SIGTERM', stop);
+          resolveStop?.();
+        };
+        dependencies.signals.once('SIGINT', stop);
+        dependencies.signals.once('SIGTERM', stop);
+
+        try {
+          await bootstrap.start();
+          if (bootstrap.sessionId !== undefined) {
+            printJson(dependencies, { attached: bootstrap.sessionId, ...request_ });
+          }
+          await stopped;
+        } finally {
+          dependencies.signals.off('SIGINT', stop);
+          dependencies.signals.off('SIGTERM', stop);
+          await bootstrap.stop();
+        }
       },
     );
   sessions
@@ -2143,6 +2366,65 @@ export function createCli(dependencies: CliDependencies): Command {
         closeGraceMs: string;
         url: string;
       }) => runDeepSeekBridge(dependencies, options),
+    );
+  sessionBridge
+    .command('native <provider> [nativeArgs...]')
+    .description('Serve one agent inbox unattended by running Claude, Codex, or Gemini headless')
+    .option('--project <projectId>', 'Explicit registered project ID')
+    .option('--agent-id <agentId>', 'Explicit LUWI AgentDefinition ID')
+    .option('--working-directory <path>', 'Native agent working directory', dependencies.cwd())
+    .option('--executable <path>', 'Explicit native agent executable')
+    .option('--bridge-instance <id>', 'Stable inbox consumer identity', 'native-bridge')
+    .option('--limit <count>', 'Maximum inbox items per claim', '1')
+    .option('--block-ms <milliseconds>', 'Bounded claim block interval', '30000')
+    .option('--min-idle-ms <milliseconds>', 'Pending recovery minimum idle time', '15000')
+    .option('--heartbeat-ms <milliseconds>', 'Session heartbeat interval', '5000')
+    .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
+    .option('--connect-timeout-ms <milliseconds>', 'Per-request LUWI connection timeout', '2000')
+    .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
+    .action(
+      async (
+        providerValue: string,
+        nativeArgs: string[] | undefined,
+        options: {
+          project?: string;
+          agentId?: string;
+          workingDirectory: string;
+          executable?: string;
+          bridgeInstance: string;
+          limit: string;
+          blockMs: string;
+          minIdleMs: string;
+          heartbeatMs: string;
+          leaseRenewMs: string;
+          connectTimeoutMs: string;
+          url: string;
+        },
+      ) =>
+        runNativeBridge(dependencies, providerValue, nativeArgs ?? [], {
+          ...(options.project === undefined ? {} : { project: options.project }),
+          ...(options.agentId === undefined ? {} : { agentId: options.agentId }),
+          workingDirectory: options.workingDirectory,
+          ...(options.executable === undefined ? {} : { executable: options.executable }),
+          bridgeInstance: options.bridgeInstance,
+          limit: positiveIntegerOption(options.limit, '--limit', 1, INBOX_MAX_CLAIM_LIMIT),
+          blockMs: positiveIntegerOption(options.blockMs, '--block-ms', 0, MESSAGE_MAX_WAIT_MS),
+          minIdleMs: positiveIntegerOption(options.minIdleMs, '--min-idle-ms', 0, 86_400_000),
+          heartbeatMs: positiveIntegerOption(options.heartbeatMs, '--heartbeat-ms', 100, 10_000),
+          leaseRenewMs: positiveIntegerOption(
+            options.leaseRenewMs,
+            '--lease-renew-ms',
+            1_000,
+            3_600_000,
+          ),
+          connectTimeoutMs: positiveIntegerOption(
+            options.connectTimeoutMs,
+            '--connect-timeout-ms',
+            100,
+            30_000,
+          ),
+          url: options.url,
+        }),
     );
 
   const messages = program.command('message').description('Exchange durable session messages');

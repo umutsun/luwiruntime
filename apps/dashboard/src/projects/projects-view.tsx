@@ -42,6 +42,7 @@ import type { PulseProject, PulseSnapshot } from '../pulse/model.js';
  * stronger fact that records exist which were never read.
  */
 const NAME_LIST_LIMIT = 25;
+const RECENT_COMMIT_LIMIT = 10;
 
 /**
  * Names one observed collection and carries its size.
@@ -61,10 +62,18 @@ function GroupLabel({ label, count }: { label: string; count: number }) {
   );
 }
 
+/*
+ * A native disclosure, closed by default: 325 branches as pills made the
+ * Repository card taller than the drawer, and the count in the summary is the
+ * fact most readers came for. The label and count stay visible while closed.
+ */
 function NameList({ names, label, noun }: { names: string[]; label: string; noun: string }) {
   return (
-    <>
-      <GroupLabel label={label} count={names.length} />
+    <details className="name-group">
+      <summary className="group-label">
+        <span>{label}</span>
+        <span className="group-label__count">{names.length}</span>
+      </summary>
       {names.length === 0 ? (
         // An observed empty collection is an answer, so it is stated rather
         // than omitted — an absent section would read as "not measured".
@@ -82,7 +91,7 @@ function NameList({ names, label, noun }: { names: string[]; label: string; noun
           all; only this list is shortened.
         </p>
       ) : null}
-    </>
+    </details>
   );
 }
 
@@ -202,40 +211,60 @@ function RepositoryBody({ git, project }: { git: ProjectGit; project: PulseProje
       </p>
       <NameList names={git.branches} label="Branches" noun="branches" />
       <NameList names={git.tags} label="Tags" noun="tags" />
-      <GroupLabel label="Worktrees" count={git.worktrees.length} />
-      {git.worktrees.length === 0 ? (
-        <p className="empty-state">No worktrees recorded</p>
-      ) : (
-        <WorktreeTable worktrees={git.worktrees} />
-      )}
-      <GroupLabel label="Recent commits" count={git.recentCommits.length} />
-      {git.recentCommits.length === 0 ? (
-        <p className="empty-state">No retained commits</p>
-      ) : (
-        <div className="table-wrap">
-          <table>
-            <caption className="visually-hidden">Recent commits</caption>
-            <thead>
-              <tr>
-                <th scope="col">Commit</th>
-                <th scope="col">Subject</th>
-                <th scope="col">Files</th>
-              </tr>
-            </thead>
-            <tbody>
-              {git.recentCommits.slice(0, 10).map((commit) => (
-                <tr key={commit.sha}>
-                  <td>
-                    <code title={commit.sha}>{abbreviateSha(commit.sha)}</code>
-                  </td>
-                  <td>{commit.subject ?? <span className="unavailable">No subject</span>}</td>
-                  <td>{commit.changedPathCount}</td>
+      {/* Folded like the name lists: a project with seventy worktrees made
+          this table the tallest thing in the drawer. */}
+      <details className="name-group">
+        <summary className="group-label">
+          <span>Worktrees</span>
+          <span className="group-label__count">{git.worktrees.length}</span>
+        </summary>
+        {git.worktrees.length === 0 ? (
+          <p className="empty-state">No worktrees recorded</p>
+        ) : (
+          <WorktreeTable worktrees={git.worktrees} />
+        )}
+      </details>
+      {/* The summary counts what the observation carries; the table shows the
+          first ten and says so, rather than a count of fifty over ten rows. */}
+      <details className="name-group">
+        <summary className="group-label">
+          <span>Recent commits</span>
+          <span className="group-label__count">{git.recentCommits.length}</span>
+        </summary>
+        {git.recentCommits.length === 0 ? (
+          <p className="empty-state">No retained commits</p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <caption className="visually-hidden">Recent commits</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Commit</th>
+                  <th scope="col">Subject</th>
+                  <th scope="col">Files</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {git.recentCommits.slice(0, RECENT_COMMIT_LIMIT).map((commit) => (
+                  <tr key={commit.sha}>
+                    <td>
+                      <code title={commit.sha}>{abbreviateSha(commit.sha)}</code>
+                    </td>
+                    <td>{commit.subject ?? <span className="unavailable">No subject</span>}</td>
+                    <td>{commit.changedPathCount}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {git.recentCommits.length > RECENT_COMMIT_LIMIT ? (
+          <p className="bounded-note">
+            Showing the first {RECENT_COMMIT_LIMIT} of {git.recentCommits.length} commits. The
+            observation carries them all; only this list is shortened.
+          </p>
+        ) : null}
+      </details>
     </div>
   );
 }
@@ -272,6 +301,7 @@ function AgentPairPanels({
       <ResourcePanel<EffectiveConfig>
         title="Effective configuration"
         meta={agentId}
+        collapsible
         resource={resources.effectiveConfig}
         loading={loading}
         emptyMessage="No effective configuration resolved"
@@ -433,6 +463,8 @@ function AgentPairPanels({
 
       <ResourcePanel<PairContextSummary>
         title="Context for this pair"
+        collapsible
+        defaultCollapsed
         resource={resources.contextSummary}
         loading={loading}
         emptyMessage="No context observed for this pair"
@@ -469,6 +501,8 @@ function AgentPairPanels({
 
       <ResourcePanel<ContextFootprint>
         title="Context footprint"
+        collapsible
+        defaultCollapsed
         resource={resources.contextFootprint}
         loading={loading}
         emptyMessage="No context footprint measured"
@@ -732,8 +766,14 @@ export function ProjectDetail({
     <p className="empty-state">Loading project evidence…</p>
   ) : (
     <div className="project-detail">
+      {/*
+       * Every card folds. The drawer stacks seven evidence cards and, opened on
+       * a real project, ran to several screens; only the repository starts
+       * open, the rest start folded and say what they hold in their headers.
+       */}
       <ResourcePanel<ProjectGit>
         title="Repository"
+        collapsible
         resource={resources.git}
         notObservedMessage="Not observed — no Git scan has been recorded for this project."
         emptyMessage="No repository detail"
@@ -744,6 +784,8 @@ export function ProjectDetail({
 
       <ResourcePanel<Bounded<ProjectAttribution>>
         title="Commit attribution"
+        collapsible
+        defaultCollapsed
         resource={resources.attributions}
         emptyMessage="No commit attribution recorded"
         isEmpty={(value) => value.items.length === 0}
@@ -811,6 +853,7 @@ export function ProjectDetail({
 
       <ResourcePanel<ProjectBinding[]>
         title="Bound agents"
+        collapsible
         resource={resources.bindings}
         emptyMessage="No agents bound to this project"
         isEmpty={(bindings) => bindings.length === 0}
@@ -859,6 +902,8 @@ export function ProjectDetail({
 
       <ResourcePanel<Bounded<ProjectPackage>>
         title="Packages"
+        collapsible
+        defaultCollapsed
         resource={resources.packages}
         emptyMessage="No package inventory recorded"
         isEmpty={(value) => value.items.length === 0}
@@ -901,6 +946,8 @@ export function ProjectDetail({
 
       <ResourcePanel<Bounded<ProjectTechnology>>
         title="Technologies"
+        collapsible
+        defaultCollapsed
         resource={resources.technologies}
         emptyMessage="No technologies detected"
         isEmpty={(value) => value.items.length === 0}
@@ -944,7 +991,12 @@ export function ProjectDetail({
         />
       )}
 
-      <Panel title="Sessions">
+      <Panel
+        title="Sessions"
+        meta={`${String(projectSessions.length)} recorded`}
+        collapsible
+        defaultCollapsed
+      >
         {projectSessions.length === 0 ? (
           <p className="empty-state">No sessions recorded for this project</p>
         ) : (

@@ -305,6 +305,34 @@ describe('control-plane service', () => {
     expect(installations.map(({ kind }) => kind)).toEqual(['claude-code', 'gemini-cli', 'kimi']);
   });
 
+  it('keeps one detection for its age limit so the agents list never spawns executables per read', async () => {
+    let runs = 0;
+    let clock = Date.parse('2026-09-03T10:00:00.000Z');
+    const { service } = await serviceFixture({
+      now: () => new Date(clock),
+      executableResolver: { resolve: async (name) => `C:/fake/${name}.exe` },
+      commandRunner: {
+        run: async () => {
+          runs += 1;
+          return { exitCode: 0, stdout: '1.2.3\n', stderr: '' };
+        },
+      },
+    });
+
+    const first = await service.detectAgentsCached(60_000);
+    expect(first.some(({ detectedVersion }) => detectedVersion === '1.2.3')).toBe(true);
+    const runsAfterFirst = runs;
+    expect(runsAfterFirst).toBeGreaterThan(0);
+
+    // Within the age limit the same result comes back and nothing is run.
+    expect(await service.detectAgentsCached(60_000)).toBe(first);
+    expect(runs).toBe(runsAfterFirst);
+
+    clock += 61_000;
+    await service.detectAgentsCached(60_000);
+    expect(runs).toBeGreaterThan(runsAfterFirst);
+  });
+
   it('registers an agent in canonical filesystem state before projecting it to Redis', async () => {
     const { service, agents, globalRoot } = await serviceFixture();
 

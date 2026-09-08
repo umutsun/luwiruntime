@@ -83,6 +83,8 @@ export type ControlPlaneServiceOptions = {
 
 export interface ControlPlaneService {
   detectAgents(projectId?: string): Promise<DetectedAgentInstallation[]>;
+  /** The last detection when it is younger than `maxAgeMs`, else a fresh one. */
+  detectAgentsCached(maxAgeMs?: number): Promise<DetectedAgentInstallation[]>;
   createAgent(request: AgentDefinitionCreateRequest): Promise<AgentDefinition>;
   updateAgent(agentId: string, request: AgentDefinitionPatchRequest): Promise<AgentDefinition>;
   getAgent(agentId: string): Promise<AgentDefinition>;
@@ -552,16 +554,36 @@ export function createControlPlaneService(
       }),
     ).slice(0, 20)}`;
 
+  const runDetection = async (projectId?: string): Promise<DetectedAgentInstallation[]> => {
+    const context = await adapterContext(undefined, projectId);
+    return (await Promise.all(adapters.map((adapter) => adapter.detectInstallations(context))))
+      .flat()
+      .sort(
+        (left, right) =>
+          left.kind.localeCompare(right.kind) ||
+          (left.executable ?? '').localeCompare(right.executable ?? ''),
+      );
+  };
+  /*
+   * Detection runs each vendor's executable for its version, so the agents
+   * list — read on every Pulse refresh — must not pay for it each time. One
+   * detection at a time, kept for its age limit; a failed one is not kept.
+   */
+  let detectionCache: { at: number; promise: Promise<DetectedAgentInstallation[]> } | undefined;
+
   return {
-    async detectAgents(projectId) {
-      const context = await adapterContext(undefined, projectId);
-      return (await Promise.all(adapters.map((adapter) => adapter.detectInstallations(context))))
-        .flat()
-        .sort(
-          (left, right) =>
-            left.kind.localeCompare(right.kind) ||
-            (left.executable ?? '').localeCompare(right.executable ?? ''),
-        );
+    detectAgents: (projectId) => runDetection(projectId),
+    detectAgentsCached(maxAgeMs = 300_000) {
+      const at = now().getTime();
+      if (detectionCache !== undefined && at - detectionCache.at < maxAgeMs) {
+        return detectionCache.promise;
+      }
+      const promise = runDetection().catch((error: unknown) => {
+        if (detectionCache?.promise === promise) detectionCache = undefined;
+        throw error;
+      });
+      detectionCache = { at, promise };
+      return promise;
     },
 
     createAgent: (request) =>

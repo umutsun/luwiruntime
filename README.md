@@ -299,6 +299,41 @@ and busy share, memory, the free space on the volume holding LUWI's state, NVIDI
 standard library, the daemon's own process and two Redis replies; the one command is a fixed
 `nvidia-smi` query, and a source that is absent leaves its field absent rather than reporting a zero.
 
+Sessions then started **binding themselves from the launcher's side**. `luwi session attach` takes no
+arguments inside a registered project: the project is the one containing the working directory, the
+vendor is the first identity that resolves, and `--native-adapter` / `--native-session` let a
+launcher that already holds the vendor's own id declare it outright, skipping every resolver. Two
+hook scripts under `scripts/` use that: `claude-attach-hook.mjs` attaches a Claude Code session on
+`SessionStart` and stops it on `SessionEnd`, forwarding the hook's session id; and
+`antigravity-attach-hook.mjs` attaches an Antigravity conversation on `PreInvocation` — Antigravity
+signals no session start or end, so the hook is idempotent per conversation and its supervisor lets
+the session lapse after thirty minutes without a transcript change. Neither script is installed by
+LUWI; the developer registers them in `~/.claude/settings.json` and `~/.gemini/config/hooks.json`.
+Both now exit at once when they inherit a `LUWI_SESSION_ID`, so a process launched under a LUWI
+session never registers a second, reader-less one.
+
+ADR 0031 then made an agent's inbox **answer itself**. `luwi session bridge native <claude|codex|gemini>`
+holds one long-lived LUWI session (through the same bootstrap `agent run` uses) and, for each message
+it claims, runs the native CLI once headless — `claude --print`, `codex exec`, `gemini --prompt` —
+inheriting `LUWI_SESSION_ID` so the child's own `luwi-runtime` MCP server completes the message. The
+bridge writes only what the child left unfinished, as an honest `failed` naming the exit code,
+deadline, or operator stop; it never writes `answered`. Everything after `--` reaches the native CLI
+unchanged as its whole permission model, and the bridge starts a new process rather than typing into
+any terminal. A message to a bridged agent is now picked up within one claim block instead of waiting
+for a human to say "check your inbox", and because the bridge keeps its session `idle`, target
+selection has one clear candidate instead of the newest arbitrary heartbeat. It adds no daemon,
+protocol, Redis, or dependency change. `agy` is not installed on this machine, so only claude and
+codex are proven live; the `gemini` shape is carried, not verified.
+
+**Sleep/wake-safe lifecycle:** if sleep expires a daemon owner key, the existing daemon can
+atomically reacquire that key only when it is vacant; it never replaces another owner's token. If
+session presence expired, `SESSION_NOT_FOUND` or `SESSION_TERMINAL` rotates observation to a new
+LUWI session without transferring work leases. `luwi session attach` bounds discovery, registration,
+heartbeats, cleanup, lease listing, and lease renewal with `--connect-timeout-ms` (2,000 ms by
+default), and disarms its timers before its bounded best-effort cleanup. `agent run` and Claude have
+exact native-end signals; Antigravity has none, so its existing helper remains bounded by 30 minutes
+without activity.
+
 ## Architecture and security
 
 Redis is the only runtime datastore. It is the operational database, durable event bus,
@@ -314,7 +349,8 @@ local API. The daemon:
 - requires `content-type: application/json` on a `POST` that carries no `Origin`, and serves no CORS
   header and no `OPTIONS` handler, so a cross-site mutation cannot pass the preflight it needs;
 - does not log Redis URLs, secrets, complete prompts, or unbounded payloads;
-- acquires a TTL-backed single-daemon owner lease before bootstrap mutation.
+- atomically acquires, and may atomically reacquire only a vacant, TTL-backed single-daemon owner
+  lease before bootstrap mutation; neither operation replaces another owner's token.
 
 After `pnpm build`, the daemon serves Pulse at `http://127.0.0.1:4782/`. For frontend
 development, start the daemon with

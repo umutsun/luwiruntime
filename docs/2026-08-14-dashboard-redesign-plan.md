@@ -329,3 +329,15 @@ and every list inside collapsed to zero height. The stack is the container now.
 Two traps for the next live check: the daemon caches `index.html`, so a new build needs a daemon
 restart (and the ~15 s owner-lease wait), and the browser caches it too, so reload with a query
 string. A screenshot of the old bundle looks like a layout bug.
+
+Later the same day, from the owner's read of the running product on a real project: the **project
+evidence drawer** ran to several screens (325 branches as pills, a 70-row worktree table), so every
+evidence card is now collapsible — only Repository and Bound agents start open, the rest fold and
+state what they hold in their headers — and the branch, tag and worktree lists inside Repository sit
+in native `<details>` disclosures, closed, with the count in the summary. The **Agents route** stopped
+lying with "Undetected": the daemon's agent list now joins the version of the detected installation
+for each definition's adapter from a cached detection (five minutes; detection spawns the vendors'
+executables, so it never runs per read, and a failed detection costs the versions, not the list).
+The table gained a "Models seen" column — the distinct `metadata.model` values the agent's sessions
+reported, a dash when none did — and a second panel lists agent ids that sessions carry but no
+definition covers, since a launcher hook names the vendor rather than a registered definition.

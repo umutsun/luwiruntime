@@ -69,6 +69,33 @@ const ephemeralConfig: DaemonConfig = {
 };
 
 describe('daemon runtime', () => {
+  it('routes sleep-safe recovery through the pending coordinator and final ownership fence', () => {
+    const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
+    const ownershipRecovery = source.indexOf('await runDaemonRecoveryCycle({');
+    const functionRecovery = source.indexOf('await verifyOrLoadFunctionLibrary', ownershipRecovery);
+    const streamRecovery = source.indexOf('await ensureRealtimeStreamGroup', ownershipRecovery);
+    const ready = source.indexOf("readiness.transitionTo('ready')", ownershipRecovery);
+    const coordinator = source.indexOf(
+      'const recoveryCoordinator = createDaemonRecoveryCoordinator({',
+      ownershipRecovery,
+    );
+    const requestAssignment = source.indexOf(
+      'requestRecovery = recoveryCoordinator.request;',
+      coordinator,
+    );
+
+    expect(ownershipRecovery).toBeGreaterThan(-1);
+    expect(functionRecovery).toBeGreaterThan(ownershipRecovery);
+    expect(streamRecovery).toBeGreaterThan(functionRecovery);
+    expect(ready).toBeGreaterThan(streamRecovery);
+    expect(coordinator).toBeGreaterThan(ready);
+    expect(requestAssignment).toBeGreaterThan(coordinator);
+    const coordinatorBlock = source.slice(coordinator, requestAssignment);
+    expect(coordinatorBlock).toContain('onError: (error) => {');
+    expect(coordinatorBlock).toContain('{ err: error, runtimeInstanceId }');
+    expect(coordinatorBlock).toContain('void shutdownRuntime();');
+  });
+
   it('restores canonical project projections before dependent control-plane state', () => {
     const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
     const restore = source.indexOf(

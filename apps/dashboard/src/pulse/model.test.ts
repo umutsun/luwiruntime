@@ -5,6 +5,7 @@ import {
   labelSessionStatus,
   scopePulseSnapshot,
   type PulseInput,
+  type PulseSession,
 } from './model.js';
 
 const baseInput = (): PulseInput => ({
@@ -531,6 +532,58 @@ describe('Pulse snapshot mapping', () => {
 
     expect(ready.agents[0]?.sessionCount).toEqual({ state: 'ready', value: 1 });
     expect(unavailable.agents[0]?.sessionCount).toEqual({ state: 'unavailable' });
+  });
+
+  it('collects the models sessions reported per agent and lists ids no definition covers', () => {
+    const sessionAt = (id: string, agentId: string, model?: string): PulseSession => {
+      const base: PulseSession = {
+        id,
+        agentId,
+        projectId: 'p1',
+        status: 'thinking',
+        presence: 'online',
+        startedAt: '2026-08-05T08:00:00.000Z',
+        lastHeartbeatAt: '2026-08-05T08:00:00.000Z',
+      };
+      return model === undefined ? base : { ...base, metadata: { model } };
+    };
+    const agent = {
+      id: 'a1',
+      kind: 'other',
+      displayName: 'Agent',
+      adapterId: 'x',
+      enabled: true,
+      updatedAt: '2026-08-05T08:00:00.000Z',
+    };
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      agents: { state: 'ready', data: [agent] },
+      sessions: {
+        state: 'ready',
+        data: [
+          sessionAt('s1', 'a1', 'model-b'),
+          sessionAt('s2', 'a1', 'model-a'),
+          sessionAt('s3', 'a1', 'model-a'),
+          sessionAt('s4', 'a1'),
+          sessionAt('s5', 'hooked', 'model-c'),
+          sessionAt('s6', 'hooked'),
+        ],
+      },
+    });
+
+    expect(snapshot.agents[0]?.models).toEqual(['model-a', 'model-b']);
+    expect(snapshot.unregisteredAgents).toEqual([
+      { id: 'hooked', sessionCount: 2, models: ['model-c'] },
+    ]);
+
+    // An unavailable read on either side lists nothing: every id would look
+    // unregistered against an agents read that never happened.
+    const unavailable = buildPulseSnapshot({
+      ...baseInput(),
+      agents: { state: 'unavailable' },
+      sessions: { state: 'ready', data: [sessionAt('s5', 'hooked', 'model-c')] },
+    });
+    expect(unavailable.unregisteredAgents).toEqual([]);
   });
 });
 

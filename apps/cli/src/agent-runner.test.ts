@@ -30,6 +30,8 @@ class FakeChild extends EventEmitter implements NativeAgentChildProcess {
   pid: number | undefined = 321;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  stdout?: EventEmitter;
+  stderr?: EventEmitter;
   readonly kill = vi.fn(() => true);
 
   exit(code: number | null, signal: NodeJS.Signals | null): void {
@@ -96,6 +98,40 @@ describe('native agent process runner', () => {
     });
     child.exit(7, null);
     await expect(running).resolves.toEqual({ exitCode: 7, signal: undefined });
+  });
+
+  it('pipes and forwards both streams when output capture is requested', async () => {
+    const child = new FakeChild();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const spawnProcess = vi.fn(() => child);
+    const runner = new NodeNativeAgentProcessRunner({
+      platform: 'linux',
+      environment: { PATH: '/tools' },
+      resolveExecutable: vi.fn(async (name: string) => `/tools/${name}`),
+      canonicalizeExecutable: vi.fn(async (path: string) => path),
+      spawnProcess,
+      wait: vi.fn(async () => undefined),
+    });
+    const captured: string[] = [];
+    const running = runner.run({
+      executable: 'claude',
+      args: ['--print', 'hello'],
+      workingDirectory: '/work/project',
+      environment: { PATH: '/tools' },
+      signals: new FakeSignals(),
+      captureOutput: (chunk) => captured.push(chunk),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(spawnProcess.mock.calls[0]?.[2]).toMatchObject({ stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout.emit('data', Buffer.from('out-chunk'));
+    child.stderr.emit('data', Buffer.from('err-chunk'));
+    child.exit(0, null);
+
+    await expect(running).resolves.toEqual({ exitCode: 0, signal: undefined });
+    expect(captured).toEqual(['out-chunk', 'err-chunk']);
   });
 
   it('normalizes an asynchronous spawn failure', async () => {

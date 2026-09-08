@@ -95,6 +95,69 @@ describe('Phase 3 HTTP routes', () => {
     await app?.close();
   });
 
+  it('lists definitions with the version of the detected installation for their adapter', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const detectAgentsCached = vi.fn(async () => [
+      {
+        kind: agent.kind,
+        adapterId: agent.adapterId,
+        executable: 'C:/tools/codex.exe',
+        detectedVersion: '0.149.1',
+        configRoots: [],
+        supportLevel: 'full' as const,
+        warnings: [],
+      },
+    ]);
+    const controlPlane = {
+      listAgents: vi.fn(async () => [agent, { ...agent, id: 'other-adapter', adapterId: 'x-v1' }]),
+      detectAgentsCached,
+    } as unknown as ControlPlaneService;
+    app = buildDaemon({
+      config: {
+        host: '127.0.0.1',
+        port: 80,
+        redisUrl: 'redis://127.0.0.1:6379',
+        logLevel: 'silent',
+        workspaceId: 'local',
+      },
+      redis: new HealthyRedis(),
+      logger: false,
+      readiness,
+      runtimeState: () => readiness.state,
+      services: {
+        projects: {
+          register: async () => project,
+          get: async () => project,
+          list: async () => [project],
+        } as ProjectService,
+        sessions: { list: async () => [] } as unknown as SessionService,
+        controlPlane,
+        listEvents: async () => [],
+      },
+    });
+
+    const listed = await app.inject({ method: 'GET', url: '/api/v1/agents' });
+    expect(listed.statusCode).toBe(200);
+    const { agents } = listed.json<{ agents: Array<{ id: string; detectedVersion?: string }> }>();
+    // The definition on the detected adapter carries its version; the one on
+    // an adapter nothing detected stays without one rather than borrowing it.
+    expect(agents.find(({ id }) => id === agent.id)?.detectedVersion).toBe('0.149.1');
+    expect(agents.find(({ id }) => id === 'other-adapter')?.detectedVersion).toBeUndefined();
+    // The cached read is what the list uses, never a fresh detection per read.
+    expect(detectAgentsCached).toHaveBeenCalledTimes(1);
+
+    // A detection that fails costs the versions, not the list.
+    detectAgentsCached.mockRejectedValueOnce(new Error('spawn failed'));
+    const degraded = await app.inject({ method: 'GET', url: '/api/v1/agents' });
+    expect(degraded.statusCode).toBe(200);
+    expect(
+      degraded
+        .json<{ agents: Array<{ detectedVersion?: string }> }>()
+        .agents.every(({ detectedVersion }) => detectedVersion === undefined),
+    ).toBe(true);
+  });
+
   it('validates and exposes agent registration and effective configuration', async () => {
     const readiness = createRuntimeReadiness('recovering');
     readiness.transitionTo('ready');

@@ -1,4 +1,5 @@
 import { ApplicationError } from '@luwi/runtime';
+import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
 import { runCli, type CliDependencies, type CliWebSocket, type HttpResponseLike } from './cli.js';
@@ -1401,6 +1402,43 @@ function codexRollout(sessionId: string, cwd: string): string {
   return `${JSON.stringify(meta)}\n${JSON.stringify({ type: 'response_item', payload: {} })}\n`;
 }
 
+function controlledDeadlineTimers() {
+  let nextId = 0;
+  const callbacks = new Map<NodeJS.Timeout, () => void>();
+  return {
+    callbacks,
+    setTimeout: ((callback: () => void) => {
+      const timer = ++nextId as unknown as NodeJS.Timeout;
+      callbacks.set(timer, callback);
+      return timer;
+    }) as CliDependencies['setTimeout'],
+    clearTimeout: ((timer: NodeJS.Timeout) => {
+      callbacks.delete(timer);
+    }) as CliDependencies['clearTimeout'],
+    fireNext() {
+      const next = callbacks.entries().next().value as [NodeJS.Timeout, () => void] | undefined;
+      if (next === undefined) throw new Error('No request deadline is armed.');
+      callbacks.delete(next[0]);
+      next[1]();
+    },
+  };
+}
+
+function controlledCliSignals() {
+  const listeners = new Map<'SIGINT' | 'SIGTERM', () => void>();
+  return {
+    listeners,
+    signals: {
+      once(signal: 'SIGINT' | 'SIGTERM', listener: () => void) {
+        listeners.set(signal, listener);
+      },
+      off(signal: 'SIGINT' | 'SIGTERM', listener: () => void) {
+        if (listeners.get(signal) === listener) listeners.delete(signal);
+      },
+    } satisfies CliDependencies['signals'],
+  };
+}
+
 describe('session attach', () => {
   const registered = {
     id: 'session-attached',
@@ -1413,6 +1451,221 @@ describe('session attach', () => {
     metadata: {},
     presence: 'online',
   };
+  const heldAttachLease = {
+    id: 'lease-attach',
+    projectId: 'project-1',
+    sessionId: registered.id,
+    agentId: registered.agentId,
+    path: 'src',
+    matchPath: 'src/',
+    reason: 'active edit',
+    state: 'held' as const,
+    acquiredAt: '2026-08-17T12:00:00.000Z',
+    expiresAt: '2026-08-17T12:05:00.000Z',
+  };
+
+  it.each(['99', '30001', 'not-an-integer'])(
+    'rejects an unsafe attach request timeout of %s',
+    async (value) => {
+      await expect(
+        runCli(
+          [
+            'session',
+            'attach',
+            '--project',
+            'project-1',
+            '--connect-timeout-ms',
+            value,
+            '--dry-run',
+          ],
+          {
+            fetch: async () => {
+              throw new Error('must not fetch');
+            },
+            stdout: { write: () => undefined },
+            stderr: { write: () => undefined },
+          },
+        ),
+      ).rejects.toMatchObject({
+        code: 'CLI_OPTION_INVALID',
+        message: expect.stringContaining('--connect-timeout-ms'),
+      });
+    },
+  );
+
+  it('installs stop handling before a bounded initial registration', async () => {
+    const deadlines = controlledDeadlineTimers();
+    const controlled = controlledCliSignals();
+    const intervals: NodeJS.Timeout[] = [];
+    const seenSignals: AbortSignal[] = [];
+    let stderr = '';
+    const run = runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'claude-code',
+        '--connect-timeout-ms',
+        '100',
+      ],
+      {
+        environment: {},
+        canonicalizePath: async (path) => path,
+        fetch: (_url, init) => {
+          if (init?.signal !== undefined) seenSignals.push(init.signal);
+          return new Promise<HttpResponseLike>(() => undefined);
+        },
+        setInterval: ((callback: () => void) => {
+          const timer = { callback } as unknown as NodeJS.Timeout;
+          intervals.push(timer);
+          return timer;
+        }) as never,
+        clearInterval: vi.fn(),
+        setTimeout: deadlines.setTimeout,
+        clearTimeout: deadlines.clearTimeout,
+        signals: controlled.signals,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => void (stderr += text) },
+      },
+    );
+
+    await vi.waitFor(() => expect(seenSignals).toHaveLength(1));
+    expect(controlled.listeners.size).toBe(2);
+    expect(seenSignals[0]).toBeInstanceOf(AbortSignal);
+
+    deadlines.fireNext();
+    await vi.waitFor(() => expect(stderr).toContain('exceeded its bounded timeout'));
+    controlled.listeners.get('SIGTERM')?.();
+
+    await expect(run).resolves.toBeUndefined();
+    expect(intervals).toHaveLength(2);
+  });
+
+  it('puts an AbortSignal on every attach-side daemon request', async () => {
+    const project = {
+      id: 'project-1',
+      name: 'Work',
+      localPath: 'C:/work',
+      canonicalPath: 'C:/work',
+      createdAt: '2026-08-17T12:00:00.000Z',
+      updatedAt: '2026-08-17T12:00:00.000Z',
+    };
+    const requests: Array<{ url: string; signal?: AbortSignal }> = [];
+    const intervals: Array<{ callback: () => void; intervalMs: number }> = [];
+    const controlled = controlledCliSignals();
+    const run = runCli(['session', 'attach', '--working-directory', 'C:/work/app'], {
+      environment: {},
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      fetch: async (url, init) => {
+        requests.push({ url, signal: init?.signal });
+        if (url.endsWith('/api/v1/projects')) {
+          return response({ projects: [project] });
+        }
+        if (url.endsWith('/api/v1/sessions')) {
+          return response(registered, { status: 201 });
+        }
+        if (url.endsWith('/heartbeat')) {
+          return response({ status: 'renewed', eventEmitted: false });
+        }
+        if (url.includes('/api/v1/leases?sessionId=')) {
+          return response({ leases: [heldAttachLease], truncated: false });
+        }
+        if (url.endsWith('/api/v1/leases/lease-attach/renew')) {
+          return response(heldAttachLease);
+        }
+        if (url.endsWith('/close')) {
+          return response(registered);
+        }
+        throw new Error('Unexpected request: ' + url);
+      },
+      setInterval: ((callback: () => void, intervalMs: number) => {
+        intervals.push({ callback, intervalMs });
+        return intervals.length as unknown as NodeJS.Timeout;
+      }) as never,
+      clearInterval: vi.fn(),
+      signals: controlled.signals,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    });
+
+    await vi.waitFor(() =>
+      expect(requests.some(({ url }) => url.endsWith('/api/v1/sessions'))).toBe(true),
+    );
+
+    intervals.find(({ intervalMs }) => intervalMs === 5_000)?.callback();
+    await vi.waitFor(() =>
+      expect(requests.some(({ url }) => url.endsWith('/heartbeat'))).toBe(true),
+    );
+
+    intervals.find(({ intervalMs }) => intervalMs === 150_000)?.callback();
+    await vi.waitFor(() =>
+      expect(requests.some(({ url }) => url.endsWith('/api/v1/leases/lease-attach/renew'))).toBe(
+        true,
+      ),
+    );
+
+    controlled.listeners.get('SIGTERM')?.();
+    await run;
+
+    expect(requests.some(({ url }) => url.endsWith('/close'))).toBe(true);
+    expect(requests).toHaveLength(6);
+    for (const request of requests) {
+      expect(request.signal, request.url).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it('clears local timers and exits when remote close times out', async () => {
+    const deadlines = controlledDeadlineTimers();
+    const controlled = controlledCliSignals();
+    const order: string[] = [];
+    let closeSignal: AbortSignal | undefined;
+    let stderr = '';
+    const run = runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'claude-code',
+        '--connect-timeout-ms',
+        '100',
+      ],
+      {
+        environment: {},
+        canonicalizePath: async (path) => path,
+        fetch: (url, init) => {
+          if (url.endsWith('/close')) {
+            order.push('close');
+            closeSignal = init?.signal;
+            return new Promise<HttpResponseLike>(() => undefined);
+          }
+          return Promise.resolve(response(registered, { status: 201 }));
+        },
+        setInterval: vi.fn(() => ({ unref: vi.fn() }) as unknown as NodeJS.Timeout),
+        clearInterval: vi.fn(() => void order.push('clear')),
+        setTimeout: deadlines.setTimeout,
+        clearTimeout: deadlines.clearTimeout,
+        signals: controlled.signals,
+        stdout: { write: () => undefined },
+        stderr: { write: (text) => void (stderr += text) },
+      },
+    );
+
+    await vi.waitFor(() => expect(controlled.listeners.size).toBe(2));
+    controlled.listeners.get('SIGTERM')?.();
+    await vi.waitFor(() => expect(closeSignal).toBeInstanceOf(AbortSignal));
+
+    expect(order.slice(0, 3)).toEqual(['clear', 'clear', 'close']);
+    deadlines.fireNext();
+
+    await expect(run).resolves.toBeUndefined();
+    expect(closeSignal?.aborted).toBe(true);
+    expect(stderr).toContain('exceeded its bounded timeout');
+  });
 
   it('declares the identity the environment carries, then heartbeats', async () => {
     const bodies: unknown[] = [];
@@ -1845,6 +2098,63 @@ describe('session attach', () => {
       agentId: 'codex',
       native: { adapterId: 'codex', nativeSessionId: '01a0577b-9555-7741-b8f1-395df30a7003' },
     });
+  });
+
+  it('declares an explicit native reference outright and resolves nothing on its behalf', async () => {
+    const project = {
+      id: 'project-1',
+      name: 'Work',
+      localPath: 'C:/work',
+      canonicalPath: 'C:/work',
+      createdAt: '2026-07-28T12:00:00.000Z',
+      updatedAt: '2026-07-28T12:00:00.000Z',
+    };
+    const printed: string[] = [];
+    await runCli(
+      [
+        'session',
+        'attach',
+        '--working-directory',
+        'C:/work/app',
+        '--agent',
+        'antigravity',
+        '--native-adapter',
+        'antigravity',
+        '--native-session',
+        'ec33ebf9-0cba-4100-8142-c61503f6c587',
+        '--dry-run',
+      ],
+      {
+        // A Claude identity is present in the environment and must not win.
+        environment: { CLAUDE_CODE_SESSION_ID: '64c3e219-18aa-4539-9104-89d3d2ac5629' },
+        platform: 'win32',
+        canonicalizePath: async (path: string) => path,
+        fetch: async (url) => {
+          if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+          throw new Error(`unexpected request ${url}`);
+        },
+        stdout: { write: (chunk: string) => void printed.push(chunk) },
+        stderr: { write: () => undefined },
+      },
+    );
+
+    expect(JSON.parse(printed.join(''))).toMatchObject({
+      projectId: 'project-1',
+      agentId: 'antigravity',
+      native: { adapterId: 'antigravity', nativeSessionId: 'ec33ebf9-0cba-4100-8142-c61503f6c587' },
+    });
+
+    // Half a reference is refused before any request leaves the process.
+    await expect(
+      runCli(['session', 'attach', '--native-adapter', 'antigravity', '--dry-run'], {
+        canonicalizePath: async (path: string) => path,
+        fetch: async () => {
+          throw new Error('must not be called');
+        },
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      }),
+    ).rejects.toMatchObject({ code: 'CLI_OPTION_INVALID' });
   });
 
   it('records --model as session metadata without inventing one otherwise', async () => {
@@ -2375,5 +2685,202 @@ describe('lease commands', () => {
     await runCli(['lease', 'get', 'lease-1'], dependencies);
 
     expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/leases/lease-1');
+  });
+});
+
+describe('session bridge native', () => {
+  const timestamp = '2026-09-08T00:00:00.000Z';
+  const project = {
+    id: 'project-app',
+    name: 'App',
+    localPath: 'C:/work/app',
+    canonicalPath: 'C:/work/app',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const agent = {
+    id: 'claude-code',
+    kind: 'claude-code',
+    displayName: 'Claude Code',
+    executable: 'C:/tools/claude.exe',
+    enabled: true,
+    adapterId: 'claude-code',
+    nativeConfigRoots: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    metadata: {},
+  };
+  const binding = {
+    id: 'binding-claude',
+    projectId: project.id,
+    agentId: agent.id,
+    enabled: true,
+    profileIds: [],
+    capabilityBindingIds: [],
+    overrides: {},
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const session = {
+    id: 'session-1',
+    projectId: project.id,
+    agentId: agent.id,
+    status: 'starting',
+    workingDirectory: 'C:/work/app',
+    startedAt: timestamp,
+    lastHeartbeatAt: timestamp,
+    metadata: { bridge: 'native-headless', provider: 'claude' },
+    presence: 'online',
+  };
+  const message = (state: string) => ({
+    id: 'message-1',
+    correlationId: 'correlation-1',
+    projectId: project.id,
+    sourceSessionId: 'source-1',
+    sourceAgentId: 'codex',
+    targetSessionId: session.id,
+    targetAgentId: agent.id,
+    selectionReason: 'direct target session session-1',
+    kind: 'instruction',
+    subject: 'ALB-1',
+    content: 'Inspect and report.',
+    evidenceRequirements: [],
+    state,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    deadlineAt: '2026-09-08T02:00:00.000Z',
+  });
+  const requestItem = {
+    streamId: '1-0',
+    itemKind: 'request',
+    messageId: 'message-1',
+    correlationId: 'correlation-1',
+    sourceSessionId: 'source-1',
+    targetSessionId: session.id,
+    createdAt: timestamp,
+    payload: {
+      kind: 'instruction',
+      subject: 'ALB-1',
+      content: 'Inspect and report.',
+      evidenceRequirements: [],
+      deadlineAt: '2026-09-08T02:00:00.000Z',
+    },
+  };
+
+  it('registers, claims, runs the native CLI headless, and closes on signal', async () => {
+    const signalSource = new EventEmitter();
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+    let getMessageCalls = 0;
+    let claims = 0;
+    let recorded: unknown;
+    const processRunner = {
+      run: vi.fn(async (input: unknown) => {
+        recorded = input;
+        signalSource.emit('SIGINT');
+        return { exitCode: 0 };
+      }),
+    };
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: processRunner as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+          signalSource.once(signal, listener);
+        },
+        off: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+          signalSource.off(signal, listener);
+        },
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      wait: async () => undefined,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: async (url, init) => {
+        requests.push({
+          url,
+          method: init?.method,
+          body: init?.body === undefined ? undefined : JSON.parse(init.body),
+        });
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [agent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [binding] });
+        }
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(session, { status: 201 });
+        }
+        if (url.includes('/inbox/claim')) {
+          claims += 1;
+          return response({ items: claims === 1 ? [requestItem] : [] });
+        }
+        if (url.includes('/status')) return response(session);
+        if (url.includes('/heartbeat')) return response({ acknowledgedAt: timestamp });
+        if (url.includes('/close')) {
+          return response({ ...session, status: 'completed', presence: 'offline' });
+        }
+        if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        if (url.endsWith('/api/v1/messages/correlation-1/acknowledge')) {
+          return response(message('acknowledged'));
+        }
+        if (url.endsWith('/api/v1/messages/correlation-1/processing')) {
+          return response(message('processing'));
+        }
+        if (url.endsWith('/api/v1/messages/correlation-1')) {
+          getMessageCalls += 1;
+          return response(message(getMessageCalls === 1 ? 'delivered' : 'responded'));
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(
+      [
+        'session',
+        'bridge',
+        'native',
+        'claude',
+        '--working-directory',
+        'C:/work/app',
+        '--',
+        '--allowedTools',
+        'mcp__luwi-runtime',
+      ],
+      dependencies,
+    );
+
+    const runInput = recorded as {
+      executable: string;
+      args: string[];
+      environment: Record<string, string>;
+    };
+    expect(runInput.executable).toBe('C:/tools/claude.exe');
+    expect(runInput.args[0]).toBe('--print');
+    expect(runInput.args.slice(-2)).toEqual(['--allowedTools', 'mcp__luwi-runtime']);
+    expect(runInput.environment.LUWI_SESSION_ID).toBe('session-1');
+    expect(runInput.environment.LUWI_DAEMON_URL).toBe('http://127.0.0.1:4782');
+
+    const register = requests.find(
+      (entry) => entry.url.endsWith('/api/v1/sessions') && entry.method === 'POST',
+    );
+    expect(register?.body).toMatchObject({
+      projectId: 'project-app',
+      agentId: 'claude-code',
+      metadata: { bridge: 'native-headless', provider: 'claude' },
+    });
+    const claim = requests.find((entry) => entry.url.includes('/inbox/claim'));
+    expect(claim?.body).toMatchObject({
+      bridgeInstanceId: 'native-bridge',
+      limit: 1,
+      blockMs: 30_000,
+    });
+    expect(requests.some((entry) => entry.url.includes('/close'))).toBe(true);
+    expect(
+      requests.some((entry) => entry.url.endsWith('/respond') || entry.url.endsWith('/fail')),
+    ).toBe(false);
   });
 });

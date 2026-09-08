@@ -307,6 +307,54 @@ describe('AgentsView', () => {
     expect(within(screen.getByRole('row', { name: /Agent a2/ })).getByText('0')).toBeTruthy();
   });
 
+  it('lists the models sessions reported, and the agent ids no definition covers', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        agents: { state: 'ready', data: [agent('a1'), agent('a2')] },
+        sessions: {
+          state: 'ready',
+          data: [
+            session('s1', { agentId: 'a1', metadata: { model: 'model-b' } }),
+            session('s2', { agentId: 'a1', metadata: { model: 'model-a' } }),
+            session('s3', { agentId: 'a1' }),
+            session('s4', { agentId: 'a2' }),
+            session('s5', { agentId: 'hooked', metadata: { model: 'model-c' } }),
+          ],
+        },
+      }),
+    );
+    render(<AgentsView snapshot={snapshot} />);
+
+    // Distinct, sorted, and only what sessions said — a session with no model
+    // adds nothing, and an agent whose sessions said nothing gets a dash.
+    expect(
+      within(screen.getByRole('row', { name: /Agent a1/ })).getByText('model-a, model-b'),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByRole('row', { name: /Agent a2/ })).getByLabelText('No model reported'),
+    ).toBeTruthy();
+
+    // The hook-attached id is seen, counted and shown with its models, but no
+    // definition is invented for it.
+    const unregistered = screen.getByRole('region', { name: /without a definition/i });
+    const row = within(unregistered).getByRole('row', { name: /hooked/ });
+    expect(within(row).getByText('1')).toBeTruthy();
+    expect(within(row).getByText('model-c')).toBeTruthy();
+    expect(screen.queryByRole('row', { name: /Agent hooked/ })).toBeNull();
+  });
+
+  it('omits the unregistered panel when every session id has a definition', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        agents: { state: 'ready', data: [agent('a1')] },
+        sessions: { state: 'ready', data: [session('s1', { agentId: 'a1' })] },
+      }),
+    );
+    render(<AgentsView snapshot={snapshot} />);
+
+    expect(screen.queryByRole('region', { name: /without a definition/i })).toBeNull();
+  });
+
   it('keeps empty and unavailable distinct', () => {
     const { unmount } = render(<AgentsView snapshot={buildPulseSnapshot(baseInput())} />);
     expect(screen.getByText(/no agent definitions/i)).toBeTruthy();

@@ -1082,11 +1082,31 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
     if (services.controlPlane !== undefined) {
       const control = services.controlPlane;
 
-      app.get('/api/v1/agents', async () =>
-        agentDefinitionCollectionSchema.parse({
-          agents: await withCurrentRead(() => control.listAgents()),
-        }),
-      );
+      /*
+       * A definition's `detectedVersion` was never written by anything, so the
+       * column it fed always read "Undetected". The list now carries the version
+       * of the detected installation for the definition's adapter — from a
+       * cached detection, since detecting spawns the vendors' executables — and
+       * a detection that fails leaves every version absent rather than the list.
+       */
+      app.get('/api/v1/agents', async () => {
+        const [agents, installations] = await withCurrentRead(() =>
+          Promise.all([control.listAgents(), control.detectAgentsCached().catch(() => [])]),
+        );
+        const versions = new Map(
+          installations.flatMap((installation) =>
+            installation.detectedVersion === undefined
+              ? []
+              : [[installation.adapterId, installation.detectedVersion] as const],
+          ),
+        );
+        return agentDefinitionCollectionSchema.parse({
+          agents: agents.map((agent) => {
+            const detectedVersion = agent.detectedVersion ?? versions.get(agent.adapterId);
+            return detectedVersion === undefined ? agent : { ...agent, detectedVersion };
+          }),
+        });
+      });
       app.post('/api/v1/agents', async (request, reply) => {
         const body = parseRequestInput(agentDefinitionCreateRequestSchema, request.body);
         const agent = await withMutation(() => control.createAgent(body));

@@ -295,6 +295,41 @@ export function buildPulseSnapshot(input: PulseInput) {
     const value = sessions.filter((session) => session.agentId === agentId).length;
     return { state: value === 0 ? 'empty' : 'ready', value };
   };
+  /*
+   * A model is a session's statement about itself (`metadata.model`, reported
+   * at registration), never a definition's property. Listed per agent as the
+   * distinct values its sessions reported; none reported is an empty list, and
+   * the row's session count already says when the read was unavailable.
+   */
+  const modelsOf = (rows: PulseSession[]): string[] =>
+    [
+      ...new Set(
+        rows.flatMap((session) => {
+          const model = session.metadata?.['model'];
+          return typeof model === 'string' ? [model] : [];
+        }),
+      ),
+    ].sort();
+  const perAgentModels = (agentId: string): string[] =>
+    modelsOf(sessions.filter((session) => session.agentId === agentId));
+  /*
+   * Agent ids that sessions carry but no definition covers — a session attached
+   * by a launcher hook names its vendor, not a registered definition. Listed
+   * rather than folded into a definition, because the definition is what would
+   * be invented. Only when both reads succeeded: an unavailable side would make
+   * every id look unregistered.
+   */
+  const definedAgents = input.agents.state === 'ready' ? input.agents.data : undefined;
+  const unregisteredAgents =
+    definedAgents !== undefined && input.sessions.state === 'ready'
+      ? [...new Set(sessions.map((session) => session.agentId))]
+          .filter((id) => !definedAgents.some((agent) => agent.id === id))
+          .sort()
+          .map((id) => {
+            const rows = sessions.filter((session) => session.agentId === id);
+            return { id, sessionCount: rows.length, models: modelsOf(rows) };
+          })
+      : [];
   const perProjectActiveSessions = (projectId: string): CountValue => {
     if (input.sessions.state === 'unavailable') return { state: 'unavailable' };
     const value = activeSessions.filter((session) => session.projectId === projectId).length;
@@ -415,9 +450,11 @@ export function buildPulseSnapshot(input: PulseInput) {
         ? input.agents.data.map((agent) => ({
             ...agent,
             sessionCount: perAgentSessionCount(agent.id),
+            models: perAgentModels(agent.id),
           }))
         : [],
     agentsState: input.agents.state,
+    unregisteredAgents,
     sessions,
     activeSessions,
     projects,

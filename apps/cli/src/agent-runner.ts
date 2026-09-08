@@ -42,10 +42,16 @@ export interface NativeAgentSignalSource {
   off(signal: 'SIGINT' | 'SIGTERM', listener: () => void): unknown;
 }
 
+export interface NativeAgentReadableStream {
+  on(event: 'data', listener: (chunk: Buffer | string) => void): unknown;
+}
+
 export interface NativeAgentChildProcess {
   readonly pid: number | undefined;
   readonly exitCode: number | null;
   readonly signalCode: NodeJS.Signals | null;
+  readonly stdout?: NativeAgentReadableStream;
+  readonly stderr?: NativeAgentReadableStream;
   kill(signal?: number | NodeJS.Signals): boolean;
   once(event: 'error', listener: (error: Error) => void): unknown;
   once(
@@ -63,7 +69,7 @@ type NativeAgentSpawnOptions = {
   cwd: string;
   env: Readonly<Record<string, string | undefined>>;
   shell: false;
-  stdio: 'inherit';
+  stdio: 'inherit' | ['ignore', 'pipe', 'pipe'];
   windowsHide: false;
   windowsVerbatimArguments: boolean;
 };
@@ -81,6 +87,8 @@ export type NativeAgentProcessInput = {
   environment: Readonly<Record<string, string | undefined>>;
   signals: NativeAgentSignalSource;
   onDiagnostic?: (error: unknown) => void;
+  /** When set, stdout/stderr are piped (not inherited) and every chunk is forwarded as UTF-8. */
+  captureOutput?: (chunk: string) => void;
 };
 
 export type NativeAgentProcessResult = {
@@ -247,12 +255,18 @@ export class NodeNativeAgentProcessRunner implements NativeAgentProcessRunner {
         cwd: input.workingDirectory,
         env: input.environment,
         shell: false,
-        stdio: 'inherit',
+        stdio: input.captureOutput === undefined ? 'inherit' : ['ignore', 'pipe', 'pipe'],
         windowsHide: false,
         windowsVerbatimArguments: commandShim,
       });
     } catch {
       throw new ApplicationError('AGENT_SPAWN_FAILED', 'The native agent could not start.', 500);
+    }
+    if (input.captureOutput !== undefined) {
+      const forward = (chunk: Buffer | string): void =>
+        input.captureOutput?.(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+      child.stdout?.on('data', forward);
+      child.stderr?.on('data', forward);
     }
     const rootObservedBeforeMs = this.#now();
 

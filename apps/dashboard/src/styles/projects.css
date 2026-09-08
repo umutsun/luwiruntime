@@ -148,6 +148,36 @@
   margin-top: var(--space-2);
 }
 
+/*
+ * A folded name list. The summary is the group label itself, so the count
+ * stays readable while the pills are hidden; the caret is the panel toggle's,
+ * turned by the native open state rather than by script.
+ */
+.name-group > summary {
+  cursor: pointer;
+  list-style: none;
+}
+.name-group > summary::-webkit-details-marker {
+  display: none;
+}
+.name-group > summary::before {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--space-0);
+  border-right: 1.5px solid var(--text-muted);
+  border-bottom: 1.5px solid var(--text-muted);
+  transform: rotate(-45deg);
+  transition: transform var(--dur-1) var(--ease);
+  content: '';
+}
+.name-group[open] > summary::before {
+  transform: rotate(45deg);
+}
+.name-group > summary:hover::before {
+  border-color: var(--text);
+}
+
 /* Branch and tag names. A wrapping row of pills rather than a table: these are
    single values with no columns to align. */
 .name-list {

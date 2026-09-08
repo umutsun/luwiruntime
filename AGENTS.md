@@ -329,6 +329,11 @@ luwi:v1:runtime:daemon-owner
 Never infer online state from an old registry or session hash. Presence requires a fresh
 heartbeat timestamp and a live TTL key.
 
+Daemon ownership is single-process. Only the lease instance that previously acquired the owner key
+may reclaim an absent key, always through `SET NX PX` with its existing token; any competing token
+forces that daemon to drain. Reacquisition is recovery by the same runtime instance, not a second
+startup.
+
 ### Redis Functions
 
 Use versioned Redis Functions when a state mutation and event append must succeed atomically.
@@ -588,6 +593,13 @@ The CLI includes HTTP-only `manual`, `echo`, and `status-responder` bridge simul
 claim durable inbox work, acknowledge/process it, and optionally return explicitly simulated
 responses. They never receive Redis credentials and do not inject terminal prompts.
 
+`session bridge native <claude|codex|gemini>` (ADR 0031) serves one agent's inbox unattended: one
+long-lived LUWI session, and one headless native run per claimed message (`claude --print`,
+`codex exec`, `gemini --prompt`) that inherits `LUWI_SESSION_ID` so the child's own MCP server
+completes the message. The bridge writes only what the child left unfinished, and never `answered`.
+Everything after `--` is passed to the native CLI unchanged as its whole permission model; the
+bridge starts a new process and injects nothing into any terminal.
+
 `@luwi/mcp-server` is a thin stdio adapter bound to one registered online session. It
 validates daemon responses, derives source/responder identity from `LUWI_SESSION_ID`, and
 operates only through loopback HTTP. Phase 3 control-plane and Phase 4 intelligence tools
@@ -643,7 +655,7 @@ Phase 1 through Phase 4 coverage includes:
 11. Redis Function atomic success and rollback behavior;
 12. bounded Stream trimming;
 13. non-loopback bind and invalid origin rejection;
-14. single-daemon ownership and owned recovery;
+14. single-daemon ownership, sleep-expired vacant-key reacquisition, contention, and owned recovery;
 15. bounded WebSocket client queues.
 16. complete message transition and timeout race rules;
 17. same-project deterministic routing and idempotency conflicts;
@@ -668,6 +680,8 @@ Phase 1 through Phase 4 coverage includes:
 31. proposal state, acceptance-without-apply, Phase 3 ConfigPlan handoff, post-change
     evaluation, and `causalClaim: false`.
 32. Phase 4 HTTP/CLI and project-scoped read-only MCP tools.
+33. bounded session-attach discovery, registration, heartbeat, close, lease-list, and lease-renew
+    requests, plus timer-first bounded helper cleanup.
 
 Use unit tests for `@luwi/runtime` transitions and integration tests for Redis behavior.
 
@@ -706,6 +720,7 @@ docs/decisions/0013-bounded-global-graph-summary.md
 docs/decisions/0014-complete-graph-projection-inputs.md
 docs/decisions/0015-internal-validation-failures-are-server-errors.md
 docs/decisions/0016-rooted-graph-exploration-view.md
+docs/decisions/0030-sleep-wake-agent-lifecycle.md
 ```
 
 Each ADR contains context, decision, consequences, and status.
@@ -1202,8 +1217,8 @@ the failure transition, and stayed `running` with its real reason replaced by a 
 as a rebuild runs, a failed renewal stops the write loop, and `failureSummary` carries the real reason.
 The same rebuild then exposed a second pre-existing stall: ADR 0012's projection filtered the whole
 export list once per file — 8.7 s of synchronous work on a 20 000-file project, longer than the
-15-second daemon owner lease tolerates before the recovery path stops the runtime — and it is now a
-single map lookup.
+15-second daemon owner lease tolerates before owner recovery begins — and it is now a single map
+lookup.
 
 **Built 2026-09-02: host and footprint figures on the Runtime route.**
 `apps/daemon/src/host-resources.ts` answers `GET /api/v1/runtime/resources` from `node:os`,
@@ -1212,6 +1227,18 @@ single map lookup.
 ten seconds, absent when the tool is not there. Rates (host and daemon CPU) are computed against the
 previous read and are absent on the first; nothing reports a zero it did not measure. No record,
 datastore or `luwi_v1` change — one response schema in `@luwi/protocol` and one read-only route.
+
+**Built under ADR 0030 (2026-09-07): sleep/wake-safe observation recovery.** A daemon that previously
+owned the runtime may atomically reclaim only a vacant owner key with its existing token; contention
+still drains the old daemon, and recovery retains the same runtime instance rather than starting a
+second one. `session attach` now bounds every daemon request with a 2,000-ms default
+`--connect-timeout-ms`, installs stop handling before bootstrap registration, and disarms heartbeat
+and lease-renewal timers before bounded cleanup. Session expiry rotates only on
+`SESSION_NOT_FOUND` or `SESSION_TERMINAL` without lease transfer. Native liveness remains
+authoritative: exact child exit for `agent run`, exact `SessionEnd` for Claude, the existing
+30-minute inactivity bound for Antigravity, and explicit lifetime for manual attach. No sleep
+detector, wake task, service, or watchdog was added; Redis integration verification remains gated by
+an explicit `LUWI_TEST_REDIS_URL`.
 
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers

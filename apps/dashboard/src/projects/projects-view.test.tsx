@@ -9,6 +9,15 @@ import { ProjectsView } from './projects-view.js';
 
 afterEach(cleanup);
 
+/**
+ * Evidence cards other than the repository start folded, so a test that reads
+ * a card's contents opens it first — the way a reader would.
+ */
+function expand(panel: HTMLElement): HTMLElement {
+  fireEvent.click(within(panel).getByRole('button', { expanded: false }));
+  return panel;
+}
+
 const LONG_PATH = 'C:/xampp/htdocs/very/deep/nested/workspace/luwiruntime';
 
 function snapshotOf(overrides: Partial<PulseInput> = {}) {
@@ -398,7 +407,7 @@ describe('ProjectsView detail', () => {
   it('renders commit attribution with the agent and session it was tied to', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
-    const panel = screen.getByRole('region', { name: /commit attribution/i });
+    const panel = expand(screen.getByRole('region', { name: /commit attribution/i }));
     expect(within(panel).getByTitle('c'.repeat(40))).toBeTruthy();
     expect(within(panel).getByText(/agent-1/)).toBeTruthy();
     expect(within(panel).getByText('Correlated')).toBeTruthy();
@@ -408,7 +417,7 @@ describe('ProjectsView detail', () => {
   it('says a commit is unattributed rather than leaving the cell blank', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
-    const panel = screen.getByRole('region', { name: /commit attribution/i });
+    const panel = expand(screen.getByRole('region', { name: /commit attribution/i }));
     expect(within(panel).getByText('Unattributed')).toBeTruthy();
     expect(within(panel).getByText('Unknown')).toBeTruthy();
     expect(within(panel).getByText('insufficient-session-correlation')).toBeTruthy();
@@ -417,7 +426,7 @@ describe('ProjectsView detail', () => {
   it('discloses that a bounded attribution list is truncated', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
-    const panel = screen.getByRole('region', { name: /commit attribution/i });
+    const panel = expand(screen.getByRole('region', { name: /commit attribution/i }));
     expect(within(panel).getByText(/more attributions exist/i)).toBeTruthy();
   });
 
@@ -429,7 +438,7 @@ describe('ProjectsView detail', () => {
         attributions: { state: 'ready', data: { items: [], truncated: false } },
       },
     });
-    const empty = screen.getByRole('region', { name: /commit attribution/i });
+    const empty = expand(screen.getByRole('region', { name: /commit attribution/i }));
     expect(within(empty).getByText(/no commit attribution recorded/i)).toBeTruthy();
     expect(within(empty).queryByText('Unavailable')).toBeNull();
 
@@ -438,7 +447,7 @@ describe('ProjectsView detail', () => {
       selectedProjectId: 'proj-1',
       resources: { ...readyScope, attributions: { state: 'unavailable' } },
     });
-    const failed = screen.getByRole('region', { name: /commit attribution/i });
+    const failed = expand(screen.getByRole('region', { name: /commit attribution/i }));
     expect(within(failed).getByText('Unavailable')).toBeTruthy();
     expect(within(failed).queryByText(/no commit attribution recorded/i)).toBeNull();
   });
@@ -446,21 +455,21 @@ describe('ProjectsView detail', () => {
   it('discloses that a bounded package list is truncated', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
-    const panel = screen.getByRole('region', { name: /packages/i });
+    const panel = expand(screen.getByRole('region', { name: /packages/i }));
     expect(within(panel).getByText(/bounded|truncated|more/i)).toBeTruthy();
   });
 
   it('does not claim truncation when the list is complete', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
-    const panel = screen.getByRole('region', { name: /technologies/i });
+    const panel = expand(screen.getByRole('region', { name: /technologies/i }));
     expect(within(panel).queryByText(/truncated/i)).toBeNull();
   });
 
   it('labels every confidence tier as text, including unknown', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
-    const panel = screen.getByRole('region', { name: /technologies/i });
+    const panel = expand(screen.getByRole('region', { name: /technologies/i }));
     for (const label of ['High', 'Medium', 'Low', 'Unknown']) {
       expect(within(panel).getByText(label)).toBeTruthy();
     }
@@ -477,7 +486,7 @@ describe('ProjectsView detail', () => {
   it('lists only the selected project sessions', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
-    const panel = screen.getByRole('region', { name: /sessions/i });
+    const panel = expand(screen.getByRole('region', { name: /sessions/i }));
     expect(within(panel).getByText('sess-1')).toBeTruthy();
     expect(within(panel).queryByText('sess-2')).toBeNull();
   });
@@ -608,7 +617,7 @@ describe('ProjectsView agent pair', () => {
   it('renders the pair context counts as six independent observations', () => {
     pairView();
 
-    const panel = screen.getByRole('region', { name: /context for this pair/i });
+    const panel = expand(screen.getByRole('region', { name: /context for this pair/i }));
     for (const label of [
       'Contributions',
       'Assigned',
@@ -625,7 +634,7 @@ describe('ProjectsView agent pair', () => {
   it('labels footprint tokens as estimates and lists byte-identical groups', () => {
     pairView();
 
-    const panel = screen.getByRole('region', { name: /context footprint/i });
+    const panel = expand(screen.getByRole('region', { name: /context footprint/i }));
     expect(within(panel).getByText(/generic character estimates/i)).toBeTruthy();
     expect(within(panel).getByText('context:a = context:b')).toBeTruthy();
   });

@@ -48,6 +48,11 @@ import {
   createBackgroundWorkTracker,
   waitForCompletion,
 } from './background-work.js';
+import {
+  createDaemonRecoveryCoordinator,
+  runDaemonRecoveryCycle,
+  type DaemonRecoveryRunContext,
+} from './daemon-ownership-recovery.js';
 import type { DaemonConfig } from './config.js';
 import { createCanonicalStore } from './canonical-store.js';
 import { createConfigControlService } from './config-control-service.js';
@@ -447,7 +452,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let gitScanTimer: NodeJS.Timeout | undefined;
   let transcriptScanTimer: NodeJS.Timeout | undefined;
   let shutdownPromise: Promise<void> | undefined;
-  let recoveryPromise: Promise<void> | undefined;
   let sweeping = false;
   let sweepingMessageTimeouts = false;
   let sweepingLeaseExpiry = false;
@@ -777,10 +781,12 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     },
   });
 
-  const runRecovery = async (): Promise<void> => {
+  const canRecover = (): boolean => readiness.state !== 'draining' && readiness.state !== 'stopped';
+
+  const runRecovery = async ({ hasPendingRequest }: DaemonRecoveryRunContext): Promise<void> => {
     transitionDegraded();
     let backoff = setting(config, 'reconnectInitialMs');
-    while (readiness.state !== 'draining' && readiness.state !== 'stopped') {
+    while (canRecover()) {
       try {
         if (readiness.state === 'degraded') {
           readiness.transitionTo('recovering');
@@ -788,21 +794,35 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         await connect(connections.command);
         await connect(connections.admin);
         await connect(connections.relay);
-        if (!(await ownership.ownsLease())) {
-          void shutdownRuntime();
-          return;
-        }
-        await verifyOrLoadFunctionLibrary(connections.admin, library, ownership);
-        await ensureRealtimeStreamGroup(
-          connections.admin,
-          keys.globalEvents,
-          REALTIME_CONSUMER_GROUP,
-        );
-        await relay.recoverPending();
-        await reconcileCanonicalControlPlane();
-        await ensureIntelligenceHealthy();
-        relay.start();
-        readiness.transitionTo('ready');
+        await runDaemonRecoveryCycle({
+          ownership,
+          canRecover,
+          hasPendingRequest,
+          recoverRuntimeState: async () => {
+            await verifyOrLoadFunctionLibrary(connections.admin, library, ownership);
+            await ensureRealtimeStreamGroup(
+              connections.admin,
+              keys.globalEvents,
+              REALTIME_CONSUMER_GROUP,
+            );
+            await relay.recoverPending();
+            await reconcileCanonicalControlPlane();
+            await ensureIntelligenceHealthy();
+          },
+          onReacquired: () => {
+            app?.log.info(
+              { runtimeInstanceId },
+              'Daemon ownership reacquired after an expired owner key',
+            );
+          },
+          onContended: () => {
+            void shutdownRuntime();
+          },
+          onReady: () => {
+            relay.start();
+            readiness.transitionTo('ready');
+          },
+        });
         return;
       } catch (error) {
         transitionDegraded();
@@ -813,18 +833,18 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     }
   };
 
-  requestRecovery = () => {
-    if (
-      readiness.state === 'draining' ||
-      readiness.state === 'stopped' ||
-      recoveryPromise !== undefined
-    ) {
-      return;
-    }
-    recoveryPromise = runRecovery().finally(() => {
-      recoveryPromise = undefined;
-    });
-  };
+  const recoveryCoordinator = createDaemonRecoveryCoordinator({
+    canRecover,
+    onError: (error) => {
+      app?.log.error(
+        { err: error, runtimeInstanceId },
+        'Runtime recovery coordinator failed unexpectedly',
+      );
+      void shutdownRuntime();
+    },
+    runRecovery,
+  });
+  requestRecovery = recoveryCoordinator.request;
 
   const shutdownRuntime = async (): Promise<void> => {
     if (shutdownPromise !== undefined) {

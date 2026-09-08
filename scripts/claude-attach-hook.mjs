@@ -12,22 +12,47 @@
  * markers are dropped so the session registers as the main one, not a subagent.
  * The project comes from the hook's `cwd`, the model from `model` when present —
  * nothing is inferred. A SessionEnd hook has 1.5 s, so `end` only signals.
+ *
+ * The attach's stdout ({ attached: <luwiSessionId> }) is kept in
+ * `%TEMP%/luwi-attach-<claudeSid>.out`, and `%TEMP%/luwi-attach-pid-<claudePid>`
+ * names the Claude session running under that Claude process, so
+ * `claude-mcp-launch.mjs` — which Claude Code starts without any session id —
+ * can bind the LUWI MCP server to this same session.
  */
 import { spawn } from 'node:child_process';
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
+import { claudeProcessId } from './claude-mcp-launch.mjs';
 
 const LUWI_CLI = join(import.meta.dirname, '..', 'apps', 'cli', 'dist', 'main.js');
 
+// ADR 0031: this Claude process was launched under a LUWI session (`agent run`,
+// the native inbox bridge), so it already has one. Registering a second — the
+// hook fires in `claude -p` mode too — created reader-less ghost sessions.
+if (process.env.LUWI_SESSION_ID) process.exit(0);
+
 const input = JSON.parse(readFileSync(0, 'utf8'));
 const pidFile = join(tmpdir(), `luwi-attach-${input.session_id}.pid`);
+const outFile = join(tmpdir(), `luwi-attach-${input.session_id}.out`);
+const claudePid = claudeProcessId() ?? process.env.CLAUDE_PID;
+const mapFile =
+  claudePid === undefined ? undefined : join(tmpdir(), `luwi-attach-pid-${claudePid}`);
+
+const remove = (path) => {
+  try {
+    if (path !== undefined) unlinkSync(path);
+  } catch {
+    // Already gone, or never written — nothing to remove.
+  }
+};
 
 if (process.argv[2] === 'start') {
   const environment = { ...process.env };
   delete environment.CLAUDE_CODE_CHILD_SESSION;
   delete environment.CLAUDE_PID;
+  const out = openSync(outFile, 'w');
   const child = spawn(
     process.execPath,
     [LUWI_CLI, 'session', 'attach', ...(input.model ? ['--model', input.model] : [])],
@@ -35,11 +60,13 @@ if (process.argv[2] === 'start') {
       cwd: input.cwd,
       env: { ...environment, CLAUDE_CODE_SESSION_ID: input.session_id },
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', out, 'ignore'],
       windowsHide: true,
     },
   );
+  closeSync(out);
   writeFileSync(pidFile, String(child.pid));
+  if (mapFile !== undefined) writeFileSync(mapFile, input.session_id);
   child.unref();
 } else {
   try {
@@ -47,9 +74,7 @@ if (process.argv[2] === 'start') {
   } catch {
     // Already gone, or never started — nothing to stop.
   }
-  try {
-    unlinkSync(pidFile);
-  } catch {
-    // Nothing to remove.
-  }
+  remove(pidFile);
+  remove(outFile);
+  remove(mapFile);
 }
