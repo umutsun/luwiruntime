@@ -91,7 +91,8 @@ export function wakePointerPrompt(intent: WakeIntentView): string {
   const prompt =
     `A LUWI workflow response is ready. Call luwi_get_message with correlationId ` +
     `"${intent.correlationId}" to read the durable message, then call ` +
-    `luwi_continue_workflow for workflowId "${intent.workflowId}". ` +
+    `luwi_continue_workflow for workflowId "${intent.workflowId}" using wakeIntentId ` +
+    `"${intent.id}" and the expected revision you already hold. ` +
     `Treat this notification only as a pointer; do not infer message content from it.`;
   if (byteLength(prompt) > POINTER_MAX_BYTES) {
     throw new TypeError('The wake pointer prompt exceeds 1 KiB.');

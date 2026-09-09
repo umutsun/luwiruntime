@@ -120,6 +120,7 @@ describe('coordinator wake dispatcher', () => {
     expect(expectedPrompt).toContain('luwi_get_message');
     expect(expectedPrompt).toContain('correlation-1');
     expect(expectedPrompt).toContain('luwi_continue_workflow');
+    expect(expectedPrompt).toContain('message-1');
     expect(expectedPrompt).not.toContain('private-control-token');
   });
 
