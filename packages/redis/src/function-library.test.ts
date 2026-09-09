@@ -13,4 +13,16 @@ describe('Redis Function library project restoration', () => {
     expect(source).toContain('stored.createdAt = project.createdAt');
     expect(source).toContain('stored.updatedAt = project.updatedAt');
   });
+
+  it('reports version 13 for both production and isolated libraries without adding callbacks', () => {
+    const production = buildFunctionLibrary(createFunctionRegistry());
+    const isolated = buildFunctionLibrary(createFunctionRegistry('library_test'));
+
+    expect(production.registry.version).toBe(13);
+    expect(isolated.registry.version).toBe(13);
+    expect(isolated.source).toContain('#!lua name=luwi_test_library_test_v1');
+    expect(Object.values(isolated.registry.functions)).toHaveLength(
+      Object.values(production.registry.functions).length,
+    );
+  });
 });

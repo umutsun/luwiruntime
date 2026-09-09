@@ -135,10 +135,16 @@ async function verifyVersionFunction(
       'The Redis Function version response is invalid.',
     );
   }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new RedisBootstrapError(
+      'FUNCTION_LIBRARY_INVALID',
+      'The Redis Function version response is invalid.',
+    );
+  }
   const value = parsed as { version?: unknown; libraryName?: unknown };
   if (
     value.version !== library.registry.version ||
-    (value.libraryName !== library.registry.libraryName && value.libraryName !== 'test')
+    value.libraryName !== library.registry.libraryName
   ) {
     throw new RedisBootstrapError(
       'FUNCTION_LIBRARY_INVALID',

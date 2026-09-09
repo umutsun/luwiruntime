@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createRedisKeys } from './index.js';
+import { createRedisKeys, WAKE_CONSUMER_GROUP } from './index.js';
 
 describe('Redis key registry', () => {
   it('constructs the approved production taxonomy centrally', () => {
@@ -123,6 +123,52 @@ describe('Redis key registry', () => {
 
     expect(keys.globalEvents).toBe('luwi:test:run-123:v1:events:global');
     expect(keys.project('project-1')).toBe('luwi:test:run-123:v1:project:project-1');
+  });
+
+  it('declares the bridge-slot, workflow, and wake key taxonomy', () => {
+    const keys = createRedisKeys();
+    const digest = 'a'.repeat(64);
+
+    expect(keys.bridgeSlotsIndex).toBe('luwi:v1:index:bridge-slots');
+    expect(keys.bridgeSlotDeadlines).toBe('luwi:v1:deadline:bridge-slots');
+    expect(keys.bridgeSlot(digest)).toBe(`luwi:v1:bridge-slot:${digest}`);
+    expect(keys.bridgeSlotOwner(digest)).toBe(`luwi:v1:bridge-slot-owner:${digest}`);
+    expect(keys.workflowsIndex).toBe('luwi:v1:index:workflows');
+    expect(keys.workflow('workflow-1')).toBe('luwi:v1:workflow:workflow-1');
+    expect(keys.projectWorkflows('project-1')).toBe('luwi:v1:index:project:project-1:workflows');
+    expect(keys.coordinatorSessionWorkflows('session-1')).toBe(
+      'luwi:v1:index:session:session-1:workflows:coordinator',
+    );
+    expect(keys.workflowMessages('workflow-1')).toBe('luwi:v1:index:workflow:workflow-1:messages');
+    expect(keys.workflowRootCorrelation('root-1')).toBe(
+      'luwi:v1:index:workflow:root-correlation:root-1',
+    );
+    expect(keys.workflowDecision('workflow-1', 2)).toBe('luwi:v1:workflow-decision:workflow-1:2');
+    expect(keys.wakeStream).toBe('luwi:v1:stream:wake');
+    expect(keys.wakeIntentsIndex).toBe('luwi:v1:index:wake-intents');
+    expect(keys.wakeIntentDeadlines).toBe('luwi:v1:deadline:wake-intents');
+    expect(keys.wakeIntent('message-1')).toBe('luwi:v1:wake-intent:message-1');
+    expect(keys.projectWakeIntents('project-1')).toBe(
+      'luwi:v1:index:project:project-1:wake-intents',
+    );
+    expect(WAKE_CONSUMER_GROUP).toBe('luwi-wake-v1');
+  });
+
+  it('normalizes namespaces and rejects unsafe slot, workflow, and wake identifiers', () => {
+    const keys = createRedisKeys('luwi:test:run:v1:::');
+
+    expect(keys.wakeStream).toBe('luwi:test:run:v1:stream:wake');
+    for (const digest of ['', 'a'.repeat(63), 'A'.repeat(64), 'g'.repeat(64)]) {
+      expect(() => keys.bridgeSlot(digest)).toThrow('SHA-256 digest');
+      expect(() => keys.bridgeSlotOwner(digest)).toThrow('SHA-256 digest');
+    }
+    for (const id of ['', 'bad/id', '-leading']) {
+      expect(() => keys.workflow(id)).toThrow('Unsafe Redis key identifier');
+      expect(() => keys.wakeIntent(id)).toThrow('Unsafe Redis key identifier');
+    }
+    for (const revision of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => keys.workflowDecision('workflow-1', revision)).toThrow('positive integer');
+    }
   });
 
   it('rejects unsafe entity identifiers before constructing keys', () => {

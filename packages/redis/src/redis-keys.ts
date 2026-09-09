@@ -5,10 +5,16 @@ export interface RedisKeys {
   readonly projectsIndex: string;
   readonly heartbeatDeadlines: string;
   readonly messagesIndex: string;
+  readonly workflowsIndex: string;
   readonly terminalMessages: string;
   readonly messageDeadlines: string;
   /** Every held lease, scored by expiry, so one sweep finds all of them. */
   readonly leaseDeadlines: string;
+  readonly bridgeSlotsIndex: string;
+  readonly bridgeSlotDeadlines: string;
+  readonly wakeStream: string;
+  readonly wakeIntentsIndex: string;
+  readonly wakeIntentDeadlines: string;
   readonly daemonOwner: string;
   readonly agentDefinitionsIndex: string;
   readonly capabilitiesIndex: string;
@@ -40,6 +46,8 @@ export interface RedisKeys {
   projectSessions(projectId: string): string;
   agentSessions(agentId: string): string;
   lease(leaseId: string): string;
+  bridgeSlot(slotDigest: string): string;
+  bridgeSlotOwner(slotDigest: string): string;
   /** Held leases for one project, scored by expiry. The conflict check reads only this. */
   projectLeases(projectId: string): string;
   sessionLeases(sessionId: string): string;
@@ -51,6 +59,14 @@ export interface RedisKeys {
   sourceSessionMessages(sessionId: string): string;
   targetSessionMessages(sessionId: string): string;
   sessionInbox(sessionId: string): string;
+  workflow(workflowId: string): string;
+  projectWorkflows(projectId: string): string;
+  coordinatorSessionWorkflows(sessionId: string): string;
+  workflowMessages(workflowId: string): string;
+  workflowRootCorrelation(correlationId: string): string;
+  workflowDecision(workflowId: string, revision: number): string;
+  wakeIntent(messageId: string): string;
+  projectWakeIntents(projectId: string): string;
   agentDefinition(agentId: string): string;
   projectAgentBinding(bindingId: string): string;
   projectAgentBindings(projectId: string): string;
@@ -113,12 +129,27 @@ export interface RedisKeys {
 }
 
 export const SESSION_INBOX_CONSUMER_GROUP = 'luwi-session-inbox-v1';
+export const WAKE_CONSUMER_GROUP = 'luwi-wake-v1';
 
 const safeKeyPartPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
 function keyPart(value: string): string {
   if (!safeKeyPartPattern.test(value)) {
     throw new Error('Unsafe Redis key identifier');
+  }
+  return value;
+}
+
+function slotDigest(value: string): string {
+  if (!/^[a-f0-9]{64}$/.test(value)) {
+    throw new Error('Bridge slot identifier must be a lowercase SHA-256 digest');
+  }
+  return value;
+}
+
+function positiveSafeInteger(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error('Workflow decision revision must be a safe positive integer');
   }
   return value;
 }
@@ -133,9 +164,15 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     projectsIndex: `${prefix}:index:projects`,
     heartbeatDeadlines: `${prefix}:deadline:heartbeats`,
     messagesIndex: `${prefix}:index:messages`,
+    workflowsIndex: `${prefix}:index:workflows`,
     terminalMessages: `${prefix}:index:messages:terminal`,
     messageDeadlines: `${prefix}:deadline:messages`,
     leaseDeadlines: `${prefix}:deadline:leases`,
+    bridgeSlotsIndex: `${prefix}:index:bridge-slots`,
+    bridgeSlotDeadlines: `${prefix}:deadline:bridge-slots`,
+    wakeStream: `${prefix}:stream:wake`,
+    wakeIntentsIndex: `${prefix}:index:wake-intents`,
+    wakeIntentDeadlines: `${prefix}:deadline:wake-intents`,
     daemonOwner: `${prefix}:runtime:daemon-owner`,
     agentDefinitionsIndex: `${prefix}:index:agent-definitions`,
     capabilitiesIndex: `${prefix}:index:capabilities`,
@@ -168,6 +205,8 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     projectSessions: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:sessions`,
     agentSessions: (agentId) => `${prefix}:index:agent:${keyPart(agentId)}:sessions`,
     lease: (leaseId) => `${prefix}:lease:${keyPart(leaseId)}`,
+    bridgeSlot: (digest) => `${prefix}:bridge-slot:${slotDigest(digest)}`,
+    bridgeSlotOwner: (digest) => `${prefix}:bridge-slot-owner:${slotDigest(digest)}`,
     projectLeases: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:leases`,
     sessionLeases: (sessionId) => `${prefix}:index:session:${keyPart(sessionId)}:leases`,
     sessionPresence: (sessionId) => `${prefix}:presence:session:${keyPart(sessionId)}`,
@@ -186,6 +225,17 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     targetSessionMessages: (sessionId) =>
       `${prefix}:index:session:${keyPart(sessionId)}:messages:target`,
     sessionInbox: (sessionId) => `${prefix}:inbox:session:${keyPart(sessionId)}`,
+    workflow: (workflowId) => `${prefix}:workflow:${keyPart(workflowId)}`,
+    projectWorkflows: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:workflows`,
+    coordinatorSessionWorkflows: (sessionId) =>
+      `${prefix}:index:session:${keyPart(sessionId)}:workflows:coordinator`,
+    workflowMessages: (workflowId) => `${prefix}:index:workflow:${keyPart(workflowId)}:messages`,
+    workflowRootCorrelation: (correlationId) =>
+      `${prefix}:index:workflow:root-correlation:${keyPart(correlationId)}`,
+    workflowDecision: (workflowId, revision) =>
+      `${prefix}:workflow-decision:${keyPart(workflowId)}:${positiveSafeInteger(revision)}`,
+    wakeIntent: (messageId) => `${prefix}:wake-intent:${keyPart(messageId)}`,
+    projectWakeIntents: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:wake-intents`,
     agentDefinition: (agentId) => `${prefix}:agent-definition:${keyPart(agentId)}`,
     projectAgentBinding: (bindingId) => `${prefix}:project-agent-binding:${keyPart(bindingId)}`,
     projectAgentBindings: (projectId) =>

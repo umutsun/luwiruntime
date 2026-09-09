@@ -39,18 +39,36 @@ describe('Redis Function registry', () => {
     const registry = createFunctionRegistry();
 
     expect(registry.libraryName).toBe('luwi_v1');
-    expect(registry.version).toBe(12);
+    expect(registry.version).toBe(13);
     expect(Object.values(registry.functions)).toEqual(productionFunctionNames);
   });
 
   it('namespaces both test library and every registered function', () => {
     const registry = createFunctionRegistry('run_123');
+    const library = buildFunctionLibrary(registry);
 
     expect(registry.libraryName).toBe('luwi_test_run_123_v1');
     for (const functionName of Object.values(registry.functions)) {
       expect(functionName).toContain('run_123');
       expect(productionFunctionNames).not.toContain(functionName);
+      expect(library.source).toContain(`function_name='${functionName}'`);
     }
+  });
+
+  it('rejects invalid test suffixes and creates disjoint registries', () => {
+    for (const suffix of ['', 'bad-suffix', 'x'.repeat(65)]) {
+      expect(() => createFunctionRegistry(suffix)).toThrow('Invalid Redis Function test suffix');
+    }
+
+    const left = createFunctionRegistry('left');
+    const right = createFunctionRegistry('right');
+    expect(left.libraryName).not.toBe(right.libraryName);
+    expect(new Set(Object.values(left.functions))).toHaveLength(
+      Object.values(left.functions).length,
+    );
+    expect(
+      Object.values(left.functions).some((name) => Object.values(right.functions).includes(name)),
+    ).toBe(false);
   });
 
   it('builds stable versioned Lua source and a SHA-256 content hash', () => {
@@ -60,6 +78,9 @@ describe('Redis Function registry', () => {
     expect(library.source).toContain('#!lua name=luwi_v1');
     for (const functionName of productionFunctionNames) {
       expect(library.source).toContain(functionName);
+    }
+    for (const functionName of Object.values(library.registry.functions)) {
+      expect(library.source).toContain(`function_name='${functionName}'`);
     }
     expect(library.contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(repeated.contentHash).toBe(library.contentHash);

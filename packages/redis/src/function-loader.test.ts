@@ -16,6 +16,7 @@ class FakeAdminClient implements RedisAdminClient {
   readonly commands: string[][] = [];
   redisVersion = '7.2.5';
   library?: LibraryState;
+  versionReply: unknown = JSON.stringify({ version: 13, libraryName: 'luwi_v1' });
 
   async sendCommand(arguments_: readonly string[]): Promise<unknown> {
     const command = [...arguments_];
@@ -60,10 +61,7 @@ class FakeAdminClient implements RedisAdminClient {
       return command.includes('REPLACE') ? 'REPLACED' : 'LOADED';
     }
     if (command[0] === 'FCALL') {
-      return JSON.stringify({
-        version: 12,
-        libraryName: command[1]?.includes('test') ? 'test' : 'luwi_v1',
-      });
+      return this.versionReply;
     }
     throw new Error(`Unexpected command: ${command.join(' ')}`);
   }
@@ -115,6 +113,66 @@ describe('Redis Function loader', () => {
     });
 
     expect(client.commands.some((command) => command[1] === 'LOAD')).toBe(false);
+  });
+
+  it('replaces a source mismatch even when the installed function names match', async () => {
+    const client = new FakeAdminClient();
+    const library = buildFunctionLibrary(createFunctionRegistry());
+    client.library = {
+      source: `${library.source}\n-- incompatible`,
+      functionNames: Object.values(library.registry.functions),
+    };
+
+    await verifyOrLoadFunctionLibrary(client, library, { ownsLease: async () => true });
+
+    expect(client.commands).toContainEqual(['FUNCTION', 'LOAD', 'REPLACE', library.source]);
+  });
+
+  it('replaces missing or extra installed functions despite matching source', async () => {
+    const library = buildFunctionLibrary(createFunctionRegistry());
+    for (const functionNames of [
+      Object.values(library.registry.functions).slice(1),
+      [...Object.values(library.registry.functions), 'unexpected_function'],
+    ]) {
+      const client = new FakeAdminClient();
+      client.library = { source: library.source, functionNames };
+
+      await verifyOrLoadFunctionLibrary(client, library, { ownsLease: async () => true });
+
+      expect(client.commands).toContainEqual(['FUNCTION', 'LOAD', 'REPLACE', library.source]);
+    }
+  });
+
+  it('verifies a suffixed library against its exact reply', async () => {
+    const client = new FakeAdminClient();
+    const library = buildFunctionLibrary(createFunctionRegistry('suite_1'));
+    client.versionReply = JSON.stringify({
+      version: 13,
+      libraryName: library.registry.libraryName,
+    });
+
+    await verifyOrLoadFunctionLibrary(client, library, { ownsLease: async () => true });
+
+    expect(client.commands.at(-1)).toEqual(['FCALL', library.registry.functions.version, '0']);
+  });
+
+  it.each([
+    ['wrong version', JSON.stringify({ version: 12, libraryName: 'luwi_v1' })],
+    ['wrong library name', JSON.stringify({ version: 13, libraryName: 'test' })],
+    ['null object', 'null'],
+    ['malformed response', '{not json}'],
+  ])('rejects a %s version reply', async (_description, versionReply) => {
+    const client = new FakeAdminClient();
+    const library = buildFunctionLibrary(createFunctionRegistry());
+    client.library = {
+      source: library.source,
+      functionNames: Object.values(library.registry.functions),
+    };
+    client.versionReply = versionReply;
+
+    await expect(
+      verifyOrLoadFunctionLibrary(client, library, { ownsLease: async () => true }),
+    ).rejects.toMatchObject({ code: 'FUNCTION_LIBRARY_INVALID' });
   });
 
   it('replaces an incompatible library only while ownership is valid', async () => {

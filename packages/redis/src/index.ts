@@ -7,7 +7,11 @@ export type {
   RedisGatewayOptions,
   RedisHealth,
 } from './redis-gateway.js';
-export { createRedisKeys, SESSION_INBOX_CONSUMER_GROUP } from './redis-keys.js';
+export {
+  createRedisKeys,
+  SESSION_INBOX_CONSUMER_GROUP,
+  WAKE_CONSUMER_GROUP,
+} from './redis-keys.js';
 export type { RedisKeys } from './redis-keys.js';
 export { createFunctionRegistry } from './function-registry.js';
 export type { RedisFunctionRegistry } from './function-registry.js';
