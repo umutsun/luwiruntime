@@ -32,6 +32,10 @@ function isAvailable(session: SessionView): boolean {
   );
 }
 
+function isNativeHeadlessBridge(session: SessionView): boolean {
+  return session.metadata.bridge === 'native-headless';
+}
+
 export function selectMessageTarget(input: SelectMessageTargetInput): MessageTargetSelection {
   if (input.targetSessionId !== undefined) {
     const target = input.sessions.find((candidate) => candidate.id === input.targetSessionId);
@@ -61,6 +65,11 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
         isAvailable(candidate),
     )
     .toSorted((left, right) => {
+      const bridgePreferenceDifference =
+        Number(isNativeHeadlessBridge(right)) - Number(isNativeHeadlessBridge(left));
+      if (bridgePreferenceDifference !== 0) {
+        return bridgePreferenceDifference;
+      }
       const rankDifference = statusRank[left.status] - statusRank[right.status];
       if (rankDifference !== 0) {
         return rankDifference;
@@ -80,6 +89,8 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
   return {
     status: 'selected',
     session: selected,
-    reason: `selected agent ${targetAgentId} session ${selected.id} by status, heartbeat, and session ID`,
+    reason: isNativeHeadlessBridge(selected)
+      ? `selected agent ${targetAgentId} session ${selected.id} by native-headless bridge preference, status, heartbeat, and session ID`
+      : `selected agent ${targetAgentId} session ${selected.id} by status, heartbeat, and session ID`,
   };
 }
