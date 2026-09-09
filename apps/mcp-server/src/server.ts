@@ -10,6 +10,10 @@ import {
   mcpLeaseCollectionOutputSchema,
   workLeaseSchema,
   mcpAwaitResponseInputSchema,
+  mcpContinueWorkflowInputSchema,
+  mcpContinueWorkflowOutputSchema,
+  mcpCreateWorkflowInputSchema,
+  mcpCreateWorkflowOutputSchema,
   mcpFailMessageInputSchema,
   mcpGetMessageInputSchema,
   mcpGetProjectStateInputSchema,
@@ -596,6 +600,37 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
         mcpMessageOutputSchema,
         ({ correlationId, state }) => `Message ${correlationId} is ${state}.`,
         () => handlers.getMessage(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_create_workflow',
+    {
+      description:
+        'Create a durable workflow as the bound coordinator session and enqueue its first message.',
+      inputSchema: mcpCreateWorkflowInputSchema,
+      outputSchema: mcpCreateWorkflowOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpCreateWorkflowOutputSchema,
+        ({ status, workflow }) =>
+          `Workflow ${workflow.id} is ${status} at revision ${String(workflow.revision)}.`,
+        () => handlers.createWorkflow(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_continue_workflow',
+    {
+      description: 'Commit one exactly-once workflow decision as the bound actor session.',
+      inputSchema: mcpContinueWorkflowInputSchema,
+      outputSchema: mcpContinueWorkflowOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpContinueWorkflowOutputSchema,
+        ({ workflow }) =>
+          `Workflow ${workflow.id} is ${workflow.state} at revision ${String(workflow.revision)}.`,
+        () => handlers.continueWorkflow(input),
       ),
   );
   server.registerTool(

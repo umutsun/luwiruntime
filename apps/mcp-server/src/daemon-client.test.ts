@@ -73,4 +73,89 @@ describe('MCP daemon client', () => {
       new McpDaemonError('TARGET_SESSION_UNAVAILABLE', 'The target session is unavailable.', 409),
     );
   });
+
+  it('uses the bound workflow HTTP routes without adding process or Redis behavior', async () => {
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+    const workflow = {
+      id: 'workflow-1',
+      projectId: 'project-1',
+      coordinatorSessionId: 'session-1',
+      rootCorrelationId: 'correlation-root',
+      objective: 'Finish the durable workflow.',
+      revision: 1,
+      state: 'active',
+      currentMessageId: 'message-1',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    } as const;
+    const message = {
+      id: 'message-1',
+      correlationId: 'correlation-root',
+      projectId: 'project-1',
+      sourceSessionId: 'session-1',
+      sourceAgentId: 'claude-sim',
+      targetSessionId: 'session-target',
+      targetAgentId: 'gemini',
+      selectionReason: 'selected target',
+      kind: 'instruction',
+      content: 'Implement the task.',
+      evidenceRequirements: [],
+      state: 'queued',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deadlineAt: timestamp,
+    } as const;
+    const fetch: McpFetch = async (url, init) => {
+      requests.push({
+        url,
+        method: init?.method,
+        ...(init?.body === undefined ? {} : { body: JSON.parse(init.body) }),
+      });
+      return url.endsWith('/continue')
+        ? response({
+            status: 'updated',
+            workflow: { ...workflow, revision: 2, state: 'completed' },
+          })
+        : response({ status: 'created', workflow, message }, 201);
+    };
+    const client = createDaemonClient({
+      daemonUrl: 'http://127.0.0.1:4782',
+      requestTimeoutMs: 30_000,
+      fetch,
+    });
+    const create = {
+      objective: workflow.objective,
+      coordinatorSessionId: 'session-1',
+      rootCorrelationId: 'correlation-root',
+      firstMessage: {
+        targetAgentId: 'gemini',
+        kind: 'instruction' as const,
+        content: 'Implement the task.',
+      },
+    };
+    const continuation = {
+      workflowId: 'workflow-1',
+      expectedRevision: 1,
+      proof: { kind: 'wake' as const, wakeIntentId: 'wake-1' },
+      decision: { kind: 'complete' as const },
+    };
+
+    await expect(client.createWorkflow(create)).resolves.toMatchObject({ status: 'created' });
+    await expect(
+      client.continueWorkflow('session-1', 'workflow-1', continuation),
+    ).resolves.toMatchObject({ status: 'updated' });
+
+    expect(requests).toEqual([
+      {
+        url: 'http://127.0.0.1:4782/api/v1/workflows',
+        method: 'POST',
+        body: create,
+      },
+      {
+        url: 'http://127.0.0.1:4782/api/v1/sessions/session-1/workflows/workflow-1/continue',
+        method: 'POST',
+        body: continuation,
+      },
+    ]);
+  });
 });

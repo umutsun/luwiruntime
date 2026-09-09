@@ -20,6 +20,8 @@ import {
   inboxClaimResponseSchema,
   messageCreateResponseSchema,
   messageResponseSchema,
+  mcpContinueWorkflowOutputSchema,
+  mcpCreateWorkflowOutputSchema,
   projectCollectionResponseSchema,
   projectAgentBindingCollectionSchema,
   projectResponseSchema,
@@ -35,6 +37,7 @@ import {
   type AgentMessage,
   type AgentDefinition,
   type AgentMessageResponse,
+  type ContinueWorkflowRequest,
   type InboxClaimRequest,
   type InboxClaimResponse,
   type CapabilityPackage,
@@ -62,6 +65,8 @@ import {
   type SessionView,
   type TechnologyRecord,
   type UsageSummary,
+  type WorkflowCreateRequest,
+  type WorkflowView,
 } from '@luwi/protocol';
 
 export type McpFetchInit = {
@@ -164,6 +169,16 @@ export type McpDaemonClient = {
     limit: number,
   ): Promise<LeaseCollection>;
   askAgent(request: MessageCreateRequest, idempotencyKey?: string): Promise<MessageCreateResponse>;
+  createWorkflow(request: WorkflowCreateRequest): Promise<{
+    status: 'created' | 'existing';
+    workflow: WorkflowView;
+    message: AgentMessage;
+  }>;
+  continueWorkflow(
+    actorSessionId: string,
+    workflowId: string,
+    request: ContinueWorkflowRequest,
+  ): Promise<{ status: 'updated'; workflow: WorkflowView; message?: AgentMessage | undefined }>;
   getMessage(correlationId: string): Promise<AgentMessage>;
   waitForMessage(correlationId: string, waitMs: number): Promise<AgentMessage>;
   claimInbox(sessionId: string, request: InboxClaimRequest): Promise<InboxClaimResponse>;
@@ -391,6 +406,13 @@ export function createDaemonClient(options: {
         messageCreateResponseSchema,
         body,
         idempotencyKey === undefined ? {} : { 'idempotency-key': idempotencyKey },
+      ),
+    createWorkflow: (body) => post('/api/v1/workflows', mcpCreateWorkflowOutputSchema, body),
+    continueWorkflow: (actorSessionId, workflowId, body) =>
+      post(
+        `/api/v1/sessions/${encodeURIComponent(actorSessionId)}/workflows/${encodeURIComponent(workflowId)}/continue`,
+        mcpContinueWorkflowOutputSchema,
+        body,
       ),
     getMessage: (correlationId) =>
       request(`/api/v1/messages/${encodeURIComponent(correlationId)}`, messageResponseSchema),

@@ -126,6 +126,8 @@ function client(): McpDaemonClient {
       selectionReason: 'selected target',
       idempotent: false,
     })),
+    createWorkflow: vi.fn(),
+    continueWorkflow: vi.fn(),
     getMessage: vi.fn(),
     waitForMessage: vi.fn(),
     claimInbox: vi.fn(async () => ({ items: [] })),
@@ -181,6 +183,82 @@ describe('MCP tool handlers', () => {
       'source',
       expect.objectContaining({ status: 'answered' }),
     );
+  });
+
+  it('derives workflow coordinator and continuation actor from the bound session', async () => {
+    const daemon = client();
+    const workflow = {
+      id: 'workflow-1',
+      projectId: 'project-1',
+      coordinatorSessionId: boundSession.id,
+      rootCorrelationId: 'correlation-root',
+      objective: 'Finish the durable workflow.',
+      revision: 1,
+      state: 'active' as const,
+      currentMessageId: 'message-1',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const createInput = {
+      objective: workflow.objective,
+      rootCorrelationId: workflow.rootCorrelationId,
+      firstMessage: {
+        targetAgentId: 'claude-sim',
+        kind: 'instruction' as const,
+        content: 'Implement the next step.',
+      },
+    };
+    const continuation = {
+      workflowId: workflow.id,
+      expectedRevision: 1,
+      proof: { kind: 'wake' as const, wakeIntentId: 'wake-1' },
+      decision: { kind: 'complete' as const },
+    };
+    vi.mocked(daemon.createWorkflow).mockResolvedValue({
+      status: 'created',
+      workflow,
+      message: {
+        id: 'message-1',
+        correlationId: 'correlation-root',
+        projectId: 'project-1',
+        sourceSessionId: boundSession.id,
+        sourceAgentId: boundSession.agentId,
+        targetSessionId: 'target',
+        targetAgentId: 'claude-sim',
+        selectionReason: 'selected target',
+        kind: 'instruction',
+        content: 'Implement the next step.',
+        evidenceRequirements: [],
+        state: 'queued',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deadlineAt: timestamp,
+      },
+    });
+    vi.mocked(daemon.continueWorkflow).mockResolvedValue({
+      status: 'updated',
+      workflow: { ...workflow, revision: 2, state: 'completed' },
+    });
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await tools.createWorkflow(createInput);
+    await tools.continueWorkflow(continuation);
+
+    expect(daemon.createWorkflow).toHaveBeenCalledWith({
+      ...createInput,
+      coordinatorSessionId: boundSession.id,
+    });
+    expect(daemon.continueWorkflow).toHaveBeenCalledWith(
+      boundSession.id,
+      workflow.id,
+      continuation,
+    );
+    await expect(
+      tools.createWorkflow({ ...createInput, coordinatorSessionId: 'forged' }),
+    ).rejects.toThrow();
+    await expect(
+      tools.continueWorkflow({ ...continuation, actorSessionId: 'forged' }),
+    ).rejects.toThrow();
   });
 
   it('returns only the bound project state and rejects cross-project session reads', async () => {

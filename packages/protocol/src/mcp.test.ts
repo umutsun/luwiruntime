@@ -4,6 +4,8 @@ import {
   mcpAcknowledgeMessageInputSchema,
   mcpAskAgentInputSchema,
   mcpAwaitResponseInputSchema,
+  mcpContinueWorkflowInputSchema,
+  mcpCreateWorkflowInputSchema,
   mcpGetProjectStateInputSchema,
   mcpGetSessionInputSchema,
   mcpInboxNextInputSchema,
@@ -103,6 +105,39 @@ describe('MCP tool contracts', () => {
         },
       }).response.status,
     ).toBe('answered');
+  });
+
+  it('keeps workflow coordinator and actor identities outside MCP input', () => {
+    const create = {
+      objective: 'Finish the wake workflow.',
+      rootCorrelationId: 'correlation-root',
+      firstMessage: {
+        targetAgentId: 'claude-code',
+        kind: 'instruction' as const,
+        content: 'Implement the bounded task.',
+      },
+    };
+    expect(mcpCreateWorkflowInputSchema.parse(create)).toEqual(create);
+    expect(
+      mcpCreateWorkflowInputSchema.safeParse({
+        ...create,
+        coordinatorSessionId: 'forged-coordinator',
+      }).success,
+    ).toBe(false);
+
+    const continuation = {
+      workflowId: 'workflow-1',
+      expectedRevision: 1,
+      proof: { kind: 'wake' as const, wakeIntentId: 'wake-1' },
+      decision: { kind: 'complete' as const },
+    };
+    expect(mcpContinueWorkflowInputSchema.parse(continuation)).toEqual(continuation);
+    expect(
+      mcpContinueWorkflowInputSchema.safeParse({
+        ...continuation,
+        actorSessionId: 'forged-actor',
+      }).success,
+    ).toBe(false);
   });
 
   it('defines bounded validated output contracts', () => {

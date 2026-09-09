@@ -20,6 +20,11 @@ import { projectSchema } from './project.js';
 import { agentIdSchema } from './session.js';
 import { sessionViewSchema } from './session.js';
 import {
+  continueWorkflowRequestSchema,
+  workflowCreateRequestSchema,
+  workflowViewSchema,
+} from './workflow.js';
+import {
   agentDefinitionSchema,
   capabilityKindSchema,
   capabilityPackageSchema,
@@ -222,6 +227,12 @@ export const mcpGetMessageInputSchema = z.strictObject({
   correlationId: identifierSchema,
 });
 
+/** Coordinator/actor identities are injected from the bound MCP session. */
+export const mcpCreateWorkflowInputSchema = workflowCreateRequestSchema.omit({
+  coordinatorSessionId: true,
+});
+export const mcpContinueWorkflowInputSchema = continueWorkflowRequestSchema;
+
 export const mcpInboxNextInputSchema = z.strictObject({
   bridgeInstanceId: bridgeInstanceIdSchema,
   limit: z.number().int().min(1).max(INBOX_MAX_CLAIM_LIMIT).default(INBOX_DEFAULT_CLAIM_LIMIT),
@@ -268,6 +279,16 @@ export const mcpAskAgentOutputSchema = z.strictObject({
   response: agentMessageResponseSchema.optional(),
 });
 export const mcpMessageOutputSchema = agentMessageSchema;
+export const mcpCreateWorkflowOutputSchema = z.strictObject({
+  status: z.enum(['created', 'existing']),
+  workflow: workflowViewSchema,
+  message: agentMessageSchema,
+});
+export const mcpContinueWorkflowOutputSchema = z.strictObject({
+  status: z.literal('updated'),
+  workflow: workflowViewSchema,
+  message: agentMessageSchema.optional(),
+});
 export const mcpInboxOutputSchema = inboxClaimResponseSchema;
 export const mcpListAgentsOutputSchema = z.strictObject({
   agents: z.array(agentDefinitionSchema).max(MCP_MAX_COLLECTION_ITEMS),
@@ -343,6 +364,8 @@ export type McpGetSessionInput = z.infer<typeof mcpGetSessionInputSchema>;
 export type McpGetProjectStateInput = z.infer<typeof mcpGetProjectStateInputSchema>;
 export type McpAwaitResponseInput = z.infer<typeof mcpAwaitResponseInputSchema>;
 export type McpGetMessageInput = z.infer<typeof mcpGetMessageInputSchema>;
+export type McpCreateWorkflowInput = z.infer<typeof mcpCreateWorkflowInputSchema>;
+export type McpContinueWorkflowInput = z.infer<typeof mcpContinueWorkflowInputSchema>;
 export type McpInboxNextInput = z.infer<typeof mcpInboxNextInputSchema>;
 export type McpAcknowledgeMessageInput = z.infer<typeof mcpAcknowledgeMessageInputSchema>;
 export type McpMarkMessageProcessingInput = z.infer<typeof mcpMarkMessageProcessingInputSchema>;
@@ -355,6 +378,8 @@ export type McpGetSessionOutput = z.infer<typeof mcpGetSessionOutputSchema>;
 export type McpGetProjectStateOutput = z.infer<typeof mcpGetProjectStateOutputSchema>;
 export type McpAskAgentOutput = z.infer<typeof mcpAskAgentOutputSchema>;
 export type McpMessageOutput = z.infer<typeof mcpMessageOutputSchema>;
+export type McpCreateWorkflowOutput = z.infer<typeof mcpCreateWorkflowOutputSchema>;
+export type McpContinueWorkflowOutput = z.infer<typeof mcpContinueWorkflowOutputSchema>;
 export type McpInboxOutput = z.infer<typeof mcpInboxOutputSchema>;
 export type McpListAgentsInput = z.infer<typeof mcpListAgentsInputSchema>;
 export type McpGetAgentInput = z.infer<typeof mcpGetAgentInputSchema>;

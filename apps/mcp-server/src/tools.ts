@@ -7,6 +7,8 @@ import {
   mcpReleaseLeaseInputSchema,
   mcpAskAgentInputSchema,
   mcpAwaitResponseInputSchema,
+  mcpContinueWorkflowInputSchema,
+  mcpCreateWorkflowInputSchema,
   mcpFailMessageInputSchema,
   mcpGetMessageInputSchema,
   mcpGetProjectStateInputSchema,
@@ -54,6 +56,8 @@ export type McpToolHandlers = {
   askAgent(input: unknown): Promise<unknown>;
   awaitResponse(input: unknown): Promise<unknown>;
   getMessage(input: unknown): Promise<unknown>;
+  createWorkflow(input: unknown): Promise<unknown>;
+  continueWorkflow(input: unknown): Promise<unknown>;
   inboxNext(input: unknown): Promise<unknown>;
   acknowledgeMessage(input: unknown): Promise<unknown>;
   markMessageProcessing(input: unknown): Promise<unknown>;
@@ -263,6 +267,38 @@ export function createMcpToolHandlers(
     async getMessage(input) {
       const parsed = mcpGetMessageInputSchema.parse(input);
       return getBoundMessage(parsed.correlationId);
+    },
+    async createWorkflow(input) {
+      const parsed = mcpCreateWorkflowInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      const result = await client.createWorkflow({
+        ...parsed,
+        coordinatorSessionId: current.id,
+      });
+      if (
+        result.workflow.projectId !== current.projectId ||
+        result.workflow.coordinatorSessionId !== current.id
+      ) {
+        throw new McpDaemonError(
+          'BOUND_PROJECT_MISMATCH',
+          'The workflow response is outside the bound LUWI session project.',
+          409,
+        );
+      }
+      return result;
+    },
+    async continueWorkflow(input) {
+      const parsed = mcpContinueWorkflowInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      const result = await client.continueWorkflow(current.id, parsed.workflowId, parsed);
+      if (result.workflow.projectId !== current.projectId) {
+        throw new McpDaemonError(
+          'BOUND_PROJECT_MISMATCH',
+          'The workflow response is outside the bound LUWI session project.',
+          409,
+        );
+      }
+      return result;
     },
     async inboxNext(input) {
       const parsed = mcpInboxNextInputSchema.parse(input);
