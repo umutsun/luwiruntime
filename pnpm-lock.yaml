@@ -157,6 +157,9 @@ importers:
       '@luwi/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@luwi/runtime':
+        specifier: workspace:*
+        version: link:../runtime
       redis:
         specifier: ^6.1.0
         version: 6.1.0

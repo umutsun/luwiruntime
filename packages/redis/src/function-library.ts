@@ -38,7 +38,8 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     'local STREAM_SEQ_HEADROOM = {',
     "  ['1'] = '18446744073709551614',",
     "  ['2'] = '18446744073709551613',",
-    "  ['3'] = '18446744073709551612'",
+    "  ['3'] = '18446744073709551612',",
+    "  ['4'] = '18446744073709551611'",
     '}',
     '-- Capacity for `needed` further appends, not merely for one. A stream whose',
     '-- last id is within n-1 of the maximum passes stream_appendable, accepts the',
@@ -337,6 +338,162 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "  local project_stream_id = redis.call('XADD', project_stream, '*', 'event', event_json)",
     '  return {globalStreamId=global_stream_id, projectStreamId=project_stream_id}',
     'end',
+    `-- Bridge state is public JSON in a retained hash. Only the separate string
+-- key contains a private owner token. Validation helpers never mutate Redis.
+local BRIDGE_TTL = 15000
+local MAX_SAFE_INTEGER = 9007199254740991
+local function bridge_id(value)
+  return type(value) == 'string' and #value > 0 and #value <= 128 and string.match(value, '^[A-Za-z0-9][A-Za-z0-9._:-]*$') ~= nil
+end
+local function bridge_digest(value)
+  return type(value) == 'string' and #value == 64 and string.match(value, '^[a-f0-9]+$') ~= nil
+end
+local function bridge_profile(value)
+  return (value.provider == 'codex' or value.provider == 'claude-code' or value.provider == 'gemini-cli' or value.provider == 'antigravity') and (value.executionProfile == 'read-only' or value.executionProfile == 'workspace-write')
+end
+local function bridge_integer(value, minimum)
+  return type(value) == 'number' and value >= minimum and value <= MAX_SAFE_INTEGER and value == math.floor(value)
+end
+local function bridge_token(value)
+  return type(value) == 'string' and #value > 0 and #value <= 256 and string.match(value, '^%s') == nil and string.match(value, '%s$') == nil
+end
+local function bridge_error(code) return cjson.encode({status='error', code=code}) end
+local function bridge_reserved(metadata)
+  return metadata.bridge ~= nil or metadata.bridgeSlotId ~= nil or metadata.provider ~= nil or metadata.executionProfile ~= nil
+end
+local function bridge_input(input, token_required)
+  return type(input) == 'table' and bridge_digest(input.slotId) and bridge_id(input.workspaceId) and bridge_id(input.projectId) and bridge_id(input.agentId) and bridge_profile(input) and (not token_required or bridge_token(input.ownerToken))
+end
+local function bridge_key_types(keys, with_session)
+  local expected = {'hash', 'string', 'set', 'zset', 'stream', 'stream'}
+  if with_session then expected[7] = 'hash' end
+  if #keys ~= #expected then return false end
+  for i, wanted in ipairs(expected) do
+    if not type_is(keys[i], wanted) then return false end
+    for j = 1, i - 1 do if keys[i] == keys[j] then return false end end
+  end
+  return true
+end
+local function bridge_read(slot_key, owner_key, index_key, deadline_key, identity)
+  local exists = key_type(slot_key) ~= 'none'
+  local token = redis.call('GET', owner_key)
+  local ttl = redis.call('PTTL', owner_key)
+  local score = redis.call('ZSCORE', deadline_key, identity.slotId)
+  local indexed = redis.call('SISMEMBER', index_key, identity.slotId)
+  if not exists then
+    if token or score or indexed ~= 0 then return nil, nil, 'REDIS_STATE_INVALID' end
+    return nil, nil, nil
+  end
+  if redis.call('PTTL', slot_key) ~= -1 then return nil, nil, 'REDIS_STATE_INVALID' end
+  local encoded = redis.call('HGET', slot_key, 'json')
+  if not encoded then return nil, nil, 'REDIS_STATE_INVALID' end
+  local valid, slot = pcall(cjson.decode, encoded)
+  if not valid or type(slot) ~= 'table' then return nil, nil, 'REDIS_STATE_INVALID' end
+  local fields = {id=true, workspaceId=true, projectId=true, agentId=true, provider=true, executionProfile=true, state=true, revision=true, sessionId=true, expiresAt=true}
+  for field, _ in pairs(slot) do if not fields[field] then return nil, nil, 'REDIS_STATE_INVALID' end end
+  if slot.id ~= identity.slotId or slot.workspaceId ~= identity.workspaceId or slot.projectId ~= identity.projectId or slot.agentId ~= identity.agentId or not bridge_profile(slot) or not bridge_integer(slot.revision, 1) or type(slot.expiresAt) ~= 'string' or not string.match(slot.expiresAt, '^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%d%.%d%d%dZ$') or (slot.sessionId ~= nil and not bridge_id(slot.sessionId)) or indexed ~= 1 then
+    return nil, nil, 'REDIS_STATE_INVALID'
+  end
+  if slot.state == 'active' then
+    local deadline = tonumber(score)
+    if not bridge_integer(deadline, 0) or iso_from_milliseconds(deadline) ~= slot.expiresAt then return nil, nil, 'REDIS_STATE_INVALID' end
+    if token and (not bridge_token(token) or ttl <= 0 or ttl > BRIDGE_TTL or redis.call('PEXPIRETIME', owner_key) ~= deadline) then return nil, nil, 'REDIS_STATE_INVALID' end
+  elseif slot.state == 'standby' or slot.state == 'expired' or slot.state == 'degraded' then
+    if token or score or slot.sessionId then return nil, nil, 'REDIS_STATE_INVALID' end
+  else return nil, nil, 'REDIS_STATE_INVALID' end
+  return slot, token, nil
+end
+local function bridge_owned(slot, token, input, now)
+  return slot ~= nil and slot.state == 'active' and token == input.ownerToken and slot.provider == input.provider and slot.executionProfile == input.executionProfile and slot.expiresAt > now.timestamp
+end
+local function bridge_write(key, slot) redis.call('HSET', key, 'json', cjson.encode(slot)) end
+local function bridge_event(global_key, project_key, slot, event_id, kind, clock)
+  local event = {id=event_id, version=1, type='bridge.slot.' .. kind, occurredAt=clock.timestamp, workspaceId=slot.workspaceId, projectId=slot.projectId, agentId=slot.agentId, payload={slot=slot}}
+  if slot.sessionId then event.sessionId = slot.sessionId end
+  local streams = append_event(global_key, project_key, cjson.encode(event))
+  return {event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId}
+end
+local function bridge_attach_apply(slot_key, slot, session_id, global_key, project_key, event_id, clock)
+  slot.sessionId = session_id
+  slot.revision = slot.revision + 1
+  bridge_write(slot_key, slot)
+  return bridge_event(global_key, project_key, slot, event_id, 'attached', clock)
+end
+local function bridge_transition(keys, args, operation)
+  local with_session = operation == 'attach'
+  if #args ~= 1 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  local decoded, input = pcall(cjson.decode, args[1])
+  if not decoded or not bridge_input(input, operation ~= 'expire') or not bridge_id(input.eventId) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if (operation == 'acquire' or operation == 'renew') and input.ttlMs ~= BRIDGE_TTL then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if operation == 'acquire' and (not bridge_id(input.expiredEventId) or input.eventId == input.expiredEventId) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if with_session and not bridge_id(input.sessionId) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if operation == 'expire' and (not bridge_integer(input.expectedRevision, 1) or type(input.expectedExpiresAt) ~= 'string') then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if not bridge_key_types(keys, with_session) then return bridge_error('REDIS_STATE_INVALID') end
+  local slot, token, invalid = bridge_read(keys[1], keys[2], keys[3], keys[4], input)
+  if invalid then return bridge_error(invalid) end
+  local clock = redis_now()
+  if operation == 'acquire' and token then
+    if bridge_owned(slot, token, input, clock) then return cjson.encode({status='acquired', slot=slot}) end
+    return cjson.encode({status='held', slot=slot})
+  end
+  if operation == 'expire' then
+    if not slot or slot.state ~= 'active' or token or slot.revision ~= input.expectedRevision or slot.expiresAt ~= input.expectedExpiresAt or slot.expiresAt > clock.timestamp then
+      return cjson.encode({status='unchanged', slot=slot})
+    end
+  elseif operation ~= 'acquire' and not bridge_owned(slot, token, input, clock) then
+    return cjson.encode({status='not_owner'})
+  end
+  if with_session then
+    local session = redis.call('HMGET', keys[7], 'id', 'projectId', 'agentId', 'status')
+    if session[1] ~= input.sessionId or session[2] ~= input.projectId or session[3] ~= input.agentId or not session[4] or session[4] == 'completed' or session[4] == 'disconnected' then return bridge_error('REDIS_STATE_INVALID') end
+    if slot.sessionId == input.sessionId then return cjson.encode({status='unchanged', slot=slot}) end
+  end
+  local needed = 1
+  if operation == 'acquire' and slot and slot.state == 'active' then needed = 2 end
+  if operation == 'renew' then needed = 0 end
+  if slot and slot.revision > MAX_SAFE_INTEGER - math.max(needed, 1) then return bridge_error('REDIS_STATE_INVALID') end
+  if needed > 0 and (not stream_has_capacity(keys[5], needed) or not stream_has_capacity(keys[6], needed)) then return bridge_error('REDIS_STATE_INVALID') end
+  -- All key, record, owner, revision and append checks precede this boundary.
+  if operation == 'acquire' then
+    local revision = 0
+    if slot then revision = slot.revision end
+    if slot and slot.state == 'active' then
+      slot.state = 'expired'; slot.sessionId = nil; slot.revision = slot.revision + 1
+      bridge_event(keys[5], keys[6], slot, input.expiredEventId, 'expired', clock)
+      revision = slot.revision
+    end
+    slot = {id=input.slotId, workspaceId=input.workspaceId, projectId=input.projectId, agentId=input.agentId, provider=input.provider, executionProfile=input.executionProfile, state='active', revision=revision + 1, expiresAt=iso_from_milliseconds(clock.milliseconds + BRIDGE_TTL)}
+    redis.call('SET', keys[2], input.ownerToken, 'PX', BRIDGE_TTL)
+    redis.call('SADD', keys[3], slot.id)
+    redis.call('ZADD', keys[4], clock.milliseconds + BRIDGE_TTL, slot.id)
+    bridge_write(keys[1], slot)
+    bridge_event(keys[5], keys[6], slot, input.eventId, 'acquired', clock)
+    return cjson.encode({status='acquired', slot=slot})
+  elseif operation == 'renew' then
+    slot.expiresAt = iso_from_milliseconds(clock.milliseconds + BRIDGE_TTL)
+    redis.call('PEXPIRE', keys[2], BRIDGE_TTL)
+    redis.call('ZADD', keys[4], clock.milliseconds + BRIDGE_TTL, slot.id)
+    bridge_write(keys[1], slot)
+    return cjson.encode({status='renewed', slot=slot})
+  elseif operation == 'attach' then
+    bridge_attach_apply(keys[1], slot, input.sessionId, keys[5], keys[6], input.eventId, clock)
+    return cjson.encode({status='attached', slot=slot})
+  else
+    slot.state = 'expired'
+    local status = 'expired'
+    if operation == 'release' then slot.state = 'standby'; status = 'released' end
+    slot.sessionId = nil; slot.revision = slot.revision + 1
+    redis.call('DEL', keys[2]); redis.call('ZREM', keys[4], slot.id)
+    bridge_write(keys[1], slot)
+    bridge_event(keys[5], keys[6], slot, input.eventId, status, clock)
+    return cjson.encode({status=status, slot=slot})
+  end
+end
+local function bridge_slot_acquire(keys, args) return bridge_transition(keys, args, 'acquire') end
+local function bridge_slot_renew(keys, args) return bridge_transition(keys, args, 'renew') end
+local function bridge_slot_attach(keys, args) return bridge_transition(keys, args, 'attach') end
+local function bridge_slot_release(keys, args) return bridge_transition(keys, args, 'release') end
+local function bridge_slot_expire(keys, args) return bridge_transition(keys, args, 'expire') end`,
     'local function project_register(keys, args)',
     '  if #keys ~= 5 or #args ~= 3 then',
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
@@ -406,7 +563,7 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "  return cjson.encode({status='created', project=stored, event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId})",
     'end',
     'local function session_register(keys, args)',
-    '  if (#keys ~= 9 and #keys ~= 14) or #args < 5 then',
+    '  if (#keys ~= 9 and #keys ~= 14 and #keys ~= 13 and #keys ~= 18) or #args < 5 then',
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
     '  local decoded, session = pcall(cjson.decode, args[1])',
@@ -423,19 +580,26 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
     '  local ttl = tonumber(args[4])',
-    '  if not ttl or ttl < 1 or ttl ~= math.floor(ttl) then',
+    '  if not ttl or ttl < 1 or ttl > 2147483647 or ttl ~= math.floor(ttl) then',
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
     '  local metadata_valid, metadata = pcall(cjson.decode, session.metadataJson)',
-    "  if not metadata_valid or type(metadata) ~= 'table' then",
+    "  if not metadata_valid or type(metadata) ~= 'table' or not string.match(session.metadataJson, '^%s*{') or #session.metadataJson > 16384 then",
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
+    "  if bridge_reserved(metadata) then return cjson.encode({status='reserved_metadata_rejected'}) end",
     "  if not type_is(keys[1], 'hash') or not type_is(keys[2], 'hash') or not type_is(keys[3], 'set') or not type_is(keys[4], 'set') or not type_is(keys[5], 'string') or not type_is(keys[6], 'zset') or not type_is(keys[7], 'stream') or not type_is(keys[8], 'stream') or not type_is(keys[9], 'stream') then",
     "    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
     '  end',
-    "  if key_type(keys[1]) ~= 'none' then",
-    "    return cjson.encode({status='error', code='SESSION_ID_CONFLICT'})",
-    '  end',
+    `  -- A committed registration owns its retry result. Its external slot,
+  -- project and native-link dependencies may legitimately change afterwards.
+  if key_type(keys[1]) ~= 'none' then
+    if redis.call('HGET', keys[1], 'registrationEventId') == args[3] and redis.call('HGET', keys[1], 'id') == session.id and redis.call('HGET', keys[1], 'agentId') == session.agentId and redis.call('HGET', keys[1], 'projectId') == session.projectId then
+      local result = redis.call('HGET', keys[1], 'registrationResult')
+      if result then return result end
+    end
+    return bridge_error('SESSION_ID_CONFLICT')
+  end`,
     "  if key_type(keys[2]) == 'none' then",
     "    return cjson.encode({status='not_found', entity='project'})",
     '  end',
@@ -443,10 +607,40 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     '  if stored_project_id ~= session.projectId then',
     "    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
     '  end',
+    `  local bridge = nil
+  local bridge_slot = nil
+  local bridge_offset = nil
+  local clock = redis_now()
+  if #keys == 13 or #keys == 18 then
+    bridge_offset = #keys - 4
+    local valid_bridge, declaration = pcall(cjson.decode, args[10] or '')
+    if not valid_bridge or type(declaration) ~= 'table' or not bridge_id(args[11]) or args[11] == args[3] then return bridge_error('REDIS_ARGUMENT_INVALID') end
+    for field, _ in pairs(declaration) do
+      if field ~= 'slotId' and field ~= 'ownerToken' and field ~= 'provider' and field ~= 'executionProfile' then return bridge_error('REDIS_ARGUMENT_INVALID') end
+    end
+    declaration.workspaceId = args[2]; declaration.projectId = session.projectId; declaration.agentId = session.agentId
+    if not bridge_input(declaration, true) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+    local expected = {'hash', 'string', 'set', 'zset'}
+    for i, wanted in ipairs(expected) do
+      local key = keys[bridge_offset + i]
+      if not type_is(key, wanted) then return bridge_error('REDIS_STATE_INVALID') end
+      for j = 1, bridge_offset + i - 1 do if key == keys[j] then return bridge_error('REDIS_STATE_INVALID') end end
+    end
+    if keys[7] == keys[8] then return bridge_error('REDIS_STATE_INVALID') end
+    local token, invalid
+    bridge_slot, token, invalid = bridge_read(keys[bridge_offset + 1], keys[bridge_offset + 2], keys[bridge_offset + 3], keys[bridge_offset + 4], declaration)
+    if invalid then return bridge_error(invalid) end
+    if not bridge_owned(bridge_slot, token, declaration, clock) then return cjson.encode({status='bridge_slot_not_owner'}) end
+    bridge = declaration
+    metadata.bridge = 'native-headless'; metadata.bridgeSlotId = bridge.slotId
+    metadata.provider = bridge.provider; metadata.executionProfile = bridge.executionProfile
+    session.metadataJson = cjson.encode(metadata)
+  end
+  if #session.metadataJson > 16384 then return bridge_error('REDIS_ARGUMENT_INVALID') end`,
     '  local native = nil',
     '  local declared = nil',
     '  local event_count = 1',
-    '  if #keys == 14 then',
+    '  if #keys == 14 or #keys == 18 then',
     "    if type(args[6]) ~= 'string' or type(args[7]) ~= 'string' or type(args[8]) ~= 'string' or args[8] == '' then",
     "      return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '    end',
@@ -471,6 +665,11 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "      return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
     '    end',
     '  end',
+    `  if bridge then
+    if bridge_slot.revision >= MAX_SAFE_INTEGER then return bridge_error('REDIS_STATE_INVALID') end
+    if args[11] == args[8] or args[11] == args[9] then return bridge_error('REDIS_ARGUMENT_INVALID') end
+    event_count = event_count + 1
+  end`,
     '  if not stream_has_capacity(keys[7], event_count) or not stream_has_capacity(keys[8], event_count) then',
     "    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
     '  end',
@@ -483,7 +682,6 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "      return cjson.encode({status='error', code=native_error})",
     '    end',
     '  end',
-    '  local clock = redis_now()',
     '  local stored = {',
     "    id=session.id, agentId=session.agentId, projectId=session.projectId, status='starting',",
     '    workingDirectory=session.workingDirectory, startedAt=clock.timestamp,',
@@ -515,10 +713,20 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     '    unlinked_event = native_apply(keys[10], keys[11], keys[12], keys[13], keys[14], native, clock, args[9], args[2])',
     '  end',
     '  local streams = append_event(keys[7], keys[8], event_json)',
-    '  if not native then',
-    "    return cjson.encode({status='created', session=stored, event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId})",
+    `  local attached_event = nil
+  if bridge then attached_event = bridge_attach_apply(keys[bridge_offset + 1], bridge_slot, session.id, keys[7], keys[8], args[11], clock) end
+  local function remember(result)
+    local encoded = cjson.encode(result)
+    redis.call('HSET', keys[1], 'registrationEventId', args[3], 'registrationResult', encoded)
+    return encoded
+  end`,
+    `  if not native then
+    local result = {status='created', session=stored, event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId}
+    if attached_event then result.events = {{event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId}, attached_event} end
+    return remember(result)`,
     '  end',
     '  local events = {{event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId}}',
+    '  if attached_event then events[#events + 1] = attached_event end',
     '  if unlinked_event then',
     '    local unlinked_streams = append_event(keys[7], keys[8], cjson.encode(unlinked_event))',
     '    events[#events + 1] = {event=unlinked_event, globalStreamId=unlinked_streams.globalStreamId, projectStreamId=unlinked_streams.projectStreamId}',
@@ -535,7 +743,7 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "  if tonumber(native.expectedVersion) == 0 then transition = 'created' end",
     "  local native_result = {transition=transition, binding=redis.call('HGETALL', keys[10]), link=redis.call('HGETALL', keys[11])}",
     "  if native.staleLinkId then native_result.staleLink = redis.call('HGETALL', keys[14]) end",
-    "  return cjson.encode({status='created', session=stored, event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId, native=native_result, events=events})",
+    "  return remember({status='created', session=stored, event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId, native=native_result, events=events})",
     'end',
     '-- B0: an already-registered, live session declaring its native identity.',
     '-- The policy has already decided in @luwi/runtime; this validates that the',
@@ -704,7 +912,7 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     '  end',
     '  local ttl = tonumber(args[4])',
     '  local interval = tonumber(args[5])',
-    "  if args[1] == '' or args[2] == '' or args[3] == '' or not ttl or ttl < 1 or ttl ~= math.floor(ttl) or not interval or interval < 0 or interval ~= math.floor(interval) or (args[6] ~= '0' and args[6] ~= '1') then",
+    "  if args[1] == '' or args[2] == '' or args[3] == '' or not ttl or ttl < 1 or ttl > 2147483647 or ttl ~= math.floor(ttl) or not interval or interval < 0 or interval > MAX_SAFE_INTEGER or interval ~= math.floor(interval) or (args[6] ~= '0' and args[6] ~= '1') then",
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
     "  local values = redis.call('HMGET', keys[1], 'id', 'agentId', 'projectId', 'status', 'metadata', 'lastHeartbeatEventAt')",
@@ -715,12 +923,23 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "    return cjson.encode({status='terminal', currentStatus=values[4]})",
     '  end',
     '  local metadata_changed = false',
+    '  local next_metadata = args[7]',
     "  if args[6] == '1' then",
     '    local valid_metadata, decoded_metadata = pcall(cjson.decode, args[7])',
-    "    if not valid_metadata or type(decoded_metadata) ~= 'table' then",
+    "    if not valid_metadata or type(decoded_metadata) ~= 'table' or not string.match(args[7], '^%s*{') or #args[7] > 16384 then",
     "      return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '    end',
-    '    metadata_changed = values[5] ~= args[7]',
+    `    if bridge_reserved(decoded_metadata) then return cjson.encode({status='reserved_metadata_rejected'}) end
+    local stored_valid, stored_metadata = pcall(cjson.decode, values[5])
+    if not stored_valid or type(stored_metadata) ~= 'table' then return bridge_error('REDIS_STATE_INVALID') end
+    if bridge_reserved(stored_metadata) then
+      if stored_metadata.bridge ~= 'native-headless' or not bridge_digest(stored_metadata.bridgeSlotId) or not bridge_profile(stored_metadata) then return bridge_error('REDIS_STATE_INVALID') end
+      decoded_metadata.bridge = stored_metadata.bridge; decoded_metadata.bridgeSlotId = stored_metadata.bridgeSlotId
+      decoded_metadata.provider = stored_metadata.provider; decoded_metadata.executionProfile = stored_metadata.executionProfile
+      next_metadata = cjson.encode(decoded_metadata)
+    end
+    if #next_metadata > 16384 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+    metadata_changed = values[5] ~= next_metadata`,
     '  end',
     '  local clock = redis_now()',
     '  local last_event_ms = tonumber(values[6])',
@@ -729,7 +948,7 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
     '  end',
     "  redis.call('HSET', keys[1], 'lastHeartbeatAt', clock.timestamp)",
-    "  if args[6] == '1' then redis.call('HSET', keys[1], 'metadata', args[7]) end",
+    "  if args[6] == '1' then redis.call('HSET', keys[1], 'metadata', next_metadata) end",
     "  redis.call('SET', keys[2], values[1], 'PX', ttl)",
     "  redis.call('ZADD', keys[3], clock.milliseconds + ttl, values[1])",
     '  if not emit_event then',
@@ -1528,6 +1747,11 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     'end',
     register(registry.functions.projectRegister, 'project_register'),
     register(registry.functions.sessionRegister, 'session_register'),
+    register(registry.functions.bridgeSlotAcquire, 'bridge_slot_acquire'),
+    register(registry.functions.bridgeSlotRenew, 'bridge_slot_renew'),
+    register(registry.functions.bridgeSlotAttach, 'bridge_slot_attach'),
+    register(registry.functions.bridgeSlotRelease, 'bridge_slot_release'),
+    register(registry.functions.bridgeSlotExpire, 'bridge_slot_expire'),
     register(registry.functions.sessionHeartbeat, 'session_heartbeat'),
     register(registry.functions.sessionStatus, 'session_status'),
     register(registry.functions.sessionClose, 'session_close'),

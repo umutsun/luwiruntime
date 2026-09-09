@@ -1,5 +1,6 @@
 import {
   agentSessionSchema,
+  bridgeOwnerDeclarationSchema,
   nativeSessionBindingSchema,
   nativeSessionLinkSchema,
   projectSchema,
@@ -8,6 +9,7 @@ import {
   sessionStatusSchema,
   sessionViewSchema,
   type AgentSession,
+  type BridgeOwnerDeclaration,
   type NativeSessionBinding,
   type NativeSessionLink,
   type Project,
@@ -76,6 +78,8 @@ export type RegisterSessionInput = {
   eventId: string;
   presenceTtlMs: number;
   native?: NativeRegistrationInput;
+  bridgeOwner?: BridgeOwnerDeclaration;
+  bridgeAttachedEventId?: string;
 };
 
 /**
@@ -182,7 +186,8 @@ export type RegisterSessionResult =
       native?: NativeTransitionResult;
       events?: AppendedEvent[];
     }
-  | { status: 'not_found'; entity: 'project' };
+  | { status: 'not_found'; entity: 'project' }
+  | { status: 'bridge_slot_not_owner' | 'reserved_metadata_rejected' };
 
 export type UpdateSessionStatusInput = {
   sessionId: string;
@@ -219,6 +224,7 @@ export type HeartbeatSessionInput = {
 };
 
 export type HeartbeatSessionResult =
+  | { status: 'reserved_metadata_rejected' }
   | {
       status: 'renewed';
       eventEmitted: false;
@@ -407,6 +413,8 @@ function parseRegisterSessionResult(value: unknown): RegisterSessionResult {
   if (value.status === 'error' && typeof value.code === 'string' && value.code !== '') {
     throw new RedisRepositoryError(value.code, 'Redis rejected session registration.');
   }
+  if (value.status === 'bridge_slot_not_owner' || value.status === 'reserved_metadata_rejected')
+    return { status: value.status };
   if (value.status === 'not_found' && value.entity === 'project') {
     return { status: 'not_found', entity: 'project' };
   }
@@ -607,6 +615,8 @@ function parseHeartbeatResult(value: unknown): HeartbeatSessionResult {
   if (value.status === 'error' && typeof value.code === 'string') {
     throw new RedisRepositoryError(value.code, 'Redis rejected the session heartbeat.');
   }
+  if (value.status === 'reserved_metadata_rejected')
+    return { status: 'reserved_metadata_rejected' };
   if (value.status === 'not_found' && value.entity === 'session') {
     return { status: 'not_found', entity: 'session' };
   }
@@ -830,6 +840,8 @@ function parseSessionHash(reply: unknown): AgentSession | null {
   }
   const normalized = { ...record };
   delete normalized.lastHeartbeatEventAt;
+  delete normalized.registrationEventId;
+  delete normalized.registrationResult;
   for (const optional of ['taskSummary', 'branch', 'worktreePath']) {
     if (normalized[optional] === '') {
       delete normalized[optional];
@@ -963,6 +975,22 @@ export function createRuntimeRepository(options: {
         if (native.unlinkedEventId !== undefined) {
           commandArgs.push(native.unlinkedEventId);
         }
+      }
+      if (input.bridgeOwner !== undefined) {
+        const owner = bridgeOwnerDeclarationSchema.safeParse(input.bridgeOwner);
+        if (!owner.success || input.bridgeAttachedEventId === undefined)
+          throw new RedisRepositoryError(
+            'REDIS_ARGUMENT_INVALID',
+            'Bridge owner declaration is invalid.',
+          );
+        commandKeys.push(
+          keys.bridgeSlot(owner.data.slotId),
+          keys.bridgeSlotOwner(owner.data.slotId),
+          keys.bridgeSlotsIndex,
+          keys.bridgeSlotDeadlines,
+        );
+        while (commandArgs.length < 9) commandArgs.push('');
+        commandArgs.push(JSON.stringify(owner.data), input.bridgeAttachedEventId);
       }
       const reply = await client.sendCommand([
         'FCALL',

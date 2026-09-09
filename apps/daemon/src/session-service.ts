@@ -283,6 +283,7 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
       const registrationEventId = createId();
       const linkedEventId = createId();
       const unlinkedEventId = createId();
+      const bridgeAttachedEventId = request.bridgeOwner === undefined ? undefined : createId();
       const session = {
         id: sessionId,
         agentId: request.agentId,
@@ -311,7 +312,27 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
             eventId: registrationEventId,
             presenceTtlMs: options.presenceTtlMs,
             ...(native === undefined ? {} : { native }),
+            ...(request.bridgeOwner === undefined
+              ? {}
+              : {
+                  bridgeOwner: request.bridgeOwner,
+                  bridgeAttachedEventId: bridgeAttachedEventId!,
+                }),
           });
+          if (result.status === 'bridge_slot_not_owner') {
+            throw new ApplicationError(
+              'BRIDGE_SLOT_NOT_OWNER',
+              'The bridge slot ownership is no longer valid.',
+              409,
+            );
+          }
+          if (result.status === 'reserved_metadata_rejected') {
+            throw new ApplicationError(
+              'RESERVED_METADATA_REJECTED',
+              'Session metadata contains reserved bridge fields.',
+              409,
+            );
+          }
           if (result.status === 'not_found') {
             throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
           }
@@ -487,6 +508,13 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
           ? {}
           : { metadataJson: canonicalJsonStringify(request.metadata) }),
       });
+      if (result.status === 'reserved_metadata_rejected') {
+        throw new ApplicationError(
+          'RESERVED_METADATA_REJECTED',
+          'Session metadata contains reserved bridge fields.',
+          409,
+        );
+      }
       if (result.status === 'not_found') {
         throw sessionNotFound();
       }

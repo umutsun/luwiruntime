@@ -17,6 +17,11 @@ export type RedisFunctionRegistry = {
     sessionStatus: string;
     sessionClose: string;
     sessionDisconnect: string;
+    bridgeSlotAcquire: string;
+    bridgeSlotRenew: string;
+    bridgeSlotAttach: string;
+    bridgeSlotRelease: string;
+    bridgeSlotExpire: string;
     nativeLinkTrim: string;
     nativeDeclare: string;
     messageRequest: string;
@@ -50,6 +55,11 @@ const productionFunctions = {
   sessionStatus: 'luwi_session_status_v1',
   sessionClose: 'luwi_session_close_v1',
   sessionDisconnect: 'luwi_session_disconnect_v1',
+  bridgeSlotAcquire: 'luwi_bridge_slot_acquire_v1',
+  bridgeSlotRenew: 'luwi_bridge_slot_renew_v1',
+  bridgeSlotAttach: 'luwi_bridge_slot_attach_v1',
+  bridgeSlotRelease: 'luwi_bridge_slot_release_v1',
+  bridgeSlotExpire: 'luwi_bridge_slot_expire_v1',
   nativeLinkTrim: 'luwi_native_link_trim_v1',
   nativeDeclare: 'luwi_native_declare_v1',
   messageRequest: 'luwi_message_request_v1',

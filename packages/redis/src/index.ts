@@ -41,6 +41,13 @@ export type {
   RuntimeNamespaceResetResult,
 } from './runtime-reset.js';
 export { createRuntimeRepository, RedisRepositoryError } from './runtime-repository.js';
+export { createBridgeSlotRepository, BRIDGE_SLOT_TTL_MS } from './bridge-slots.js';
+export type {
+  BridgeSlotRepository,
+  BridgeSlotOwnerInput,
+  BridgeSlotAcquireInput,
+  BridgeSlotResult,
+} from './bridge-slots.js';
 export type {
   RedisCommandClient,
   CloseSessionInput,

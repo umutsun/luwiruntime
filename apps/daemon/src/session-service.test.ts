@@ -99,6 +99,93 @@ function repository(options?: {
 }
 
 describe('session service', () => {
+  it('carries bridge ownership and one stable attachment event through registration retries', async () => {
+    const backing = repository();
+    const registrations: RegisterSessionInput[] = [];
+    const bridgeOwner = {
+      slotId: 'a'.repeat(64),
+      ownerToken: 'private-owner',
+      provider: 'codex' as const,
+      executionProfile: 'workspace-write' as const,
+    };
+    const service = createSessionService({
+      repository: {
+        ...backing,
+        registerSession: async (input) => {
+          registrations.push(input);
+          if (registrations.length === 1)
+            throw new RedisRepositoryError('VERSION_CONFLICT', 'Retry.');
+          return backing.registerSession(input);
+        },
+      },
+      workspaceId: 'local',
+      presenceTtlMs: 15000,
+      createId: (() => {
+        let n = 0;
+        return () => (n++ === 0 ? 'session-1' : `event-${n}`);
+      })(),
+      canonicalizeWorkingDirectory: async () => ({
+        localPath: 'C:/fixture',
+        canonicalPath: 'C:/fixture',
+        identityPath: 'c:/fixture',
+        pathIdentityHash: 'a'.repeat(64),
+      }),
+    });
+    await service.register({
+      projectId: 'project-1',
+      agentId: 'codex-sim',
+      workingDirectory: '.',
+      metadata: {},
+      bridgeOwner,
+    });
+    expect(registrations).toHaveLength(2);
+    expect(registrations[0]).toMatchObject({
+      bridgeOwner,
+      bridgeAttachedEventId: expect.any(String),
+    });
+    expect(registrations[1]?.bridgeAttachedEventId).toBe(registrations[0]?.bridgeAttachedEventId);
+  });
+
+  it.each(['bridge_slot_not_owner', 'reserved_metadata_rejected'] as const)(
+    'maps %s registration refusal to a safe application error',
+    async (status) => {
+      const service = createSessionService({
+        repository: repository({ register: { status } }),
+        workspaceId: 'local',
+        presenceTtlMs: 15000,
+        createId: () => 'session-1',
+        canonicalizeWorkingDirectory: async () => ({
+          localPath: 'C:/fixture',
+          canonicalPath: 'C:/fixture',
+          identityPath: 'c:/fixture',
+          pathIdentityHash: 'a'.repeat(64),
+        }),
+      });
+      await expect(
+        service.register({
+          projectId: 'project-1',
+          agentId: 'codex-sim',
+          workingDirectory: '.',
+          metadata: {},
+        }),
+      ).rejects.toMatchObject({ code: status.toUpperCase(), statusCode: 409 });
+    },
+  );
+
+  it('maps reserved heartbeat metadata refusal to a safe application error', async () => {
+    const service = createSessionService({
+      repository: {
+        ...repository(),
+        heartbeatSession: async () => ({ status: 'reserved_metadata_rejected' }),
+      },
+      workspaceId: 'local',
+      presenceTtlMs: 15000,
+    });
+    await expect(
+      service.heartbeat('session-1', { metadata: { bridge: 'injected' } }),
+    ).rejects.toMatchObject({ code: 'RESERVED_METADATA_REJECTED', statusCode: 409 });
+  });
+
   it('registers an unseen opaque agent without requiring an AgentDefinition', async () => {
     let registration: unknown;
     const backing = repository();
