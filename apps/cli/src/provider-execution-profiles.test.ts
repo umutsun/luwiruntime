@@ -62,14 +62,14 @@ describe('supervised provider execution profiles', () => {
       });
       if (result.kind !== 'ready') throw new Error('Expected a ready plan.');
       expect(result.args).toEqual([
+        '-a',
+        'never',
         'exec',
         '--ignore-user-config',
         '--ignore-rules',
         '--ephemeral',
         '--skip-git-repo-check',
         '--strict-config',
-        '-a',
-        'never',
         '-c',
         'sandbox_permissions=[]',
         '-c',

@@ -231,14 +231,14 @@ export async function resolveProviderExecutionProfile(
   }
 
   const args = [
+    '-a',
+    'never',
     'exec',
     '--ignore-user-config',
     '--ignore-rules',
     '--ephemeral',
     '--skip-git-repo-check',
     '--strict-config',
-    '-a',
-    'never',
     '-c',
     'sandbox_permissions=[]',
     '-c',
