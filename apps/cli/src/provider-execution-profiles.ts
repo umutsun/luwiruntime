@@ -4,7 +4,9 @@ import {
   type BridgeExecutionProfile,
   type BridgeProvider,
 } from '@luwi/protocol';
+import { realpath } from 'node:fs/promises';
 import { posix, win32 } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { pathContains } from './agent-runner.js';
 
@@ -56,6 +58,12 @@ export type ResolveProviderExecutionProfileInput = {
   platform?: NodeJS.Platform;
 };
 
+export type ProviderExecutionProfileDependencies = {
+  canonicalizePath?: (value: string) => Promise<string>;
+  nodeExecutable?: string;
+  mcpServerEntry?: string;
+};
+
 const providerKinds: Record<BridgeProvider, AgentKind> = {
   codex: 'codex',
   'claude-code': 'claude-code',
@@ -64,8 +72,8 @@ const providerKinds: Record<BridgeProvider, AgentKind> = {
 };
 
 /**
- * Codex needs the LUWI binding injected into its MCP subprocess and automatic
- * approval for the bounded MCP response calls.
+ * Arguments for the existing operator-driven native bridge. Supervised
+ * profiles use the isolated binding below and never inherit this approval mode.
  */
 export function codexMcpBindingArgs(sessionId: string, daemonUrl: string): string[] {
   return [
@@ -93,14 +101,43 @@ function safeExecutable(executable: string, platform: NodeJS.Platform): boolean 
   const path = platform === 'win32' ? win32 : posix;
   if (!path.isAbsolute(executable) || hasControlCharacter(executable)) return false;
   const base = path.basename(executable).toLowerCase();
-  if (
-    ['cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'sh', 'bash'].includes(
-      base,
-    )
-  ) {
-    return false;
-  }
-  return !['.cmd', '.bat', '.ps1'].some((extension) => base.endsWith(extension));
+  return platform === 'win32' ? base === 'codex.exe' : base === 'codex';
+}
+
+function safeNodeExecutable(executable: string, platform: NodeJS.Platform): boolean {
+  const path = platform === 'win32' ? win32 : posix;
+  if (!path.isAbsolute(executable) || hasControlCharacter(executable)) return false;
+  const base = path.basename(executable).toLowerCase();
+  return platform === 'win32' ? base === 'node.exe' : base === 'node';
+}
+
+function safeMcpEntry(entry: string, platform: NodeJS.Platform): boolean {
+  const path = platform === 'win32' ? win32 : posix;
+  return (
+    path.isAbsolute(entry) && !hasControlCharacter(entry) && path.basename(entry) === 'main.js'
+  );
+}
+
+function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function supervisedCodexBindingArgs(input: {
+  sessionId: string;
+  daemonUrl: string;
+  nodeExecutable: string;
+  mcpServerEntry: string;
+}): string[] {
+  return [
+    '-c',
+    `mcp_servers.luwi-runtime.command=${tomlString(input.nodeExecutable)}`,
+    '-c',
+    `mcp_servers.luwi-runtime.args=[${tomlString(input.mcpServerEntry)}]`,
+    '-c',
+    `mcp_servers.luwi-runtime.env.LUWI_SESSION_ID=${tomlString(input.sessionId)}`,
+    '-c',
+    `mcp_servers.luwi-runtime.env.LUWI_DAEMON_URL=${tomlString(input.daemonUrl)}`,
+  ];
 }
 
 function safeDaemonUrl(value: string): boolean {
@@ -124,9 +161,10 @@ function safeDaemonUrl(value: string): boolean {
  * Resolve an already-effective profile into an immutable, no-shell launch plan.
  * The caller supplies canonical project paths and a resolved native executable.
  */
-export function resolveProviderExecutionProfile(
+export async function resolveProviderExecutionProfile(
   input: ResolveProviderExecutionProfileInput,
-): ProviderLaunchPlan | ProviderProfileRejection {
+  dependencies: ProviderExecutionProfileDependencies = {},
+): Promise<ProviderLaunchPlan | ProviderProfileRejection> {
   const parsed = nativeBridgeExecutionProfileSchema.safeParse(input.profile);
   if (!parsed.success) return rejection('effective_config_invalid');
   if (!input.definition.enabled) return rejection('agent_definition_disabled');
@@ -151,16 +189,74 @@ export function resolveProviderExecutionProfile(
     return rejection('binding_invalid');
   }
 
+  const canonicalizePath = dependencies.canonicalizePath ?? realpath;
+  let canonicalExecutable: string;
+  let canonicalRoot: string;
+  let canonicalWorkingDirectory: string;
+  let canonicalNodeExecutable: string;
+  let canonicalMcpServerEntry: string;
+  try {
+    [
+      canonicalExecutable,
+      canonicalRoot,
+      canonicalWorkingDirectory,
+      canonicalNodeExecutable,
+      canonicalMcpServerEntry,
+    ] = await Promise.all([
+      canonicalizePath(executable),
+      canonicalizePath(input.registeredRoot),
+      canonicalizePath(input.workingDirectory),
+      canonicalizePath(dependencies.nodeExecutable ?? process.execPath),
+      canonicalizePath(
+        dependencies.mcpServerEntry ??
+          fileURLToPath(new URL('../../mcp-server/dist/main.js', import.meta.url)),
+      ),
+    ]);
+  } catch {
+    return rejection('executable_missing');
+  }
+  if (!safeExecutable(canonicalExecutable, platform)) return rejection('executable_unsafe');
+  if (
+    !pathContains(canonicalRoot, canonicalWorkingDirectory, platform) ||
+    !path.isAbsolute(canonicalRoot) ||
+    !path.isAbsolute(canonicalWorkingDirectory)
+  ) {
+    return rejection('working_directory_outside_root');
+  }
+  if (
+    !safeNodeExecutable(canonicalNodeExecutable, platform) ||
+    !safeMcpEntry(canonicalMcpServerEntry, platform)
+  ) {
+    return rejection('binding_invalid');
+  }
+
   const args = [
     'exec',
-    ...codexMcpBindingArgs(input.sessionId, input.daemonUrl),
+    '--ignore-user-config',
+    '--ignore-rules',
+    '--ephemeral',
+    '--skip-git-repo-check',
     '--strict-config',
+    '-a',
+    'never',
+    '-c',
+    'sandbox_permissions=[]',
+    '-c',
+    'sandbox_workspace_write.writable_roots=[]',
+    '-c',
+    'sandbox_workspace_write.network_access=false',
+    ...supervisedCodexBindingArgs({
+      sessionId: input.sessionId,
+      daemonUrl: input.daemonUrl,
+      nodeExecutable: canonicalNodeExecutable,
+      mcpServerEntry: canonicalMcpServerEntry,
+    }),
     '--sandbox',
     parsed.data.executionProfile,
     '--color',
     'never',
     '-C',
-    input.workingDirectory,
+    canonicalWorkingDirectory,
     PROMPT_SLOT,
   ];
   const promptIndex = args.indexOf(PROMPT_SLOT);
@@ -174,10 +270,10 @@ export function resolveProviderExecutionProfile(
     kind: 'ready',
     provider: parsed.data.provider,
     executionProfile: parsed.data.executionProfile,
-    executable,
+    executable: canonicalExecutable,
     args: Object.freeze(args),
     promptIndex,
-    workingDirectory: input.workingDirectory,
+    workingDirectory: canonicalWorkingDirectory,
     environment,
     shell: false,
   });
