@@ -41,8 +41,17 @@ import {
   resolveNativeIdentityFromDisk,
   type TranscriptFileSystem,
 } from '@luwi/adapters';
+import {
+  bridgeExecutionProfileSchema,
+  bridgeSlotCollectionSchema,
+  bridgeSlotTransitionResponseSchema,
+  effectiveAgentConfigurationSchema,
+  nativeBridgeExecutionProfileSchema,
+  type BridgeExecutionProfile,
+} from '@luwi/protocol';
 import { ApplicationError, createSessionBootstrap } from '@luwi/runtime';
 import { Command } from 'commander';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
@@ -54,9 +63,21 @@ import {
   agentProvider,
   resolveAgentRunContext,
   type NativeAgentProcessRunner,
+  type NativeAgentProvider,
   resolveProject,
 } from './agent-runner.js';
 import type { BridgeDaemonClient } from './bridge-daemon.js';
+import {
+  bridgeProviderFor,
+  createBridgeSlotOwner,
+  nativeAgentNameFor,
+  type BridgeSlotClient,
+} from './bridge-slot-owner.js';
+import {
+  providerLaunchArguments,
+  resolveProviderExecutionProfile,
+} from './provider-execution-profiles.js';
+import { createWakeSupervisor, type WakeCandidate, type WakeWorker } from './wake-supervisor.js';
 import { createDeepSeekAcpFactory, type DeepSeekAcpFactoryOptions } from './deepseek-acp-client.js';
 import {
   DeepSeekBridgeStartupCancelledError,
@@ -67,7 +88,7 @@ import {
   codexMcpBindingArgs,
   createNativeBridge,
   nativeHeadlessArguments,
-  type NativeBridgeExecutor,
+  type NativeBridge,
   type NativeBridgeRunResult,
 } from './native-bridge.js';
 import { registerIntelligenceCli } from './intelligence-cli.js';
@@ -352,7 +373,11 @@ function printRuntimeResetResult(
 
 function printAgentDiagnostic(
   dependencies: CliDependencies,
-  code: 'LUWI_OBSERVATION_DEGRADED' | 'LUWI_SESSION_RECOVERED' | 'AGENT_PROCESS_DIAGNOSTIC',
+  code:
+    | 'LUWI_OBSERVATION_DEGRADED'
+    | 'LUWI_SESSION_RECOVERED'
+    | 'AGENT_PROCESS_DIAGNOSTIC'
+    | 'BRIDGE_SLOT_LOST',
   error?: unknown,
 ): void {
   dependencies.stderr.write(
@@ -1409,6 +1434,42 @@ function createBootstrapLeaseClient(
   };
 }
 
+/** The bounded slot ownership client a bridge drives before and beside its session. */
+function createBridgeSlotClient(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+  connectTimeoutMs: number,
+): BridgeSlotClient {
+  const post = (path: string, body: unknown) =>
+    boundedRequest(
+      dependencies,
+      daemonUrl,
+      path,
+      bridgeSlotTransitionResponseSchema,
+      connectTimeoutMs,
+      jsonBody(body),
+    );
+  const slotPath = (slotId: string, action: string) =>
+    `/api/v1/bridge-slots/${encodeURIComponent(slotId)}/${action}`;
+  return {
+    acquire: (body) => post('/api/v1/bridge-slots/acquire', body),
+    renew: (slotId, ownerToken) => post(slotPath(slotId, 'renew'), { ownerToken }),
+    release: (slotId, ownerToken) => post(slotPath(slotId, 'release'), { ownerToken }),
+  };
+}
+
+function executionProfileOption(value: string): BridgeExecutionProfile {
+  const parsed = bridgeExecutionProfileSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new ApplicationError(
+      'CLI_OPTION_INVALID',
+      '--execution-profile must be read-only or workspace-write.',
+      400,
+    );
+  }
+  return parsed.data;
+}
+
 /**
  * ADR 0031: `luwi session bridge native <provider>` serves one agent's inbox unattended.
  * The session bootstrap owns identity, heartbeat, rotation, lease renewal and close; the
@@ -1425,6 +1486,7 @@ async function runNativeBridge(
     workingDirectory: string;
     executable?: string;
     bridgeInstance: string;
+    executionProfile: BridgeExecutionProfile;
     limit: number;
     blockMs: number;
     minIdleMs: number;
@@ -1457,25 +1519,146 @@ async function runNativeBridge(
     client: createAgentRunDiscoveryClient(dependencies, daemonUrl, options.connectTimeoutMs),
   });
 
-  const bootstrap = createSessionBootstrap({
-    client: createBootstrapSessionClient(dependencies, daemonUrl, options.connectTimeoutMs),
+  const worker = createNativeBridgeWorker(dependencies, {
+    daemonUrl,
+    provider,
     projectId: context.projectId,
     agentId: context.agentId,
     workingDirectory,
-    metadata: { bridge: 'native-headless', provider: provider.name },
-    heartbeatIntervalMs: options.heartbeatMs,
-    leaseRenewIntervalMs: options.leaseRenewMs,
-    leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, options.connectTimeoutMs),
-    onError: (error) => printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
-    setInterval: dependencies.setInterval,
-    clearInterval: dependencies.clearInterval,
+    executionProfile: options.executionProfile,
+    bridgeInstance: options.bridgeInstance,
+    limit: options.limit,
+    blockMs: options.blockMs,
+    minIdleMs: options.minIdleMs,
+    heartbeatMs: options.heartbeatMs,
+    leaseRenewMs: options.leaseRenewMs,
+    connectTimeoutMs: options.connectTimeoutMs,
+    // Everything after `--` reaches the native CLI unchanged as its permission
+    // model (ADR 0031); codex additionally gets its MCP session binding injected.
+    launch: ({ prompt, sessionId }) => ({
+      executable: options.executable ?? context.executable ?? provider.executable,
+      args: nativeHeadlessArguments(
+        provider.name,
+        prompt,
+        provider.name === 'codex' && sessionId !== undefined
+          ? [...codexMcpBindingArgs(sessionId, daemonUrl), ...nativeArgs]
+          : nativeArgs,
+      ),
+      workingDirectory,
+    }),
   });
 
-  await bootstrap.start();
+  const stop = (): void => worker.stop();
+  dependencies.signals.once('SIGINT', stop);
+  dependencies.signals.once('SIGTERM', stop);
+  let outcome: NativeBridgeWorkerOutcome;
+  try {
+    outcome = await worker.start();
+  } finally {
+    dependencies.signals.off('SIGINT', stop);
+    dependencies.signals.off('SIGTERM', stop);
+  }
+  if (outcome === 'held') {
+    throw new ApplicationError(
+      'BRIDGE_SLOT_HELD',
+      'Another bridge already owns this project and agent; standing down.',
+      409,
+    );
+  }
+  if (outcome === 'lost') {
+    throw new ApplicationError(
+      'BRIDGE_SLOT_LOST',
+      'Bridge slot ownership was lost; the bridge stopped serving.',
+      409,
+    );
+  }
+}
 
+type NativeBridgeWorkerOutcome = 'held' | 'stopped' | 'lost';
+
+type NativeBridgeLaunch = {
+  executable: string;
+  args: readonly string[];
+  workingDirectory: string;
+  /** Replaces the inherited environment when present (a validated profile plan). */
+  environment?: Readonly<Record<string, string | undefined>>;
+};
+
+type NativeBridgeWorkerOptions = {
+  daemonUrl: string;
+  provider: NativeAgentProvider;
+  projectId: string;
+  agentId: string;
+  workingDirectory: string;
+  executionProfile: BridgeExecutionProfile;
+  bridgeInstance: string;
+  limit: number;
+  blockMs: number;
+  minIdleMs: number;
+  heartbeatMs: number;
+  leaseRenewMs: number;
+  connectTimeoutMs: number;
+  /** How one message becomes one process, given the session currently bound. */
+  launch: (input: {
+    prompt: string;
+    sessionId: string | undefined;
+  }) => NativeBridgeLaunch | Promise<NativeBridgeLaunch>;
+};
+
+interface NativeBridgeWorker {
+  /** Resolves when the worker has stood down: held before any session, stopped, or lost. */
+  start(): Promise<NativeBridgeWorkerOutcome>;
+  stop(): void;
+}
+
+/**
+ * One bridge per project and agent (the supervised bridge singleton). The slot
+ * is owned before the session exists; its declaration rides every registration
+ * so the daemon writes the reserved bridge metadata itself, and a refused
+ * renewal stops this worker rather than letting it serve an inbox another
+ * owner now answers. Shared by the operator's `session bridge native` and the
+ * `wake serve` supervisor, which differ only in how a message is launched.
+ */
+function createNativeBridgeWorker(
+  dependencies: CliDependencies,
+  options: NativeBridgeWorkerOptions,
+): NativeBridgeWorker {
+  const { daemonUrl, provider } = options;
+  let lost = false;
+  let stopped = false;
   let activeRun: EventEmitter | undefined;
-  const executor: NativeBridgeExecutor = {
-    run: async ({ prompt, deadlineAt }): Promise<NativeBridgeRunResult> => {
+  let bridge: NativeBridge | undefined;
+
+  const stop = (): void => {
+    stopped = true;
+    void bridge?.stop();
+    activeRun?.emit('SIGTERM');
+  };
+
+  const owner = createBridgeSlotOwner({
+    client: createBridgeSlotClient(dependencies, daemonUrl, options.connectTimeoutMs),
+    slot: {
+      projectId: options.projectId,
+      agentId: options.agentId,
+      provider: bridgeProviderFor(provider.name),
+      executionProfile: options.executionProfile,
+    },
+    ownerToken: randomUUID(),
+    setInterval: dependencies.setInterval,
+    clearInterval: dependencies.clearInterval,
+    onLost: (reason) => {
+      lost = true;
+      printAgentDiagnostic(dependencies, 'BRIDGE_SLOT_LOST', new Error(reason));
+      stop();
+    },
+    onError: (error) => printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
+  });
+
+  const runProcess = async (
+    { prompt, deadlineAt }: { prompt: string; deadlineAt: string },
+    sessionId: string | undefined,
+  ): Promise<NativeBridgeRunResult> => {
+    {
       const runSignals = new EventEmitter();
       activeRun = runSignals;
       let deadlineFired = false;
@@ -1488,21 +1671,16 @@ async function runNativeBridge(
       delete inherited['LUWI_DAEMON_URL'];
       delete inherited['LUWI_SESSION_ID'];
       let tail = '';
-      // codex needs the LUWI session injected into its MCP server's env and its tool
-      // calls auto-approved; claude/gemini bind through the inherited LUWI_SESSION_ID.
-      const providerNativeArgs =
-        provider.name === 'codex' && bootstrap.sessionId !== undefined
-          ? [...codexMcpBindingArgs(bootstrap.sessionId, daemonUrl), ...nativeArgs]
-          : nativeArgs;
       try {
+        const launch = await options.launch({ prompt, sessionId });
         const result = await dependencies.agentProcessRunner.run({
-          executable: options.executable ?? context.executable ?? provider.executable,
-          args: nativeHeadlessArguments(provider.name, prompt, providerNativeArgs),
-          workingDirectory,
-          environment: {
+          executable: launch.executable,
+          args: [...launch.args],
+          workingDirectory: launch.workingDirectory,
+          environment: launch.environment ?? {
             ...inherited,
             LUWI_DAEMON_URL: daemonUrl,
-            ...(bootstrap.sessionId === undefined ? {} : { LUWI_SESSION_ID: bootstrap.sessionId }),
+            ...(sessionId === undefined ? {} : { LUWI_SESSION_ID: sessionId }),
           },
           signals: runSignals,
           captureOutput: (chunk) => {
@@ -1520,46 +1698,301 @@ async function runNativeBridge(
         dependencies.clearTimeout(timer);
         if (activeRun === runSignals) activeRun = undefined;
       }
+    }
+  };
+
+  return {
+    stop,
+    async start() {
+      if (stopped) return 'stopped';
+      if ((await owner.acquire()) === 'held' || owner.declaration === undefined) return 'held';
+      const bridgeOwner = owner.declaration;
+      const bootstrap = createSessionBootstrap({
+        client: createBootstrapSessionClient(dependencies, daemonUrl, options.connectTimeoutMs),
+        projectId: options.projectId,
+        agentId: options.agentId,
+        workingDirectory: options.workingDirectory,
+        bridgeOwner,
+        heartbeatIntervalMs: options.heartbeatMs,
+        leaseRenewIntervalMs: options.leaseRenewMs,
+        leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, options.connectTimeoutMs),
+        onError: (error) => printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
+        setInterval: dependencies.setInterval,
+        clearInterval: dependencies.clearInterval,
+      });
+      try {
+        await bootstrap.start();
+        bridge = createNativeBridge({
+          daemon: createBridgeDaemonClient(dependencies, daemonUrl),
+          executor: { run: (input) => runProcess(input, bootstrap.sessionId) },
+          currentSessionId: () => bootstrap.sessionId,
+          agentId: options.agentId,
+          bridgeInstanceId: options.bridgeInstance,
+          claimLimit: options.limit,
+          claimBlockMs: options.blockMs,
+          claimMinIdleMs: options.minIdleMs,
+          report: (line) => printJson(dependencies, { bridge: 'native-headless', ...line }),
+        });
+        printJson(dependencies, {
+          bridge: 'native-headless',
+          provider: provider.name,
+          executionProfile: options.executionProfile,
+          slotId: bridgeOwner.slotId,
+          sessionId: bootstrap.sessionId,
+          agentId: options.agentId,
+          projectId: options.projectId,
+        });
+        if (stopped) return 'stopped';
+        while (!stopped) {
+          const count = await bridge.pollOnce();
+          if (count === 0 && options.blockMs === 0 && !stopped) await dependencies.wait(100);
+        }
+      } finally {
+        await bootstrap.stop();
+        // A no-op after a loss: the token is already dead and a release would be refused.
+        await owner.release();
+      }
+      return lost ? 'lost' : 'stopped';
     },
   };
+}
 
-  const bridge = createNativeBridge({
-    daemon: createBridgeDaemonClient(dependencies, daemonUrl),
-    executor,
-    currentSessionId: () => bootstrap.sessionId,
-    agentId: context.agentId,
-    bridgeInstanceId: options.bridgeInstance,
-    claimLimit: options.limit,
-    claimBlockMs: options.blockMs,
-    claimMinIdleMs: options.minIdleMs,
-    report: (line) => printJson(dependencies, { bridge: 'native-headless', ...line }),
-  });
+/** The three fields the supervisor reads; the rest of the effective configuration is not its concern. */
+const wakeEffectiveConfigSchema = effectiveAgentConfigurationSchema
+  .pick({ valid: true, settings: true, agentKind: true })
+  .loose();
 
-  let stopped = false;
-  const stop = (): void => {
-    stopped = true;
-    void bridge.stop();
-    activeRun?.emit('SIGTERM');
+/**
+ * Enabled project-agent bindings whose effective configuration carries a
+ * strict `settings.luwiNativeBridge` leaf. Anything else — a disabled
+ * definition, an invalid configuration, a leaf with an extra field — gets no
+ * worker, so installing LUWI never silently begins unattended execution.
+ */
+function createWakeDiscovery(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+  connectTimeoutMs: number,
+): () => Promise<WakeCandidate[]> {
+  const client = createAgentRunDiscoveryClient(dependencies, daemonUrl, connectTimeoutMs);
+  return async () => {
+    const [projects, agents] = await Promise.all([client.listProjects(), client.listAgents()]);
+    const definitions = new Map(agents.map((agent) => [agent.id, agent]));
+    const candidates: WakeCandidate[] = [];
+    for (const project of projects) {
+      for (const binding of await client.listProjectAgentBindings(project.id)) {
+        const definition = definitions.get(binding.agentId);
+        if (!binding.enabled || definition === undefined || !definition.enabled) continue;
+        const config = await boundedRequest(
+          dependencies,
+          daemonUrl,
+          `/api/v1/projects/${encodeURIComponent(project.id)}/agents/${encodeURIComponent(binding.agentId)}/effective-config`,
+          wakeEffectiveConfigSchema,
+          connectTimeoutMs,
+        );
+        if (!config.valid) continue;
+        const leaf = nativeBridgeExecutionProfileSchema.safeParse(
+          config.settings['luwiNativeBridge'],
+        );
+        if (!leaf.success) continue;
+        candidates.push({
+          projectId: project.id,
+          agentId: binding.agentId,
+          agentKind: definition.kind,
+          provider: leaf.data.provider,
+          executionProfile: leaf.data.executionProfile,
+          localPath: project.localPath,
+          ...(definition.executable === undefined ? {} : { executable: definition.executable }),
+        });
+      }
+    }
+    return candidates;
   };
+}
+
+type WakeServeOptions = {
+  bridgeInstance: string;
+  limit: number;
+  blockMs: number;
+  minIdleMs: number;
+  heartbeatMs: number;
+  leaseRenewMs: number;
+  connectTimeoutMs: number;
+};
+
+/**
+ * A supervised worker launches every message through a validated provider
+ * execution profile: a constant argv template, `shell: false`, the registered
+ * project root as its only workspace. No operator argument reaches the child.
+ */
+function createSupervisedWorker(
+  dependencies: CliDependencies,
+  candidate: WakeCandidate,
+  daemonUrl: string,
+  options: WakeServeOptions,
+): WakeWorker {
+  const provider = agentProvider(nativeAgentNameFor(candidate.provider));
+  return createNativeBridgeWorker(dependencies, {
+    daemonUrl,
+    provider,
+    projectId: candidate.projectId,
+    agentId: candidate.agentId,
+    workingDirectory: candidate.localPath,
+    executionProfile: candidate.executionProfile,
+    bridgeInstance: `${options.bridgeInstance}:${candidate.agentId}`,
+    limit: options.limit,
+    blockMs: options.blockMs,
+    minIdleMs: options.minIdleMs,
+    heartbeatMs: options.heartbeatMs,
+    leaseRenewMs: options.leaseRenewMs,
+    connectTimeoutMs: options.connectTimeoutMs,
+    launch: async ({ prompt, sessionId }) => {
+      if (sessionId === undefined) {
+        throw new ApplicationError(
+          'BRIDGE_SESSION_UNBOUND',
+          'The supervised bridge has no bound session to launch under.',
+          409,
+        );
+      }
+      const plan = await resolveProviderExecutionProfile(
+        {
+          profile: {
+            enabled: true,
+            provider: candidate.provider,
+            executionProfile: candidate.executionProfile,
+          },
+          definition: {
+            kind: candidate.agentKind,
+            enabled: true,
+            ...(candidate.executable === undefined ? {} : { executable: candidate.executable }),
+          },
+          registeredRoot: candidate.localPath,
+          workingDirectory: candidate.localPath,
+          sessionId,
+          daemonUrl,
+          environment: dependencies.environment,
+          platform: dependencies.platform,
+        },
+        { canonicalizePath: dependencies.canonicalizePath },
+      );
+      if (plan.kind === 'rejected') {
+        throw new ApplicationError(
+          'BRIDGE_PROFILE_REJECTED',
+          `The supervised execution profile was refused: ${plan.reasonCode}.`,
+          409,
+        );
+      }
+      return {
+        executable: plan.executable,
+        args: providerLaunchArguments(plan, prompt),
+        workingDirectory: plan.workingDirectory,
+        environment: plan.environment,
+      };
+    },
+  });
+}
+
+async function runWakeServe(
+  dependencies: CliDependencies,
+  options: WakeServeOptions & { url: string; rescanMs: number; standbyMs: number },
+): Promise<void> {
+  const daemonUrl = loopbackDaemonUrl(options.url);
+  const supervisor = createWakeSupervisor({
+    discover: createWakeDiscovery(dependencies, daemonUrl, options.connectTimeoutMs),
+    createWorker: (candidate) =>
+      createSupervisedWorker(dependencies, candidate, daemonUrl, options),
+    standbyMs: options.standbyMs,
+    rescanMs: options.rescanMs,
+    wait: dependencies.wait,
+    setInterval: dependencies.setInterval,
+    clearInterval: dependencies.clearInterval,
+    report: (line) => printJson(dependencies, { wake: 'supervisor', ...line }),
+  });
+  let resolveStopped: () => void = () => undefined;
+  const stopRequested = new Promise<void>((resolve) => {
+    resolveStopped = resolve;
+  });
+  const stop = (): void => resolveStopped();
   dependencies.signals.once('SIGINT', stop);
   dependencies.signals.once('SIGTERM', stop);
-  printJson(dependencies, {
-    bridge: 'native-headless',
-    provider: provider.name,
-    sessionId: bootstrap.sessionId,
-    agentId: context.agentId,
-    projectId: context.projectId,
-  });
   try {
-    while (!stopped) {
-      const count = await bridge.pollOnce();
-      if (count === 0 && options.blockMs === 0 && !stopped) await dependencies.wait(100);
-    }
+    await supervisor.start();
+    printJson(dependencies, { wake: 'supervisor', event: 'serving', bindings: supervisor.active });
+    await stopRequested;
   } finally {
     dependencies.signals.off('SIGINT', stop);
     dependencies.signals.off('SIGTERM', stop);
-    await bootstrap.stop();
+    await supervisor.stop();
   }
+}
+
+function registerWakeCli(program: Command, dependencies: CliDependencies): void {
+  const wake = program
+    .command('wake')
+    .description('Supervise unattended native bridges for enabled project-agent bindings');
+  wake
+    .command('serve')
+    .description('Own one bridge slot per configured binding and serve its inbox headless')
+    .option('--rescan-ms <milliseconds>', 'Binding rediscovery interval', '60000')
+    .option('--standby-ms <milliseconds>', 'Retry delay after a held or lost slot', '15000')
+    .option('--bridge-instance <id>', 'Inbox consumer identity prefix', 'wake-supervisor')
+    .option('--limit <count>', 'Maximum inbox items per claim', '1')
+    .option('--block-ms <milliseconds>', 'Bounded claim block interval', '30000')
+    .option('--min-idle-ms <milliseconds>', 'Pending recovery minimum idle time', '15000')
+    .option('--heartbeat-ms <milliseconds>', 'Session heartbeat interval', '5000')
+    .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
+    .option('--connect-timeout-ms <milliseconds>', 'Per-request LUWI connection timeout', '2000')
+    .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        rescanMs: string;
+        standbyMs: string;
+        bridgeInstance: string;
+        limit: string;
+        blockMs: string;
+        minIdleMs: string;
+        heartbeatMs: string;
+        leaseRenewMs: string;
+        connectTimeoutMs: string;
+        url: string;
+      }) =>
+        runWakeServe(dependencies, {
+          rescanMs: positiveIntegerOption(options.rescanMs, '--rescan-ms', 1_000, 3_600_000),
+          standbyMs: positiveIntegerOption(options.standbyMs, '--standby-ms', 100, 3_600_000),
+          bridgeInstance: options.bridgeInstance,
+          limit: positiveIntegerOption(options.limit, '--limit', 1, INBOX_MAX_CLAIM_LIMIT),
+          blockMs: positiveIntegerOption(options.blockMs, '--block-ms', 0, MESSAGE_MAX_WAIT_MS),
+          minIdleMs: positiveIntegerOption(options.minIdleMs, '--min-idle-ms', 0, 86_400_000),
+          heartbeatMs: positiveIntegerOption(options.heartbeatMs, '--heartbeat-ms', 100, 10_000),
+          leaseRenewMs: positiveIntegerOption(
+            options.leaseRenewMs,
+            '--lease-renew-ms',
+            1_000,
+            3_600_000,
+          ),
+          connectTimeoutMs: positiveIntegerOption(
+            options.connectTimeoutMs,
+            '--connect-timeout-ms',
+            100,
+            30_000,
+          ),
+          url: options.url,
+        }),
+    );
+  wake
+    .command('status')
+    .description('List bridge slot ownership as the daemon records it')
+    .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
+    .action(async (options: { url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          loopbackDaemonUrl(options.url),
+          '/api/v1/bridge-slots?limit=100',
+          bridgeSlotCollectionSchema,
+        ),
+      );
+    });
 }
 
 function registerAgentRunCli(agents: Command, dependencies: CliDependencies): void {
@@ -1892,6 +2325,7 @@ export function createCli(dependencies: CliDependencies): Command {
   const agents = registerControlPlaneCli(program, projects, dependencies);
   registerAgentRunCli(agents, dependencies);
   registerIntelligenceCli(program, dependencies);
+  registerWakeCli(program, dependencies);
 
   const sessions = program.command('session').description('Manage agent sessions');
   sessions
@@ -2384,6 +2818,11 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--working-directory <path>', 'Native agent working directory', dependencies.cwd())
     .option('--executable <path>', 'Explicit native agent executable')
     .option('--bridge-instance <id>', 'Stable inbox consumer identity', 'native-bridge')
+    .option(
+      '--execution-profile <profile>',
+      'Slot execution profile declared for this bridge: read-only or workspace-write',
+      'workspace-write',
+    )
     .option('--limit <count>', 'Maximum inbox items per claim', '1')
     .option('--block-ms <milliseconds>', 'Bounded claim block interval', '30000')
     .option('--min-idle-ms <milliseconds>', 'Pending recovery minimum idle time', '15000')
@@ -2401,6 +2840,7 @@ export function createCli(dependencies: CliDependencies): Command {
           workingDirectory: string;
           executable?: string;
           bridgeInstance: string;
+          executionProfile: string;
           limit: string;
           blockMs: string;
           minIdleMs: string;
@@ -2416,6 +2856,7 @@ export function createCli(dependencies: CliDependencies): Command {
           workingDirectory: options.workingDirectory,
           ...(options.executable === undefined ? {} : { executable: options.executable }),
           bridgeInstance: options.bridgeInstance,
+          executionProfile: executionProfileOption(options.executionProfile),
           limit: positiveIntegerOption(options.limit, '--limit', 1, INBOX_MAX_CLAIM_LIMIT),
           blockMs: positiveIntegerOption(options.blockMs, '--block-ms', 0, MESSAGE_MAX_WAIT_MS),
           minIdleMs: positiveIntegerOption(options.minIdleMs, '--min-idle-ms', 0, 86_400_000),
