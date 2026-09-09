@@ -4,7 +4,10 @@ import {
   canonicalJsonStringify,
   type HeartbeatRequest,
   type HeartbeatResponse,
+  type HostWakeDeclaration,
+  type NativeDeclarationRequest,
   type NativeDeclarationResponse,
+  type NativeIdentityProvenance,
   type NativeSessionBinding,
   type NativeSessionLink,
   type NativeSessionRef,
@@ -54,6 +57,39 @@ function nativeInconsistent(): ApplicationError {
     'The native session binding names an open link that cannot be read.',
     409,
   );
+}
+
+function hostWakeProofInvalid(): ApplicationError {
+  return new ApplicationError(
+    'HOST_WAKE_PROOF_INVALID',
+    'Host wake proof does not identify this trusted Codex main session.',
+    400,
+  );
+}
+
+/**
+ * A host wake declaration is a capability claim, so it is accepted only when
+ * every private proof binds the Codex host launcher to this exact LUWI main
+ * session. Provenance without a host-wake claim remains useful for passive
+ * inspection and is persisted without upgrading the session to wake-capable.
+ */
+function validateHostWakeProof(
+  ref: NativeSessionRef | undefined,
+  sessionId: string,
+  identityProvenance: NativeIdentityProvenance | undefined,
+  hostWake: HostWakeDeclaration | undefined,
+): void {
+  if (hostWake === undefined) return;
+  if (
+    ref === undefined ||
+    ref.adapterId !== 'codex-native-v1' ||
+    ref.nativeSubagentId !== undefined ||
+    identityProvenance?.source !== 'host_launcher' ||
+    hostWake.adapter !== 'codex-queue-v1' ||
+    hostWake.mcpSessionId !== sessionId
+  ) {
+    throw hostWakeProofInvalid();
+  }
 }
 
 type NativeBindingObservation = {
@@ -109,6 +145,10 @@ function buildNativeDeclaration(
   bindingId: string,
   sessionId: string,
   eventIds: { linked: string; unlinked: string },
+  proof: {
+    identityProvenance?: NativeIdentityProvenance;
+    hostWake?: HostWakeDeclaration;
+  } = {},
 ): NativeRegistrationInput {
   const linkId = deriveNativeLinkId(bindingId, sessionId);
   const parentRef = deriveParentRef(ref);
@@ -140,6 +180,10 @@ function buildNativeDeclaration(
             },
           }
         : {}),
+      ...(proof.identityProvenance === undefined
+        ? {}
+        : { identityProvenance: proof.identityProvenance }),
+      ...(proof.hostWake === undefined ? {} : { hostWake: proof.hostWake }),
     },
   };
 }
@@ -149,6 +193,10 @@ async function planNativeDeclaration(
   ref: NativeSessionRef,
   sessionId: string,
   eventIds: { linked: string; unlinked: string },
+  proof: {
+    identityProvenance?: NativeIdentityProvenance;
+    hostWake?: HostWakeDeclaration;
+  } = {},
 ): Promise<NativeRegistrationInput> {
   const observed = await observeNativeBinding(repository, ref);
   const decision = evaluateNativeDeclaration({
@@ -174,7 +222,7 @@ async function planNativeDeclaration(
       409,
     );
   }
-  return buildNativeDeclaration(decision, ref, observed.bindingId, sessionId, eventIds);
+  return buildNativeDeclaration(decision, ref, observed.bindingId, sessionId, eventIds, proof);
 }
 
 /**
@@ -226,7 +274,10 @@ async function resolveNativeUnlink(
 
 export type SessionService = {
   register(request: SessionRegistrationRequest): Promise<SessionView>;
-  declareNative(sessionId: string, ref: NativeSessionRef): Promise<NativeDeclarationResponse>;
+  declareNative(
+    sessionId: string,
+    declaration: NativeSessionRef | NativeDeclarationRequest,
+  ): Promise<NativeDeclarationResponse>;
   get(sessionId: string): Promise<SessionView | null>;
   list(projectId?: string): Promise<SessionView[]>;
   updateStatus(sessionId: string, targetStatus: SessionStatusTarget): Promise<SessionView>;
@@ -284,6 +335,12 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
       const linkedEventId = createId();
       const unlinkedEventId = createId();
       const bridgeAttachedEventId = request.bridgeOwner === undefined ? undefined : createId();
+      validateHostWakeProof(
+        request.native,
+        sessionId,
+        request.nativeIdentityProvenance,
+        request.hostWake,
+      );
       const session = {
         id: sessionId,
         agentId: request.agentId,
@@ -300,10 +357,21 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
         const native =
           request.native === undefined
             ? undefined
-            : await planNativeDeclaration(options.repository, request.native, sessionId, {
-                linked: linkedEventId,
-                unlinked: unlinkedEventId,
-              });
+            : await planNativeDeclaration(
+                options.repository,
+                request.native,
+                sessionId,
+                {
+                  linked: linkedEventId,
+                  unlinked: unlinkedEventId,
+                },
+                {
+                  ...(request.nativeIdentityProvenance === undefined
+                    ? {}
+                    : { identityProvenance: request.nativeIdentityProvenance }),
+                  ...(request.hostWake === undefined ? {} : { hostWake: request.hostWake }),
+                },
+              );
 
         try {
           const result = await options.repository.registerSession({
@@ -360,7 +428,10 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
      * because re-declaration is the steady state for anything that declares at
      * startup or on a timer.
      */
-    async declareNative(sessionId, ref) {
+    async declareNative(sessionId, declaration) {
+      const request = 'native' in declaration ? declaration : { native: declaration };
+      const ref = request.native;
+      validateHostWakeProof(ref, sessionId, request.identityProvenance, request.hostWake);
       const session = await requireSession(options.repository, sessionId);
       if (session.status === 'completed' || session.status === 'disconnected') {
         throw new ApplicationError(
@@ -396,10 +467,19 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
           return { outcome: 'unchanged', binding: observed.binding, link: observed.openLinkRecord };
         }
 
-        const native = buildNativeDeclaration(decision, ref, observed.bindingId, sessionId, {
-          linked: linkedEventId,
-          unlinked: unlinkedEventId,
-        });
+        const native = buildNativeDeclaration(
+          decision,
+          ref,
+          observed.bindingId,
+          sessionId,
+          { linked: linkedEventId, unlinked: unlinkedEventId },
+          {
+            ...(request.identityProvenance === undefined
+              ? {}
+              : { identityProvenance: request.identityProvenance }),
+            ...(request.hostWake === undefined ? {} : { hostWake: request.hostWake }),
+          },
+        );
         try {
           const result = await options.repository.declareNativeSession({
             sessionId,

@@ -90,6 +90,8 @@ export type {
   ListWorkflowsQuery,
   WorkflowRepository,
 } from './workflows.js';
+export { createWakeIntentRepository } from './wake-intents.js';
+export type { WakeIntentRepository } from './wake-intents.js';
 export { createLeaseRepository } from './lease-repository.js';
 export type {
   AcquireLeaseResult,

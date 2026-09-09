@@ -506,7 +506,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
       const body = parseRequestInput(nativeDeclarationRequestSchema, request.body);
       return nativeDeclarationResponseSchema.parse(
-        await withMutation(() => services.sessions.declareNative(sessionId, body.native)),
+        await withMutation(() => services.sessions.declareNative(sessionId, body)),
       );
     });
     app.post('/api/v1/sessions/:sessionId/heartbeat', async (request) => {

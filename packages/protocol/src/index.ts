@@ -58,10 +58,12 @@ export type {
   SessionView,
 } from './session.js';
 export {
+  hostWakeDeclarationSchema,
   NATIVE_LINK_TRIM_MAX_PER_CALL,
   nativeDeclarationOutcomeSchema,
   nativeDeclarationRequestSchema,
   nativeDeclarationResponseSchema,
+  nativeIdentityProvenanceSchema,
   nativeSessionBindingSchema,
   nativeSessionKindSchema,
   nativeSessionLinkSchema,
@@ -124,6 +126,7 @@ export {
   continueWorkflowRequestSchema,
   parseContinueWorkflowRequest,
   workflowCollectionSchema,
+  workflowContinuationProofSchema,
   workflowCreateRequestSchema,
   workflowDecisionSchema,
   workflowStateSchema,
@@ -132,15 +135,18 @@ export {
 export type {
   ContinueWorkflowRequest,
   WorkflowCollection,
+  WorkflowContinuationProof,
   WorkflowCreateRequest,
   WorkflowDecision,
   WorkflowState,
   WorkflowView,
 } from './workflow.js';
 export type {
+  HostWakeDeclaration,
   NativeDeclarationOutcome,
   NativeDeclarationRequest,
   NativeDeclarationResponse,
+  NativeIdentityProvenance,
   NativeSessionBinding,
   NativeSessionKind,
   NativeSessionLink,

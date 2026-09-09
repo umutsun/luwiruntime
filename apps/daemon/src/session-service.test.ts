@@ -475,6 +475,111 @@ const declaration: SessionRegistrationRequest = {
 };
 
 describe('native session declaration', () => {
+  it('carries trusted host-wake proof into the private native registration payload', async () => {
+    const harness = nativeHarness({});
+    const nativeIdentityProvenance = {
+      source: 'host_launcher' as const,
+      launcherInstanceId: 'launcher-1',
+    };
+    const hostWake = { adapter: 'codex-queue-v1' as const, mcpSessionId: 'session-1' };
+    const trustedDeclaration = {
+      ...declaration,
+      native: { adapterId: 'codex-native-v1', nativeSessionId: 'codex-thread-1' },
+    };
+
+    await expect(
+      harness.service.register({ ...trustedDeclaration, nativeIdentityProvenance, hostWake }),
+    ).resolves.toEqual(view);
+    expect(harness.registrations[0]?.native?.payload).toMatchObject({
+      identityProvenance: nativeIdentityProvenance,
+      hostWake,
+    });
+  });
+
+  it.each<[string, SessionRegistrationRequest]>([
+    [
+      'missing launcher provenance',
+      {
+        ...declaration,
+        native: { adapterId: 'codex-native-v1', nativeSessionId: 'codex-thread-1' },
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+      },
+    ],
+    [
+      'filesystem heuristic provenance',
+      {
+        ...declaration,
+        native: { adapterId: 'codex-native-v1', nativeSessionId: 'codex-thread-1' },
+        nativeIdentityProvenance: { source: 'filesystem_heuristic' },
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+      },
+    ],
+    [
+      'non-Codex adapter',
+      {
+        ...declaration,
+        nativeIdentityProvenance: {
+          source: 'host_launcher',
+          launcherInstanceId: 'launcher-1',
+        },
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+      },
+    ],
+    [
+      'native subagent',
+      {
+        ...declaration,
+        native: {
+          adapterId: 'codex-native-v1',
+          nativeSessionId: 'codex-thread-1',
+          nativeSubagentId: 'agent-1',
+        },
+        nativeIdentityProvenance: {
+          source: 'host_launcher',
+          launcherInstanceId: 'launcher-1',
+        },
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+      },
+    ],
+    [
+      'different MCP session',
+      {
+        ...declaration,
+        native: { adapterId: 'codex-native-v1', nativeSessionId: 'codex-thread-1' },
+        nativeIdentityProvenance: {
+          source: 'host_launcher',
+          launcherInstanceId: 'launcher-1',
+        },
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-other' },
+      },
+    ],
+  ])('rejects untrusted host-wake proof: %s', async (_name, request) => {
+    const harness = nativeHarness({});
+
+    await expect(harness.service.register(request)).rejects.toMatchObject({
+      code: 'HOST_WAKE_PROOF_INVALID',
+      statusCode: 400,
+    });
+    expect(harness.registrations).toHaveLength(0);
+  });
+
+  it('carries trusted host-wake proof through a post-registration declaration', async () => {
+    const harness = nativeHarness({});
+    const identityProvenance = {
+      source: 'host_launcher' as const,
+      launcherInstanceId: 'launcher-1',
+    };
+    const hostWake = { adapter: 'codex-queue-v1' as const, mcpSessionId: 'session-1' };
+
+    await harness.service.declareNative('session-1', {
+      native: { adapterId: 'codex-native-v1', nativeSessionId: 'codex-thread-1' },
+      identityProvenance,
+      hostWake,
+    });
+
+    expect(harness.declares[0]?.native.payload).toMatchObject({ identityProvenance, hostWake });
+  });
+
   it('declares a new binding when the reference is free', async () => {
     const harness = nativeHarness({});
 

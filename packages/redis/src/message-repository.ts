@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   agentMessageResponseSchema,
   agentMessageSchema,
@@ -388,7 +390,9 @@ export function createMessageRepository(options: {
   client: RedisCommandClient;
   keys: RedisKeys;
   functions: RedisFunctionRegistry;
+  createId?: () => string;
 }): MessageRepository {
+  const createId = options.createId ?? randomUUID;
   const getMessageById = async (messageId: string): Promise<AgentMessage | null> =>
     parseStoredMessage(
       await options.client.sendCommand(['HGETALL', options.keys.message(messageId)]),
@@ -594,11 +598,51 @@ export function createMessageRepository(options: {
       if (message === null) {
         throw new RedisRepositoryError('MESSAGE_NOT_FOUND', 'The message was not found.');
       }
-      const idempotencyHash = await options.client.sendCommand([
-        'HGET',
-        options.keys.message(message.id),
-        'idempotencyKeyHash',
-      ]);
+      const terminal =
+        kind === 'responded' || kind === 'rejected' || kind === 'failed' || kind === 'timed_out';
+      const privateFields = terminal
+        ? await options.client.sendCommand([
+            'HMGET',
+            options.keys.message(message.id),
+            'idempotencyKeyHash',
+            'workflowId',
+            'workflowRevision',
+          ])
+        : await options.client.sendCommand([
+            'HGET',
+            options.keys.message(message.id),
+            'idempotencyKeyHash',
+          ]);
+      let idempotencyHash: unknown = privateFields;
+      let workflowId: string | undefined;
+      if (terminal) {
+        if (
+          !Array.isArray(privateFields) ||
+          privateFields.length !== 3 ||
+          !privateFields.every((value) => value === null || typeof value === 'string')
+        ) {
+          throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis message data is invalid.');
+        }
+        [idempotencyHash] = privateFields;
+        const storedWorkflowId = privateFields[1];
+        const storedWorkflowRevision = privateFields[2];
+        if ((storedWorkflowId === null) !== (storedWorkflowRevision === null)) {
+          throw new RedisRepositoryError(
+            'REDIS_DATA_INVALID',
+            'Redis workflow message link is invalid.',
+          );
+        }
+        if (typeof storedWorkflowId === 'string' && typeof storedWorkflowRevision === 'string') {
+          const revision = Number(storedWorkflowRevision);
+          if (!Number.isSafeInteger(revision) || revision < 1) {
+            throw new RedisRepositoryError(
+              'REDIS_DATA_INVALID',
+              'Redis workflow message link is invalid.',
+            );
+          }
+          workflowId = storedWorkflowId;
+        }
+      }
       if (idempotencyHash !== null && typeof idempotencyHash !== 'string') {
         throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis message data is invalid.');
       }
@@ -625,30 +669,49 @@ export function createMessageRepository(options: {
         typeof idempotencyHash === 'string'
           ? options.keys.messageIdempotency(message.sourceSessionId, idempotencyHash)
           : options.keys.messageIdempotency(message.sourceSessionId, message.id);
+      const commandKeys = [
+        options.keys.message(message.id),
+        options.keys.session(message.targetSessionId),
+        options.keys.globalEvents,
+        options.keys.projectEvents(message.projectId),
+        options.keys.sessionInbox(message.targetSessionId),
+        options.keys.sessionInbox(message.sourceSessionId),
+        options.keys.messageDeadlines,
+        options.keys.terminalMessages,
+        idempotencyKey,
+        options.keys.messageCorrelation(message.correlationId),
+      ];
+      const commandArgs = [
+        input.correlationId,
+        input.responderSessionId,
+        input.workspaceId,
+        input.eventId,
+        input.responseJson ?? '',
+        input.expectedDeadlineMs === undefined ? '' : String(input.expectedDeadlineMs),
+        String(input.idempotencyRetentionMs ?? 86_400_000),
+        'luwi-session-inbox-v1',
+        idempotencyHash === null ? '0' : '1',
+      ];
+      if (workflowId !== undefined) {
+        commandKeys.push(
+          options.keys.session(message.sourceSessionId),
+          options.keys.sessionPresence(message.sourceSessionId),
+          options.keys.workflow(workflowId),
+          options.keys.wakeIntent(message.id),
+          options.keys.wakeStream,
+          options.keys.wakeIntentsIndex,
+          options.keys.projectWakeIntents(message.projectId),
+          options.keys.wakeIntentDeadlines,
+        );
+        commandArgs.push(createId(), createId());
+      }
       const result = decodeJsonReply(
         await options.client.sendCommand([
           'FCALL',
           functionName[kind],
-          '10',
-          options.keys.message(message.id),
-          options.keys.session(message.targetSessionId),
-          options.keys.globalEvents,
-          options.keys.projectEvents(message.projectId),
-          options.keys.sessionInbox(message.targetSessionId),
-          options.keys.sessionInbox(message.sourceSessionId),
-          options.keys.messageDeadlines,
-          options.keys.terminalMessages,
-          idempotencyKey,
-          options.keys.messageCorrelation(message.correlationId),
-          input.correlationId,
-          input.responderSessionId,
-          input.workspaceId,
-          input.eventId,
-          input.responseJson ?? '',
-          input.expectedDeadlineMs === undefined ? '' : String(input.expectedDeadlineMs),
-          String(input.idempotencyRetentionMs ?? 86_400_000),
-          'luwi-session-inbox-v1',
-          idempotencyHash === null ? '0' : '1',
+          String(commandKeys.length),
+          ...commandKeys,
+          ...commandArgs,
         ]),
       );
       return parseTransitionResult(result);

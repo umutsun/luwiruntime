@@ -10,6 +10,8 @@ import {
   sessionViewSchema,
   type AgentSession,
   type BridgeOwnerDeclaration,
+  type HostWakeDeclaration,
+  type NativeIdentityProvenance,
   type NativeSessionBinding,
   type NativeSessionLink,
   type Project,
@@ -109,6 +111,8 @@ export type NativeRegistrationInput = {
       kind: 'main' | 'subagent';
       parentRefJson?: string;
     };
+    identityProvenance?: NativeIdentityProvenance;
+    hostWake?: HostWakeDeclaration;
   };
 };
 
@@ -817,6 +821,24 @@ function parseNativeLinkHash(reply: unknown): NativeSessionLink | null {
   if (record === null) {
     return null;
   }
+  const identityProvenanceSource = record.identityProvenanceSource;
+  const launcherInstanceId = record.launcherInstanceId;
+  const hasNoProvenance =
+    identityProvenanceSource === undefined && launcherInstanceId === undefined;
+  const hasFilesystemProvenance =
+    identityProvenanceSource === 'filesystem_heuristic' && launcherInstanceId === undefined;
+  const hasLauncherProvenance =
+    identityProvenanceSource === 'host_launcher' &&
+    typeof launcherInstanceId === 'string' &&
+    launcherInstanceId.trim() === launcherInstanceId &&
+    launcherInstanceId.length >= 1 &&
+    launcherInstanceId.length <= 128;
+  if (!hasNoProvenance && !hasFilesystemProvenance && !hasLauncherProvenance) {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis contains invalid private native-link provenance.',
+    );
+  }
   const parsed = nativeSessionLinkSchema.safeParse({
     id: record.id,
     bindingId: record.bindingId,
@@ -833,7 +855,7 @@ function parseNativeLinkHash(reply: unknown): NativeSessionLink | null {
   return parsed.data;
 }
 
-function parseSessionHash(reply: unknown): AgentSession | null {
+function parseSessionHash(reply: unknown): (AgentSession & { wakeCapable?: boolean }) | null {
   const record = hashRecord(reply, 'session');
   if (record === null) {
     return null;
@@ -842,6 +864,10 @@ function parseSessionHash(reply: unknown): AgentSession | null {
   delete normalized.lastHeartbeatEventAt;
   delete normalized.registrationEventId;
   delete normalized.registrationResult;
+  const hostWakeAdapter = normalized.hostWakeAdapter;
+  const hostWakeMcpSessionId = normalized.hostWakeMcpSessionId;
+  delete normalized.hostWakeAdapter;
+  delete normalized.hostWakeMcpSessionId;
   for (const optional of ['taskSummary', 'branch', 'worktreePath']) {
     if (normalized[optional] === '') {
       delete normalized[optional];
@@ -861,7 +887,21 @@ function parseSessionHash(reply: unknown): AgentSession | null {
       'Redis contains malformed session metadata.',
     );
   }
-  return agentSessionSchema.parse(normalized);
+  const session = agentSessionSchema.parse(normalized);
+  if (hostWakeAdapter === undefined && hostWakeMcpSessionId === undefined) {
+    return session;
+  }
+  if (
+    hostWakeAdapter !== 'codex-queue-v1' ||
+    typeof hostWakeMcpSessionId !== 'string' ||
+    hostWakeMcpSessionId !== session.id
+  ) {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis contains invalid private host-wake proof.',
+    );
+  }
+  return { ...session, wakeCapable: true };
 }
 
 function stringArray(reply: unknown, entity: string): string[] {

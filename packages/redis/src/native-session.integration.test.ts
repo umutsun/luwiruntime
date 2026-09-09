@@ -72,6 +72,37 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       };
     }
 
+    function nextTrustedCodexCase(): ReturnType<typeof nextCase> {
+      const current = nextCase();
+      const adapterId = 'codex-native-v1';
+      return {
+        ...current,
+        adapterId,
+        bindingId: deriveNativeBindingId({
+          adapterId,
+          nativeSessionId: current.nativeSessionId,
+        }),
+      };
+    }
+
+    function trustedDeclaration(current: ReturnType<typeof nextCase>): NativeRegistrationInput {
+      const declaration = firstDeclaration(current);
+      return {
+        ...declaration,
+        payload: {
+          ...declaration.payload,
+          identityProvenance: {
+            source: 'host_launcher',
+            launcherInstanceId: `launcher-${current.sessionId}`,
+          },
+          hostWake: {
+            adapter: 'codex-queue-v1',
+            mcpSessionId: current.sessionId,
+          },
+        },
+      };
+    }
+
     const register = async (
       sessionId: string,
       native?: NativeRegistrationInput,
@@ -168,6 +199,56 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       // Every timestamp comes from the same Redis transition clock.
       expect(link?.linkedAt).toBe(binding?.firstLinkedAt);
       expect(await repository.getSessionNativeBindingId(current.sessionId)).toBe(current.bindingId);
+    });
+
+    it('atomically persists trusted host-wake proof during session registration', async () => {
+      const current = nextTrustedCodexCase();
+      const declaration = trustedDeclaration(current);
+
+      await register(current.sessionId, declaration);
+
+      const linkId = deriveNativeLinkId(current.bindingId, current.sessionId);
+      await expect(
+        Promise.all([
+          commandClient.sendCommand(['HGET', keys.session(current.sessionId), 'hostWakeAdapter']),
+          commandClient.sendCommand([
+            'HGET',
+            keys.session(current.sessionId),
+            'hostWakeMcpSessionId',
+          ]),
+          commandClient.sendCommand([
+            'HGET',
+            keys.nativeSessionLink(linkId),
+            'identityProvenanceSource',
+          ]),
+          commandClient.sendCommand(['HGET', keys.nativeSessionLink(linkId), 'launcherInstanceId']),
+        ]),
+      ).resolves.toEqual([
+        'codex-queue-v1',
+        current.sessionId,
+        'host_launcher',
+        `launcher-${current.sessionId}`,
+      ]);
+      const session = await repository.getSession(current.sessionId);
+      expect(session).toMatchObject({ id: current.sessionId, wakeCapable: true });
+      expect(session).not.toHaveProperty('hostWakeAdapter');
+      expect(session).not.toHaveProperty('hostWakeMcpSessionId');
+      const link = await repository.getNativeLink(linkId);
+      expect(link).not.toHaveProperty('identityProvenanceSource');
+      expect(link).not.toHaveProperty('launcherInstanceId');
+    });
+
+    it('refuses untrusted registration proof before creating session or native state', async () => {
+      const current = nextTrustedCodexCase();
+      const declaration = trustedDeclaration(current);
+      declaration.payload.identityProvenance = { source: 'filesystem_heuristic' };
+
+      await expect(register(current.sessionId, declaration)).rejects.toMatchObject({
+        code: 'REDIS_ARGUMENT_INVALID',
+      });
+      expect(await repository.getSession(current.sessionId)).toBeNull();
+      expect(await repository.getNativeBinding(current.bindingId)).toBeNull();
+      expect(await repository.getNativeLink(declaration.linkId)).toBeNull();
     });
 
     it('keeps the 9-key registration shape untouched', async () => {
@@ -642,6 +723,74 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         projectId: 'project-1',
         agentId: 'codex-sim',
         sessionId: current.sessionId,
+      });
+    });
+
+    it('atomically propagates trusted host-wake proof during post-registration declaration', async () => {
+      const current = nextTrustedCodexCase();
+      await register(current.sessionId);
+      const declaration = trustedDeclaration(current);
+
+      await repository.declareNativeSession({
+        sessionId: current.sessionId,
+        projectId: 'project-1',
+        workspaceId: 'local',
+        native: declaration,
+      });
+
+      await expect(repository.getSession(current.sessionId)).resolves.toMatchObject({
+        id: current.sessionId,
+        wakeCapable: true,
+      });
+      await expect(
+        Promise.all([
+          commandClient.sendCommand(['HGET', keys.session(current.sessionId), 'hostWakeAdapter']),
+          commandClient.sendCommand([
+            'HGET',
+            keys.session(current.sessionId),
+            'hostWakeMcpSessionId',
+          ]),
+          commandClient.sendCommand([
+            'HGET',
+            keys.nativeSessionLink(declaration.linkId),
+            'identityProvenanceSource',
+          ]),
+          commandClient.sendCommand([
+            'HGET',
+            keys.nativeSessionLink(declaration.linkId),
+            'launcherInstanceId',
+          ]),
+        ]),
+      ).resolves.toEqual([
+        'codex-queue-v1',
+        current.sessionId,
+        'host_launcher',
+        `launcher-${current.sessionId}`,
+      ]);
+    });
+
+    it('rejects partial private proof when reading stored session and native-link state', async () => {
+      const current = nextCase();
+      await register(current.sessionId, firstDeclaration(current));
+      const linkId = deriveNativeLinkId(current.bindingId, current.sessionId);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.session(current.sessionId),
+        'hostWakeAdapter',
+        'codex-queue-v1',
+      ]);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.nativeSessionLink(linkId),
+        'identityProvenanceSource',
+        'host_launcher',
+      ]);
+
+      await expect(repository.getSession(current.sessionId)).rejects.toMatchObject({
+        code: 'REDIS_DATA_INVALID',
+      });
+      await expect(repository.getNativeLink(linkId)).rejects.toMatchObject({
+        code: 'REDIS_DATA_INVALID',
       });
     });
 

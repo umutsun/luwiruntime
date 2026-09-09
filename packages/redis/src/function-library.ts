@@ -62,6 +62,83 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     '  if #seq > #threshold then return false end',
     '  return seq <= threshold',
     'end',
+    'local function stream_has_group(key, group_name)',
+    "  if key_type(key) ~= 'stream' then return false end",
+    "  local groups = redis.call('XINFO', 'GROUPS', key)",
+    '  for _, group in ipairs(groups) do',
+    "    if type(group) == 'table' then",
+    '      for index = 1, #group, 2 do',
+    "        if group[index] == 'name' and group[index + 1] == group_name then return true end",
+    '      end',
+    '    end',
+    '  end',
+    '  return false',
+    'end',
+    'local function private_identifier(value)',
+    "  if type(value) ~= 'string' or value == '' or #value > 128 then return false end",
+    "  return string.match(value, '^%s*(.-)%s*$') == value",
+    'end',
+    'local function exact_fields(value, allowed)',
+    "  if type(value) ~= 'table' then return false end",
+    '  for field, _ in pairs(value) do',
+    '    if not allowed[field] then return false end',
+    '  end',
+    '  return true',
+    'end',
+    'local function native_provenance_valid(provenance)',
+    "  if type(provenance) ~= 'table' then return false end",
+    "  if provenance.source == 'host_launcher' then",
+    '    return exact_fields(provenance, {source=true, launcherInstanceId=true}) and private_identifier(provenance.launcherInstanceId)',
+    '  end',
+    "  if provenance.source == 'filesystem_heuristic' then",
+    '    return exact_fields(provenance, {source=true})',
+    '  end',
+    '  return false',
+    'end',
+    'local function session_wake_state_valid(session_key, session_id)',
+    "  local values = redis.call('HMGET', session_key, 'hostWakeAdapter', 'hostWakeMcpSessionId')",
+    '  if values[1] == false and values[2] == false then return true end',
+    "  return values[1] == 'codex-queue-v1' and values[2] == session_id",
+    'end',
+    'local function native_link_provenance_state_valid(link_key)',
+    "  local values = redis.call('HMGET', link_key, 'identityProvenanceSource', 'launcherInstanceId')",
+    '  if values[1] == false and values[2] == false then return true end',
+    "  if values[1] == 'filesystem_heuristic' then return values[2] == false end",
+    "  return values[1] == 'host_launcher' and private_identifier(values[2])",
+    'end',
+    'local function native_wake_proof_validate(binding_key, native, session_id, expected_version)',
+    '  local provenance = native.identityProvenance',
+    '  local host_wake = native.hostWake',
+    '  if provenance ~= nil and not native_provenance_valid(provenance) then',
+    "    return 'REDIS_ARGUMENT_INVALID'",
+    '  end',
+    '  if host_wake == nil then return nil end',
+    "  if not exact_fields(host_wake, {adapter=true, mcpSessionId=true}) or host_wake.adapter ~= 'codex-queue-v1' or not private_identifier(host_wake.mcpSessionId) or host_wake.mcpSessionId ~= session_id then",
+    "    return 'REDIS_ARGUMENT_INVALID'",
+    '  end',
+    "  if provenance == nil or provenance.source ~= 'host_launcher' then",
+    "    return 'REDIS_ARGUMENT_INVALID'",
+    '  end',
+    '  local adapter_id = nil',
+    '  local kind = nil',
+    '  local native_subagent_id = nil',
+    '  if expected_version == 0 then',
+    "    if type(native.binding) ~= 'table' then return 'REDIS_ARGUMENT_INVALID' end",
+    '    adapter_id = native.binding.adapterId',
+    '    kind = native.binding.kind',
+    '    native_subagent_id = native.binding.nativeSubagentId',
+    '  else',
+    "    local stored = redis.call('HMGET', binding_key, 'adapterId', 'kind', 'nativeSubagentId')",
+    "    if stored[1] == false or stored[2] == false then return 'REDIS_STATE_INVALID' end",
+    '    adapter_id = stored[1]',
+    '    kind = stored[2]',
+    '    native_subagent_id = stored[3]',
+    '  end',
+    "  if adapter_id ~= 'codex-native-v1' or kind ~= 'main' or native_subagent_id ~= nil and native_subagent_id ~= false then",
+    "    return 'REDIS_ARGUMENT_INVALID'",
+    '  end',
+    '  return nil',
+    'end',
     '-- Validates only. Any mutation here would break "a conflict writes nothing",',
     '-- and it runs before XGROUP CREATE, which itself creates a stream.',
     'local function native_validate(binding_key, link_key, stale_key, native, session_id, declared)',
@@ -117,7 +194,10 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "    if redis.call('HGET', stale_key, 'id') ~= native.staleLinkId then return 'VERSION_CONFLICT' end",
     "    if redis.call('HGET', stale_key, 'bindingId') ~= native.bindingId then return 'VERSION_CONFLICT' end",
     "    if redis.call('HGET', stale_key, 'unlinkedAt') then return 'VERSION_CONFLICT' end",
+    "    if not native_link_provenance_state_valid(stale_key) then return 'REDIS_STATE_INVALID' end",
     '  end',
+    '  local proof_error = native_wake_proof_validate(binding_key, native, session_id, expected_version)',
+    '  if proof_error then return proof_error end',
     '  -- An existing link key means this (binding, session) pair was linked before;',
     '  -- overwriting it would silently discard an earlier interval.',
     "  if key_type(link_key) ~= 'none' then return 'VERSION_CONFLICT' end",
@@ -134,6 +214,10 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     '    }',
     '  end',
     "  redis.call('HSET', link_key, 'id', native.link.id, 'bindingId', native.bindingId, 'sessionId', native.link.sessionId, 'linkedAt', clock.timestamp)",
+    '  if native.identityProvenance then',
+    "    redis.call('HSET', link_key, 'identityProvenanceSource', native.identityProvenance.source)",
+    "    if native.identityProvenance.source == 'host_launcher' then redis.call('HSET', link_key, 'launcherInstanceId', native.identityProvenance.launcherInstanceId) end",
+    '  end',
     "  redis.call('ZADD', links_key, clock.milliseconds, native.link.id)",
     "  redis.call('SET', reverse_key, native.bindingId)",
     '  if tonumber(native.expectedVersion) == 0 then',
@@ -146,6 +230,12 @@ export function buildFunctionLibrary(registry: RedisFunctionRegistry): RedisFunc
     "    redis.call('HINCRBY', binding_key, 'version', 1)",
     '  end',
     '  return unlinked_event',
+    'end',
+    'local function native_apply_session_wake(session_key, native)',
+    "  redis.call('HDEL', session_key, 'hostWakeAdapter', 'hostWakeMcpSessionId')",
+    '  if native.hostWake then',
+    "    redis.call('HSET', session_key, 'hostWakeAdapter', native.hostWake.adapter, 'hostWakeMcpSessionId', native.hostWake.mcpSessionId)",
+    '  end',
     'end',
     '-- HSET creates a missing hash, so the unlink proves the link is the one it',
     '-- means before writing, and refuses a second close so unlinkedAt is written once.',
@@ -640,6 +730,7 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
   -- project and native-link dependencies may legitimately change afterwards.
   if key_type(keys[1]) ~= 'none' then
     if redis.call('HGET', keys[1], 'registrationEventId') == args[3] and redis.call('HGET', keys[1], 'id') == session.id and redis.call('HGET', keys[1], 'agentId') == session.agentId and redis.call('HGET', keys[1], 'projectId') == session.projectId then
+      if not session_wake_state_valid(keys[1], session.id) then return bridge_error('REDIS_STATE_INVALID') end
       local result = redis.call('HGET', keys[1], 'registrationResult')
       if result then return result end
     end
@@ -758,6 +849,7 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     '  local unlinked_event = nil',
     '  if native then',
     '    unlinked_event = native_apply(keys[10], keys[11], keys[12], keys[13], keys[14], native, clock, args[9], args[2])',
+    '    native_apply_session_wake(keys[1], native)',
     '  end',
     '  local streams = append_event(keys[7], keys[8], event_json)',
     `  local attached_event = nil
@@ -842,6 +934,9 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     '  if values[3] ~= declared.projectId then',
     "    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
     '  end',
+    '  if not session_wake_state_valid(keys[1], declared.sessionId) then',
+    "    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
+    '  end',
     '  -- A terminal session cannot declare: its interval is already closed, and',
     '  -- a fresh open link would claim evidence the session can no longer earn.',
     "  if values[4] == 'completed' or values[4] == 'disconnected' then",
@@ -856,6 +951,7 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     '  end',
     '  local clock = redis_now()',
     '  local unlinked_event = native_apply(keys[2], keys[3], keys[4], keys[5], keys[6], native, clock, args[5], args[3])',
+    '  native_apply_session_wake(keys[1], native)',
     '  local events = {}',
     '  if unlinked_event then',
     '    local unlinked_streams = append_event(keys[7], keys[8], cjson.encode(unlinked_event))',
@@ -1510,7 +1606,7 @@ end`,
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
     '  local terminal_target = terminal[target_state] == true',
-    '  if not stream_appendable(keys[3]) or not stream_appendable(keys[4]) or (terminal_target and not stream_appendable(keys[6])) then',
+    '  if not stream_appendable(keys[3]) or not stream_appendable(keys[4]) or (terminal_target and (not stream_has_capacity(keys[6], 1) or not stream_has_group(keys[5], args[8]))) then',
     "    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
     '  end',
     "  redis.call('HSET', keys[1], 'state', target_state, 'updatedAt', clock.timestamp)",
@@ -1546,13 +1642,307 @@ end`,
     "  if not updated then return cjson.encode({status='error', code='REDIS_STATE_INVALID'}) end",
     "  return cjson.encode({status='updated', message=updated, event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId})",
     'end',
+    `local function workflow_terminal_transition(keys, args, target_state)
+  if #keys == 10 and #args == 9 then
+    if not type_is(keys[1], 'hash') then return bridge_error('REDIS_STATE_INVALID') end
+    if key_type(keys[1]) ~= 'none' then
+      local workflow_link = redis.call('HMGET', keys[1], 'workflowId', 'workflowRevision')
+      if (workflow_link[1] == false) ~= (workflow_link[2] == false) then
+        return bridge_error('REDIS_STATE_INVALID')
+      end
+      if workflow_link[1] ~= false then return bridge_error('REDIS_ARGUMENT_INVALID') end
+    end
+    return message_transition(keys, args, target_state)
+  end
+  if #keys ~= 18 or #args ~= 11 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if target_state ~= 'responded' and target_state ~= 'rejected'
+    and target_state ~= 'failed' and target_state ~= 'timed_out' then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  if not type_is(keys[1], 'hash') or not type_is(keys[2], 'hash')
+    or not type_is(keys[3], 'stream') or not type_is(keys[4], 'stream')
+    or not type_is(keys[5], 'stream') or not type_is(keys[6], 'stream')
+    or not type_is(keys[7], 'zset') or not type_is(keys[8], 'zset')
+    or not type_is(keys[9], 'string') or not type_is(keys[10], 'string')
+    or not type_is(keys[11], 'hash') or not type_is(keys[12], 'string')
+    or not type_is(keys[13], 'hash') or not type_is(keys[14], 'hash')
+    or not type_is(keys[15], 'stream') or not type_is(keys[16], 'zset')
+    or not type_is(keys[17], 'zset') or not type_is(keys[18], 'zset') then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  if key_type(keys[1]) == 'none' then return bridge_error('MESSAGE_NOT_FOUND') end
+
+  local retention_ms = tonumber(args[7])
+  if not bridge_id(args[1]) or type(args[3]) ~= 'string' or #args[3] == 0
+    or #args[3] > 128 or string.match(args[3], '%S') == nil
+    or not bridge_id(args[4]) or not bridge_integer(retention_ms, 1)
+    or args[8] ~= 'luwi-session-inbox-v1'
+    or (args[9] ~= '0' and args[9] ~= '1')
+    or not bridge_id(args[10]) or not bridge_id(args[11]) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+
+  local values = redis.call(
+    'HMGET', keys[1],
+    'id', 'correlationId', 'projectId', 'sourceSessionId', 'sourceAgentId',
+    'targetSessionId', 'targetAgentId', 'state', 'targetInboxStreamId',
+    'idempotencyKeyHash', 'workflowId', 'workflowRevision'
+  )
+  for index = 1, 9 do
+    if values[index] == false or values[index] == '' then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+  end
+  if not bridge_id(values[1]) or not bridge_id(values[2]) or not bridge_id(values[3])
+    or not bridge_id(values[4]) or not bridge_id(values[5]) or not bridge_id(values[6])
+    or not bridge_id(values[7]) or not bridge_id(values[9])
+    or not bridge_id(values[11]) then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local workflow_revision = tonumber(values[12])
+  if not bridge_integer(workflow_revision, 1) then return bridge_error('REDIS_STATE_INVALID') end
+  if values[2] ~= args[1] then return bridge_error('MESSAGE_NOT_FOUND') end
+
+  local prefix = key_namespace(keys[3])
+  local idempotency_part = values[1]
+  if values[10] == false then
+    if args[9] ~= '0' then return bridge_error('REDIS_STATE_INVALID') end
+  else
+    if not bridge_digest(values[10]) or args[9] ~= '1' then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+    idempotency_part = values[10]
+  end
+  if prefix == nil
+    or not exact_key(prefix, keys[1], ':message:' .. values[1])
+    or not exact_key(prefix, keys[2], ':session:' .. values[6])
+    or not exact_key(prefix, keys[3], ':events:global')
+    or not exact_key(prefix, keys[4], ':events:project:' .. values[3])
+    or not exact_key(prefix, keys[5], ':inbox:session:' .. values[6])
+    or not exact_key(prefix, keys[6], ':inbox:session:' .. values[4])
+    or not exact_key(prefix, keys[7], ':deadline:messages')
+    or not exact_key(prefix, keys[8], ':index:messages:terminal')
+    or not exact_key(prefix, keys[9], ':index:message:idempotency:' .. values[4] .. ':' .. idempotency_part)
+    or not exact_key(prefix, keys[10], ':index:message:correlation:' .. values[2])
+    or not exact_key(prefix, keys[11], ':session:' .. values[4])
+    or not exact_key(prefix, keys[12], ':presence:session:' .. values[4])
+    or not exact_key(prefix, keys[13], ':workflow:' .. values[11])
+    or not exact_key(prefix, keys[14], ':wake-intent:' .. values[1])
+    or not exact_key(prefix, keys[15], ':stream:wake')
+    or not exact_key(prefix, keys[16], ':index:wake-intents')
+    or not exact_key(prefix, keys[17], ':index:project:' .. values[3] .. ':wake-intents')
+    or not exact_key(prefix, keys[18], ':deadline:wake-intents') then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+
+  local current = values[8]
+  local projection = message_projection(keys[1])
+  if not projection then return bridge_error('REDIS_STATE_INVALID') end
+  if target_state ~= 'timed_out' then
+    if not bridge_id(args[2]) or args[2] ~= values[6] or key_type(keys[2]) == 'none' then
+      return bridge_error('RESPONDER_SESSION_MISMATCH')
+    end
+    local responder = redis.call('HMGET', keys[2], 'id', 'status')
+    if responder[1] ~= values[6] or responder[2] == false then
+      return bridge_error('RESPONDER_SESSION_MISMATCH')
+    end
+    if current ~= target_state
+      and (responder[2] == 'completed' or responder[2] == 'disconnected') then
+      return bridge_error('RESPONDER_SESSION_MISMATCH')
+    end
+  elseif args[2] ~= '' then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  if current == target_state then
+    return cjson.encode({status='unchanged', message=projection})
+  end
+  local terminal = {responded=true, rejected=true, timed_out=true, failed=true}
+  if terminal[current] then
+    if target_state == 'timed_out' then
+      return cjson.encode({status='unchanged', message=projection})
+    end
+    return bridge_error('MESSAGE_TERMINAL')
+  end
+  local allowed = {
+    queued={timed_out=true, failed=true},
+    delivered={responded=true, rejected=true, timed_out=true, failed=true},
+    acknowledged={responded=true, rejected=true, timed_out=true, failed=true},
+    processing={responded=true, rejected=true, timed_out=true, failed=true}
+  }
+  if not allowed[current] or not allowed[current][target_state] then
+    return bridge_error('MESSAGE_TRANSITION_INVALID')
+  end
+
+  local clock = redis_now()
+  if target_state == 'timed_out' then
+    local expected_deadline = tonumber(args[6])
+    local stored_deadline = redis.call('ZSCORE', keys[7], values[1])
+    if not bridge_integer(expected_deadline, 1) or not stored_deadline
+      or tonumber(stored_deadline) ~= expected_deadline or clock.milliseconds < expected_deadline then
+      return cjson.encode({status='unchanged', message=projection})
+    end
+  elseif args[6] ~= '' then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+
+  local response = nil
+  if target_state == 'responded' or target_state == 'rejected' or target_state == 'failed' then
+    local response_ok
+    response_ok, response = pcall(cjson.decode, args[5])
+    if not response_ok or type(response) ~= 'table' or type(response.status) ~= 'string'
+      or type(response.answer) ~= 'string' or response.answer == ''
+      or type(response.evidence) ~= 'table' or type(response.verifiedAt) ~= 'string' then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+    if target_state == 'responded'
+      and response.status ~= 'answered' and response.status ~= 'partially_answered' then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+    if target_state == 'rejected' and response.status ~= 'rejected' then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+    if target_state == 'failed' and response.status ~= 'failed' then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+  elseif args[5] ~= '' then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+
+  if key_type(keys[11]) ~= 'hash' or key_type(keys[13]) ~= 'hash'
+    or key_type(keys[14]) ~= 'none' then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local workflow = redis.call(
+    'HMGET', keys[13],
+    'id', 'projectId', 'coordinatorSessionId', 'revision', 'state',
+    'currentMessageId', 'currentWakeIntentId', 'currentHumanContinuationId'
+  )
+  if workflow[1] ~= values[11] or workflow[2] ~= values[3]
+    or workflow[3] ~= values[4] or tonumber(workflow[4]) ~= workflow_revision
+    or workflow[5] ~= 'active' or workflow[6] ~= values[1]
+    or workflow[7] ~= false or workflow[8] ~= false then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local source = redis.call(
+    'HMGET', keys[11],
+    'id', 'agentId', 'projectId', 'status', 'hostWakeAdapter', 'hostWakeMcpSessionId'
+  )
+  if source[1] ~= values[4] or source[2] ~= values[5] or source[3] ~= values[3]
+    or source[4] == false then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local adapter_missing = source[5] == false
+  local mcp_missing = source[6] == false
+  if adapter_missing ~= mcp_missing then return bridge_error('REDIS_STATE_INVALID') end
+  local eligible = false
+  if not adapter_missing then
+    if source[5] ~= 'codex-queue-v1' or source[6] ~= values[4] then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+    if source[4] ~= 'completed' and source[4] ~= 'disconnected' then
+      local presence = redis.call('GET', keys[12])
+      if presence ~= false then
+        if presence ~= values[4] or redis.call('PTTL', keys[12]) <= 0 then
+          return bridge_error('REDIS_STATE_INVALID')
+        end
+        eligible = true
+      end
+    end
+  end
+
+  if not stream_has_capacity(keys[3], 2)
+    or not stream_has_capacity(keys[4], 2)
+    or not stream_has_capacity(keys[6], 1)
+    or not stream_has_group(keys[5], args[8])
+    or (eligible and not stream_has_capacity(keys[15], 1)) then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+
+  local event_types = {
+    responded='message.responded', rejected='message.rejected',
+    failed='message.failed', timed_out='message.timed_out'
+  }
+  local event = {
+    id=args[4], version=1, type=event_types[target_state], occurredAt=clock.timestamp,
+    workspaceId=args[3], projectId=values[3], agentId=values[7], sessionId=values[6],
+    correlationId=values[2],
+    payload={messageId=values[1], previousState=current, currentState=target_state}
+  }
+  redis.call(
+    'HSET', keys[1],
+    'state', target_state, 'updatedAt', clock.timestamp, 'terminalEventId', args[4]
+  )
+  if target_state == 'responded' then
+    redis.call('HSET', keys[1], 'respondedAt', clock.timestamp)
+  end
+  if response then redis.call('HSET', keys[1], 'response', args[5]) end
+  redis.call('ZREM', keys[7], values[1])
+  redis.call('ZADD', keys[8], clock.milliseconds, values[1])
+  local notification = {
+    messageId=values[1], correlationId=values[2], itemKind='response',
+    sourceSessionId=values[6], targetSessionId=values[4], createdAt=clock.timestamp,
+    payload={state=target_state}
+  }
+  if response then notification.payload.response = response end
+  redis.call('XADD', keys[6], '*', 'item', cjson.encode(notification))
+  redis.call('XACK', keys[5], args[8], values[9])
+  if args[9] == '1' then redis.call('PEXPIRE', keys[9], retention_ms) end
+  local streams = append_event(keys[3], keys[4], cjson.encode(event))
+
+  if eligible then
+    local deadline_ms = clock.milliseconds + 300000
+    local wake_stream_id = redis.call('XADD', keys[15], '*', 'wakeIntentId', values[1])
+    redis.call(
+      'HSET', keys[14],
+      'id', values[1], 'messageId', values[1], 'workflowId', values[11],
+      'sourceSessionId', values[4], 'correlationId', values[2],
+      'terminalState', target_state, 'adapter', 'codex-queue-v1',
+      'state', 'pending', 'createdAt', clock.timestamp, 'updatedAt', clock.timestamp,
+      'workspaceId', args[3], 'projectId', values[3], 'sourceAgentId', values[5],
+      'workflowRevision', workflow_revision, 'streamId', wake_stream_id,
+      'deadlineMs', deadline_ms, 'fallbackContinuationId', args[11],
+      'requestedEventId', args[10], 'lastEventId', args[10]
+    )
+    redis.call('ZADD', keys[16], clock.milliseconds, values[1])
+    redis.call('ZADD', keys[17], clock.milliseconds, values[1])
+    redis.call('ZADD', keys[18], deadline_ms, values[1])
+    redis.call('HSET', keys[13], 'currentWakeIntentId', values[1], 'updatedAt', clock.timestamp)
+    redis.call('HDEL', keys[13], 'currentHumanContinuationId', 'humanDecision')
+    local wake_event = {
+      id=args[10], version=1, type='wake.requested', occurredAt=clock.timestamp,
+      workspaceId=args[3], projectId=values[3], agentId=values[5],
+      sessionId=values[4], correlationId=values[2], causationId=args[4],
+      payload={
+        wakeIntentId=values[1], messageId=values[1],
+        workflowId=values[11], terminalState=target_state
+      }
+    }
+    append_event(keys[3], keys[4], cjson.encode(wake_event))
+  else
+    redis.call(
+      'HSET', keys[13],
+      'state', 'waiting_for_human',
+      'currentHumanContinuationId', args[11],
+      'humanDecision', 'Review the durable terminal response and continue this workflow.',
+      'updatedAt', clock.timestamp
+    )
+    redis.call('HDEL', keys[13], 'currentWakeIntentId')
+  end
+
+  local updated = message_projection(keys[1])
+  if not updated then return bridge_error('REDIS_STATE_INVALID') end
+  return cjson.encode({
+    status='updated', message=updated, event=event,
+    globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId
+  })
+end`,
     "local function message_delivered(keys, args) return message_transition(keys, args, 'delivered') end",
     "local function message_acknowledge(keys, args) return message_transition(keys, args, 'acknowledged') end",
     "local function message_processing(keys, args) return message_transition(keys, args, 'processing') end",
-    "local function message_respond(keys, args) return message_transition(keys, args, 'responded') end",
-    "local function message_reject(keys, args) return message_transition(keys, args, 'rejected') end",
-    "local function message_fail(keys, args) return message_transition(keys, args, 'failed') end",
-    "local function message_timeout(keys, args) return message_transition(keys, args, 'timed_out') end",
+    "local function message_respond(keys, args) return workflow_terminal_transition(keys, args, 'responded') end",
+    "local function message_reject(keys, args) return workflow_terminal_transition(keys, args, 'rejected') end",
+    "local function message_fail(keys, args) return workflow_terminal_transition(keys, args, 'failed') end",
+    "local function message_timeout(keys, args) return workflow_terminal_transition(keys, args, 'timed_out') end",
     'local function control_append_event(global_stream, project_stream, event_json)',
     "  local global_stream_id = redis.call('XADD', global_stream, '*', 'event', event_json)",
     '  local project_stream_id = global_stream_id',

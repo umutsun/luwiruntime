@@ -225,8 +225,10 @@ describe('Phase 1 HTTP routes', () => {
       link: declaredLink,
     });
     expect(declareNative).toHaveBeenCalledWith('session-1', {
-      adapterId: 'claude-code',
-      nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+      native: {
+        adapterId: 'claude-code',
+        nativeSessionId: '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34',
+      },
     });
   });
 

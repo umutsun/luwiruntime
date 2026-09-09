@@ -127,6 +127,86 @@ describe('runtime repository project boundary', () => {
 });
 
 describe('runtime repository session boundary', () => {
+  it('redacts private host-wake proof and exposes only the bounded capability flag', async () => {
+    const client = new FakeCommandClient();
+    client.sendCommand = async (command) => {
+      client.commands.push([...command]);
+      if (command[0] === 'EXISTS') return 1;
+      return [
+        'id',
+        'session-1',
+        'agentId',
+        'codex',
+        'projectId',
+        'project-1',
+        'status',
+        'idle',
+        'workingDirectory',
+        'C:/workspace/luwi',
+        'startedAt',
+        '2026-07-28T12:00:00.000Z',
+        'lastHeartbeatAt',
+        '2026-07-28T12:00:01.000Z',
+        'metadata',
+        '{}',
+        'hostWakeAdapter',
+        'codex-queue-v1',
+        'hostWakeMcpSessionId',
+        'session-1',
+      ];
+    };
+    const repository = createRuntimeRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.getSession('session-1')).resolves.toMatchObject({
+      id: 'session-1',
+      presence: 'online',
+      wakeCapable: true,
+    });
+  });
+
+  it.each([
+    ['hostWakeAdapter', 'codex-queue-v1'],
+    ['hostWakeMcpSessionId', 'session-1'],
+  ])('rejects partial private host-wake proof: %s', async (field, value) => {
+    const client = new FakeCommandClient();
+    client.sendCommand = async (command) => {
+      client.commands.push([...command]);
+      return [
+        'id',
+        'session-1',
+        'agentId',
+        'codex',
+        'projectId',
+        'project-1',
+        'status',
+        'completed',
+        'workingDirectory',
+        'C:/workspace/luwi',
+        'startedAt',
+        '2026-07-28T12:00:00.000Z',
+        'lastHeartbeatAt',
+        '2026-07-28T12:00:01.000Z',
+        'metadata',
+        '{}',
+        field,
+        value,
+      ];
+    };
+    const repository = createRuntimeRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.getSession('session-1')).rejects.toMatchObject({
+      code: 'REDIS_DATA_INVALID',
+    });
+  });
+
   it('registers through the session Function with projection, indexes, presence, and Streams', async () => {
     const client = new FakeCommandClient();
     client.reply = JSON.stringify({
@@ -435,6 +515,60 @@ describe('runtime repository native declaration boundary', () => {
     });
 
     await expect(repository.declareNativeSession(declareInput)).rejects.toMatchObject({
+      code: 'REDIS_DATA_INVALID',
+    });
+  });
+});
+
+describe('runtime repository native wake proof boundary', () => {
+  const baseLink = {
+    id: 'link-1',
+    bindingId: 'binding-1',
+    sessionId: 'session-1',
+    linkedAt: '2026-07-28T12:00:00.000Z',
+  };
+
+  it('redacts valid private native-link provenance', async () => {
+    const client = new FakeCommandClient();
+    client.reply = Object.entries({
+      ...baseLink,
+      identityProvenanceSource: 'host_launcher',
+      launcherInstanceId: 'launcher-1',
+    }).flat();
+    const repository = createRuntimeRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    const link = await repository.getNativeLink(baseLink.id);
+
+    expect(link).toEqual(baseLink);
+    expect(link).not.toHaveProperty('identityProvenanceSource');
+    expect(link).not.toHaveProperty('launcherInstanceId');
+  });
+
+  it.each([
+    ['launcher source without launcher id', { identityProvenanceSource: 'host_launcher' }],
+    ['launcher id without source', { launcherInstanceId: 'launcher-1' }],
+    [
+      'heuristic source with launcher id',
+      {
+        identityProvenanceSource: 'filesystem_heuristic',
+        launcherInstanceId: 'launcher-1',
+      },
+    ],
+    ['unknown source', { identityProvenanceSource: 'unknown' }],
+  ])('rejects malformed private native-link proof: %s', async (_name, proof) => {
+    const client = new FakeCommandClient();
+    client.reply = Object.entries({ ...baseLink, ...proof }).flat();
+    const repository = createRuntimeRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.getNativeLink(baseLink.id)).rejects.toMatchObject({
       code: 'REDIS_DATA_INVALID',
     });
   });

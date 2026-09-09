@@ -59,10 +59,15 @@ export const workflowDecisionSchema = z.discriminatedUnion('kind', [
   waitingForHumanDecisionSchema,
 ]);
 
+export const workflowContinuationProofSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('wake'), wakeIntentId: idSchema }),
+  z.strictObject({ kind: z.literal('human'), continuationId: idSchema }),
+]);
+
 export const continueWorkflowRequestSchema = z.strictObject({
   workflowId: idSchema,
   expectedRevision: z.number().int().positive(),
-  wakeIntentId: idSchema,
+  proof: workflowContinuationProofSchema,
   decision: workflowDecisionSchema,
 });
 
@@ -75,4 +80,5 @@ export type WorkflowView = z.infer<typeof workflowViewSchema>;
 export type WorkflowCollection = z.infer<typeof workflowCollectionSchema>;
 export type WorkflowCreateRequest = z.infer<typeof workflowCreateRequestSchema>;
 export type WorkflowDecision = z.infer<typeof workflowDecisionSchema>;
+export type WorkflowContinuationProof = z.infer<typeof workflowContinuationProofSchema>;
 export type ContinueWorkflowRequest = z.infer<typeof continueWorkflowRequestSchema>;

@@ -338,4 +338,102 @@ describe('message repository boundary', () => {
       keys.messageCorrelation('correlation-1'),
     ]);
   });
+
+  it('declares the complete workflow wake boundary for a linked terminal transition', async () => {
+    const client = new FakeCommandClient();
+    client.replies = [
+      'message-1',
+      Object.entries(storedRecord()).flatMap(([field, value]) => [field, value]),
+      ['a'.repeat(64), 'workflow-1', '1'],
+      JSON.stringify({
+        status: 'updated',
+        message: {
+          ...storedMessage,
+          state: 'failed',
+          respondedAt: '2026-07-29T12:00:01.000Z',
+          updatedAt: '2026-07-29T12:00:01.000Z',
+          response: {
+            status: 'failed',
+            answer: 'Failed safely.',
+            evidence: [],
+            verifiedAt: '2026-07-29T12:00:01.000Z',
+          },
+        },
+        event: {
+          id: 'event-failed',
+          version: 1,
+          type: 'message.failed',
+          occurredAt: '2026-07-29T12:00:01.000Z',
+          workspaceId: 'local',
+          projectId: 'project-1',
+          correlationId: 'correlation-1',
+          payload: { messageId: 'message-1' },
+        },
+        globalStreamId: '2-0',
+        projectStreamId: '2-0',
+      }),
+    ];
+    const keys = createRedisKeys();
+    const functions = createFunctionRegistry();
+    const ids = ['wake-event-1', 'continuation-1'];
+    const repository = createMessageRepository({
+      client,
+      keys,
+      functions,
+      createId: () => ids.shift() ?? 'unexpected',
+    });
+
+    await repository.transitionMessage('failed', {
+      correlationId: 'correlation-1',
+      responderSessionId: 'session-target',
+      workspaceId: 'local',
+      eventId: 'event-failed',
+      responseJson: JSON.stringify({
+        status: 'failed',
+        answer: 'Failed safely.',
+        evidence: [],
+        verifiedAt: '2026-07-29T12:00:01.000Z',
+      }),
+    });
+
+    expect(client.commands[3]).toEqual([
+      'FCALL',
+      functions.functions.messageFail,
+      '18',
+      keys.message('message-1'),
+      keys.session('session-target'),
+      keys.globalEvents,
+      keys.projectEvents('project-1'),
+      keys.sessionInbox('session-target'),
+      keys.sessionInbox('session-source'),
+      keys.messageDeadlines,
+      keys.terminalMessages,
+      keys.messageIdempotency('session-source', 'a'.repeat(64)),
+      keys.messageCorrelation('correlation-1'),
+      keys.session('session-source'),
+      keys.sessionPresence('session-source'),
+      keys.workflow('workflow-1'),
+      keys.wakeIntent('message-1'),
+      keys.wakeStream,
+      keys.wakeIntentsIndex,
+      keys.projectWakeIntents('project-1'),
+      keys.wakeIntentDeadlines,
+      'correlation-1',
+      'session-target',
+      'local',
+      'event-failed',
+      JSON.stringify({
+        status: 'failed',
+        answer: 'Failed safely.',
+        evidence: [],
+        verifiedAt: '2026-07-29T12:00:01.000Z',
+      }),
+      '',
+      '86400000',
+      'luwi-session-inbox-v1',
+      '1',
+      'wake-event-1',
+      'continuation-1',
+    ]);
+  });
 });
