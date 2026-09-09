@@ -16,6 +16,7 @@ const productionFunctionNames = [
   'luwi_bridge_slot_expire_v1',
   'luwi_native_link_trim_v1',
   'luwi_native_declare_v1',
+  'luwi_workflow_create_v1',
   'luwi_message_request_v1',
   'luwi_message_delivered_v1',
   'luwi_message_acknowledge_v1',

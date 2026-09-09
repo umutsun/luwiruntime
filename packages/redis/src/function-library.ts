@@ -1153,6 +1153,28 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     '  }',
     "  return cjson.encode({status='disconnected', event=event, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId, events=events})",
     'end',
+    `local function message_keys_match(keys, message, use_idempotency)
+  if #keys ~= 15 then return false end
+  local prefix = key_namespace(keys[14])
+  if prefix == nil then return false end
+  local idempotency_part = message.id
+  if use_idempotency then idempotency_part = message.idempotencyKeyHash end
+  return exact_key(prefix, keys[1], ':message:' .. message.id)
+    and exact_key(prefix, keys[2], ':index:message:correlation:' .. message.correlationId)
+    and exact_key(prefix, keys[3], ':index:message:idempotency:' .. message.sourceSessionId .. ':' .. idempotency_part)
+    and exact_key(prefix, keys[4], ':index:messages')
+    and exact_key(prefix, keys[5], ':index:project:' .. message.projectId .. ':messages')
+    and exact_key(prefix, keys[6], ':index:session:' .. message.sourceSessionId .. ':messages:source')
+    and exact_key(prefix, keys[7], ':index:session:' .. message.targetSessionId .. ':messages:target')
+    and exact_key(prefix, keys[8], ':deadline:messages')
+    and exact_key(prefix, keys[9], ':session:' .. message.sourceSessionId)
+    and exact_key(prefix, keys[10], ':presence:session:' .. message.sourceSessionId)
+    and exact_key(prefix, keys[11], ':session:' .. message.targetSessionId)
+    and exact_key(prefix, keys[12], ':presence:session:' .. message.targetSessionId)
+    and exact_key(prefix, keys[13], ':inbox:session:' .. message.targetSessionId)
+    and exact_key(prefix, keys[14], ':events:global')
+    and exact_key(prefix, keys[15], ':events:project:' .. message.projectId)
+end`,
     'local function message_request(keys, args)',
     '  if #keys ~= 15 or #args ~= 4 then',
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
@@ -1167,7 +1189,30 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     "      return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '    end',
     '  end',
+    '  if not bridge_id(message.id) or not bridge_id(message.correlationId) or not bridge_id(message.projectId) or not bridge_id(message.sourceSessionId) or not bridge_id(message.sourceAgentId) or not bridge_id(message.targetSessionId) or not bridge_id(message.targetAgentId) or not bridge_digest(message.requestFingerprint) then',
+    "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
+    '  end',
+    "  if (message.kind ~= 'question' and message.kind ~= 'status_request' and message.kind ~= 'instruction') or #message.selectionReason > 1024 or string.match(message.selectionReason, '%S') == nil or #message.content > 32768 or string.match(message.content, '%S') == nil then",
+    "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
+    '  end',
+    "  if message.subject ~= nil and (type(message.subject) ~= 'string' or #message.subject > 512 or string.match(message.subject, '%S') == nil) then",
+    "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
+    '  end',
     "  if type(message.evidenceRequirements) ~= 'table' or type(message.timeoutMs) ~= 'number' or message.timeoutMs < 1 or message.timeoutMs ~= math.floor(message.timeoutMs) or args[2] == '' or args[3] == '' or (args[4] ~= '0' and args[4] ~= '1') then",
+    "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
+    '  end',
+    '  if message.timeoutMs > 86400000 or not bridge_id(args[2]) or not bridge_id(args[3]) then',
+    "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
+    '  end',
+    '  local evidence_count = 0',
+    '  local allowed_evidence = {session_state=true, git_commit=true, git_diff=true, test_result=true, build_result=true, file_reference=true, memory_reference=true, other=true}',
+    '  for key, value in pairs(message.evidenceRequirements) do',
+    "    if type(key) ~= 'number' or key < 1 or key ~= math.floor(key) or not allowed_evidence[value] then",
+    "      return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
+    '    end',
+    '    evidence_count = evidence_count + 1',
+    '  end',
+    "  if evidence_count > 32 or not message_keys_match(keys, message, args[4] == '1') then",
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
     "  local evidence_requirements_json = next(message.evidenceRequirements) == nil and '[]' or cjson.encode(message.evidenceRequirements)",
@@ -1253,6 +1298,95 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     '  local streams = append_event(keys[14], keys[15], event_json)',
     "  return cjson.encode({status='created', message=stored, event=event, inboxStreamId=inbox_stream_id, globalStreamId=streams.globalStreamId, projectStreamId=streams.projectStreamId})",
     'end',
+    `local function workflow_create(keys, args)
+  if #keys ~= 21 or #args ~= 4 then
+    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})
+  end
+  local workflow_ok, workflow = pcall(cjson.decode, args[1])
+  local message_ok, message = pcall(cjson.decode, args[2])
+  if not workflow_ok or type(workflow) ~= 'table' or not message_ok or type(message) ~= 'table' then
+    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})
+  end
+  if not bridge_id(workflow.id) or not bridge_id(workflow.projectId)
+    or not bridge_id(workflow.coordinatorSessionId) or not bridge_id(workflow.rootCorrelationId)
+    or type(workflow.objective) ~= 'string' or #workflow.objective > 4000
+    or string.match(workflow.objective, '%S') == nil or not bridge_digest(workflow.createFingerprint) then
+    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})
+  end
+  if not bridge_id(message.id) or not bridge_id(message.correlationId)
+    or not bridge_id(message.projectId) or not bridge_id(message.sourceSessionId)
+    or not bridge_id(message.targetSessionId) or message.idempotencyKeyHash ~= nil then
+    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})
+  end
+  if workflow.projectId ~= message.projectId
+    or workflow.coordinatorSessionId ~= message.sourceSessionId
+    or workflow.rootCorrelationId ~= message.correlationId then
+    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})
+  end
+  local message_keys = {}
+  for index = 1, 15 do message_keys[index] = keys[index + 6] end
+  local prefix = key_namespace(keys[20])
+  if prefix == nil
+    or not exact_key(prefix, keys[1], ':workflow:' .. workflow.id)
+    or not exact_key(prefix, keys[2], ':index:workflow:root-correlation:' .. workflow.rootCorrelationId)
+    or not exact_key(prefix, keys[3], ':index:workflows')
+    or not exact_key(prefix, keys[4], ':index:project:' .. workflow.projectId .. ':workflows')
+    or not exact_key(prefix, keys[5], ':index:session:' .. workflow.coordinatorSessionId .. ':workflows:coordinator')
+    or not exact_key(prefix, keys[6], ':index:workflow:' .. workflow.id .. ':messages')
+    or not message_keys_match(message_keys, message, false) then
+    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})
+  end
+  if not type_is(keys[2], 'string') then
+    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})
+  end
+  local receipt_json = redis.call('GET', keys[2])
+  if receipt_json then
+    local receipt_ok, receipt = pcall(cjson.decode, receipt_json)
+    if not receipt_ok or type(receipt) ~= 'table' or not bridge_id(receipt.workflowId)
+      or not bridge_id(receipt.messageId) or not bridge_digest(receipt.fingerprint) then
+      return cjson.encode({status='error', code='REDIS_STATE_INVALID'})
+    end
+    if receipt.fingerprint ~= workflow.createFingerprint then
+      return cjson.encode({status='error', code='WORKFLOW_CREATE_CONFLICT'})
+    end
+    return cjson.encode({status='existing', workflowId=receipt.workflowId, messageId=receipt.messageId})
+  end
+  if not type_is(keys[1], 'hash') or not type_is(keys[3], 'zset')
+    or not type_is(keys[4], 'zset') or not type_is(keys[5], 'zset')
+    or not type_is(keys[6], 'zset') then
+    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})
+  end
+  if key_type(keys[1]) ~= 'none' then
+    return cjson.encode({status='error', code='WORKFLOW_CREATE_CONFLICT'})
+  end
+  local message_result_json = message_request(message_keys, {args[2], args[3], args[4], '0'})
+  local result_ok, message_result = pcall(cjson.decode, message_result_json)
+  if not result_ok or type(message_result) ~= 'table' then
+    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})
+  end
+  if message_result.status ~= 'created' then return message_result_json end
+  local clock = redis_now()
+  local stored_workflow = {
+    id=workflow.id, projectId=workflow.projectId,
+    coordinatorSessionId=workflow.coordinatorSessionId,
+    rootCorrelationId=workflow.rootCorrelationId, objective=workflow.objective,
+    revision=1, state='active', currentMessageId=message.id,
+    createdAt=message_result.message.createdAt, updatedAt=message_result.message.createdAt
+  }
+  redis.call('HSET', keys[1], 'id', stored_workflow.id, 'projectId', stored_workflow.projectId,
+    'coordinatorSessionId', stored_workflow.coordinatorSessionId,
+    'rootCorrelationId', stored_workflow.rootCorrelationId, 'objective', stored_workflow.objective,
+    'revision', 1, 'state', 'active', 'currentMessageId', stored_workflow.currentMessageId,
+    'createdAt', stored_workflow.createdAt, 'updatedAt', stored_workflow.updatedAt,
+    'createFingerprint', workflow.createFingerprint)
+  redis.call('HSET', keys[7], 'workflowId', workflow.id, 'workflowRevision', 1)
+  redis.call('ZADD', keys[3], clock.milliseconds, workflow.id)
+  redis.call('ZADD', keys[4], clock.milliseconds, workflow.id)
+  redis.call('ZADD', keys[5], clock.milliseconds, workflow.id)
+  redis.call('ZADD', keys[6], 1, message.id)
+  redis.call('SET', keys[2], cjson.encode({workflowId=workflow.id, messageId=message.id, fingerprint=workflow.createFingerprint}))
+  return cjson.encode({status='created', workflow=stored_workflow, message=message_result.message})
+end`,
     'local function message_projection(key)',
     "  local fields = redis.call('HGETALL', key)",
     '  if #fields == 0 then return nil end',
@@ -1805,6 +1939,7 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     register(registry.functions.sessionDisconnect, 'session_disconnect'),
     register(registry.functions.nativeLinkTrim, 'native_link_trim'),
     register(registry.functions.nativeDeclare, 'native_declare'),
+    register(registry.functions.workflowCreate, 'workflow_create'),
     register(registry.functions.messageRequest, 'message_request'),
     register(registry.functions.messageDelivered, 'message_delivered'),
     register(registry.functions.messageAcknowledge, 'message_acknowledge'),

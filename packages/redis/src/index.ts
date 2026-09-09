@@ -83,6 +83,13 @@ export type {
   TransitionMessageInput,
   TransitionMessageResult,
 } from './message-repository.js';
+export { createWorkflowRepository } from './workflows.js';
+export type {
+  CreateWorkflowInput,
+  CreateWorkflowResult,
+  ListWorkflowsQuery,
+  WorkflowRepository,
+} from './workflows.js';
 export { createLeaseRepository } from './lease-repository.js';
 export type {
   AcquireLeaseResult,

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { createClient, type RedisClientType } from 'redis';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -113,7 +113,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         content: `Status ${suffix}?`,
         evidenceRequirements: ['session_state'],
         timeoutMs: 120_000,
-        requestFingerprint: suffix.padEnd(64, 'f').slice(0, 64),
+        requestFingerprint: createHash('sha256').update(suffix).digest('hex'),
       },
       workspaceId: 'local',
       eventId: `event-request-${suffix}`,

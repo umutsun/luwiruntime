@@ -24,6 +24,7 @@ export type RedisFunctionRegistry = {
     bridgeSlotExpire: string;
     nativeLinkTrim: string;
     nativeDeclare: string;
+    workflowCreate: string;
     messageRequest: string;
     messageDelivered: string;
     messageAcknowledge: string;
@@ -62,6 +63,7 @@ const productionFunctions = {
   bridgeSlotExpire: 'luwi_bridge_slot_expire_v1',
   nativeLinkTrim: 'luwi_native_link_trim_v1',
   nativeDeclare: 'luwi_native_declare_v1',
+  workflowCreate: 'luwi_workflow_create_v1',
   messageRequest: 'luwi_message_request_v1',
   messageDelivered: 'luwi_message_delivered_v1',
   messageAcknowledge: 'luwi_message_acknowledge_v1',

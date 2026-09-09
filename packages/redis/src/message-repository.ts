@@ -87,6 +87,7 @@ export interface MessageRepository {
   getMessage(correlationId: string): Promise<AgentMessage | null>;
   getMessageById(messageId: string): Promise<AgentMessage | null>;
   listMessages(query?: Partial<MessageListQuery>): Promise<AgentMessage[]>;
+  listByWorkflow(workflowId: string): Promise<AgentMessage[]>;
   transitionMessage(
     kind: MessageTransitionKind,
     input: TransitionMessageInput,
@@ -552,6 +553,39 @@ export function createMessageRepository(options: {
         if (ids.length < batchSize) {
           break;
         }
+      }
+      return messageCollectionResponseSchema.parse({ messages }).messages;
+    },
+    async listByWorkflow(workflowId) {
+      const ids = stringArray(
+        await options.client.sendCommand([
+          'ZRANGE',
+          options.keys.workflowMessages(workflowId),
+          '0',
+          '-1',
+        ]),
+      );
+      const messages: AgentMessage[] = [];
+      for (const id of ids) {
+        const linkedWorkflowId = await options.client.sendCommand([
+          'HGET',
+          options.keys.message(id),
+          'workflowId',
+        ]);
+        if (linkedWorkflowId !== workflowId) {
+          throw new RedisRepositoryError(
+            'REDIS_DATA_INVALID',
+            'Redis workflow message link is invalid.',
+          );
+        }
+        const message = await getMessageById(id);
+        if (message === null) {
+          throw new RedisRepositoryError(
+            'REDIS_DATA_INVALID',
+            'Redis workflow message is missing.',
+          );
+        }
+        messages.push(message);
       }
       return messageCollectionResponseSchema.parse({ messages }).messages;
     },
