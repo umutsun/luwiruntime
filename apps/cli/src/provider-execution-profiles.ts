@@ -13,6 +13,7 @@ import { pathContains } from './agent-runner.js';
 const PROMPT_SLOT = '__LUWI_SUPERVISED_MESSAGE_PROMPT__';
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const LOOPBACK_HOST = '127.0.0.1';
+const SUPERVISED_LUWI_TOOLS = ['luwi_respond_to_message'] as const;
 
 export type ProviderProfileReason =
   | 'effective_config_invalid'
@@ -133,6 +134,12 @@ function supervisedCodexBindingArgs(input: {
     `mcp_servers.luwi-runtime.command=${tomlString(input.nodeExecutable)}`,
     '-c',
     `mcp_servers.luwi-runtime.args=[${tomlString(input.mcpServerEntry)}]`,
+    '-c',
+    `mcp_servers.luwi-runtime.enabled_tools=[${SUPERVISED_LUWI_TOOLS.map(tomlString).join(',')}]`,
+    '-c',
+    'mcp_servers.luwi-runtime.default_tools_approval_mode="prompt"',
+    '-c',
+    'mcp_servers.luwi-runtime.tools.luwi_respond_to_message.approval_mode="approve"',
     '-c',
     `mcp_servers.luwi-runtime.env.LUWI_SESSION_ID=${tomlString(input.sessionId)}`,
     '-c',

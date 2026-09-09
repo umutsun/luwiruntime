@@ -81,6 +81,12 @@ describe('supervised provider execution profiles', () => {
         '-c',
         'mcp_servers.luwi-runtime.args=["C:/luwi/apps/mcp-server/dist/main.js"]',
         '-c',
+        'mcp_servers.luwi-runtime.enabled_tools=["luwi_respond_to_message"]',
+        '-c',
+        'mcp_servers.luwi-runtime.default_tools_approval_mode="prompt"',
+        '-c',
+        'mcp_servers.luwi-runtime.tools.luwi_respond_to_message.approval_mode="approve"',
+        '-c',
         'mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="session-1"',
         '-c',
         'mcp_servers.luwi-runtime.env.LUWI_DAEMON_URL="http://127.0.0.1:4782"',
@@ -93,6 +99,9 @@ describe('supervised provider execution profiles', () => {
         '__LUWI_SUPERVISED_MESSAGE_PROMPT__',
       ]);
       expect(result.args).not.toContain('--approve-for-me');
+      expect(result.args.join('\n')).not.toContain('luwi_ask_agent');
+      expect(result.args.join('\n')).not.toContain('luwi_acquire_lease');
+      expect(result.args.join('\n')).not.toContain('luwi_continue_workflow');
       expect(providerLaunchArguments(result, 'Perform the bounded task.')).toEqual([
         ...result.args.slice(0, result.promptIndex),
         'Perform the bounded task.',
