@@ -3427,6 +3427,53 @@ describe('wake lifecycle commands', () => {
     ownership: 'none' as const,
   };
 
+  it('runs the real durable recover and blocking claim loop under wake serve', async () => {
+    const signalSource = new EventEmitter();
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+    let claimCount = 0;
+
+    await runCli(['wake', 'serve'], {
+      environment: {},
+      signals: {
+        once: (signal, listener) => signalSource.once(signal, listener),
+        off: (signal, listener) => signalSource.off(signal, listener),
+      },
+      fetch: async (url, init) => {
+        requests.push({
+          url,
+          method: init?.method,
+          ...(init?.body === undefined ? {} : { body: JSON.parse(init.body) }),
+        });
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [] });
+        if (url.endsWith('/api/v1/wake-intents/recover')) {
+          return response({ items: [], recoveredDispatching: [], terminalAcknowledged: 0 });
+        }
+        if (url.endsWith('/api/v1/wake-intents/claim')) {
+          claimCount += 1;
+          queueMicrotask(() => signalSource.emit('SIGINT'));
+          return response({ items: [], recoveredDispatching: [], terminalAcknowledged: 0 });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    });
+
+    const recover = requests.find(({ url }) => url.endsWith('/api/v1/wake-intents/recover'));
+    const claim = requests.find(({ url }) => url.endsWith('/api/v1/wake-intents/claim'));
+    expect(recover).toMatchObject({ method: 'POST' });
+    expect(claim).toMatchObject({ method: 'POST' });
+    expect(recover?.body).toMatchObject({ limit: 1, minIdleMs: 15_000 });
+    expect(claim?.body).toMatchObject({ limit: 1, blockMs: 5_000, minIdleMs: 15_000 });
+    expect((recover?.body as Record<string, unknown>)['dispatcherInstanceId']).toBe(
+      (claim?.body as Record<string, unknown>)['dispatcherInstanceId'],
+    );
+    expect(claimCount).toBe(1);
+  });
+
   it('starts, stops, and reports process plus daemon slot state without exposing control data', async () => {
     const wakeLifecycle: WakeLifecycleService = {
       start: vi.fn(async () => running),

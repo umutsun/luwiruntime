@@ -28,6 +28,10 @@ import {
   sessionCollectionResponseSchema,
   sessionResponseSchema,
   sessionStatusTargetSchema,
+  wakeIntentClaimResponseSchema,
+  wakeIntentCompleteResponseSchema,
+  wakeIntentDispatchingResponseSchema,
+  wakeIntentRecoverResponseSchema,
   workLeaseSchema,
   type AgentKind,
   type AgentMessage,
@@ -59,6 +63,11 @@ import { isAbsolute } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
 import { registerControlPlaneCli } from './control-plane-cli.js';
+import {
+  createCoordinatorWakeDispatcher,
+  type CoordinatorWakeClient,
+  type CoordinatorWakeDispatcher,
+} from './coordinator-wake.js';
 import {
   NodeNativeAgentProcessRunner,
   agentProvider,
@@ -205,6 +214,8 @@ const noOpWakeDispatcher: WakeDispatcherHook = {
   start: async () => undefined,
   stop: async () => undefined,
 };
+
+const WAKE_DAEMON_REQUEST_TIMEOUT_MS = 15_000;
 
 const defaultDependencies: CliDependencies = {
   fetch: (url, init) => fetch(url, init as RequestInit),
@@ -1450,6 +1461,63 @@ function createBootstrapSessionClient(
         connectTimeoutMs,
         jsonBody({}),
       );
+    },
+  };
+}
+
+function createCoordinatorWakeClient(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+): CoordinatorWakeClient {
+  const post = <Output>(path: string, parser: Parser<Output>, body: unknown): Promise<Output> =>
+    boundedRequest(
+      dependencies,
+      daemonUrl,
+      path,
+      parser,
+      WAKE_DAEMON_REQUEST_TIMEOUT_MS,
+      jsonBody(body),
+    );
+  return {
+    claim: (input) => post('/api/v1/wake-intents/claim', wakeIntentClaimResponseSchema, input),
+    recover: (input) =>
+      post('/api/v1/wake-intents/recover', wakeIntentRecoverResponseSchema, input),
+    markDispatching: (intentId, input) =>
+      post(
+        `/api/v1/wake-intents/${encodeURIComponent(intentId)}/dispatching`,
+        wakeIntentDispatchingResponseSchema,
+        input,
+      ),
+    complete: (intentId, input) =>
+      post(
+        `/api/v1/wake-intents/${encodeURIComponent(intentId)}/complete`,
+        wakeIntentCompleteResponseSchema,
+        input,
+      ),
+  };
+}
+
+function createCliWakeDispatcher(dependencies: CliDependencies): WakeDispatcherHook {
+  let active: CoordinatorWakeDispatcher | undefined;
+  return {
+    async start({ daemonUrl }) {
+      if (active !== undefined) return;
+      const dispatcher = createCoordinatorWakeDispatcher({
+        client: createCoordinatorWakeClient(dependencies, daemonUrl),
+        dispatcherInstanceId: randomUUID(),
+        environment: dependencies.environment,
+        setTimeout: dependencies.setTimeout,
+        clearTimeout: dependencies.clearTimeout,
+        wait: dependencies.wait,
+        report: (entry) => printJson(dependencies, { wake: 'dispatcher', ...entry }),
+      });
+      active = dispatcher;
+      await dispatcher.start();
+    },
+    async stop() {
+      const dispatcher = active;
+      active = undefined;
+      await dispatcher?.stop();
     },
   };
 }
@@ -3390,6 +3458,10 @@ export async function runCli(
   arguments_: readonly string[],
   dependencies: Partial<CliDependencies> = {},
 ): Promise<void> {
-  const program = createCli({ ...defaultDependencies, ...dependencies });
+  const resolved: CliDependencies = { ...defaultDependencies, ...dependencies };
+  if (dependencies.wakeDispatcher === undefined) {
+    resolved.wakeDispatcher = createCliWakeDispatcher(resolved);
+  }
+  const program = createCli(resolved);
   await program.parseAsync([...arguments_], { from: 'user' });
 }
