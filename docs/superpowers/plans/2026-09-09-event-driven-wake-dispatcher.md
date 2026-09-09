@@ -20,7 +20,7 @@
 - Wake dispatch completion and workflow continuation are independent facts: continuation is valid while the wake is durably `dispatching`; its revision decision receipt cannot be overwritten by a later `dispatched`, `fallback_only`, or `indeterminate` update.
 - Exact spawn is `codex queue --thread <nativeSessionId> --message <wakePrompt>` with no shell and a ≤1KiB pointer prompt containing validated IDs/state only.
 - `luwi_continue_workflow(workflowId, expectedRevision, wakeIntentId, decision)` atomically creates at most one next message or terminal/human-blocked state. MCP is request driven, daemon never launches vendors, Pulse is read-only.
-- Run Redis integration checks only against a dedicated Redis-compatible process on `127.0.0.1:6391`; never use coordination Redis `6379` or Albanoosh Redis `6380`. Each invocation sets `LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'`, `LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'`, and one process-unique `LUWI_TEST_REDIS_NAMESPACE`/`LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX` value derived from `$PID`; every load, `FCALL`, and teardown in that invocation uses those exact values.
+- Run Redis integration checks only against a dedicated Redis-compatible process on `127.0.0.1:6391`; never use coordination Redis `6379` or Albanoosh Redis `6380`. Every invocation sets both `LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'` and `LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'`. Inside each suite derive `runId = run_${randomUUID().replaceAll('-', '')}`, pass `createRedisKeys('luwi:test:' + runId + ':v1')` and `createFunctionRegistry(runId)` into every repository/daemon collaborator, and delete only that namespace and exact registry library during teardown.
 - Before Task 5 integration checks, create `C:\xampp\htdocs\luwiruntime\.worktrees\codex-event-driven-wake-dispatcher\.superpowers\sdd\redis-6391`, start `C:\Program Files\Memurai\memurai.exe` with fixed arguments `--port 6391 --appendonly no --save 1000000 1 --dir C:\xampp\htdocs\luwiruntime\.worktrees\codex-event-driven-wake-dispatcher\.superpowers\sdd\redis-6391` using `Start-Process -WindowStyle Hidden -PassThru`, record that exact PID, and stop only that PID after the final Redis check.
 
 ---
@@ -189,31 +189,35 @@ Expected: PASS. Commit: `git add packages/runtime && git commit -m "feat(runtime
 
 ### Task 4: Version Redis v13 keys and isolated Function libraries
 
-**Files:** Modify `packages/redis/src/redis-keys.ts`, `function-registry.ts`, `function-library.ts`, `function-loader.ts` and tests/harness.
+**Files:** Modify `packages/redis/src/redis-keys.ts`, `redis-keys.test.ts`, `function-registry.ts`, `function-registry.test.ts`, `function-library.ts`, `function-library.test.ts`, `function-loader.ts`, `function-loader.test.ts`, and `index.ts`.
 
-**Interfaces:** Production name remains `luwi_v1`; test `resolveFunctionLibraryName('luwi_v1','run_abc')` returns `luwi_v1_run_abc`. Add declared slot/workflow/wake/index/Stream/group keys.
+**Interfaces:** Production registry remains `createFunctionRegistry()` → `luwi_v1`; isolated suites reuse the existing `createFunctionRegistry(runId)` contract, which returns `luwi_test_${runId}_v1` and suffixes every Function name. `buildFunctionLibrary(registry).registry.version` becomes 13. Add declared slot/workflow/wake/index/Stream keys and export `WAKE_CONSUMER_GROUP = 'luwi-wake-v1'` separately because a consumer-group name is not a Redis key.
 
 - [ ] **Step 1: Write failing keys/version/suffix tests**
 
 ```ts
 expect(createRedisKeys('run-a').wakeStream).toBe('run-a:stream:wake');
-expect(buildFunctionLibrary().version).toBe(13);
-expect(resolveFunctionLibraryName('luwi_v1', 'run_abc')).toBe('luwi_v1_run_abc');
+const registry = createFunctionRegistry('run_abc');
+expect(registry.libraryName).toBe('luwi_test_run_abc_v1');
+expect(buildFunctionLibrary(registry).registry.version).toBe(13);
+expect(new Set(Object.values(registry.functions)).size).toBe(
+  Object.values(registry.functions).length,
+);
 ```
 
 - [ ] **Step 2: Run failing tests**
 
-Run: `pnpm exec vitest run packages/redis/src/redis-keys.test.ts packages/redis/src/function-registry.test.ts packages/redis/src/function-library.test.ts`
+Run: `pnpm exec vitest run packages/redis/src/redis-keys.test.ts packages/redis/src/function-registry.test.ts packages/redis/src/function-library.test.ts packages/redis/src/function-loader.test.ts`
 
 Expected: FAIL because v13/suffix support is absent.
 
 - [ ] **Step 3: Implement declared keys and validated test suffix**
 
-Suffix is harness-only, bounded, used consistently in Function load/compatibility/FCALL/unload; production stays `luwi_v1`.
+Keep the existing bounded suffix validation and route the same registry through source generation, compatibility checks, every `FCALL`, and teardown. Tighten loader verification to require the exact registry library name and non-null object reply; remove the legacy `libraryName: 'test'` wildcard. Add exact key constructors for the retained slot projection/private owner, workflow decision receipts, wake indexes/deadlines/Stream, and reject raw or malformed slot digests. Do not register dummy callbacks before their implementation tasks.
 
 - [ ] **Step 4: Verify and commit boundary**
 
-Run: `pnpm exec vitest run packages/redis/src/redis-keys.test.ts packages/redis/src/function-registry.test.ts packages/redis/src/function-library.test.ts`
+Run: `pnpm exec vitest run packages/redis/src/redis-keys.test.ts packages/redis/src/function-registry.test.ts packages/redis/src/function-library.test.ts packages/redis/src/function-loader.test.ts`
 
 Expected: PASS. Commit: `git add packages/redis/src && git commit -m "feat(redis): add v13 isolated wake functions"`.
 
@@ -251,7 +255,7 @@ Declare slot/session/link/event/index keys and preflight their types plus event 
 
 - [ ] **Step 4: Verify isolated Redis and commit boundary**
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/bridge-slots.integration.test.ts`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/bridge-slots.integration.test.ts`
 
 Expected: PASS. Commit: `git add packages/redis/src && git commit -m "feat(redis): atomically fence bridge slots"`.
 
@@ -323,7 +327,7 @@ Validate all workflow/message/index/stream keys before any write; invalid coordi
 
 - [ ] **Step 4: Verify isolated Redis and commit boundary**
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/workflows.integration.test.ts`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/workflows.integration.test.ts`
 
 Expected: PASS. Commit: `git add packages/redis/src && git commit -m "feat(redis): atomically create workflow message"`.
 
@@ -356,7 +360,7 @@ Refactor the shared `message_transition` preflight/apply path so every terminal 
 
 - [ ] **Step 4: Verify isolated Redis and commit boundary**
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/message-transitions.integration.test.ts packages/redis/src/wake-intents.integration.test.ts`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/message-transitions.integration.test.ts packages/redis/src/wake-intents.integration.test.ts`
 
 Expected: PASS. Commit: `git add packages/redis/src && git commit -m "feat(redis): atomically create terminal wakes"`.
 
@@ -388,7 +392,7 @@ Use `XREADGROUP BLOCK`/`XAUTOCLAIM`; only claimed reassigns. Fence dispatching w
 
 - [ ] **Step 4: Verify isolated Redis and commit boundary**
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/wake-intents.integration.test.ts packages/redis/src/message-retention.integration.test.ts`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/wake-intents.integration.test.ts packages/redis/src/message-retention.integration.test.ts`
 
 Expected: PASS. Commit: `git add packages/redis/src && git commit -m "feat(redis): recover durable wakes safely"`.
 
@@ -421,7 +425,7 @@ Verify active workflow/coordinator/current wake/revision/target; atomically pers
 
 - [ ] **Step 4: Verify isolated Redis and commit boundary**
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/workflows.integration.test.ts`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm exec vitest run --config vitest.integration.config.ts packages/redis/src/workflows.integration.test.ts`
 
 Expected: PASS. Commit: `git add packages/redis/src && git commit -m "feat(redis): fence workflow continuation"`.
 
@@ -461,7 +465,7 @@ Use existing origin/content protection, derive identity from path/claim not body
 
 - [ ] **Step 4: Verify and commit boundary**
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm exec vitest run --config vitest.integration.config.ts apps/daemon/src/runtime.integration.test.ts`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm exec vitest run --config vitest.integration.config.ts apps/daemon/src/runtime.integration.test.ts`
 
 Expected: PASS. Commit: `git add apps/daemon/src && git commit -m "feat(daemon): serve durable wake APIs"`.
 
@@ -583,7 +587,7 @@ Cover invalid binding fallback, WebSocket disconnect, restart from `0-0`, claime
 
 - [ ] **Step 2: Run failing isolated suite**
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm exec vitest run --config vitest.integration.config.ts apps/daemon/src/wake-dispatch.integration.test.ts apps/cli/src/wake-supervisor.integration.test.ts apps/cli/src/coordinator-wake.integration.test.ts`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm exec vitest run --config vitest.integration.config.ts apps/daemon/src/wake-dispatch.integration.test.ts apps/cli/src/wake-supervisor.integration.test.ts apps/cli/src/coordinator-wake.integration.test.ts`
 
 Expected: FAIL until composition is wired.
 
@@ -593,7 +597,7 @@ Retain no-daemon-spawn and no-uncertain-retry invariants.
 
 - [ ] **Step 4: Verify and commit boundary**
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm exec vitest run --config vitest.integration.config.ts apps/daemon/src/wake-dispatch.integration.test.ts apps/cli/src/wake-supervisor.integration.test.ts apps/cli/src/coordinator-wake.integration.test.ts`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm exec vitest run --config vitest.integration.config.ts apps/daemon/src/wake-dispatch.integration.test.ts apps/cli/src/wake-supervisor.integration.test.ts apps/cli/src/coordinator-wake.integration.test.ts`
 
 Expected: PASS. Commit: `git add apps/daemon/src apps/cli/src && git commit -m "test: prove wake dispatcher recovery"`.
 
@@ -609,7 +613,7 @@ Run: `pnpm format:write && pnpm lint && pnpm typecheck && pnpm test`
 
 Expected: PASS.
 
-Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; $env:LUWI_TEST_REDIS_NAMESPACE="wake_test_$PID"; $env:LUWI_TEST_REDIS_FUNCTION_LIBRARY_SUFFIX="wake_test_$PID"; pnpm test:integration`
+Run: `$env:LUWI_TEST_REDIS_URL='redis://127.0.0.1:6391'; $env:LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS='true'; pnpm test:integration`
 
 Expected: PASS with only the isolated namespace/library touched.
 
