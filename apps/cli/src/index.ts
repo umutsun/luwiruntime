@@ -1,5 +1,5 @@
 export { createCli, runCli } from './cli.js';
-export type { CliDependencies, HttpResponseLike } from './cli.js';
+export type { CliDependencies, HttpResponseLike, WakeDispatcherHook } from './cli.js';
 export {
   createLifecycleService,
   createNodeLifecycleService,
@@ -16,6 +16,14 @@ export type {
   RuntimeResetResult,
   SetupResult,
 } from './lifecycle.js';
+export { createNodeWakeLifecycleService, createWakeLifecycleService } from './wake-lifecycle.js';
+export type {
+  ManagedWakeServeLease,
+  WakeLifecycleDependencies,
+  WakeLifecycleService,
+  WakeLifecycleStatus,
+  WakeProcessLaunch,
+} from './wake-lifecycle.js';
 export { createProjectDiscoveryService } from './project-discovery.js';
 export type {
   ProjectCandidate,

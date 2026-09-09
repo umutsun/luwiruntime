@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { AUTOSTART_TASK_NAME, createAutostart, type AutostartCommandResult } from './autostart.js';
+import {
+  AUTOSTART_TASK_NAME,
+  WAKE_AUTOSTART_TASK_NAME,
+  createAutostart,
+  createWakeAutostart,
+  type AutostartCommandResult,
+} from './autostart.js';
 
 const NODE = 'C:/Program Files/nodejs/node.exe';
 const CLI = 'C:/xampp/htdocs/luwiruntime/apps/cli/dist/main.js';
@@ -88,5 +94,32 @@ describe('windows autostart', () => {
     await expect(autostart.disable()).resolves.toBe('unsupported');
     await expect(autostart.status()).resolves.toBe('unsupported');
     expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it('registers the independent wake dispatcher task with fixed wake start arguments', async () => {
+    const runCommand = vi.fn(async (): Promise<AutostartCommandResult> => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    }));
+    const autostart = createWakeAutostart({
+      platform: 'win32',
+      runCommand,
+      nodeExecutable: NODE,
+      cliEntry: CLI,
+    });
+
+    await expect(autostart.enable()).resolves.toBe('enabled');
+    expect(runCommand).toHaveBeenCalledWith('schtasks', [
+      '/Create',
+      '/TN',
+      WAKE_AUTOSTART_TASK_NAME,
+      '/TR',
+      `"${NODE}" "${CLI}" wake start`,
+      '/SC',
+      'ONLOGON',
+      '/F',
+    ]);
+    expect(WAKE_AUTOSTART_TASK_NAME).toBe('LUWI Wake Dispatcher');
   });
 });

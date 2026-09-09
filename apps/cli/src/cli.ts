@@ -78,6 +78,13 @@ import {
   resolveProviderExecutionProfile,
 } from './provider-execution-profiles.js';
 import { createWakeSupervisor, type WakeCandidate, type WakeWorker } from './wake-supervisor.js';
+import {
+  createNodeWakeLifecycleService,
+  WAKE_CONTROL_TOKEN_ENV,
+  WAKE_INSTANCE_ID_ENV,
+  type WakeLifecycleService,
+  type WakeLifecycleStatus,
+} from './wake-lifecycle.js';
 import { createDeepSeekAcpFactory, type DeepSeekAcpFactoryOptions } from './deepseek-acp-client.js';
 import {
   DeepSeekBridgeStartupCancelledError,
@@ -133,6 +140,11 @@ export interface CliWebSocket {
   close(code?: number, reason?: string): void;
 }
 
+export interface WakeDispatcherHook {
+  start(input: { daemonUrl: string }): Promise<void>;
+  stop(): Promise<void>;
+}
+
 export type CliDependencies = {
   fetch: (url: string, init?: FetchInitLike) => Promise<HttpResponseLike>;
   createWebSocket: (url: string) => CliWebSocket;
@@ -172,6 +184,8 @@ export type CliDependencies = {
   agentProcessRunner: NativeAgentProcessRunner;
   setExitCode: (code: number) => void;
   lifecycle: LifecycleService;
+  wakeLifecycle: WakeLifecycleService;
+  wakeDispatcher: WakeDispatcherHook;
   projectDiscovery: ProjectDiscoveryService;
 };
 
@@ -182,6 +196,13 @@ const defaultConfirm = async (prompt: string): Promise<boolean> => {
   } finally {
     terminal.close();
   }
+};
+
+const defaultLifecycle = createNodeLifecycleService({ confirm: defaultConfirm });
+const defaultWakeLifecycle = createNodeWakeLifecycleService({ lifecycle: defaultLifecycle });
+const noOpWakeDispatcher: WakeDispatcherHook = {
+  start: async () => undefined,
+  stop: async () => undefined,
 };
 
 const defaultDependencies: CliDependencies = {
@@ -206,7 +227,9 @@ const defaultDependencies: CliDependencies = {
   clearTimeout,
   wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   confirm: defaultConfirm,
-  lifecycle: createNodeLifecycleService({ confirm: defaultConfirm }),
+  lifecycle: defaultLifecycle,
+  wakeLifecycle: defaultWakeLifecycle,
+  wakeDispatcher: noOpWakeDispatcher,
   projectDiscovery: createProjectDiscoveryService(),
   createDeepSeekAcpFactory,
 };
@@ -354,6 +377,24 @@ function printLifecycleStatus(
   );
   dependencies.stdout.write(`redis: ${status.redis.state} (compose: ${status.redis.compose})\n`);
   dependencies.stdout.write(`endpoint: ${status.endpoints.daemon}\n`);
+}
+
+function printWakeLifecycleStatus(
+  dependencies: CliDependencies,
+  status: WakeLifecycleStatus,
+  json: boolean,
+): void {
+  if (json) {
+    printJson(dependencies, status);
+    return;
+  }
+  dependencies.stdout.write(
+    `wake: ${status.state} (${status.managed ? 'managed' : status.ownership})\n`,
+  );
+  if (status.pid !== undefined) dependencies.stdout.write(`pid: ${String(status.pid)}\n`);
+  if (status.heartbeatAt !== undefined) {
+    dependencies.stdout.write(`heartbeat: ${status.heartbeatAt}\n`);
+  }
 }
 
 function printRuntimeResetResult(
@@ -1675,20 +1716,27 @@ function createNativeBridgeWorker(
       const inherited: Record<string, string | undefined> = { ...dependencies.environment };
       delete inherited['LUWI_DAEMON_URL'];
       delete inherited['LUWI_SESSION_ID'];
+      delete inherited[WAKE_CONTROL_TOKEN_ENV];
+      delete inherited[WAKE_INSTANCE_ID_ENV];
       let tail = '';
       try {
         if (signal.aborted) throw new DOMException('The native bridge stopped.', 'AbortError');
         const launch = await options.launch({ prompt, sessionId });
         if (signal.aborted) throw new DOMException('The native bridge stopped.', 'AbortError');
+        const childEnvironment: Record<string, string | undefined> = {
+          ...(launch.environment ?? {
+            ...inherited,
+            LUWI_DAEMON_URL: daemonUrl,
+            ...(sessionId === undefined ? {} : { LUWI_SESSION_ID: sessionId }),
+          }),
+        };
+        delete childEnvironment[WAKE_CONTROL_TOKEN_ENV];
+        delete childEnvironment[WAKE_INSTANCE_ID_ENV];
         const result = await dependencies.agentProcessRunner.run({
           executable: launch.executable,
           args: [...launch.args],
           workingDirectory: launch.workingDirectory,
-          environment: launch.environment ?? {
-            ...inherited,
-            LUWI_DAEMON_URL: daemonUrl,
-            ...(sessionId === undefined ? {} : { LUWI_SESSION_ID: sessionId }),
-          },
+          environment: childEnvironment,
           signals: runSignals,
           signal,
           captureOutput: (chunk) => {
@@ -1907,6 +1955,14 @@ async function runWakeServe(
   options: WakeServeOptions & { url: string; rescanMs: number; standbyMs: number },
 ): Promise<void> {
   const daemonUrl = loopbackDaemonUrl(options.url);
+  const managed =
+    dependencies.environment[WAKE_CONTROL_TOKEN_ENV] !== undefined ||
+    dependencies.environment[WAKE_INSTANCE_ID_ENV] !== undefined;
+  const lifecycleLease = managed ? await dependencies.wakeLifecycle.beginManagedServe() : undefined;
+  const managedStop = lifecycleLease?.stopRequested.then(
+    () => ({ kind: 'managed-stop' }) as const,
+    (error: unknown) => ({ kind: 'managed-error', error }) as const,
+  );
   const supervisor = createWakeSupervisor({
     discover: createWakeDiscovery(dependencies, daemonUrl, options.connectTimeoutMs),
     createWorker: (candidate) =>
@@ -1926,13 +1982,40 @@ async function runWakeServe(
   dependencies.signals.once('SIGINT', stop);
   dependencies.signals.once('SIGTERM', stop);
   try {
-    await supervisor.start();
+    const supervisorStarted = supervisor.start().then(() => ({ kind: 'started' }) as const);
+    const startupOutcome =
+      managedStop === undefined
+        ? await supervisorStarted
+        : await Promise.race([supervisorStarted, managedStop]);
+    if (startupOutcome.kind !== 'started') {
+      // Join the bounded initial discovery before stopping the supervisor so its
+      // completion cannot arm a fresh rescan timer after shutdown.
+      await supervisorStarted;
+      if (startupOutcome.kind === 'managed-error') throw startupOutcome.error;
+      return;
+    }
+    await dependencies.wakeDispatcher.start({ daemonUrl });
     printJson(dependencies, { wake: 'supervisor', event: 'serving', bindings: supervisor.active });
-    await stopRequested;
+    const outcome =
+      managedStop === undefined
+        ? await stopRequested.then(() => ({ kind: 'signal' }) as const)
+        : await Promise.race([
+            stopRequested.then(() => ({ kind: 'signal' }) as const),
+            managedStop,
+          ]);
+    if (outcome.kind === 'managed-error') throw outcome.error;
   } finally {
     dependencies.signals.off('SIGINT', stop);
     dependencies.signals.off('SIGTERM', stop);
-    await supervisor.stop();
+    try {
+      await dependencies.wakeDispatcher.stop();
+    } finally {
+      try {
+        await supervisor.stop();
+      } finally {
+        await lifecycleLease?.close();
+      }
+    }
   }
 }
 
@@ -1940,6 +2023,28 @@ function registerWakeCli(program: Command, dependencies: CliDependencies): void 
   const wake = program
     .command('wake')
     .description('Supervise unattended native bridges for enabled project-agent bindings');
+  wake
+    .command('start')
+    .description('Start one managed hidden wake supervisor after bounded daemon readiness')
+    .option('--json', 'Print machine-readable process status')
+    .action(async (options: { json?: boolean }) => {
+      printWakeLifecycleStatus(
+        dependencies,
+        await dependencies.wakeLifecycle.start(),
+        options.json === true,
+      );
+    });
+  wake
+    .command('stop')
+    .description('Request a cooperative stop from the identity-matched wake supervisor')
+    .option('--json', 'Print machine-readable process status')
+    .action(async (options: { json?: boolean }) => {
+      printWakeLifecycleStatus(
+        dependencies,
+        await dependencies.wakeLifecycle.stop(),
+        options.json === true,
+      );
+    });
   wake
     .command('serve')
     .description('Own one bridge slot per configured binding and serve its inbox headless')
@@ -1991,18 +2096,25 @@ function registerWakeCli(program: Command, dependencies: CliDependencies): void 
     );
   wake
     .command('status')
-    .description('List bridge slot ownership as the daemon records it')
+    .description('Report wake process health and bridge slot ownership')
+    .option('--json', 'Print machine-readable process and slot status')
     .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
-    .action(async (options: { url: string }) => {
-      printJson(
-        dependencies,
-        await request(
+    .action(async (options: { json?: boolean; url: string }) => {
+      const [processStatus, slotStatus] = await Promise.all([
+        dependencies.wakeLifecycle.status(),
+        request(
           dependencies,
           loopbackDaemonUrl(options.url),
           '/api/v1/bridge-slots?limit=100',
           bridgeSlotCollectionSchema,
         ),
-      );
+      ]);
+      if (options.json === true) {
+        printJson(dependencies, { process: processStatus, ...slotStatus });
+        return;
+      }
+      printWakeLifecycleStatus(dependencies, processStatus, false);
+      dependencies.stdout.write(`slots: ${String(slotStatus.slots.length)}\n`);
     });
 }
 
@@ -2159,17 +2271,28 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--print-hooks', 'Print optional native-agent wrapper snippets')
     .option('--autostart', 'Register a per-user logon task that starts LUWI (Windows)')
     .option('--no-autostart', 'Remove the LUWI autostart task')
-    .action(async (options: { yes?: boolean; printHooks?: boolean; autostart?: boolean }) => {
-      printJson(
-        dependencies,
-        await dependencies.lifecycle.setup({
-          approved: options.yes === true,
-          printHooks: options.printHooks === true,
-          autostart: options.autostart === true,
-          noAutostart: options.autostart === false,
-        }),
-      );
-    });
+    .option('--wake-autostart', 'Register the independent wake dispatcher logon task (Windows)')
+    .option('--no-wake-autostart', 'Remove the wake dispatcher logon task')
+    .action(
+      async (options: {
+        yes?: boolean;
+        printHooks?: boolean;
+        autostart?: boolean;
+        wakeAutostart?: boolean;
+      }) => {
+        printJson(
+          dependencies,
+          await dependencies.lifecycle.setup({
+            approved: options.yes === true,
+            printHooks: options.printHooks === true,
+            autostart: options.autostart === true,
+            noAutostart: options.autostart === false,
+            wakeAutostart: options.wakeAutostart === true,
+            noWakeAutostart: options.wakeAutostart === false,
+          }),
+        );
+      },
+    );
 
   program
     .command('start')
@@ -2581,7 +2704,8 @@ export function createCli(dependencies: CliDependencies): Command {
           for (const candidate of options.agentKind === undefined
             ? DETECTABLE_AGENT_KINDS
             : [agentKindSchema.parse(options.agentKind)]) {
-            native = await resolve(candidate);
+            const resolvedNative = await resolve(candidate);
+            native = resolvedNative?.ref;
             if (native !== undefined || options.agentKind !== undefined) {
               kind = candidate;
               break;

@@ -234,6 +234,33 @@ describe('CLI lifecycle', () => {
     });
   });
 
+  it('manages wake autostart independently from daemon autostart', async () => {
+    const { service, runCommand } = fixture();
+
+    const result = await service.setup({ approved: true, wakeAutostart: true });
+
+    expect(result).toMatchObject({ autostart: 'enabled', wakeAutostart: 'enabled' });
+    expect(runCommand).toHaveBeenCalledWith(
+      'schtasks',
+      [
+        '/Create',
+        '/TN',
+        'LUWI Wake Dispatcher',
+        '/TR',
+        `"C:/bin/node.exe" "${installationRoot}/apps/cli/dist/main.js" wake start`,
+        '/SC',
+        'ONLOGON',
+        '/F',
+      ],
+      expect.objectContaining({ cwd: installationRoot }),
+    );
+    expect(runCommand).not.toHaveBeenCalledWith(
+      'schtasks',
+      expect.arrayContaining(['/TN', 'LUWI Runtime', '/Create']),
+      expect.anything(),
+    );
+  });
+
   it('does not write setup state when approval is denied', async () => {
     const { service, dependencies } = fixture({ confirm: false });
 

@@ -10,7 +10,7 @@ import {
 } from '@luwi/protocol';
 import { ApplicationError } from '@luwi/runtime';
 
-import { createAutostart, type AutostartState } from './autostart.js';
+import { createAutostart, createWakeAutostart, type AutostartState } from './autostart.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { access, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
@@ -172,6 +172,7 @@ export type SetupResult = {
   target: string;
   hooks: string[];
   autostart: AutostartState;
+  wakeAutostart: AutostartState;
 };
 
 export type RuntimeResetResult = {
@@ -188,6 +189,8 @@ export interface LifecycleService {
     printHooks?: boolean;
     autostart?: boolean;
     noAutostart?: boolean;
+    wakeAutostart?: boolean;
+    noWakeAutostart?: boolean;
   }): Promise<SetupResult>;
   start(options?: { readinessTimeoutMs?: number }): Promise<LifecycleStatus>;
   status(): Promise<LifecycleStatus>;
@@ -976,12 +979,28 @@ export function createLifecycleService(options: LifecycleServiceOptions): Lifecy
         nodeExecutable: dependencies.nodeExecutable,
         cliEntry: pathApi.join(config.installationRoot, 'apps', 'cli', 'dist', 'main.js'),
       });
+      const wakeAutostart = createWakeAutostart({
+        platform: dependencies.platform,
+        runCommand: (executable, args) =>
+          dependencies.runCommand(executable, args, {
+            cwd: config.installationRoot,
+            timeoutMs: 15_000,
+          }),
+        nodeExecutable: dependencies.nodeExecutable,
+        cliEntry: pathApi.join(config.installationRoot, 'apps', 'cli', 'dist', 'main.js'),
+      });
       const autostartState: AutostartState =
         setupOptions.autostart === true
           ? await autostart.enable()
           : setupOptions.noAutostart === true
             ? await autostart.disable()
             : await autostart.status();
+      const wakeAutostartState: AutostartState =
+        setupOptions.wakeAutostart === true
+          ? await wakeAutostart.enable()
+          : setupOptions.noWakeAutostart === true
+            ? await wakeAutostart.disable()
+            : await wakeAutostart.status();
 
       const content = serialize(config);
       const current = await dependencies.fileSystem.readText(configPath, CONFIG_MAX_BYTES);
@@ -993,7 +1012,13 @@ export function createLifecycleService(options: LifecycleServiceOptions): Lifecy
           ]
         : [];
       if (current === content) {
-        return { changed: false, target: configPath, hooks, autostart: autostartState };
+        return {
+          changed: false,
+          target: configPath,
+          hooks,
+          autostart: autostartState,
+          wakeAutostart: wakeAutostartState,
+        };
       }
       if (
         setupOptions.approved !== true &&
@@ -1002,7 +1027,13 @@ export function createLifecycleService(options: LifecycleServiceOptions): Lifecy
         throw new ApplicationError('SETUP_CANCELLED', 'LUWI setup was cancelled.', 409);
       }
       await dependencies.fileSystem.writeAtomic(configPath, content);
-      return { changed: true, target: configPath, hooks, autostart: autostartState };
+      return {
+        changed: true,
+        target: configPath,
+        hooks,
+        autostart: autostartState,
+        wakeAutostart: wakeAutostartState,
+      };
     },
 
     async status() {

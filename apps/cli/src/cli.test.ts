@@ -6,6 +6,7 @@ import { runCli, type CliDependencies, type CliWebSocket, type HttpResponseLike 
 import { DeepSeekBridgeStartupCancelledError, type DeepSeekAcpFactory } from './deepseek-bridge.js';
 import type { LifecycleService } from './lifecycle.js';
 import type { ProjectDiscoveryService } from './project-discovery.js';
+import type { WakeLifecycleService } from './wake-lifecycle.js';
 
 const runtimeResponse = {
   version: '0.1.0',
@@ -93,6 +94,8 @@ describe('LUWI CLI', () => {
         changed: true,
         target: 'C:/fixture/.luwi/runtime/config.json',
         hooks: ['luwi agent run codex -- <native arguments>'],
+        autostart: 'disabled' as const,
+        wakeAutostart: 'disabled' as const,
       })),
       start: vi.fn(async () => status),
       status: vi.fn(async () => status),
@@ -124,6 +127,8 @@ describe('LUWI CLI', () => {
       printHooks: true,
       autostart: false,
       noAutostart: false,
+      wakeAutostart: false,
+      noWakeAutostart: false,
     });
     (lifecycle.setup as ReturnType<typeof vi.fn>).mockClear();
     await runCli(['setup', '--yes', '--autostart'], dependencies);
@@ -132,6 +137,8 @@ describe('LUWI CLI', () => {
       printHooks: false,
       autostart: true,
       noAutostart: false,
+      wakeAutostart: false,
+      noWakeAutostart: false,
     });
     (lifecycle.setup as ReturnType<typeof vi.fn>).mockClear();
     await runCli(['setup', '--yes', '--no-autostart'], dependencies);
@@ -140,6 +147,28 @@ describe('LUWI CLI', () => {
       printHooks: false,
       autostart: false,
       noAutostart: true,
+      wakeAutostart: false,
+      noWakeAutostart: false,
+    });
+    (lifecycle.setup as ReturnType<typeof vi.fn>).mockClear();
+    await runCli(['setup', '--yes', '--wake-autostart'], dependencies);
+    expect(lifecycle.setup).toHaveBeenCalledWith({
+      approved: true,
+      printHooks: false,
+      autostart: false,
+      noAutostart: false,
+      wakeAutostart: true,
+      noWakeAutostart: false,
+    });
+    (lifecycle.setup as ReturnType<typeof vi.fn>).mockClear();
+    await runCli(['setup', '--yes', '--no-wake-autostart'], dependencies);
+    expect(lifecycle.setup).toHaveBeenCalledWith({
+      approved: true,
+      printHooks: false,
+      autostart: false,
+      noAutostart: false,
+      wakeAutostart: false,
+      noWakeAutostart: true,
     });
     output = '';
     await runCli(['start'], dependencies);
@@ -1832,13 +1861,16 @@ describe('session attach', () => {
     expect(bodies[0]).toMatchObject({
       projectId: 'project-1',
       agentId: 'codex-agent',
-      native: { adapterId: 'codex', nativeSessionId: '01a05c7d-d90a-7a62-8856-ebd3bf43f1c7' },
+      native: {
+        adapterId: 'codex-native-v1',
+        nativeSessionId: '01a05c7d-d90a-7a62-8856-ebd3bf43f1c7',
+      },
     });
   });
 
-  it('lets the environment win over a disk rollout and never reads disk when CODEX_SESSION_ID is set', async () => {
-    // ADR 0028 guard #1: the environment resolver is deterministic and preferred,
-    // so a present CODEX_SESSION_ID is declared and the rollout tree is never read.
+  it('fails closed without a native declaration when Codex launcher proof is incomplete', async () => {
+    // Automatic Codex wake requires both launcher ids plus exact rollout proof.
+    // One environment id alone must not fall back to a heuristic disk identity.
     const bodies: unknown[] = [];
     let signalListener: (() => void) | undefined;
     const diskCalls: string[] = [];
@@ -1900,9 +1932,7 @@ describe('session attach', () => {
     signalListener?.();
     await run;
 
-    expect(bodies[0]).toMatchObject({
-      native: { adapterId: 'codex', nativeSessionId: 'env-session-uuid' },
-    });
+    expect((bodies[0] as Record<string, unknown>)['native']).toBeUndefined();
     expect(diskCalls).toEqual([]);
   });
 
@@ -1961,7 +1991,7 @@ describe('session attach', () => {
     await run;
 
     expect(bodies[0]).toMatchObject({
-      native: { adapterId: 'codex', nativeSessionId: 'aliased-session' },
+      native: { adapterId: 'codex-native-v1', nativeSessionId: 'aliased-session' },
     });
   });
 
@@ -2096,7 +2126,10 @@ describe('session attach', () => {
     ).toMatchObject({
       projectId: 'project-1',
       agentId: 'codex',
-      native: { adapterId: 'codex', nativeSessionId: '01a0577b-9555-7741-b8f1-395df30a7003' },
+      native: {
+        adapterId: 'codex-native-v1',
+        nativeSessionId: '01a0577b-9555-7741-b8f1-395df30a7003',
+      },
     });
   });
 
@@ -2947,8 +2980,34 @@ describe('session bridge native', () => {
     let recorded: { args: string[] } | undefined;
     let claims = 0;
     let getMessageCalls = 0;
+    const managedProcess = {
+      state: 'running' as const,
+      managed: true,
+      ownership: 'owned' as const,
+      pid: 4242,
+      instanceId: 'f2e95fa4-f12d-4a42-92bb-fba0bb5f938b',
+      startedAt: timestamp,
+      heartbeatAt: timestamp,
+    };
     const dependencies: Partial<CliDependencies> = {
-      environment: { PATH: 'C:/tools' },
+      environment: {
+        PATH: 'C:/tools',
+        LUWI_WAKE_CONTROL_TOKEN: '6ccfd2c0-e424-4a21-91db-30dc72092a01',
+        LUWI_WAKE_INSTANCE_ID: managedProcess.instanceId,
+      },
+      wakeLifecycle: {
+        start: vi.fn(async () => managedProcess),
+        stop: vi.fn(async () => ({
+          state: 'stopped' as const,
+          managed: false,
+          ownership: 'none' as const,
+        })),
+        status: vi.fn(async () => managedProcess),
+        beginManagedServe: vi.fn(async () => ({
+          stopRequested: new Promise<void>(() => undefined),
+          close: vi.fn(async () => undefined),
+        })),
+      },
       platform: 'win32',
       canonicalizePath: async (path) => path,
       agentProcessRunner: {
@@ -3253,6 +3312,171 @@ describe('session bridge native', () => {
   });
 });
 
+describe('wake lifecycle commands', () => {
+  const running = {
+    state: 'running' as const,
+    managed: true,
+    ownership: 'owned' as const,
+    pid: 4242,
+    instanceId: 'f2e95fa4-f12d-4a42-92bb-fba0bb5f938b',
+    startedAt: '2026-09-10T08:00:00.000Z',
+    heartbeatAt: '2026-09-10T08:00:01.000Z',
+  };
+  const stopped = {
+    state: 'stopped' as const,
+    managed: false,
+    ownership: 'none' as const,
+  };
+
+  it('starts, stops, and reports process plus daemon slot state without exposing control data', async () => {
+    const wakeLifecycle: WakeLifecycleService = {
+      start: vi.fn(async () => running),
+      stop: vi.fn(async () => stopped),
+      status: vi.fn(async () => running),
+      beginManagedServe: vi.fn(async () => {
+        throw new Error('not used');
+      }),
+    };
+    let output = '';
+    const dependencies: Partial<CliDependencies> = {
+      wakeLifecycle,
+      stdout: { write: (text) => (output += text) },
+      fetch: async (url) => {
+        if (url.endsWith('/api/v1/bridge-slots?limit=100')) return response({ slots: [] });
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(['wake', 'start', '--json'], dependencies);
+    expect(JSON.parse(output)).toEqual(running);
+    output = '';
+    await runCli(['wake', 'stop', '--json'], dependencies);
+    expect(JSON.parse(output)).toEqual(stopped);
+    output = '';
+    await runCli(['wake', 'status', '--json'], dependencies);
+    expect(JSON.parse(output)).toEqual({ process: running, slots: [] });
+    expect(output).not.toContain('token');
+  });
+
+  it('honors a managed cooperative stop and shuts dispatcher down before supervisor', async () => {
+    const order: string[] = [];
+    let requestStop!: () => void;
+    const stopRequested = new Promise<void>((resolve) => {
+      requestStop = resolve;
+    });
+    const lease = {
+      stopRequested,
+      close: vi.fn(async () => {
+        order.push('lifecycle');
+      }),
+    };
+    const wakeLifecycle: WakeLifecycleService = {
+      start: vi.fn(async () => running),
+      stop: vi.fn(async () => stopped),
+      status: vi.fn(async () => running),
+      beginManagedServe: vi.fn(async () => lease),
+    };
+    const signalSource = new EventEmitter();
+    const wakeDispatcher = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => {
+        order.push('dispatcher');
+      }),
+    };
+    let output = '';
+
+    const run = runCli(['wake', 'serve'], {
+      wakeLifecycle,
+      wakeDispatcher,
+      environment: {
+        LUWI_WAKE_CONTROL_TOKEN: '6ccfd2c0-e424-4a21-91db-30dc72092a01',
+        LUWI_WAKE_INSTANCE_ID: 'f2e95fa4-f12d-4a42-92bb-fba0bb5f938b',
+      },
+      signals: {
+        once: (signal, listener) => signalSource.once(signal, listener),
+        off: (signal, listener) => signalSource.off(signal, listener),
+      },
+      stdout: { write: (text) => (output += text) },
+      stderr: { write: () => undefined },
+      fetch: async (url) => {
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [] });
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(() => {
+        order.push('supervisor');
+      }),
+    });
+    await vi.waitFor(() => expect(wakeDispatcher.start).toHaveBeenCalledTimes(1));
+    requestStop();
+    await run;
+
+    expect(wakeLifecycle.beginManagedServe).toHaveBeenCalledTimes(1);
+    expect(wakeDispatcher.start).toHaveBeenCalledWith({ daemonUrl: 'http://127.0.0.1:4782' });
+    expect(order).toEqual(['dispatcher', 'supervisor', 'lifecycle']);
+    expect(output).not.toContain('6ccfd2c0');
+  });
+
+  it('does not start the dispatcher when managed ownership stops during initial discovery', async () => {
+    const order: string[] = [];
+    let requestStop!: () => void;
+    const stopRequested = new Promise<void>((resolve) => {
+      requestStop = resolve;
+    });
+    let finishProjects!: (value: HttpResponseLike) => void;
+    const projects = new Promise<HttpResponseLike>((resolve) => {
+      finishProjects = resolve;
+    });
+    const wakeLifecycle: WakeLifecycleService = {
+      start: vi.fn(async () => running),
+      stop: vi.fn(async () => stopped),
+      status: vi.fn(async () => running),
+      beginManagedServe: vi.fn(async () => ({
+        stopRequested,
+        close: vi.fn(async () => {
+          order.push('lifecycle');
+        }),
+      })),
+    };
+    const wakeDispatcher = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => {
+        order.push('dispatcher');
+      }),
+    };
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/api/v1/projects')) return await projects;
+      if (url.endsWith('/api/v1/agents')) return response({ agents: [] });
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    const run = runCli(['wake', 'serve'], {
+      wakeLifecycle,
+      wakeDispatcher,
+      environment: {
+        LUWI_WAKE_CONTROL_TOKEN: '6ccfd2c0-e424-4a21-91db-30dc72092a01',
+        LUWI_WAKE_INSTANCE_ID: 'f2e95fa4-f12d-4a42-92bb-fba0bb5f938b',
+      },
+      signals: { once: () => undefined, off: () => undefined },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch,
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(() => {
+        order.push('supervisor');
+      }),
+    });
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    requestStop();
+    finishProjects(response({ projects: [] }));
+
+    await run;
+    expect(wakeDispatcher.start).not.toHaveBeenCalled();
+    expect(order).toEqual(['dispatcher', 'supervisor', 'lifecycle']);
+  });
+});
+
 describe('wake serve', () => {
   const timestamp = '2026-09-09T00:00:00.000Z';
   const project = {
@@ -3452,6 +3676,8 @@ describe('wake serve', () => {
     expect(recorded?.args).toContain('workspace-write');
     expect(recorded?.args.slice(-1)[0]).toContain('LUWI message');
     expect(recorded?.environment.LUWI_SESSION_ID).toBe('codex-session-1');
+    expect(recorded?.environment).not.toHaveProperty('LUWI_WAKE_CONTROL_TOKEN');
+    expect(recorded?.environment).not.toHaveProperty('LUWI_WAKE_INSTANCE_ID');
     const acquires = requests.filter((entry) => entry.url.endsWith('/api/v1/bridge-slots/acquire'));
     expect(acquires).toHaveLength(1);
     expect(acquires[0]?.body).toMatchObject({
@@ -3471,7 +3697,28 @@ describe('wake serve', () => {
 
   it('reports slot ownership through wake status', async () => {
     const lines: string[] = [];
+    const processStatus = {
+      state: 'running' as const,
+      managed: true,
+      ownership: 'owned' as const,
+      pid: 4242,
+      instanceId: 'f2e95fa4-f12d-4a42-92bb-fba0bb5f938b',
+      startedAt: timestamp,
+      heartbeatAt: timestamp,
+    };
     const dependencies: Partial<CliDependencies> = {
+      wakeLifecycle: {
+        start: vi.fn(async () => processStatus),
+        stop: vi.fn(async () => ({
+          state: 'stopped' as const,
+          managed: false,
+          ownership: 'none' as const,
+        })),
+        status: vi.fn(async () => processStatus),
+        beginManagedServe: vi.fn(async () => {
+          throw new Error('not used');
+        }),
+      },
       stdout: { write: (text: string) => lines.push(text) },
       stderr: { write: () => undefined },
       setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
@@ -3482,8 +3729,8 @@ describe('wake serve', () => {
       },
     };
 
-    await runCli(['wake', 'status'], dependencies);
+    await runCli(['wake', 'status', '--json'], dependencies);
 
-    expect(JSON.parse(lines.join(''))).toEqual({ slots: [slot] });
+    expect(JSON.parse(lines.join(''))).toEqual({ process: processStatus, slots: [slot] });
   });
 });

@@ -16,6 +16,8 @@ import { ApplicationError } from '@luwi/runtime';
 
 /** The Scheduled Task name. A constant, never taken from input. */
 export const AUTOSTART_TASK_NAME = 'LUWI Runtime';
+/** Independent logon task for the managed wake supervisor. */
+export const WAKE_AUTOSTART_TASK_NAME = 'LUWI Wake Dispatcher';
 
 export type AutostartState = 'enabled' | 'disabled' | 'unsupported';
 
@@ -49,11 +51,24 @@ export interface Autostart {
  *  "already not there", which is success for an idempotent remove. */
 const TASK_ABSENT = /cannot find|does not exist|the system cannot find/iu;
 
-export function createAutostart(options: AutostartOptions): Autostart {
+function createTaskAutostart(
+  options: AutostartOptions,
+  task: {
+    name: string;
+    cliArguments: readonly string[];
+    registerErrorCode: string;
+    removeErrorCode: string;
+    label: string;
+  },
+): Autostart {
   const supported = options.platform === 'win32';
   // Quoted so the spaces in the node and CLI paths survive the scheduler's own
   // parse of the stored command.
-  const taskCommand = `"${options.nodeExecutable}" "${options.cliEntry}" start`;
+  const taskCommand = [
+    `"${options.nodeExecutable}"`,
+    `"${options.cliEntry}"`,
+    ...task.cliArguments,
+  ].join(' ');
 
   const run = (args: readonly string[]): Promise<AutostartCommandResult> =>
     options.runCommand('schtasks', args);
@@ -66,7 +81,7 @@ export function createAutostart(options: AutostartOptions): Autostart {
       const result = await run([
         '/Create',
         '/TN',
-        AUTOSTART_TASK_NAME,
+        task.name,
         '/TR',
         taskCommand,
         '/SC',
@@ -75,8 +90,8 @@ export function createAutostart(options: AutostartOptions): Autostart {
       ]);
       if (result.exitCode !== 0) {
         throw new ApplicationError(
-          'AUTOSTART_REGISTER_FAILED',
-          `Could not register the LUWI autostart task: ${result.stderr.trim() || `schtasks exited ${result.exitCode}`}`,
+          task.registerErrorCode,
+          `Could not register the ${task.label} autostart task: ${result.stderr.trim() || `schtasks exited ${result.exitCode}`}`,
           500,
         );
       }
@@ -85,12 +100,12 @@ export function createAutostart(options: AutostartOptions): Autostart {
 
     async disable() {
       if (!supported) return 'unsupported';
-      const result = await run(['/Delete', '/TN', AUTOSTART_TASK_NAME, '/F']);
+      const result = await run(['/Delete', '/TN', task.name, '/F']);
       // A task that was never registered is already disabled, not a failure.
       if (result.exitCode !== 0 && !TASK_ABSENT.test(`${result.stderr}\n${result.stdout}`)) {
         throw new ApplicationError(
-          'AUTOSTART_REMOVE_FAILED',
-          `Could not remove the LUWI autostart task: ${result.stderr.trim() || `schtasks exited ${result.exitCode}`}`,
+          task.removeErrorCode,
+          `Could not remove the ${task.label} autostart task: ${result.stderr.trim() || `schtasks exited ${result.exitCode}`}`,
           500,
         );
       }
@@ -99,8 +114,28 @@ export function createAutostart(options: AutostartOptions): Autostart {
 
     async status() {
       if (!supported) return 'unsupported';
-      const result = await run(['/Query', '/TN', AUTOSTART_TASK_NAME]);
+      const result = await run(['/Query', '/TN', task.name]);
       return result.exitCode === 0 ? 'enabled' : 'disabled';
     },
   };
+}
+
+export function createAutostart(options: AutostartOptions): Autostart {
+  return createTaskAutostart(options, {
+    name: AUTOSTART_TASK_NAME,
+    cliArguments: ['start'],
+    registerErrorCode: 'AUTOSTART_REGISTER_FAILED',
+    removeErrorCode: 'AUTOSTART_REMOVE_FAILED',
+    label: 'LUWI',
+  });
+}
+
+export function createWakeAutostart(options: AutostartOptions): Autostart {
+  return createTaskAutostart(options, {
+    name: WAKE_AUTOSTART_TASK_NAME,
+    cliArguments: ['wake', 'start'],
+    registerErrorCode: 'WAKE_AUTOSTART_REGISTER_FAILED',
+    removeErrorCode: 'WAKE_AUTOSTART_REMOVE_FAILED',
+    label: 'LUWI wake dispatcher',
+  });
 }
