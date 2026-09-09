@@ -374,6 +374,50 @@ local function bridge_key_types(keys, with_session)
   end
   return true
 end
+local function key_namespace(global_event_key)
+  local suffix = ':events:global'
+  if type(global_event_key) ~= 'string' or #global_event_key <= #suffix or string.sub(global_event_key, -#suffix) ~= suffix then return nil end
+  return string.sub(global_event_key, 1, #global_event_key - #suffix)
+end
+local function exact_key(prefix, key, suffix) return key == prefix .. suffix end
+local function bridge_keys_at_prefix(keys, offset, prefix, identity)
+  return exact_key(prefix, keys[offset + 1], ':bridge-slot:' .. identity.slotId)
+    and exact_key(prefix, keys[offset + 2], ':bridge-slot-owner:' .. identity.slotId)
+    and exact_key(prefix, keys[offset + 3], ':index:bridge-slots')
+    and exact_key(prefix, keys[offset + 4], ':deadline:bridge-slots')
+end
+local function bridge_keys_match(keys, identity, with_session)
+  local prefix = key_namespace(keys[5])
+  return prefix ~= nil
+    and bridge_keys_at_prefix(keys, 0, prefix, identity)
+    and exact_key(prefix, keys[6], ':events:project:' .. identity.projectId)
+    and (not with_session or exact_key(prefix, keys[7], ':session:' .. identity.sessionId))
+end
+local function session_keys_match(keys, session, native, declared, bridge, bridge_offset)
+  local prefix = key_namespace(keys[7])
+  if not prefix
+    or not exact_key(prefix, keys[1], ':session:' .. session.id)
+    or not exact_key(prefix, keys[2], ':project:' .. session.projectId)
+    or not exact_key(prefix, keys[3], ':index:project:' .. session.projectId .. ':sessions')
+    or not exact_key(prefix, keys[4], ':index:agent:' .. session.agentId .. ':sessions')
+    or not exact_key(prefix, keys[5], ':presence:session:' .. session.id)
+    or not exact_key(prefix, keys[6], ':deadline:heartbeats')
+    or not exact_key(prefix, keys[8], ':events:project:' .. session.projectId)
+    or not exact_key(prefix, keys[9], ':inbox:session:' .. session.id)
+  then return false end
+  if native then
+    if type(declared.bindingId) ~= 'string' or type(declared.linkId) ~= 'string'
+      or not exact_key(prefix, keys[10], ':native-session:' .. declared.bindingId)
+      or not exact_key(prefix, keys[11], ':native-session-link:' .. declared.linkId)
+      or not exact_key(prefix, keys[12], ':index:native-session:' .. declared.bindingId .. ':links')
+      or not exact_key(prefix, keys[13], ':index:session:' .. session.id .. ':native')
+    then return false end
+    if declared.staleLinkId then
+      if type(declared.staleLinkId) ~= 'string' or not exact_key(prefix, keys[14], ':native-session-link:' .. declared.staleLinkId) then return false end
+    elseif keys[14] ~= keys[10] then return false end
+  end
+  return not bridge or bridge_keys_at_prefix(keys, bridge_offset, prefix, bridge)
+end
 local function bridge_read(slot_key, owner_key, index_key, deadline_key, identity)
   local exists = key_type(slot_key) ~= 'none'
   local token = redis.call('GET', owner_key)
@@ -424,11 +468,12 @@ local function bridge_transition(keys, args, operation)
   if #args ~= 1 then return bridge_error('REDIS_ARGUMENT_INVALID') end
   local decoded, input = pcall(cjson.decode, args[1])
   if not decoded or not bridge_input(input, operation ~= 'expire') or not bridge_id(input.eventId) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if input.ownerToken and input.eventId == input.ownerToken then return bridge_error('REDIS_ARGUMENT_INVALID') end
   if (operation == 'acquire' or operation == 'renew') and input.ttlMs ~= BRIDGE_TTL then return bridge_error('REDIS_ARGUMENT_INVALID') end
-  if operation == 'acquire' and (not bridge_id(input.expiredEventId) or input.eventId == input.expiredEventId) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if operation == 'acquire' and (not bridge_id(input.expiredEventId) or input.eventId == input.expiredEventId or input.expiredEventId == input.ownerToken) then return bridge_error('REDIS_ARGUMENT_INVALID') end
   if with_session and not bridge_id(input.sessionId) then return bridge_error('REDIS_ARGUMENT_INVALID') end
   if operation == 'expire' and (not bridge_integer(input.expectedRevision, 1) or type(input.expectedExpiresAt) ~= 'string') then return bridge_error('REDIS_ARGUMENT_INVALID') end
-  if not bridge_key_types(keys, with_session) then return bridge_error('REDIS_STATE_INVALID') end
+  if not bridge_key_types(keys, with_session) or not bridge_keys_match(keys, input, with_session) then return bridge_error('REDIS_STATE_INVALID') end
   local slot, token, invalid = bridge_read(keys[1], keys[2], keys[3], keys[4], input)
   if invalid then return bridge_error(invalid) end
   local clock = redis_now()
@@ -437,7 +482,7 @@ local function bridge_transition(keys, args, operation)
     return cjson.encode({status='held', slot=slot})
   end
   if operation == 'expire' then
-    if not slot or slot.state ~= 'active' or token or slot.revision ~= input.expectedRevision or slot.expiresAt ~= input.expectedExpiresAt or slot.expiresAt > clock.timestamp then
+    if not slot or slot.state ~= 'active' or token or slot.provider ~= input.provider or slot.executionProfile ~= input.executionProfile or slot.revision ~= input.expectedRevision or slot.expiresAt ~= input.expectedExpiresAt or slot.expiresAt > clock.timestamp then
       return cjson.encode({status='unchanged', slot=slot})
     end
   elseif operation ~= 'acquire' and not bridge_owned(slot, token, input, clock) then
@@ -600,6 +645,7 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     end
     return bridge_error('SESSION_ID_CONFLICT')
   end`,
+    "  if not session_keys_match(keys, session, nil, nil, nil, nil) then return bridge_error('REDIS_STATE_INVALID') end",
     "  if key_type(keys[2]) == 'none' then",
     "    return cjson.encode({status='not_found', entity='project'})",
     '  end',
@@ -667,9 +713,10 @@ local function bridge_slot_expire(keys, args) return bridge_transition(keys, arg
     '  end',
     `  if bridge then
     if bridge_slot.revision >= MAX_SAFE_INTEGER then return bridge_error('REDIS_STATE_INVALID') end
-    if args[11] == args[8] or args[11] == args[9] then return bridge_error('REDIS_ARGUMENT_INVALID') end
+    if bridge.ownerToken == args[3] or bridge.ownerToken == args[8] or bridge.ownerToken == args[9] or bridge.ownerToken == args[11] or args[11] == args[8] or args[11] == args[9] then return bridge_error('REDIS_ARGUMENT_INVALID') end
     event_count = event_count + 1
   end`,
+    "  if not session_keys_match(keys, session, native, declared, bridge, bridge_offset) then return bridge_error('REDIS_STATE_INVALID') end",
     '  if not stream_has_capacity(keys[7], event_count) or not stream_has_capacity(keys[8], event_count) then',
     "    return cjson.encode({status='error', code='REDIS_STATE_INVALID'})",
     '  end',

@@ -627,5 +627,170 @@ describe.skipIf(url === undefined || process.env.LUWI_TEST_ALLOW_SHARED_REDIS_FU
       });
       expect((await repository.getNativeLink(linkId))?.unlinkedAt).toBeDefined();
     });
+
+    it('fences every bridge key to the declared namespace and tuple', async () => {
+      const input = request();
+      const wrongKeys = [
+        `${namespace}:wrong:slot`,
+        `${namespace}:wrong:owner`,
+        `${namespace}:wrong:index`,
+        `${namespace}:wrong:deadlines`,
+        `${namespace}:wrong:global`,
+        `${namespace}:wrong:project`,
+      ];
+      expect(await call('acquire', input, {}, wrongKeys)).toMatchObject({
+        status: 'error',
+        code: 'REDIS_STATE_INVALID',
+      });
+      expect(await client.exists(wrongKeys)).toBe(0);
+    });
+
+    it('never permits an owner token to become a public event identifier', async () => {
+      const input = request();
+      expect(await call('acquire', { ...input, eventId: input.ownerToken })).toMatchObject({
+        status: 'error',
+        code: 'REDIS_ARGUMENT_INVALID',
+      });
+      expect(await call('acquire', { ...input, expiredEventId: input.ownerToken })).toMatchObject({
+        status: 'error',
+        code: 'REDIS_ARGUMENT_INVALID',
+      });
+      await call('acquire', input);
+
+      for (const collision of ['registration', 'attachment', 'native'] as const) {
+        const reg = registration(input);
+        if (collision === 'registration') reg.eventId = input.ownerToken;
+        if (collision === 'attachment') reg.bridgeAttachedEventId = input.ownerToken;
+        if (collision === 'native') {
+          const ref = { adapterId: 'codex-native-v1', nativeSessionId: randomUUID() };
+          const bindingId = deriveNativeBindingId(ref);
+          const linkId = deriveNativeLinkId(bindingId, reg.session.id);
+          await expect(
+            repository.registerSession({
+              ...reg,
+              native: {
+                bindingId,
+                linkId,
+                linkedEventId: input.ownerToken,
+                payload: {
+                  bindingId,
+                  expectedVersion: 0,
+                  link: { id: linkId, sessionId: reg.session.id },
+                  binding: { id: bindingId, ...ref, kind: 'main' },
+                },
+              },
+            }),
+          ).rejects.toMatchObject({ code: 'REDIS_ARGUMENT_INVALID' });
+        } else {
+          await expect(repository.registerSession(reg)).rejects.toMatchObject({
+            code: 'REDIS_ARGUMENT_INVALID',
+          });
+        }
+        await expectNoSession(reg.session.id);
+      }
+      expect(JSON.stringify(await events())).not.toContain(input.ownerToken);
+    });
+
+    it('does not let a different provider or profile expire a retained slot', async () => {
+      const input = request();
+      await call('acquire', input);
+      const slot = await expireOwner(input);
+      const expected = {
+        expectedRevision: slot.revision,
+        expectedExpiresAt: slot.expiresAt,
+        eventId: randomUUID(),
+      };
+      expect(await call('expire', { ...input, provider: 'claude-code' }, expected)).toMatchObject({
+        status: 'unchanged',
+      });
+      expect(
+        await call('expire', { ...input, executionProfile: 'read-only' }, expected),
+      ).toMatchObject({ status: 'unchanged' });
+      expect(JSON.parse((await client.hGet(keys.bridgeSlot(slot.id), 'json'))!)).toEqual(slot);
+    });
+
+    it.each([
+      ['plain', '18446744073709551615-18446744073709551614'],
+      ['native', '18446744073709551615-18446744073709551612'],
+    ] as const)(
+      'rejects aliased global/project Streams before any %s registration writes',
+      async (variant, nearMaximumId) => {
+        const caseNamespace = `${namespace}:alias:${randomUUID()}`;
+        const caseKeys = redis.createRedisKeys(caseNamespace);
+        const baseRepository = redis.createRuntimeRepository({
+          client: commandClient,
+          keys: caseKeys,
+          functions,
+        });
+        await baseRepository.registerProject({
+          project: {
+            id: 'project-alias',
+            name: 'Alias fixture',
+            localPath: 'C:/fixture',
+            canonicalPath: 'C:/fixture',
+            identityPath: 'c:/fixture',
+            pathIdentityHash: 'e'.repeat(64),
+          },
+          workspaceId: 'local',
+          eventId: randomUUID(),
+        });
+        await client.del(caseKeys.globalEvents);
+        await client.xAdd(caseKeys.globalEvents, nearMaximumId, { fixture: 'near-capacity' });
+        const aliased = redis.createRuntimeRepository({
+          client: {
+            sendCommand: (args) =>
+              commandClient.sendCommand(
+                args.map((argument) =>
+                  argument === caseKeys.projectEvents('project-alias')
+                    ? caseKeys.globalEvents
+                    : argument,
+                ),
+              ),
+          },
+          keys: caseKeys,
+          functions,
+        });
+        const sessionId = randomUUID();
+        const registrationInput: redis.RegisterSessionInput = {
+          session: {
+            id: sessionId,
+            projectId: 'project-alias',
+            agentId: 'codex',
+            status: 'starting',
+            workingDirectory: 'C:/fixture',
+            metadataJson: '{}',
+          },
+          workspaceId: 'local',
+          eventId: randomUUID(),
+          presenceTtlMs: 15_000,
+        };
+        if (variant === 'native') {
+          const ref = { adapterId: 'codex-native-v1', nativeSessionId: randomUUID() };
+          const bindingId = deriveNativeBindingId(ref);
+          const linkId = deriveNativeLinkId(bindingId, sessionId);
+          registrationInput.native = {
+            bindingId,
+            linkId,
+            linkedEventId: randomUUID(),
+            payload: {
+              bindingId,
+              expectedVersion: 0,
+              link: { id: linkId, sessionId },
+              binding: { id: bindingId, ...ref, kind: 'main' },
+            },
+          };
+        }
+        await expect(aliased.registerSession(registrationInput)).rejects.toMatchObject({
+          code: 'REDIS_STATE_INVALID',
+        });
+        expect(
+          await client.exists([
+            caseKeys.session(sessionId),
+            caseKeys.sessionPresence(sessionId),
+            caseKeys.sessionInbox(sessionId),
+          ]),
+        ).toBe(0);
+      },
+    );
   },
 );
