@@ -168,6 +168,33 @@ export type PulseInput = Omit<
  */
 export type CountValue = { state: 'ready' | 'empty'; value: number } | { state: 'unavailable' };
 
+/** A bounded collection can prove positives, but cannot prove a global zero. */
+export type ObservedCount =
+  | { state: 'exact'; value: number }
+  | { state: 'lower-bound'; value: number }
+  | { state: 'unknown' }
+  | { state: 'unavailable' };
+
+export type OldestPendingWake =
+  | { state: 'exact' | 'lower-bound'; ageMs: number; createdAt: string }
+  | { state: 'none' }
+  | { state: 'unknown' }
+  | { state: 'unavailable' };
+
+export type BridgeSlotHealth = 'active' | 'standby' | 'degraded' | 'stale';
+
+export type SessionBridgeEvidence =
+  | {
+      state: 'observed';
+      provider: BridgeSlot['provider'];
+      executionProfile: BridgeSlot['executionProfile'];
+      health: BridgeSlotHealth;
+      expiresAt: string;
+    }
+  | { state: 'not-observed' }
+  | { state: 'unknown' }
+  | { state: 'unavailable' };
+
 const usageOrder = [
   'agent-exact',
   'agent-reported',
@@ -224,6 +251,21 @@ function countOf<T>(resource: Availability<T[]>): CountValue {
   };
 }
 
+function observedCount<T>(
+  resource: Availability<RetainedWakeCollection<T>>,
+  predicate: (item: T) => boolean,
+): ObservedCount {
+  if (resource.state === 'unavailable') return { state: 'unavailable' };
+  const value = resource.data.items.filter(predicate).length;
+  if (!resource.data.truncated) return { state: 'exact', value };
+  return value === 0 ? { state: 'unknown' } : { state: 'lower-bound', value };
+}
+
+function bridgeSlotHealth(slot: BridgeSlot, snapshotAtMs: number): BridgeSlotHealth {
+  if (slot.state === 'expired' || Date.parse(slot.expiresAt) <= snapshotAtMs) return 'stale';
+  return slot.state;
+}
+
 /**
  * The context evidence one session reported.
  *
@@ -237,6 +279,22 @@ export type SessionContextEvidence =
   | { state: 'unavailable' };
 
 export function buildPulseSnapshot(input: PulseInput) {
+  const bridgeSlots = input.bridgeSlots ?? { state: 'unavailable' as const };
+  const snapshotAtMs = Date.parse(input.snapshotAt);
+  const sessionBridge = (sessionId: string): SessionBridgeEvidence => {
+    if (bridgeSlots.state === 'unavailable') return { state: 'unavailable' };
+    const slot = bridgeSlots.data.items.find((candidate) => candidate.sessionId === sessionId);
+    if (slot === undefined) {
+      return bridgeSlots.data.truncated ? { state: 'unknown' } : { state: 'not-observed' };
+    }
+    return {
+      state: 'observed',
+      provider: slot.provider,
+      executionProfile: slot.executionProfile,
+      health: bridgeSlotHealth(slot, snapshotAtMs),
+      expiresAt: slot.expiresAt,
+    };
+  };
   const projectById = new Map(
     input.projects.state === 'ready'
       ? input.projects.data.map((project) => [project.id, project] as const)
@@ -284,6 +342,7 @@ export function buildPulseSnapshot(input: PulseInput) {
             agentName: definition?.displayName ?? session.agentId,
             agentKnown: definition !== undefined,
             context: sessionContext(session.id),
+            bridge: sessionBridge(session.id),
           };
         })
       : [];
@@ -454,43 +513,55 @@ export function buildPulseSnapshot(input: PulseInput) {
     input.bridgeSlots !== undefined ||
     input.wakeIntents !== undefined ||
     input.workflows !== undefined;
-  const bridgeSlots = input.bridgeSlots ?? { state: 'unavailable' as const };
   const wakeIntents = input.wakeIntents ?? { state: 'unavailable' as const };
   const workflows = input.workflows ?? { state: 'unavailable' as const };
-  const activeBridgeSlots =
-    bridgeSlots.state === 'ready'
-      ? bridgeSlots.data.items.filter(
-          (slot) =>
-            slot.state === 'active' && Date.parse(slot.expiresAt) > Date.parse(input.snapshotAt),
-        )
+  const countSlotHealth = (health: BridgeSlotHealth): ObservedCount =>
+    observedCount(bridgeSlots, (slot) => bridgeSlotHealth(slot, snapshotAtMs) === health);
+  const activeSlots = countSlotHealth('active');
+  const pendingWakes =
+    wakeIntents.state === 'ready'
+      ? wakeIntents.data.items.filter((intent) => intent.state === 'pending')
       : [];
-  const slotCounts = new Map<string, number>();
-  for (const slot of activeBridgeSlots) {
-    const key = `${slot.workspaceId}\u0000${slot.projectId}\u0000${slot.agentId}`;
-    slotCounts.set(key, (slotCounts.get(key) ?? 0) + 1);
-  }
-  const duplicateSlotCount = [...slotCounts.values()].reduce(
-    (total, count) => total + Math.max(0, count - 1),
-    0,
-  );
+  const oldestObservedPending = pendingWakes.reduce<WakeIntent | undefined>((oldest, intent) => {
+    if (oldest === undefined) return intent;
+    return Date.parse(intent.createdAt) < Date.parse(oldest.createdAt) ? intent : oldest;
+  }, undefined);
+  const oldestPendingWake: OldestPendingWake =
+    wakeIntents.state === 'unavailable'
+      ? { state: 'unavailable' }
+      : oldestObservedPending === undefined
+        ? wakeIntents.data.truncated
+          ? { state: 'unknown' }
+          : { state: 'none' }
+        : {
+            state: wakeIntents.data.truncated ? 'lower-bound' : 'exact',
+            ageMs: Math.max(0, snapshotAtMs - Date.parse(oldestObservedPending.createdAt)),
+            createdAt: oldestObservedPending.createdAt,
+          };
+  const supervisorOwnership =
+    bridgeSlots.state === 'unavailable' || activeSlots.state === 'unavailable'
+      ? ('unavailable' as const)
+      : activeSlots.state === 'unknown'
+        ? ('unknown' as const)
+        : activeSlots.state === 'exact' && activeSlots.value === 0
+          ? ('not-observed' as const)
+          : ('observed' as const);
   const wakeDelivery = hasWakeDelivery
     ? {
-        supervisorOwnership:
-          bridgeSlots.state === 'unavailable'
-            ? ('unavailable' as const)
-            : activeBridgeSlots.length > 0
-              ? ('observed' as const)
-              : ('not-observed' as const),
-        activeSlotCount: bridgeSlots.state === 'ready' ? activeBridgeSlots.length : undefined,
-        duplicateSlotCount: bridgeSlots.state === 'ready' ? duplicateSlotCount : undefined,
-        indeterminateWakeCount:
-          wakeIntents.state === 'ready'
-            ? wakeIntents.data.items.filter((intent) => intent.state === 'indeterminate').length
-            : undefined,
-        activeWorkflowCount:
-          workflows.state === 'ready'
-            ? workflows.data.items.filter((workflow) => workflow.state === 'active').length
-            : undefined,
+        supervisorReachability: 'unknown' as const,
+        supervisorOwnership,
+        slotCounts: {
+          active: activeSlots,
+          standby: countSlotHealth('standby'),
+          degraded: countSlotHealth('degraded'),
+          stale: countSlotHealth('stale'),
+        },
+        indeterminateWakes: observedCount(
+          wakeIntents,
+          (intent) => intent.state === 'indeterminate',
+        ),
+        activeWorkflows: observedCount(workflows, (workflow) => workflow.state === 'active'),
+        oldestPendingWake,
         bridgeSlots,
         wakeIntents,
         workflows,

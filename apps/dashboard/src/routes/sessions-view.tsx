@@ -5,7 +5,7 @@ import { formatRelativeTime } from '../components/format.js';
 import { IdBadge } from '../components/id-badge.js';
 import { ResourcePanel, TableWrap, Unavailable } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
-import type { PulseSnapshot } from '../pulse/model.js';
+import type { PulseSnapshot, SessionBridgeEvidence } from '../pulse/model.js';
 import { AskSessionDialog } from './ask-session-dialog.js';
 
 type SessionRow = PulseSnapshot['sessions'][number];
@@ -49,6 +49,32 @@ function SortHeader({
         ) : null}
       </button>
     </th>
+  );
+}
+
+function SessionBridge({ evidence }: { evidence: SessionBridgeEvidence }) {
+  if (evidence.state === 'unavailable') {
+    return <span className="unavailable">Bridge unavailable</span>;
+  }
+  if (evidence.state === 'unknown') {
+    return <span className="unavailable">Bridge evidence incomplete</span>;
+  }
+  if (evidence.state === 'not-observed') {
+    return <span className="unavailable">No bridge observed</span>;
+  }
+  const tone =
+    evidence.health === 'active'
+      ? 'success'
+      : evidence.health === 'degraded'
+        ? 'danger'
+        : 'warning';
+  return (
+    <div>
+      <span>{`${evidence.provider} · ${evidence.executionProfile}`}</span>
+      <StatusChip tone={tone}>
+        {evidence.health.charAt(0).toUpperCase() + evidence.health.slice(1)}
+      </StatusChip>
+    </div>
   );
 }
 
@@ -178,6 +204,7 @@ export function SessionsView({
                           onSort={toggleSort}
                         />
                         <th scope="col">Presence</th>
+                        <th scope="col">Bridge</th>
                         <SortHeader
                           label="Started"
                           sortKey="started"
@@ -206,6 +233,9 @@ export function SessionsView({
                             <StatusChip tone={row.presence === 'online' ? 'success' : 'unknown'}>
                               {row.presence === 'online' ? 'Online' : 'Offline'}
                             </StatusChip>
+                          </td>
+                          <td>
+                            <SessionBridge evidence={row.bridge} />
                           </td>
                           <td>
                             <time dateTime={row.startedAt} title={row.startedAt}>

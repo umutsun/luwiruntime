@@ -16,6 +16,30 @@ const snapshot = {
   runtime: { state: 'unavailable' },
 } as unknown as PulseSnapshot;
 
+const wakeSnapshot = {
+  ...snapshot,
+  wakeDelivery: {
+    supervisorReachability: 'unknown',
+    supervisorOwnership: 'observed',
+    slotCounts: {
+      active: { state: 'exact', value: 1 },
+      standby: { state: 'exact', value: 2 },
+      degraded: { state: 'lower-bound', value: 1 },
+      stale: { state: 'exact', value: 1 },
+    },
+    indeterminateWakes: { state: 'exact', value: 0 },
+    activeWorkflows: { state: 'exact', value: 1 },
+    oldestPendingWake: {
+      state: 'lower-bound',
+      ageMs: 300_000,
+      createdAt: '2026-09-10T00:00:00.000Z',
+    },
+    bridgeSlots: { state: 'ready', data: { items: [], truncated: true } },
+    wakeIntents: { state: 'ready', data: { items: [], truncated: true } },
+    workflows: { state: 'ready', data: { items: [], truncated: false } },
+  },
+} as unknown as PulseSnapshot;
+
 const figures: RuntimeResources = {
   observedAt: '2026-09-02T10:00:10.000Z',
   host: {
@@ -41,6 +65,19 @@ function loaderFor(result: ResourceState<RuntimeResources>) {
 }
 
 describe('RuntimeView resources', () => {
+  it('shows only public ownership evidence and keeps supervisor process reachability unknown', () => {
+    render(<RuntimeView snapshot={wakeSnapshot} websocketState="live" />);
+
+    const panel = screen.getByRole('region', { name: 'Wake supervision' });
+    expect(within(panel).getByText('Unknown — no public process heartbeat')).toBeTruthy();
+    expect(within(panel).getByText('Observed')).toBeTruthy();
+    const activeSlots = within(panel).getByText('Active slots').parentElement!;
+    expect(within(activeSlots).getByText('1')).toBeTruthy();
+    expect(within(panel).getByText('2')).toBeTruthy();
+    expect(within(panel).getByText('At least 1')).toBeTruthy();
+    expect(within(panel).getByText('At least 5m old')).toBeTruthy();
+  });
+
   it('shows nothing about the machine when no reader is bound', () => {
     render(<RuntimeView snapshot={snapshot} websocketState="live" />);
 

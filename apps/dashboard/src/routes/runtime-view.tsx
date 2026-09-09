@@ -5,7 +5,7 @@ import type { RuntimeResources } from '../api/runtime-resources.js';
 import { formatBytes } from '../components/format.js';
 import { Panel, type ResourceState } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
-import type { PulseSnapshot } from '../pulse/model.js';
+import type { ObservedCount, OldestPendingWake, PulseSnapshot } from '../pulse/model.js';
 
 /** Resource figures are a rate over the previous read, so the read repeats. */
 const RESOURCES_REFRESH_MS = 10_000;
@@ -20,6 +20,28 @@ function formatDuration(milliseconds: number): string {
 function formatPercent(value: number | undefined): string {
   // The first read has nothing to compare against, and says so.
   return value === undefined ? 'Measuring…' : `${String(Math.round(value))}%`;
+}
+
+function formatObservedCount(count: ObservedCount): string {
+  if (count.state === 'unavailable') return 'Unavailable';
+  if (count.state === 'unknown') return 'Unknown';
+  return count.state === 'lower-bound' ? `At least ${String(count.value)}` : String(count.value);
+}
+
+function formatShortAge(milliseconds: number): string {
+  const seconds = Math.floor(milliseconds / 1000);
+  if (seconds < 60) return `${String(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${String(minutes)}m`;
+  return `${String(Math.floor(minutes / 60))}h`;
+}
+
+function formatOldestPending(wake: OldestPendingWake): string {
+  if (wake.state === 'unavailable') return 'Unavailable';
+  if (wake.state === 'unknown') return 'Unknown';
+  if (wake.state === 'none') return 'None observed';
+  const age = `${formatShortAge(wake.ageMs)} old`;
+  return wake.state === 'lower-bound' ? `At least ${age}` : age;
 }
 
 /**
@@ -148,6 +170,49 @@ export function RuntimeView({
           </dl>
         )}
       </Panel>
+
+      {snapshot.wakeDelivery === undefined ? null : (
+        <Panel title="Wake supervision">
+          <dl className="health-list">
+            <div>
+              <dt>Reachability</dt>
+              <dd>Unknown — no public process heartbeat</dd>
+            </div>
+            <div>
+              <dt>Ownership</dt>
+              <dd>
+                {snapshot.wakeDelivery.supervisorOwnership === 'observed'
+                  ? 'Observed'
+                  : snapshot.wakeDelivery.supervisorOwnership === 'not-observed'
+                    ? 'Not observed'
+                    : snapshot.wakeDelivery.supervisorOwnership === 'unknown'
+                      ? 'Unknown'
+                      : 'Unavailable'}
+              </dd>
+            </div>
+            <div>
+              <dt>Active slots</dt>
+              <dd>{formatObservedCount(snapshot.wakeDelivery.slotCounts.active)}</dd>
+            </div>
+            <div>
+              <dt>Standby slots</dt>
+              <dd>{formatObservedCount(snapshot.wakeDelivery.slotCounts.standby)}</dd>
+            </div>
+            <div>
+              <dt>Degraded slots</dt>
+              <dd>{formatObservedCount(snapshot.wakeDelivery.slotCounts.degraded)}</dd>
+            </div>
+            <div>
+              <dt>Stale slots</dt>
+              <dd>{formatObservedCount(snapshot.wakeDelivery.slotCounts.stale)}</dd>
+            </div>
+            <div>
+              <dt>Oldest pending wake</dt>
+              <dd>{formatOldestPending(snapshot.wakeDelivery.oldestPendingWake)}</dd>
+            </div>
+          </dl>
+        </Panel>
+      )}
 
       {loadResources === undefined ? null : (
         <>

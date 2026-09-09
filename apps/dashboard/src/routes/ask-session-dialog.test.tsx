@@ -22,6 +22,7 @@ function row(id: string, agentId: string): SessionRow {
     agentName: agentId,
     agentKnown: false,
     context: { state: 'unavailable' },
+    bridge: { state: 'unavailable' },
     presence: 'online',
     startedAt: '2026-08-24T00:00:00.000Z',
     lastHeartbeatAt: '2026-08-24T00:01:00.000Z',

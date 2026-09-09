@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react';
 
-import type { PulseSnapshot, SessionContextEvidence } from './model.js';
+import type { ObservedCount, PulseSnapshot, SessionContextEvidence } from './model.js';
 import {
   bucketRetainedWindow,
   type RetainedBounds,
@@ -193,20 +193,28 @@ function SessionContext({ context }: { context: SessionContextEvidence }) {
 }
 
 function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['wakeDelivery']> }) {
-  const slotCount = delivery.activeSlotCount;
-  const wakeCount =
-    delivery.wakeIntents.state === 'ready' ? delivery.wakeIntents.data.items.length : undefined;
-  const workflowCount = delivery.activeWorkflowCount;
+  const countLabel = (count: ObservedCount, noun: string): string => {
+    if (count.state === 'unavailable') return `${noun} unavailable`;
+    if (count.state === 'unknown') return `${noun} count unknown`;
+    const words = `${String(count.value)} ${noun.toLocaleLowerCase()}${count.value === 1 ? '' : 's'}`;
+    return count.state === 'lower-bound' ? `At least ${words}` : words;
+  };
+  const retainedLabel = (
+    resource: typeof delivery.bridgeSlots | typeof delivery.wakeIntents | typeof delivery.workflows,
+  ): string => {
+    if (resource.state === 'unavailable') return '—';
+    const count = resource.data.items.length;
+    if (!resource.data.truncated) return String(count);
+    return count === 0 ? '?' : `${String(count)}+`;
+  };
   const ownershipLabel =
     delivery.supervisorOwnership === 'observed'
       ? 'Supervisor ownership observed'
       : delivery.supervisorOwnership === 'unavailable'
         ? 'Supervisor ownership unavailable'
-        : 'Supervisor ownership not observed';
-  const bridgeHeadline =
-    delivery.duplicateSlotCount !== undefined && delivery.duplicateSlotCount > 0
-      ? 'Duplicate bridge slots observed'
-      : ownershipLabel;
+        : delivery.supervisorOwnership === 'unknown'
+          ? 'Supervisor ownership unknown'
+          : 'Supervisor ownership not observed';
 
   return (
     <section className="panel panel--wake" aria-labelledby="wake-delivery-title">
@@ -224,33 +232,22 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
             01
           </span>
           <h3>Supervisor</h3>
-          <p
-            className={`wake-stage__headline${
-              delivery.duplicateSlotCount !== undefined && delivery.duplicateSlotCount > 0
-                ? ' wake-stage__headline--danger'
-                : ''
-            }`}
-          >
-            {bridgeHeadline}
-          </p>
+          <p className="wake-stage__headline">{ownershipLabel}</p>
           <p className="wake-stage__measure">
-            {slotCount === undefined
-              ? 'Bridge slots unavailable'
-              : `${String(slotCount)} active ${slotCount === 1 ? 'slot' : 'slots'}`}
+            {countLabel(delivery.slotCounts.active, 'Active slot')}
           </p>
           <details className="wake-detail">
             <summary>
               <span>Bridge slots</span>
-              <span>
-                {delivery.bridgeSlots.state === 'ready'
-                  ? delivery.bridgeSlots.data.items.length
-                  : '—'}
-              </span>
+              <span>{retainedLabel(delivery.bridgeSlots)}</span>
             </summary>
             {delivery.bridgeSlots.state === 'unavailable' ? (
               <p>Bridge slots unavailable</p>
-            ) : delivery.bridgeSlots.data.items.length === 0 ? (
+            ) : delivery.bridgeSlots.data.items.length === 0 &&
+              !delivery.bridgeSlots.data.truncated ? (
               <p>No retained bridge slots</p>
+            ) : delivery.bridgeSlots.data.items.length === 0 ? (
+              <p>No bridge slot appears in the returned sample.</p>
             ) : (
               <ul>
                 {delivery.bridgeSlots.data.items.map((slot) => (
@@ -263,7 +260,7 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
               </ul>
             )}
             {delivery.bridgeSlots.state === 'ready' && delivery.bridgeSlots.data.truncated ? (
-              <p>Showing the oldest 100 retained slots</p>
+              <p>Showing 100 returned slots; more exist.</p>
             ) : null}
           </details>
         </article>
@@ -275,28 +272,38 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
           <h3>Durable wake</h3>
           {delivery.wakeIntents.state === 'unavailable' ? (
             <p className="wake-stage__headline">Wake intents unavailable</p>
-          ) : delivery.indeterminateWakeCount !== undefined &&
-            delivery.indeterminateWakeCount > 0 ? (
+          ) : (delivery.indeterminateWakes.state === 'exact' ||
+              delivery.indeterminateWakes.state === 'lower-bound') &&
+            delivery.indeterminateWakes.value > 0 ? (
             <p className="wake-stage__headline wake-stage__headline--warning">
               Wake outcome is indeterminate; read the durable inbox response.
             </p>
+          ) : delivery.indeterminateWakes.state === 'unknown' ? (
+            <p className="wake-stage__headline">Indeterminate wake outcomes unknown</p>
           ) : (
             <p className="wake-stage__headline">No indeterminate wake outcomes</p>
           )}
           <p className="wake-stage__measure">
-            {wakeCount === undefined
+            {delivery.wakeIntents.state === 'unavailable'
               ? 'Wake history unavailable'
-              : `${String(wakeCount)} retained ${wakeCount === 1 ? 'intent' : 'intents'}`}
+              : delivery.wakeIntents.data.truncated
+                ? delivery.wakeIntents.data.items.length === 0
+                  ? 'Retained wake count unknown'
+                  : `At least ${String(delivery.wakeIntents.data.items.length)} retained intents`
+                : `${String(delivery.wakeIntents.data.items.length)} retained ${delivery.wakeIntents.data.items.length === 1 ? 'intent' : 'intents'}`}
           </p>
           <details className="wake-detail">
             <summary>
               <span>Wake intents</span>
-              <span>{wakeCount ?? '—'}</span>
+              <span>{retainedLabel(delivery.wakeIntents)}</span>
             </summary>
             {delivery.wakeIntents.state === 'unavailable' ? (
               <p>The retained wake collection could not be read.</p>
-            ) : delivery.wakeIntents.data.items.length === 0 ? (
+            ) : delivery.wakeIntents.data.items.length === 0 &&
+              !delivery.wakeIntents.data.truncated ? (
               <p>No retained wake intents</p>
+            ) : delivery.wakeIntents.data.items.length === 0 ? (
+              <p>No wake intent appears in the returned sample.</p>
             ) : (
               <ul>
                 {delivery.wakeIntents.data.items.map((intent) => (
@@ -309,7 +316,7 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
               </ul>
             )}
             {delivery.wakeIntents.state === 'ready' && delivery.wakeIntents.data.truncated ? (
-              <p>Showing the oldest 100 retained intents</p>
+              <p>Showing 100 returned intents; more exist.</p>
             ) : null}
           </details>
         </article>
@@ -320,22 +327,20 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
           </span>
           <h3>Continuation</h3>
           <p className="wake-stage__headline">
-            {workflowCount === undefined
-              ? 'Workflows unavailable'
-              : `${String(workflowCount)} active ${workflowCount === 1 ? 'workflow' : 'workflows'}`}
+            {countLabel(delivery.activeWorkflows, 'Active workflow')}
           </p>
           <p className="wake-stage__measure">Revision-fenced durable decisions</p>
           <details className="wake-detail">
             <summary>
               <span>Workflows</span>
-              <span>
-                {delivery.workflows.state === 'ready' ? delivery.workflows.data.items.length : '—'}
-              </span>
+              <span>{retainedLabel(delivery.workflows)}</span>
             </summary>
             {delivery.workflows.state === 'unavailable' ? (
               <p>Workflows unavailable</p>
-            ) : delivery.workflows.data.items.length === 0 ? (
+            ) : delivery.workflows.data.items.length === 0 && !delivery.workflows.data.truncated ? (
               <p>No retained workflows</p>
+            ) : delivery.workflows.data.items.length === 0 ? (
+              <p>No workflow appears in the returned sample.</p>
             ) : (
               <ul>
                 {delivery.workflows.data.items.map((workflow) => (
@@ -348,7 +353,7 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
               </ul>
             )}
             {delivery.workflows.state === 'ready' && delivery.workflows.data.truncated ? (
-              <p>Showing the oldest 100 retained workflows</p>
+              <p>Showing 100 returned workflows; more exist.</p>
             ) : null}
           </details>
         </article>

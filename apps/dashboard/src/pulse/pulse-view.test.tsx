@@ -209,7 +209,7 @@ describe('Wake delivery', () => {
     expect(within(panel).queryByRole('button')).toBeNull();
   });
 
-  it('surfaces duplicate ownership observations and independent unavailable reads', () => {
+  it('does not infer a duplicate anomaly from deterministic public slot projections', () => {
     const value = withWakeDelivery();
     if (value.bridgeSlots?.state === 'ready') {
       value.bridgeSlots.data.items.push({
@@ -221,9 +221,68 @@ describe('Wake delivery', () => {
     renderPulse(value);
 
     const panel = screen.getByRole('region', { name: 'Wake delivery' });
-    expect(within(panel).getByText('Duplicate bridge slots observed')).toBeTruthy();
+    expect(within(panel).queryByText(/duplicate/i)).toBeNull();
+    expect(within(panel).getByText('Supervisor ownership observed')).toBeTruthy();
     expect(within(panel).getByText('Wake intents unavailable')).toBeTruthy();
     expect(within(panel).getByText('1 active workflow')).toBeTruthy();
+  });
+
+  it('renders truncated samples as unknowns or lower bounds with neutral ordering copy', () => {
+    const value = withWakeDelivery();
+    const retainedWake =
+      value.wakeIntents?.state === 'ready' ? value.wakeIntents.data.items[0]! : undefined;
+    const retainedWorkflow =
+      value.workflows?.state === 'ready' ? value.workflows.data.items[0]! : undefined;
+    if (retainedWake === undefined || retainedWorkflow === undefined) throw new Error('fixture');
+    const completedWorkflow = { ...retainedWorkflow };
+    delete completedWorkflow.currentWakeIntentId;
+    value.bridgeSlots = { state: 'ready', data: { items: [], truncated: true } };
+    value.wakeIntents = {
+      state: 'ready',
+      data: {
+        truncated: true,
+        items: [
+          {
+            ...retainedWake,
+            state: 'dispatched',
+            reasonCode: 'queue_accepted',
+          },
+        ],
+      },
+    };
+    value.workflows = {
+      state: 'ready',
+      data: {
+        truncated: true,
+        items: [
+          {
+            ...completedWorkflow,
+            state: 'completed',
+          },
+        ],
+      },
+    };
+    renderPulse(value);
+
+    const panel = screen.getByRole('region', { name: 'Wake delivery' });
+    expect(within(panel).getByText('Supervisor ownership unknown')).toBeTruthy();
+    expect(within(panel).getByText('Indeterminate wake outcomes unknown')).toBeTruthy();
+    expect(within(panel).getByText('Active workflow count unknown')).toBeTruthy();
+    expect(within(panel).queryByText(/no indeterminate|0 active/i)).toBeNull();
+    expect(within(panel).getAllByText(/returned .*more exist/i)).toHaveLength(3);
+    expect(within(panel).queryByText(/oldest 100/i)).toBeNull();
+  });
+
+  it('keeps native disclosure summaries focusable and operable', () => {
+    renderPulse(withWakeDelivery());
+
+    const summary = screen.getByText('Bridge slots').closest('summary') as HTMLElement;
+    const details = summary.closest('details') as HTMLDetailsElement;
+    summary.focus();
+    expect(document.activeElement).toBe(summary);
+    expect(details.open).toBe(false);
+    fireEvent.click(summary);
+    expect(details.open).toBe(true);
   });
 });
 

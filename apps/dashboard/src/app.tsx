@@ -677,6 +677,10 @@ export function DashboardApp({
             <MessagesView
               messages={messageResources.messages}
               loading={messagesLoading}
+              sessions={snapshot.sessions}
+              {...(snapshot.wakeDelivery === undefined
+                ? {}
+                : { wakeIntents: snapshot.wakeDelivery.wakeIntents })}
               onCloseRoutedDetail={() => {
                 window.location.hash = routeHref({ name: 'messages' });
               }}

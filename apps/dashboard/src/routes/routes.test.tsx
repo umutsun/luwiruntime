@@ -87,7 +87,7 @@ describe('SessionsView', () => {
     render(<SessionsView snapshot={snapshot} />);
 
     expect(screen.getByText('Alpha')).toBeTruthy();
-    expect(screen.getByText('Unavailable')).toBeTruthy();
+    expect(within(screen.getByRole('row', { name: /s2/ })).getByText('Unavailable')).toBeTruthy();
   });
 
   it('keeps empty and unavailable distinct', () => {
@@ -244,6 +244,55 @@ describe('SessionsView', () => {
 
     const started = screen.getByText('2h ago');
     expect(started.closest('time')?.getAttribute('dateTime')).toBe('2026-08-08T10:00:00.000Z');
+  });
+
+  it('shows public bridge provider, execution profile, and computed slot health per session', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: { state: 'ready', data: [session('s-bridged'), session('s-inbox')] },
+        bridgeSlots: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            items: [
+              {
+                id: 'a'.repeat(64),
+                workspaceId: 'local',
+                projectId: 'p1',
+                agentId: 'a1',
+                provider: 'antigravity',
+                executionProfile: 'workspace-write',
+                state: 'active',
+                revision: 1,
+                sessionId: 's-bridged',
+                expiresAt: '2026-08-08T00:00:10.000Z',
+              },
+            ],
+          },
+        },
+      }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    const bridged = screen.getByRole('row', { name: /s-bridged/ });
+    expect(within(bridged).getByText('antigravity · workspace-write')).toBeTruthy();
+    expect(within(bridged).getByText('Active')).toBeTruthy();
+    const inbox = screen.getByRole('row', { name: /s-inbox/ });
+    expect(within(inbox).getByText('No bridge observed')).toBeTruthy();
+  });
+
+  it('does not call a missing session bridge negative when the slot read was truncated', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: { state: 'ready', data: [session('s-unknown')] },
+        bridgeSlots: { state: 'ready', data: { truncated: true, items: [] } },
+      }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    const row = screen.getByRole('row', { name: /s-unknown/ });
+    expect(within(row).getByText('Bridge evidence incomplete')).toBeTruthy();
+    expect(within(row).queryByText('No bridge observed')).toBeNull();
   });
 });
 

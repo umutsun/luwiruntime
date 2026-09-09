@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import type { AgentMessage, Bounded, MessageState } from '../api/messages-scope.js';
+import type { RetainedWakeCollection, WakeIntent } from '../api/wake-scope.js';
 import { DetailDrawer } from '../components/detail-drawer.js';
 import { IdBadge } from '../components/id-badge.js';
 import { PanelBody, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
 import { StatusChip, type StatusTone } from '../components/status-chip.js';
+import type { Availability, PulseSnapshot } from '../pulse/model.js';
 
 /**
  * Inter-agent messaging, read-only.
@@ -51,6 +53,15 @@ const stateTones: Record<MessageState, StatusTone> = {
 
 const TERMINAL: readonly MessageState[] = ['responded', 'rejected', 'timed_out', 'failed'];
 
+const wakeStateLabels: Record<WakeIntent['state'], string> = {
+  pending: 'Pending',
+  claimed: 'Claimed',
+  dispatching: 'Dispatching',
+  dispatched: 'Dispatched',
+  fallback_only: 'Fallback only',
+  indeterminate: 'Indeterminate',
+};
+
 function StateChip({ state }: { state: MessageState }) {
   return <StatusChip tone={stateTones[state]}>{stateLabels[state]}</StatusChip>;
 }
@@ -77,11 +88,15 @@ export function MessagesView({
   loading = false,
   selectedCorrelationId,
   onCloseRoutedDetail,
+  wakeIntents,
+  sessions = [],
 }: {
   messages: ResourceState<Bounded<AgentMessage>> | undefined;
   loading?: boolean;
   selectedCorrelationId?: string;
   onCloseRoutedDetail?: () => void;
+  wakeIntents?: Availability<RetainedWakeCollection<WakeIntent>>;
+  sessions?: PulseSnapshot['sessions'];
 }) {
   const [stateFilter, setStateFilter] = useState('');
   const [selectedId, setSelectedId] = useState<string>();
@@ -98,6 +113,14 @@ export function MessagesView({
     [all],
   );
   const selected = all.find((message) => message.id === selectedId);
+  const selectedWake =
+    selected === undefined || wakeIntents?.state !== 'ready'
+      ? undefined
+      : wakeIntents.data.items.find((intent) => intent.messageId === selected.id);
+  const targetSession =
+    selected === undefined
+      ? undefined
+      : sessions.find((session) => session.id === selected.targetSessionId);
 
   const filtered = useMemo(
     () => (stateFilter === '' ? all : all.filter((message) => message.state === stateFilter)),
@@ -255,6 +278,101 @@ export function MessagesView({
               </dd>
             </div>
           </dl>
+
+          {wakeIntents === undefined ? null : (
+            <>
+              <p className="group-label">
+                <span>Delivery</span>
+              </p>
+              <dl className="key-values">
+                <div>
+                  <dt>Target session</dt>
+                  <dd>
+                    {targetSession === undefined ? (
+                      <span className="unavailable">Not in the retained session read</span>
+                    ) : (
+                      `${targetSession.statusLabel} · ${targetSession.presence}`
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Target bridge</dt>
+                  <dd>
+                    {targetSession === undefined || targetSession.bridge.state === 'unavailable' ? (
+                      <span className="unavailable">Unavailable</span>
+                    ) : targetSession.bridge.state === 'unknown' ? (
+                      <span className="unavailable">Bridge evidence incomplete</span>
+                    ) : targetSession.bridge.state === 'not-observed' ? (
+                      <span className="unavailable">No bridge observed</span>
+                    ) : (
+                      <span>
+                        {`${targetSession.bridge.provider} · ${targetSession.bridge.executionProfile}`}{' '}
+                        <StatusChip
+                          tone={targetSession.bridge.health === 'active' ? 'success' : 'warning'}
+                        >
+                          {targetSession.bridge.health.charAt(0).toUpperCase() +
+                            targetSession.bridge.health.slice(1)}
+                        </StatusChip>
+                      </span>
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Wake state</dt>
+                  <dd>
+                    {wakeIntents.state === 'unavailable' ? (
+                      <span className="unavailable">Wake evidence unavailable</span>
+                    ) : selectedWake === undefined ? (
+                      wakeIntents.data.truncated ? (
+                        <span className="unavailable">Wake evidence incomplete</span>
+                      ) : (
+                        <span className="unavailable">No automatic coordinator wake recorded</span>
+                      )
+                    ) : (
+                      wakeStateLabels[selectedWake.state]
+                    )}
+                  </dd>
+                </div>
+                {selectedWake === undefined ? null : (
+                  <>
+                    <div>
+                      <dt>Wake requested</dt>
+                      <dd>{selectedWake.createdAt}</dd>
+                    </div>
+                    <div>
+                      <dt>Wake updated</dt>
+                      <dd>{selectedWake.updatedAt}</dd>
+                    </div>
+                    <div>
+                      <dt>Workflow</dt>
+                      <dd>{selectedWake.workflowId}</dd>
+                    </div>
+                    <div>
+                      <dt>Wake reason</dt>
+                      <dd>
+                        {selectedWake.reasonCode ?? (
+                          <span className="unavailable">Not recorded</span>
+                        )}
+                      </dd>
+                    </div>
+                  </>
+                )}
+              </dl>
+              <p className="bounded-note">
+                {wakeIntents.state === 'unavailable'
+                  ? 'Automatic wake evidence is unavailable; the durable inbox remains authoritative.'
+                  : selectedWake === undefined
+                    ? wakeIntents.data.truncated
+                      ? 'The retained wake sample is truncated, so this message’s wake path is unknown.'
+                      : 'No automatic coordinator wake was recorded; the durable inbox is authoritative.'
+                    : selectedWake.state === 'fallback_only'
+                      ? 'Automatic wake was unavailable; the durable inbox is the only delivery path.'
+                      : selectedWake.state === 'indeterminate'
+                        ? 'Wake delivery is indeterminate; the durable inbox remains authoritative.'
+                        : 'The durable inbox remains authoritative while automatic wake is observed.'}
+              </p>
+            </>
+          )}
 
           {/* The runtime records why it picked this recipient. Without it a
               reader cannot tell a deliberate route from an arbitrary one. */}

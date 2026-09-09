@@ -96,11 +96,99 @@ describe('Pulse snapshot mapping', () => {
     });
 
     expect(snapshot.wakeDelivery).toMatchObject({
+      supervisorReachability: 'unknown',
       supervisorOwnership: 'observed',
-      activeSlotCount: 1,
-      duplicateSlotCount: 0,
-      indeterminateWakeCount: 1,
-      activeWorkflowCount: 1,
+      slotCounts: {
+        active: { state: 'exact', value: 1 },
+        standby: { state: 'exact', value: 0 },
+        degraded: { state: 'exact', value: 0 },
+        stale: { state: 'exact', value: 0 },
+      },
+      indeterminateWakes: { state: 'exact', value: 1 },
+      activeWorkflows: { state: 'exact', value: 1 },
+      oldestPendingWake: { state: 'none' },
+    });
+    expect(snapshot.wakeDelivery).not.toHaveProperty('duplicateSlotCount');
+  });
+
+  it('turns every negative from a truncated 100-row sample into unknown evidence', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      bridgeSlots: {
+        state: 'ready',
+        data: {
+          truncated: true,
+          // The endpoint returned a 101st row, so an active owner may exist
+          // outside the retained dashboard window.
+          items: [
+            {
+              id: 'a'.repeat(64),
+              workspaceId: 'local',
+              projectId: 'project-1',
+              agentId: 'agent-1',
+              provider: 'antigravity',
+              executionProfile: 'workspace-write',
+              state: 'active',
+              revision: 1,
+              expiresAt: '2026-08-05T07:59:59.000Z',
+            },
+          ],
+        },
+      },
+      wakeIntents: {
+        state: 'ready',
+        data: {
+          truncated: true,
+          items: [
+            {
+              id: 'wake-pending',
+              messageId: 'message-1',
+              workflowId: 'workflow-1',
+              sourceSessionId: 'session-1',
+              correlationId: 'correlation-1',
+              terminalState: 'responded',
+              adapter: 'codex-queue-v1',
+              state: 'pending',
+              createdAt: '2026-08-05T07:55:00.000Z',
+              updatedAt: '2026-08-05T07:55:00.000Z',
+            },
+          ],
+        },
+      },
+      workflows: {
+        state: 'ready',
+        data: {
+          truncated: true,
+          items: [
+            {
+              id: 'workflow-complete',
+              projectId: 'project-1',
+              coordinatorSessionId: 'session-1',
+              rootCorrelationId: 'correlation-1',
+              objective: 'Completed retained workflow.',
+              revision: 2,
+              state: 'completed',
+              createdAt: '2026-08-05T07:50:00.000Z',
+              updatedAt: '2026-08-05T07:59:00.000Z',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(snapshot.wakeDelivery).toMatchObject({
+      supervisorOwnership: 'unknown',
+      slotCounts: {
+        active: { state: 'unknown' },
+        stale: { state: 'lower-bound', value: 1 },
+      },
+      indeterminateWakes: { state: 'unknown' },
+      activeWorkflows: { state: 'unknown' },
+      oldestPendingWake: {
+        state: 'lower-bound',
+        ageMs: 300_000,
+        createdAt: '2026-08-05T07:55:00.000Z',
+      },
     });
   });
 

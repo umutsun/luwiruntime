@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { AgentMessage } from '../api/messages-scope.js';
+import type { WakeIntent } from '../api/wake-scope.js';
+import type { PulseSnapshot } from '../pulse/model.js';
 import { MessagesView } from './messages-view.js';
 
 afterEach(cleanup);
@@ -65,6 +67,44 @@ function view(items: AgentMessage[], truncated = false) {
   return <MessagesView messages={{ state: 'ready', data: { items, truncated } }} />;
 }
 
+const fallbackWake: WakeIntent = {
+  id: 'wake-1',
+  messageId: 'msg-1',
+  workflowId: 'workflow-1',
+  sourceSessionId: 'sess-a',
+  correlationId: 'corr-1',
+  terminalState: 'responded',
+  adapter: 'codex-queue-v1',
+  state: 'fallback_only',
+  createdAt: '2026-08-10T00:00:01.000Z',
+  updatedAt: '2026-08-10T00:00:06.000Z',
+  reasonCode: 'target_unavailable',
+};
+
+const bridgedTarget = [
+  {
+    id: 'sess-b',
+    agentId: 'agent-b',
+    projectId: 'proj-1',
+    projectName: 'Project One',
+    status: 'idle',
+    statusLabel: 'idle',
+    presence: 'online',
+    startedAt: '2026-08-09T00:00:00.000Z',
+    lastHeartbeatAt: '2026-08-10T00:00:00.000Z',
+    agentName: 'Agent B',
+    agentKnown: true,
+    context: { state: 'not-observed' },
+    bridge: {
+      state: 'observed',
+      provider: 'antigravity',
+      executionProfile: 'workspace-write',
+      health: 'active',
+      expiresAt: '2026-08-10T00:05:00.000Z',
+    },
+  },
+] as unknown as PulseSnapshot['sessions'];
+
 describe('MessagesView', () => {
   it('insets controls and notes without adding padding around the table', () => {
     render(view([message()]));
@@ -118,6 +158,47 @@ describe('MessagesView', () => {
 
     fireEvent.click(within(detail).getByRole('button', { name: 'Close drawer' }));
     expect(screen.queryByRole('dialog', { name: 'Message detail' })).toBeNull();
+  });
+
+  it('shows public wake timing, fallback delivery, and target bridge evidence', () => {
+    render(
+      <MessagesView
+        messages={{ state: 'ready', data: { items: [message()], truncated: false } }}
+        wakeIntents={{
+          state: 'ready',
+          data: { items: [fallbackWake], truncated: false },
+        }}
+        sessions={bridgedTarget}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+
+    const detail = screen.getByRole('dialog', { name: 'Message detail' });
+    expect(within(detail).getByText('Fallback only')).toBeTruthy();
+    expect(within(detail).getByText('2026-08-10T00:00:01.000Z')).toBeTruthy();
+    expect(within(detail).getByText('2026-08-10T00:00:06.000Z')).toBeTruthy();
+    expect(within(detail).getByText('antigravity · workspace-write')).toBeTruthy();
+    expect(within(detail).getByText('Active')).toBeTruthy();
+    expect(
+      within(detail).getByText(
+        'Automatic wake was unavailable; the durable inbox is the only delivery path.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('keeps a missing per-message wake unknown when the retained sample is truncated', () => {
+    render(
+      <MessagesView
+        messages={{ state: 'ready', data: { items: [message()], truncated: false } }}
+        wakeIntents={{ state: 'ready', data: { items: [], truncated: true } }}
+        sessions={[]}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }));
+
+    const detail = screen.getByRole('dialog', { name: 'Message detail' });
+    expect(within(detail).getByText('Wake evidence incomplete')).toBeTruthy();
+    expect(within(detail).queryByText(/no automatic.*wake/i)).toBeNull();
   });
 
   it('opens the message selected by correlation once the bounded list arrives', () => {
