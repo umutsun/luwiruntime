@@ -13,10 +13,12 @@ export type {
 } from './bridge-slot.js';
 export { canTransitionWakeIntent, classifyWakeProcessResult } from './wake-intent.js';
 export type { WakeProcessClassification, WakeProcessResult } from './wake-intent.js';
-export { authorizeWorkflowContinuation } from './workflow.js';
+export { authorizeWorkflowContinuation, createWorkflowDecisionFingerprint } from './workflow.js';
 export type {
   WorkflowContinuationAuthorization,
   WorkflowContinuationAuthorizationInput,
+  WorkflowContinuationRefusalReason,
+  WorkflowDecisionFingerprintInput,
 } from './workflow.js';
 export { createRuntimeLifecycleEvent } from './runtime-lifecycle.js';
 export type { RuntimeLifecycleContext, RuntimeLifecyclePhase } from './runtime-lifecycle.js';

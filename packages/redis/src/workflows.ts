@@ -3,8 +3,10 @@ import {
   workflowCollectionSchema,
   workflowViewSchema,
   type AgentMessage,
+  type ContinueWorkflowRequest,
   type WorkflowView,
 } from '@luwi/protocol';
+import { createWorkflowDecisionFingerprint } from '@luwi/runtime';
 
 import { createMessageRepository, type CreateMessageInput } from './message-repository.js';
 import type { RedisFunctionRegistry } from './function-registry.js';
@@ -31,6 +33,24 @@ export type CreateWorkflowResult = {
   message: AgentMessage;
 };
 
+export type ContinueWorkflowInput = ContinueWorkflowRequest & {
+  /** Trusted route identity. This is injected from the actor session path, never the request body. */
+  actorSessionId: string;
+  /** Fully resolved durable message. Required only for `next_message`. */
+  nextMessage?: CreateMessageInput['message'];
+  /** Fresh fence required only when the decision becomes `waiting_for_human`. */
+  nextHumanContinuationId?: string;
+  workspaceId: string;
+  eventId: string;
+};
+
+export type ContinueWorkflowResult = {
+  /** Replays intentionally return this exact committed status and projection. */
+  status: 'updated';
+  workflow: WorkflowView;
+  message?: AgentMessage;
+};
+
 export type ListWorkflowsQuery = {
   projectId?: string;
   coordinatorSessionId?: string;
@@ -39,6 +59,7 @@ export type ListWorkflowsQuery = {
 
 export interface WorkflowRepository {
   create(input: CreateWorkflowInput): Promise<CreateWorkflowResult>;
+  continue(input: ContinueWorkflowInput): Promise<ContinueWorkflowResult>;
   get(workflowId: string): Promise<WorkflowView | null>;
   getByRootCorrelation(rootCorrelationId: string): Promise<WorkflowView | null>;
   list(query?: ListWorkflowsQuery): Promise<WorkflowView[]>;
@@ -182,7 +203,12 @@ function parseStoredWorkflow(reply: unknown): WorkflowView | null {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
-  for (const field of ['currentMessageId', 'currentWakeIntentId'] as const) {
+  for (const field of [
+    'currentMessageId',
+    'currentWakeIntentId',
+    'currentHumanContinuationId',
+    'humanDecision',
+  ] as const) {
     if (typeof record[field] === 'string') {
       candidate[field] = record[field];
     }
@@ -192,6 +218,58 @@ function parseStoredWorkflow(reply: unknown): WorkflowView | null {
     throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow projection is invalid.');
   }
   return parsed.data;
+}
+
+function parseContinueResult(value: unknown, input: ContinueWorkflowInput): ContinueWorkflowResult {
+  if (!isRecord(value)) {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow result is invalid.');
+  }
+  if (value.status === 'error') {
+    const code = typeof value.code === 'string' ? value.code : 'REDIS_DATA_INVALID';
+    const safeMessages: Record<string, string> = {
+      WORKFLOW_NOT_FOUND: 'The workflow was not found.',
+      WORKFLOW_NOT_ACTIVE: 'The workflow cannot accept this continuation.',
+      WORKFLOW_REVISION_MISMATCH: 'The workflow revision changed.',
+      WORKFLOW_PROOF_MISMATCH: 'The workflow continuation proof is stale or invalid.',
+      WORKFLOW_COORDINATOR_MISMATCH: 'The actor is not the current workflow coordinator.',
+      WORKFLOW_ACTOR_INVALID: 'The actor session cannot authorize this continuation.',
+      WORKFLOW_REPLACEMENT_REQUIRED: 'A live replacement coordinator is required.',
+      WORKFLOW_DECISION_CONFLICT: 'Another decision is already committed for this revision.',
+      TARGET_SESSION_UNAVAILABLE: 'The target session is unavailable.',
+      TARGET_PROJECT_MISMATCH: 'The workflow actor and target sessions must share a project.',
+      REDIS_ARGUMENT_INVALID: 'The workflow continuation request is invalid.',
+      REDIS_STATE_INVALID: 'Redis workflow state is invalid.',
+    };
+    throw new RedisRepositoryError(code, safeMessages[code] ?? 'Redis workflow state is invalid.');
+  }
+  if (value.status !== 'updated') {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow result is invalid.');
+  }
+  const workflow = workflowViewSchema.safeParse(value.workflow);
+  const message =
+    value.message === undefined
+      ? undefined
+      : agentMessageSchema.safeParse(normalizeMessage(value.message));
+  if (!workflow.success || (message !== undefined && !message.success)) {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow result is invalid.');
+  }
+  const parsedMessage = message?.data;
+  if (
+    workflow.data.id !== input.workflowId ||
+    workflow.data.revision !== input.expectedRevision + 1 ||
+    (input.decision.kind === 'next_message') !== (parsedMessage !== undefined) ||
+    (parsedMessage !== undefined &&
+      (workflow.data.currentMessageId !== parsedMessage.id ||
+        workflow.data.projectId !== parsedMessage.projectId ||
+        parsedMessage.sourceSessionId !== workflow.data.coordinatorSessionId))
+  ) {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow result is inconsistent.');
+  }
+  return {
+    status: 'updated',
+    workflow: workflow.data,
+    ...(parsedMessage === undefined ? {} : { message: parsedMessage }),
+  };
 }
 
 function parseCreateResult(value: unknown): CreateWorkflowResult {
@@ -375,6 +453,91 @@ export function createWorkflowRepository(options: {
       }
       return parseCreateResult(reply);
     },
+    async continue(input) {
+      const workflow = await get(input.workflowId);
+      if (workflow === null) {
+        throw new RedisRepositoryError('WORKFLOW_NOT_FOUND', 'The workflow was not found.');
+      }
+      const nextMessage = input.nextMessage;
+      const decisionFingerprint = createWorkflowDecisionFingerprint(input);
+      const nextDecision = input.decision.kind === 'next_message' ? input.decision : undefined;
+      const expectsMessage = nextDecision !== undefined;
+      const expectsHumanFence = input.decision.kind === 'waiting_for_human';
+      if (
+        expectsMessage !== (nextMessage !== undefined) ||
+        expectsHumanFence !== (input.nextHumanContinuationId !== undefined) ||
+        (nextMessage !== undefined &&
+          (nextMessage.projectId !== workflow.projectId ||
+            nextMessage.sourceSessionId !== input.actorSessionId ||
+            nextMessage.idempotencyKeyHash !== undefined ||
+            nextDecision === undefined ||
+            nextMessage.targetAgentId !== nextDecision.targetAgentId ||
+            nextMessage.kind !== nextDecision.message.kind ||
+            nextMessage.subject !== nextDecision.message.subject ||
+            nextMessage.content !== nextDecision.message.content))
+      ) {
+        throw new RedisRepositoryError(
+          'WORKFLOW_INPUT_INVALID',
+          'The workflow continuation and resolved message are inconsistent.',
+        );
+      }
+      const proofId =
+        input.proof.kind === 'wake' ? input.proof.wakeIntentId : input.proof.continuationId;
+      const commandKeys = [
+        options.keys.workflow(input.workflowId),
+        options.keys.workflowDecision(input.workflowId, input.expectedRevision),
+        options.keys.session(workflow.coordinatorSessionId),
+        options.keys.coordinatorSessionWorkflows(workflow.coordinatorSessionId),
+        options.keys.session(input.actorSessionId),
+        options.keys.sessionPresence(input.actorSessionId),
+        options.keys.coordinatorSessionWorkflows(input.actorSessionId),
+        options.keys.wakeIntent(proofId),
+      ];
+      if (nextMessage !== undefined) {
+        commandKeys.push(
+          options.keys.workflowMessages(input.workflowId),
+          options.keys.message(nextMessage.id),
+          options.keys.messageCorrelation(nextMessage.correlationId),
+          options.keys.messageIdempotency(nextMessage.sourceSessionId, nextMessage.id),
+          options.keys.messagesIndex,
+          options.keys.projectMessages(nextMessage.projectId),
+          options.keys.sourceSessionMessages(nextMessage.sourceSessionId),
+          options.keys.targetSessionMessages(nextMessage.targetSessionId),
+          options.keys.messageDeadlines,
+          options.keys.session(nextMessage.targetSessionId),
+          options.keys.sessionPresence(nextMessage.targetSessionId),
+          options.keys.sessionInbox(nextMessage.targetSessionId),
+          options.keys.globalEvents,
+          options.keys.projectEvents(nextMessage.projectId),
+        );
+      }
+      const payload = {
+        workflowId: input.workflowId,
+        expectedRevision: input.expectedRevision,
+        proof: input.proof,
+        decision: input.decision,
+        actorSessionId: input.actorSessionId,
+        decisionFingerprint,
+        expectedCoordinatorSessionId: workflow.coordinatorSessionId,
+        expectedProjectId: workflow.projectId,
+        ...(input.nextHumanContinuationId === undefined
+          ? {}
+          : { nextHumanContinuationId: input.nextHumanContinuationId }),
+      };
+      const reply = decodeJsonReply(
+        await options.client.sendCommand([
+          'FCALL',
+          options.functions.functions.workflowContinue,
+          String(commandKeys.length),
+          ...commandKeys,
+          JSON.stringify(payload),
+          nextMessage === undefined ? '' : JSON.stringify(nextMessage),
+          input.workspaceId,
+          input.eventId,
+        ]),
+      );
+      return parseContinueResult(reply, input);
+    },
     get,
     getByRootCorrelation,
     async list(query = {}) {
@@ -389,20 +552,21 @@ export function createWorkflowRepository(options: {
             ? options.keys.projectWorkflows(query.projectId)
             : options.keys.workflowsIndex;
       const ids = stringArray(
-        await options.client.sendCommand(['ZREVRANGE', index, '0', String(limit - 1)]),
+        await options.client.sendCommand(['ZRANGE', index, '0', String(limit - 1)]),
         'workflow index',
       );
       const workflows: WorkflowView[] = [];
       for (const id of ids) {
         const workflow = await get(id);
         if (
-          workflow !== null &&
-          (query.projectId === undefined || workflow.projectId === query.projectId) &&
-          (query.coordinatorSessionId === undefined ||
-            workflow.coordinatorSessionId === query.coordinatorSessionId)
+          workflow === null ||
+          (query.projectId !== undefined && workflow.projectId !== query.projectId) ||
+          (query.coordinatorSessionId !== undefined &&
+            workflow.coordinatorSessionId !== query.coordinatorSessionId)
         ) {
-          workflows.push(workflow);
+          throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow index is invalid.');
         }
+        workflows.push(workflow);
       }
       return workflowCollectionSchema.parse({ workflows }).workflows;
     },

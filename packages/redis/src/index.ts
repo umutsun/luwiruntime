@@ -85,6 +85,8 @@ export type {
 } from './message-repository.js';
 export { createWorkflowRepository } from './workflows.js';
 export type {
+  ContinueWorkflowInput,
+  ContinueWorkflowResult,
   CreateWorkflowInput,
   CreateWorkflowResult,
   ListWorkflowsQuery,

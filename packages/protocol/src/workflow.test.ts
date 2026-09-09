@@ -4,6 +4,7 @@ import {
   parseContinueWorkflowRequest,
   workflowCollectionSchema,
   workflowListQuerySchema,
+  workflowViewSchema,
 } from './workflow.js';
 
 const workflow = {
@@ -86,5 +87,39 @@ describe('workflow continuation request', () => {
         decision: { kind: 'complete' },
       }),
     ).toThrow();
+  });
+});
+
+describe('workflow continuation fences', () => {
+  it('exposes a bounded human continuation without a wake fence', () => {
+    expect(
+      workflowViewSchema.parse({
+        ...workflow,
+        state: 'waiting_for_human',
+        currentHumanContinuationId: 'human-1',
+        humanDecision: 'Approve the deployment window.',
+      }),
+    ).toMatchObject({
+      currentHumanContinuationId: 'human-1',
+      humanDecision: 'Approve the deployment window.',
+    });
+  });
+
+  it.each([
+    {
+      state: 'waiting_for_human',
+      currentWakeIntentId: 'wake-1',
+      currentHumanContinuationId: 'human-1',
+      humanDecision: 'Choose a path.',
+    },
+    { state: 'waiting_for_human', currentHumanContinuationId: 'human-1' },
+    { state: 'waiting_for_human', humanDecision: 'Choose a path.' },
+    {
+      state: 'active',
+      currentHumanContinuationId: 'human-1',
+      humanDecision: 'Choose a path.',
+    },
+  ])('rejects an inconsistent public continuation fence %#', (patch) => {
+    expect(() => workflowViewSchema.parse({ ...workflow, ...patch })).toThrow();
   });
 });

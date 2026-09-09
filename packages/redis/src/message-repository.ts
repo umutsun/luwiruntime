@@ -35,6 +35,8 @@ export type CreateMessageInput = {
     timeoutMs: number;
     requestFingerprint: string;
     idempotencyKeyHash?: string;
+    /** Private causal link copied only to the durable message event and Redis metadata. */
+    causationId?: string;
   };
   workspaceId: string;
   eventId: string;
@@ -89,7 +91,7 @@ export interface MessageRepository {
   getMessage(correlationId: string): Promise<AgentMessage | null>;
   getMessageById(messageId: string): Promise<AgentMessage | null>;
   listMessages(query?: Partial<MessageListQuery>): Promise<AgentMessage[]>;
-  listByWorkflow(workflowId: string): Promise<AgentMessage[]>;
+  listByWorkflow(workflowId: string, limit?: number): Promise<AgentMessage[]>;
   transitionMessage(
     kind: MessageTransitionKind,
     input: TransitionMessageInput,
@@ -560,13 +562,16 @@ export function createMessageRepository(options: {
       }
       return messageCollectionResponseSchema.parse({ messages }).messages;
     },
-    async listByWorkflow(workflowId) {
+    async listByWorkflow(workflowId, limit = 100) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) {
+        throw new RedisRepositoryError('WORKFLOW_QUERY_INVALID', 'The workflow query is invalid.');
+      }
       const ids = stringArray(
         await options.client.sendCommand([
           'ZRANGE',
           options.keys.workflowMessages(workflowId),
           '0',
-          '-1',
+          String(limit - 1),
         ]),
       );
       const messages: AgentMessage[] = [];

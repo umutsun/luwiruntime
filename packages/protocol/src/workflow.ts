@@ -8,19 +8,62 @@ const nonBlankStringSchema = z.string().trim().min(1);
 
 export const workflowStateSchema = z.enum(['active', 'waiting_for_human', 'completed', 'failed']);
 
-export const workflowViewSchema = z.strictObject({
-  id: idSchema,
-  projectId: idSchema,
-  coordinatorSessionId: idSchema,
-  rootCorrelationId: idSchema,
-  objective: nonBlankStringSchema.max(4000),
-  revision: z.number().int().positive(),
-  state: workflowStateSchema,
-  currentMessageId: idSchema.optional(),
-  currentWakeIntentId: idSchema.optional(),
-  createdAt: timestampSchema,
-  updatedAt: timestampSchema,
-});
+export const workflowViewSchema = z
+  .strictObject({
+    id: idSchema,
+    projectId: idSchema,
+    coordinatorSessionId: idSchema,
+    rootCorrelationId: idSchema,
+    objective: nonBlankStringSchema.max(4000),
+    revision: z.number().int().positive(),
+    state: workflowStateSchema,
+    currentMessageId: idSchema.optional(),
+    currentWakeIntentId: idSchema.optional(),
+    currentHumanContinuationId: idSchema.optional(),
+    humanDecision: nonBlankStringSchema.max(2000).optional(),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+  })
+  .superRefine((workflow, context) => {
+    const hasWake = workflow.currentWakeIntentId !== undefined;
+    const hasHumanId = workflow.currentHumanContinuationId !== undefined;
+    const hasHumanDecision = workflow.humanDecision !== undefined;
+    if (hasWake && (hasHumanId || hasHumanDecision)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Wake and human continuation fences are mutually exclusive.',
+        path: ['currentWakeIntentId'],
+      });
+    }
+    if (hasHumanId !== hasHumanDecision) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Human continuation id and decision must be present together.',
+        path: ['currentHumanContinuationId'],
+      });
+    }
+    if (workflow.state === 'waiting_for_human' && (!hasHumanId || !hasHumanDecision)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A waiting workflow requires a complete human continuation fence.',
+        path: ['state'],
+      });
+    }
+    if (workflow.state !== 'waiting_for_human' && (hasHumanId || hasHumanDecision)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only a waiting workflow may expose a human continuation fence.',
+        path: ['state'],
+      });
+    }
+    if (workflow.state !== 'active' && hasWake) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only an active workflow may expose a wake continuation fence.',
+        path: ['currentWakeIntentId'],
+      });
+    }
+  });
 
 export const workflowCollectionSchema = z.strictObject({
   workflows: z.array(workflowViewSchema).max(1000),

@@ -10,6 +10,7 @@ import {
   createRedisKeys,
   createRuntimeRepository,
   createWorkflowRepository,
+  type ContinueWorkflowInput,
   type CreateWorkflowInput,
   type MessageRepository,
   type RedisCommandClient,
@@ -34,9 +35,9 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
     let workflows: WorkflowRepository;
     let messages: MessageRepository;
 
+    const fingerprint = (value: string) => createHash('sha256').update(value).digest('hex');
     const input = (suffix: string, overrides: Partial<CreateWorkflowInput> = {}) => {
       const rootCorrelationId = `correlation-${suffix}`;
-      const fingerprint = (value: string) => createHash('sha256').update(value).digest('hex');
       const value: CreateWorkflowInput = {
         workflow: {
           id: `workflow-${suffix}`,
@@ -107,6 +108,137 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       value.eventId,
     ];
 
+    const seedWake = async (input: {
+      workflowId: string;
+      messageId: string;
+      correlationId: string;
+      coordinatorSessionId: string;
+      revision: number;
+      state: 'dispatching' | 'dispatched' | 'indeterminate';
+    }) => {
+      const timestamp = '2026-09-09T12:00:00.000Z';
+      await commandClient.sendCommand([
+        'HSET',
+        keys.workflow(input.workflowId),
+        'state',
+        'active',
+        'currentWakeIntentId',
+        input.messageId,
+      ]);
+      await commandClient.sendCommand([
+        'HDEL',
+        keys.workflow(input.workflowId),
+        'currentHumanContinuationId',
+        'humanDecision',
+      ]);
+      const fields = [
+        'id',
+        input.messageId,
+        'messageId',
+        input.messageId,
+        'workflowId',
+        input.workflowId,
+        'sourceSessionId',
+        input.coordinatorSessionId,
+        'correlationId',
+        input.correlationId,
+        'terminalState',
+        'responded',
+        'adapter',
+        'codex-queue-v1',
+        'state',
+        input.state,
+        'createdAt',
+        timestamp,
+        'updatedAt',
+        timestamp,
+        'workspaceId',
+        'local',
+        'projectId',
+        'project-1',
+        'sourceAgentId',
+        'codex',
+        'workflowRevision',
+        String(input.revision),
+        'streamId',
+        '1-0',
+        'deadlineMs',
+        '1999999999999',
+        'fallbackContinuationId',
+        `fallback-${input.messageId}`,
+        'requestedEventId',
+        `requested-${input.messageId}`,
+        'lastEventId',
+        `last-${input.messageId}`,
+      ];
+      if (input.state === 'dispatching') {
+        fields.push(
+          'dispatcherInstanceId',
+          'dispatcher-1',
+          'claimId',
+          'claim-1',
+          'attemptId',
+          'attempt-1',
+        );
+      } else {
+        fields.push('reasonCode', input.state === 'dispatched' ? 'started' : 'process_unknown');
+      }
+      await commandClient.sendCommand(['HSET', keys.wakeIntent(input.messageId), ...fields]);
+    };
+
+    const nextContinuation = (
+      suffix: string,
+      value: CreateWorkflowInput,
+      overrides: Partial<ContinueWorkflowInput> = {},
+    ): ContinueWorkflowInput => {
+      const actorSessionId = overrides.actorSessionId ?? value.workflow.coordinatorSessionId;
+      const messageId = `next-message-${suffix}`;
+      const correlationId = `next-correlation-${suffix}`;
+      const base: ContinueWorkflowInput = {
+        workflowId: value.workflow.id,
+        expectedRevision: 1,
+        proof: { kind: 'wake', wakeIntentId: value.firstMessage.id },
+        decision: {
+          kind: 'next_message',
+          targetAgentId: 'gemini',
+          message: {
+            kind: 'instruction',
+            subject: `Continue ${suffix}`,
+            content: `Complete the next bounded step for ${suffix}.`,
+          },
+        },
+        actorSessionId,
+        nextMessage: {
+          id: messageId,
+          correlationId,
+          projectId: 'project-1',
+          sourceSessionId: actorSessionId,
+          sourceAgentId: 'codex',
+          targetSessionId: 'session-target',
+          targetAgentId: 'gemini',
+          selectionReason: 'direct target session session-target',
+          kind: 'instruction',
+          subject: `Continue ${suffix}`,
+          content: `Complete the next bounded step for ${suffix}.`,
+          evidenceRequirements: ['test_result'],
+          timeoutMs: 120_000,
+          requestFingerprint: fingerprint(`message:${suffix}:next`),
+          causationId: `last-${value.firstMessage.id}`,
+        },
+        workspaceId: 'local',
+        eventId: `event-${suffix}-next`,
+      };
+      return {
+        ...base,
+        ...overrides,
+        decision: overrides.decision ?? base.decision,
+        nextMessage:
+          overrides.nextMessage === undefined
+            ? base.nextMessage
+            : { ...base.nextMessage, ...overrides.nextMessage },
+      };
+    };
+
     beforeAll(async () => {
       client = createClient({ url: testRedisUrl });
       client.on('error', () => undefined);
@@ -128,16 +260,34 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         workspaceId: 'local',
         eventId: 'event-project',
       });
+      await runtime.registerProject({
+        project: {
+          id: 'project-2',
+          name: 'Other workflow project',
+          localPath: 'C:/workspace/workflows-other',
+          canonicalPath: 'C:/workspace/workflows-other',
+          identityPath: 'c:/workspace/workflows-other',
+          pathIdentityHash: 'b'.repeat(64),
+        },
+        workspaceId: 'local',
+        eventId: 'event-project-2',
+      });
       for (const session of [
-        { id: 'session-source', agentId: 'codex' },
-        { id: 'session-target', agentId: 'gemini' },
+        { id: 'session-source', agentId: 'codex', projectId: 'project-1' },
+        { id: 'session-source-replacement', agentId: 'codex', projectId: 'project-1' },
+        { id: 'session-target', agentId: 'gemini', projectId: 'project-1' },
+        { id: 'session-wrong-agent', agentId: 'gemini', projectId: 'project-1' },
+        { id: 'session-other-project', agentId: 'gemini', projectId: 'project-2' },
       ]) {
         await runtime.registerSession({
           session: {
             ...session,
-            projectId: 'project-1',
+            projectId: session.projectId,
             status: 'starting',
-            workingDirectory: 'C:/workspace/workflows',
+            workingDirectory:
+              session.projectId === 'project-1'
+                ? 'C:/workspace/workflows'
+                : 'C:/workspace/workflows-other',
             metadataJson: '{}',
           },
           workspaceId: 'local',
@@ -497,6 +647,327 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       await expect(
         commandClient.sendCommand(['XLEN', keys.sessionInbox('session-target')]),
       ).resolves.toBe(inboxBefore);
+    });
+
+    it('commits one next message and replays the exact receipt after later revisions', async () => {
+      const value = input('continue-replay');
+      await workflows.create(value);
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: value.firstMessage.id,
+        correlationId: value.firstMessage.correlationId,
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 1,
+        state: 'dispatching',
+      });
+      const decision = nextContinuation('continue-replay', value);
+
+      const first = await workflows.continue(decision);
+      expect(first).toMatchObject({
+        status: 'updated',
+        workflow: {
+          id: value.workflow.id,
+          revision: 2,
+          state: 'active',
+          currentMessageId: 'next-message-continue-replay',
+        },
+        message: { id: 'next-message-continue-replay', state: 'queued' },
+      });
+      await expect(workflows.continue(decision)).resolves.toEqual(first);
+      await expect(messages.listByWorkflow(value.workflow.id)).resolves.toEqual([
+        expect.objectContaining({ id: value.firstMessage.id }),
+        expect.objectContaining({ id: 'next-message-continue-replay' }),
+      ]);
+      await expect(
+        commandClient.sendCommand([
+          'HGET',
+          keys.message('next-message-continue-replay'),
+          'causationId',
+        ]),
+      ).resolves.toBe(`last-${value.firstMessage.id}`);
+      const latestProjectEvent = (await commandClient.sendCommand([
+        'XREVRANGE',
+        keys.projectEvents('project-1'),
+        '+',
+        '-',
+        'COUNT',
+        '1',
+      ])) as [[string, [string, string]]];
+      expect(JSON.parse(latestProjectEvent[0][1][1])).toMatchObject({
+        id: 'event-continue-replay-next',
+        causationId: `last-${value.firstMessage.id}`,
+      });
+
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: 'next-message-continue-replay',
+        correlationId: 'next-correlation-continue-replay',
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 2,
+        state: 'dispatched',
+      });
+      await workflows.continue({
+        ...decision,
+        expectedRevision: 2,
+        proof: { kind: 'wake', wakeIntentId: 'next-message-continue-replay' },
+        decision: { kind: 'complete' },
+        nextMessage: undefined,
+        eventId: 'event-continue-replay-complete',
+      });
+
+      await expect(workflows.continue(decision)).resolves.toEqual(first);
+      await expect(messages.listByWorkflow(value.workflow.id)).resolves.toHaveLength(2);
+    });
+
+    it('rejects a conflicting decision fingerprint at the committed revision', async () => {
+      const value = input('continue-conflict');
+      await workflows.create(value);
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: value.firstMessage.id,
+        correlationId: value.firstMessage.correlationId,
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 1,
+        state: 'dispatching',
+      });
+      const accepted = nextContinuation('continue-conflict', value);
+      const outcomes = await Promise.allSettled([
+        workflows.continue(accepted),
+        workflows.continue({
+          ...accepted,
+          decision: { kind: 'complete' },
+          nextMessage: undefined,
+        }),
+      ]);
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
+      expect(rejected).toMatchObject({
+        status: 'rejected',
+        reason: { code: 'WORKFLOW_DECISION_CONFLICT' },
+      });
+      await expect(workflows.get(value.workflow.id)).resolves.toMatchObject({ revision: 2 });
+    });
+
+    it.each(['dispatched', 'indeterminate'] as const)(
+      'accepts an exact current coordinator wake in the %s state',
+      async (state) => {
+        const value = input(`continue-${state}`);
+        await workflows.create(value);
+        await seedWake({
+          workflowId: value.workflow.id,
+          messageId: value.firstMessage.id,
+          correlationId: value.firstMessage.correlationId,
+          coordinatorSessionId: value.workflow.coordinatorSessionId,
+          revision: 1,
+          state,
+        });
+
+        await expect(
+          workflows.continue({
+            ...nextContinuation(`continue-${state}`, value),
+            decision: { kind: 'complete' },
+            nextMessage: undefined,
+          }),
+        ).resolves.toMatchObject({
+          workflow: { revision: 2, state: 'completed' },
+        });
+      },
+    );
+
+    it('uses a human token only as a fence and atomically rebinds a live replacement', async () => {
+      const value = input('continue-human');
+      await workflows.create(value);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.workflow(value.workflow.id),
+        'state',
+        'waiting_for_human',
+        'currentHumanContinuationId',
+        'human-proof-1',
+        'humanDecision',
+        'Choose the next bounded task.',
+      ]);
+      await commandClient.sendCommand([
+        'HDEL',
+        keys.workflow(value.workflow.id),
+        'currentWakeIntentId',
+      ]);
+      const decision = nextContinuation('continue-human', value, {
+        proof: { kind: 'human', continuationId: 'human-proof-1' },
+        actorSessionId: 'session-source-replacement',
+        nextMessage: {
+          ...nextContinuation('continue-human', value).nextMessage!,
+          sourceSessionId: 'session-source-replacement',
+        },
+      });
+
+      const result = await workflows.continue(decision);
+      expect(result).toMatchObject({
+        workflow: {
+          revision: 2,
+          coordinatorSessionId: 'session-source-replacement',
+          state: 'active',
+        },
+        message: { sourceSessionId: 'session-source-replacement' },
+      });
+      await expect(
+        commandClient.sendCommand([
+          'ZSCORE',
+          keys.coordinatorSessionWorkflows('session-source'),
+          value.workflow.id,
+        ]),
+      ).resolves.toBeNull();
+      await expect(
+        commandClient.sendCommand([
+          'ZSCORE',
+          keys.coordinatorSessionWorkflows('session-source-replacement'),
+          value.workflow.id,
+        ]),
+      ).resolves.not.toBeNull();
+    });
+
+    it('requires a distinct live same-agent replacement for a human next message', async () => {
+      const value = input('continue-human-refusal');
+      await workflows.create(value);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.workflow(value.workflow.id),
+        'state',
+        'waiting_for_human',
+        'currentHumanContinuationId',
+        'human-proof-refusal',
+        'humanDecision',
+        'Choose the next task.',
+      ]);
+      await expect(
+        workflows.continue(
+          nextContinuation('continue-human-refusal', value, {
+            proof: { kind: 'human', continuationId: 'human-proof-refusal' },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'WORKFLOW_REPLACEMENT_REQUIRED' });
+      await expect(
+        commandClient.sendCommand(['EXISTS', keys.workflowDecision(value.workflow.id, 1)]),
+      ).resolves.toBe(0);
+
+      await expect(
+        workflows.continue(
+          nextContinuation('continue-human-refusal', value, {
+            proof: { kind: 'human', continuationId: 'human-proof-refusal' },
+            actorSessionId: 'session-wrong-agent',
+            nextMessage: {
+              ...nextContinuation('continue-human-refusal', value).nextMessage!,
+              sourceSessionId: 'session-wrong-agent',
+              sourceAgentId: 'gemini',
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'WORKFLOW_ACTOR_INVALID' });
+    });
+
+    it('increments every waiting and completed decision and rotates the human fence', async () => {
+      const value = input('continue-waiting');
+      await workflows.create(value);
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: value.firstMessage.id,
+        correlationId: value.firstMessage.correlationId,
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 1,
+        state: 'dispatching',
+      });
+      const waiting = await workflows.continue({
+        ...nextContinuation('continue-waiting', value),
+        decision: { kind: 'waiting_for_human', humanDecision: 'Approve the staging release.' },
+        nextMessage: undefined,
+        nextHumanContinuationId: 'human-continue-waiting',
+      });
+      expect(waiting).toMatchObject({
+        workflow: {
+          revision: 2,
+          state: 'waiting_for_human',
+          currentHumanContinuationId: 'human-continue-waiting',
+          humanDecision: 'Approve the staging release.',
+        },
+      });
+
+      const completed = await workflows.continue({
+        ...nextContinuation('continue-waiting-complete', value),
+        expectedRevision: 2,
+        proof: { kind: 'human', continuationId: 'human-continue-waiting' },
+        actorSessionId: 'session-source-replacement',
+        decision: { kind: 'complete' },
+        nextMessage: undefined,
+      });
+      expect(completed).toMatchObject({
+        workflow: { revision: 3, state: 'completed' },
+      });
+      expect(completed.workflow).not.toHaveProperty('currentWakeIntentId');
+      expect(completed.workflow).not.toHaveProperty('currentHumanContinuationId');
+      expect(completed.workflow).not.toHaveProperty('humanDecision');
+    });
+
+    it('rejects a resolved target from another project without consuming the revision', async () => {
+      const value = input('continue-scope');
+      await workflows.create(value);
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: value.firstMessage.id,
+        correlationId: value.firstMessage.correlationId,
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 1,
+        state: 'dispatching',
+      });
+      const next = nextContinuation('continue-scope', value);
+      await expect(
+        workflows.continue({
+          ...next,
+          nextMessage: {
+            ...next.nextMessage!,
+            targetSessionId: 'session-other-project',
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'TARGET_PROJECT_MISMATCH' });
+      await expect(workflows.get(value.workflow.id)).resolves.toMatchObject({ revision: 1 });
+      await expect(
+        commandClient.sendCommand(['EXISTS', keys.workflowDecision(value.workflow.id, 1)]),
+      ).resolves.toBe(0);
+    });
+
+    it('preflights the complete next-message write set without partial state', async () => {
+      const value = input('continue-preflight');
+      await workflows.create(value);
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: value.firstMessage.id,
+        correlationId: value.firstMessage.correlationId,
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 1,
+        state: 'dispatching',
+      });
+      await commandClient.sendCommand(['DEL', keys.sessionInbox('session-target')]);
+      await commandClient.sendCommand(['SET', keys.sessionInbox('session-target'), 'corrupt']);
+      const before = await Promise.all([
+        commandClient.sendCommand(['XLEN', keys.globalEvents]),
+        commandClient.sendCommand(['ZCARD', keys.messagesIndex]),
+      ]);
+
+      await expect(
+        workflows.continue(nextContinuation('continue-preflight', value)),
+      ).rejects.toMatchObject({ code: 'REDIS_STATE_INVALID' });
+      await expect(
+        commandClient.sendCommand(['EXISTS', keys.workflowDecision(value.workflow.id, 1)]),
+      ).resolves.toBe(0);
+      await expect(
+        commandClient.sendCommand(['EXISTS', keys.message('next-message-continue-preflight')]),
+      ).resolves.toBe(0);
+      await expect(workflows.get(value.workflow.id)).resolves.toMatchObject({ revision: 1 });
+      await expect(
+        Promise.all([
+          commandClient.sendCommand(['XLEN', keys.globalEvents]),
+          commandClient.sendCommand(['ZCARD', keys.messagesIndex]),
+        ]),
+      ).resolves.toEqual(before);
     });
   },
 );

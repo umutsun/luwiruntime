@@ -5,6 +5,7 @@ import {
   createMessageRepository,
   createRedisKeys,
   createWorkflowRepository,
+  type ContinueWorkflowInput,
   type RedisCommandClient,
 } from './index.js';
 
@@ -75,6 +76,66 @@ const storedMessage = {
   updatedAt: '2026-09-09T12:00:00.000Z',
   deadlineAt: '2026-09-09T12:02:00.000Z',
 } as const;
+
+const continuedMessage = {
+  ...storedMessage,
+  id: 'message-2',
+  correlationId: 'correlation-2',
+  sourceSessionId: 'session-source',
+  targetSessionId: 'session-target',
+  subject: 'Continue the implementation',
+  content: 'Complete the next bounded step.',
+  createdAt: '2026-09-09T12:01:00.000Z',
+  updatedAt: '2026-09-09T12:01:00.000Z',
+  deadlineAt: '2026-09-09T12:03:00.000Z',
+} as const;
+
+const activeWakeWorkflow = {
+  ...storedWorkflow,
+  currentWakeIntentId: 'wake-1',
+} as const;
+
+const continuedWorkflow = {
+  ...storedWorkflow,
+  revision: 2,
+  currentMessageId: continuedMessage.id,
+  updatedAt: '2026-09-09T12:01:00.000Z',
+} as const;
+
+const continuation: ContinueWorkflowInput = {
+  workflowId: workflow.id,
+  expectedRevision: 1,
+  proof: { kind: 'wake', wakeIntentId: 'wake-1' },
+  decision: {
+    kind: 'next_message',
+    targetAgentId: 'gemini',
+    message: {
+      kind: 'instruction',
+      subject: continuedMessage.subject,
+      content: continuedMessage.content,
+    },
+  },
+  actorSessionId: 'session-source',
+  nextMessage: {
+    id: continuedMessage.id,
+    correlationId: continuedMessage.correlationId,
+    projectId: 'project-1',
+    sourceSessionId: 'session-source',
+    sourceAgentId: 'codex',
+    targetSessionId: 'session-target',
+    targetAgentId: 'gemini',
+    selectionReason: 'direct target session session-target',
+    kind: 'instruction',
+    subject: continuedMessage.subject,
+    content: continuedMessage.content,
+    evidenceRequirements: ['session_state'],
+    timeoutMs: 120_000,
+    requestFingerprint: 'c'.repeat(64),
+    causationId: 'event-terminal-1',
+  },
+  workspaceId: 'local',
+  eventId: 'event-message-2',
+};
 
 describe('workflow repository boundary', () => {
   it('constructs every key for atomic workflow and first-message creation', async () => {
@@ -180,7 +241,7 @@ describe('workflow repository boundary', () => {
     });
 
     await expect(repository.listByWorkflow(workflow.id)).resolves.toEqual([storedMessage]);
-    expect(client.commands[0]).toEqual(['ZRANGE', keys.workflowMessages(workflow.id), '0', '-1']);
+    expect(client.commands[0]).toEqual(['ZRANGE', keys.workflowMessages(workflow.id), '0', '99']);
   });
 
   it('rejects a corrupt workflow-message association', async () => {
@@ -193,6 +254,97 @@ describe('workflow repository boundary', () => {
     });
 
     await expect(repository.listByWorkflow(workflow.id)).rejects.toMatchObject({
+      code: 'REDIS_DATA_INVALID',
+    });
+  });
+
+  it('rejects an unbounded workflow message request before touching Redis', async () => {
+    const client = new FakeCommandClient();
+    const repository = createMessageRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.listByWorkflow(workflow.id, 1001)).rejects.toMatchObject({
+      code: 'WORKFLOW_QUERY_INVALID',
+    });
+    expect(client.commands).toEqual([]);
+  });
+
+  it('constructs the complete atomic continuation key set and parses its committed result', async () => {
+    const client = new FakeCommandClient();
+    client.replies = [
+      Object.entries(activeWakeWorkflow).flatMap(([key, value]) => [key, String(value)]),
+      JSON.stringify({
+        status: 'updated',
+        workflow: continuedWorkflow,
+        message: continuedMessage,
+      }),
+    ];
+    const keys = createRedisKeys();
+    const functions = createFunctionRegistry();
+    const repository = createWorkflowRepository({ client, keys, functions });
+
+    await expect(repository.continue(continuation)).resolves.toEqual({
+      status: 'updated',
+      workflow: continuedWorkflow,
+      message: continuedMessage,
+    });
+
+    expect(client.commands[1]?.slice(0, 25)).toEqual([
+      'FCALL',
+      functions.functions.workflowContinue,
+      '22',
+      keys.workflow(workflow.id),
+      keys.workflowDecision(workflow.id, 1),
+      keys.session('session-source'),
+      keys.coordinatorSessionWorkflows('session-source'),
+      keys.session('session-source'),
+      keys.sessionPresence('session-source'),
+      keys.coordinatorSessionWorkflows('session-source'),
+      keys.wakeIntent('wake-1'),
+      keys.workflowMessages(workflow.id),
+      keys.message('message-2'),
+      keys.messageCorrelation('correlation-2'),
+      keys.messageIdempotency('session-source', 'message-2'),
+      keys.messagesIndex,
+      keys.projectMessages('project-1'),
+      keys.sourceSessionMessages('session-source'),
+      keys.targetSessionMessages('session-target'),
+      keys.messageDeadlines,
+      keys.session('session-target'),
+      keys.sessionPresence('session-target'),
+      keys.sessionInbox('session-target'),
+      keys.globalEvents,
+      keys.projectEvents('project-1'),
+    ]);
+  });
+
+  it('uses the oldest-first bounded workflow index', async () => {
+    const client = new FakeCommandClient();
+    client.replies = [[]];
+    const keys = createRedisKeys();
+    const repository = createWorkflowRepository({
+      client,
+      keys,
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.list({ limit: 5 })).resolves.toEqual([]);
+    expect(client.commands[0]).toEqual(['ZRANGE', keys.workflowsIndex, '0', '4']);
+  });
+
+  it('fails closed when a bounded workflow index points at a missing projection', async () => {
+    const client = new FakeCommandClient();
+    client.replies = [['workflow-missing'], []];
+    const repository = createWorkflowRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.list({ limit: 1 })).rejects.toMatchObject({
       code: 'REDIS_DATA_INVALID',
     });
   });

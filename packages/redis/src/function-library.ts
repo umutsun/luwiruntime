@@ -1300,6 +1300,9 @@ end`,
     '  if message.timeoutMs > 86400000 or not bridge_id(args[3]) then',
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
+    '  if message.causationId ~= nil and not bridge_id(message.causationId) then',
+    "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
+    '  end',
     '  local evidence_count = 0',
     '  local allowed_evidence = {session_state=true, git_commit=true, git_diff=true, test_result=true, build_result=true, file_reference=true, memory_reference=true, other=true}',
     '  for key, value in pairs(message.evidenceRequirements) do',
@@ -1380,10 +1383,12 @@ end`,
     '    sessionId=message.sourceSessionId, correlationId=message.correlationId,',
     "    payload={messageId=message.id, kind=message.kind, state='queued', sourceSessionId=message.sourceSessionId, targetSessionId=message.targetSessionId, selectionReason=message.selectionReason}",
     '  }',
+    '  if message.causationId then event.causationId = message.causationId end',
     '  local event_json = cjson.encode(event)',
     "  redis.call('HSET', keys[1], 'id', stored.id, 'correlationId', stored.correlationId, 'projectId', stored.projectId, 'sourceSessionId', stored.sourceSessionId, 'sourceAgentId', stored.sourceAgentId, 'targetSessionId', stored.targetSessionId, 'targetAgentId', stored.targetAgentId, 'selectionReason', stored.selectionReason, 'kind', stored.kind, 'content', stored.content, 'evidenceRequirements', evidence_requirements_json, 'state', stored.state, 'createdAt', stored.createdAt, 'updatedAt', stored.updatedAt, 'deadlineAt', stored.deadlineAt, 'deadlineMs', deadline_ms, 'requestFingerprint', message.requestFingerprint, 'targetInboxStreamId', inbox_stream_id)",
     "  if stored.subject then redis.call('HSET', keys[1], 'subject', stored.subject) end",
     "  if args[4] == '1' then redis.call('HSET', keys[1], 'idempotencyKeyHash', message.idempotencyKeyHash) end",
+    "  if message.causationId then redis.call('HSET', keys[1], 'causationId', message.causationId) end",
     "  redis.call('SET', keys[2], message.id)",
     "  if args[4] == '1' then redis.call('SET', keys[3], cjson.encode({messageId=message.id, correlationId=message.correlationId, fingerprint=message.requestFingerprint})) end",
     "  redis.call('ZADD', keys[4], clock.milliseconds, message.id)",
@@ -1530,6 +1535,432 @@ end`,
     '  end',
     '  return result',
     'end',
+    `local function workflow_continue(keys, args)
+  if (#keys ~= 8 and #keys ~= 22) or #args ~= 4 then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  local request_ok, request = pcall(cjson.decode, args[1])
+  if not request_ok or type(request) ~= 'table'
+    or not exact_fields(request, {
+      workflowId=true, expectedRevision=true, proof=true, decision=true,
+      actorSessionId=true, decisionFingerprint=true,
+      expectedCoordinatorSessionId=true, expectedProjectId=true,
+      nextHumanContinuationId=true
+    })
+    or not bridge_id(request.workflowId) or not bridge_integer(request.expectedRevision, 1)
+    or request.expectedRevision >= MAX_SAFE_INTEGER
+    or not bridge_id(request.actorSessionId) or not bridge_digest(request.decisionFingerprint)
+    or not bridge_id(request.expectedCoordinatorSessionId)
+    or not bridge_id(request.expectedProjectId)
+    or not bridge_id(args[3]) or not bridge_id(args[4]) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  if type(request.proof) ~= 'table' or type(request.decision) ~= 'table' then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+
+  local proof_id = nil
+  if request.proof.kind == 'wake' then
+    if not exact_fields(request.proof, {kind=true, wakeIntentId=true})
+      or not bridge_id(request.proof.wakeIntentId) then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+    proof_id = request.proof.wakeIntentId
+  elseif request.proof.kind == 'human' then
+    if not exact_fields(request.proof, {kind=true, continuationId=true})
+      or not bridge_id(request.proof.continuationId) then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+    proof_id = request.proof.continuationId
+  else
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+
+  local decision_kind = request.decision.kind
+  if decision_kind == 'next_message' then
+    if not exact_fields(request.decision, {kind=true, targetAgentId=true, message=true})
+      or not bridge_id(request.decision.targetAgentId)
+      or type(request.decision.message) ~= 'table'
+      or not exact_fields(request.decision.message, {kind=true, subject=true, content=true})
+      or (request.decision.message.kind ~= 'question'
+        and request.decision.message.kind ~= 'status_request'
+        and request.decision.message.kind ~= 'instruction')
+      or type(request.decision.message.content) ~= 'string'
+      or #request.decision.message.content > 32768
+      or string.match(request.decision.message.content, '%S') == nil
+      or request.nextHumanContinuationId ~= nil
+      or #keys ~= 22 or args[2] == '' then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+    if request.decision.message.subject ~= nil
+      and (type(request.decision.message.subject) ~= 'string'
+        or #request.decision.message.subject > 512
+        or string.match(request.decision.message.subject, '%S') == nil) then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+  elseif decision_kind == 'complete' then
+    if not exact_fields(request.decision, {kind=true})
+      or request.nextHumanContinuationId ~= nil or #keys ~= 8 or args[2] ~= '' then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+  elseif decision_kind == 'waiting_for_human' then
+    if not exact_fields(request.decision, {kind=true, humanDecision=true})
+      or type(request.decision.humanDecision) ~= 'string'
+      or #request.decision.humanDecision > 2000
+      or string.match(request.decision.humanDecision, '%S') == nil
+      or not bridge_id(request.nextHumanContinuationId)
+      or #keys ~= 8 or args[2] ~= '' then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+  else
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+
+  local workflow_suffix = ':workflow:' .. request.workflowId
+  if type(keys[1]) ~= 'string' or #keys[1] <= #workflow_suffix
+    or string.sub(keys[1], -#workflow_suffix) ~= workflow_suffix then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  local prefix = string.sub(keys[1], 1, #keys[1] - #workflow_suffix)
+  if not exact_key(prefix, keys[2], ':workflow-decision:' .. request.workflowId .. ':' .. request.expectedRevision)
+    or not exact_key(prefix, keys[3], ':session:' .. request.expectedCoordinatorSessionId)
+    or not exact_key(prefix, keys[4], ':index:session:' .. request.expectedCoordinatorSessionId .. ':workflows:coordinator')
+    or not exact_key(prefix, keys[5], ':session:' .. request.actorSessionId)
+    or not exact_key(prefix, keys[6], ':presence:session:' .. request.actorSessionId)
+    or not exact_key(prefix, keys[7], ':index:session:' .. request.actorSessionId .. ':workflows:coordinator')
+    or not exact_key(prefix, keys[8], ':wake-intent:' .. proof_id) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  if not type_is(keys[2], 'string') then return bridge_error('REDIS_STATE_INVALID') end
+  local receipt_json = redis.call('GET', keys[2])
+  if receipt_json then
+    local receipt_ok, receipt = pcall(cjson.decode, receipt_json)
+    if not receipt_ok or type(receipt) ~= 'table'
+      or not exact_fields(receipt, {
+        workflowId=true, revision=true, fingerprint=true, decisionKind=true, result=true
+      })
+      or receipt.workflowId ~= request.workflowId
+      or receipt.revision ~= request.expectedRevision
+      or not bridge_digest(receipt.fingerprint)
+      or type(receipt.decisionKind) ~= 'string'
+      or type(receipt.result) ~= 'table'
+      or receipt.result.status ~= 'updated'
+      or type(receipt.result.workflow) ~= 'table'
+      or receipt.result.workflow.id ~= request.workflowId
+      or receipt.result.workflow.revision ~= request.expectedRevision + 1 then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+    if receipt.fingerprint ~= request.decisionFingerprint then
+      return bridge_error('WORKFLOW_DECISION_CONFLICT')
+    end
+    if receipt.decisionKind ~= decision_kind
+      or (decision_kind == 'next_message') ~= (receipt.result.message ~= nil) then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+    return cjson.encode(receipt.result)
+  end
+
+  if key_type(keys[1]) == 'none' then return bridge_error('WORKFLOW_NOT_FOUND') end
+  if key_type(keys[1]) ~= 'hash' or key_type(keys[3]) ~= 'hash'
+    or not type_is(keys[4], 'zset') or key_type(keys[5]) ~= 'hash'
+    or key_type(keys[6]) ~= 'string' or not type_is(keys[7], 'zset') then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local workflow = redis.call(
+    'HMGET', keys[1],
+    'id', 'projectId', 'coordinatorSessionId', 'revision', 'state',
+    'currentMessageId', 'currentWakeIntentId', 'currentHumanContinuationId',
+    'humanDecision', 'rootCorrelationId', 'objective', 'createdAt', 'updatedAt'
+  )
+  if workflow[1] ~= request.workflowId or not bridge_id(workflow[1])
+    or workflow[2] ~= request.expectedProjectId or not bridge_id(workflow[2])
+    or workflow[3] ~= request.expectedCoordinatorSessionId or not bridge_id(workflow[3])
+    or not bridge_id(workflow[6]) or not bridge_id(workflow[10])
+    or type(workflow[11]) ~= 'string' or workflow[11] == '' or #workflow[11] > 4000
+    or type(workflow[12]) ~= 'string' or workflow[12] == ''
+    or type(workflow[13]) ~= 'string' or workflow[13] == '' then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local actual_revision = tonumber(workflow[4])
+  if not bridge_integer(actual_revision, 1) then return bridge_error('REDIS_STATE_INVALID') end
+  if actual_revision ~= request.expectedRevision then
+    return bridge_error('WORKFLOW_REVISION_MISMATCH')
+  end
+  local coordinator_score = redis.call('ZSCORE', keys[4], request.workflowId)
+  if coordinator_score == false or tonumber(coordinator_score) == nil then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local coordinator = redis.call('HMGET', keys[3], 'id', 'agentId', 'projectId', 'status')
+  local actor = redis.call('HMGET', keys[5], 'id', 'agentId', 'projectId', 'status')
+  if coordinator[1] ~= request.expectedCoordinatorSessionId
+    or not bridge_id(coordinator[2]) or coordinator[3] ~= request.expectedProjectId
+    or type(coordinator[4]) ~= 'string' or coordinator[4] == '' then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local actor_presence = redis.call('GET', keys[6])
+  if actor[1] ~= request.actorSessionId or not bridge_id(actor[2])
+    or actor[3] ~= request.expectedProjectId
+    or actor[4] == false or actor[4] == 'completed' or actor[4] == 'disconnected'
+    or actor_presence ~= request.actorSessionId or redis.call('PTTL', keys[6]) <= 0 then
+    return bridge_error('WORKFLOW_ACTOR_INVALID')
+  end
+  if actor[2] ~= coordinator[2] then return bridge_error('WORKFLOW_ACTOR_INVALID') end
+
+  if request.proof.kind == 'wake' then
+    if workflow[5] ~= 'active' then return bridge_error('WORKFLOW_NOT_ACTIVE') end
+    if request.actorSessionId ~= request.expectedCoordinatorSessionId then
+      return bridge_error('WORKFLOW_COORDINATOR_MISMATCH')
+    end
+    if workflow[7] ~= proof_id or workflow[8] ~= false or workflow[9] ~= false then
+      return bridge_error('WORKFLOW_PROOF_MISMATCH')
+    end
+    if key_type(keys[8]) ~= 'hash' then return bridge_error('WORKFLOW_PROOF_MISMATCH') end
+    local wake = redis.call(
+      'HMGET', keys[8],
+      'id', 'messageId', 'workflowId', 'sourceSessionId', 'projectId',
+      'sourceAgentId', 'workflowRevision', 'state'
+    )
+    local wake_revision = tonumber(wake[7])
+    if wake[1] ~= proof_id or wake[2] ~= workflow[6] or wake[3] ~= request.workflowId
+      or wake[4] ~= request.expectedCoordinatorSessionId
+      or wake[5] ~= request.expectedProjectId or wake[6] ~= coordinator[2]
+      or wake_revision ~= request.expectedRevision then
+      return bridge_error('WORKFLOW_PROOF_MISMATCH')
+    end
+    if wake[8] ~= 'dispatching' and wake[8] ~= 'dispatched' and wake[8] ~= 'indeterminate' then
+      return bridge_error('WORKFLOW_PROOF_MISMATCH')
+    end
+  else
+    if workflow[5] ~= 'waiting_for_human' then return bridge_error('WORKFLOW_NOT_ACTIVE') end
+    if workflow[7] ~= false or workflow[8] ~= proof_id
+      or type(workflow[9]) ~= 'string' or workflow[9] == '' or #workflow[9] > 2000 then
+      return bridge_error('WORKFLOW_PROOF_MISMATCH')
+    end
+    if key_type(keys[8]) ~= 'none' then return bridge_error('REDIS_STATE_INVALID') end
+    if decision_kind == 'next_message'
+      and request.actorSessionId == request.expectedCoordinatorSessionId then
+      return bridge_error('WORKFLOW_REPLACEMENT_REQUIRED')
+    end
+  end
+
+  local next_message = nil
+  local evidence_json = nil
+  local target = nil
+  if decision_kind == 'next_message' then
+    local message_ok
+    message_ok, next_message = pcall(cjson.decode, args[2])
+    if not message_ok or type(next_message) ~= 'table'
+      or not exact_fields(next_message, {
+        id=true, correlationId=true, projectId=true, sourceSessionId=true,
+        sourceAgentId=true, targetSessionId=true, targetAgentId=true,
+        selectionReason=true, kind=true, subject=true, content=true,
+        evidenceRequirements=true, timeoutMs=true, requestFingerprint=true,
+        causationId=true
+      })
+      or not bridge_id(next_message.id) or not bridge_id(next_message.correlationId)
+      or next_message.projectId ~= request.expectedProjectId
+      or next_message.sourceSessionId ~= request.actorSessionId
+      or next_message.sourceAgentId ~= actor[2]
+      or not bridge_id(next_message.targetSessionId)
+      or next_message.targetAgentId ~= request.decision.targetAgentId
+      or next_message.kind ~= request.decision.message.kind
+      or next_message.subject ~= request.decision.message.subject
+      or next_message.content ~= request.decision.message.content
+      or type(next_message.selectionReason) ~= 'string'
+      or #next_message.selectionReason > 1024
+      or string.match(next_message.selectionReason, '%S') == nil
+      or type(next_message.evidenceRequirements) ~= 'table'
+      or not bridge_integer(next_message.timeoutMs, 1)
+      or next_message.timeoutMs > 86400000
+      or not bridge_digest(next_message.requestFingerprint)
+      or (next_message.causationId ~= nil and not bridge_id(next_message.causationId)) then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+    local evidence_count = 0
+    local allowed_evidence = {
+      session_state=true, git_commit=true, git_diff=true, test_result=true,
+      build_result=true, file_reference=true, memory_reference=true, other=true
+    }
+    for key, value in pairs(next_message.evidenceRequirements) do
+      if type(key) ~= 'number' or key < 1 or key ~= math.floor(key)
+        or not allowed_evidence[value] then
+        return bridge_error('REDIS_ARGUMENT_INVALID')
+      end
+      evidence_count = evidence_count + 1
+    end
+    if evidence_count > 32 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+    evidence_json = next(next_message.evidenceRequirements) == nil
+      and '[]' or cjson.encode(next_message.evidenceRequirements)
+
+    if not exact_key(prefix, keys[9], ':index:workflow:' .. request.workflowId .. ':messages')
+      or not exact_key(prefix, keys[10], ':message:' .. next_message.id)
+      or not exact_key(prefix, keys[11], ':index:message:correlation:' .. next_message.correlationId)
+      or not exact_key(prefix, keys[12], ':index:message:idempotency:' .. request.actorSessionId .. ':' .. next_message.id)
+      or not exact_key(prefix, keys[13], ':index:messages')
+      or not exact_key(prefix, keys[14], ':index:project:' .. request.expectedProjectId .. ':messages')
+      or not exact_key(prefix, keys[15], ':index:session:' .. request.actorSessionId .. ':messages:source')
+      or not exact_key(prefix, keys[16], ':index:session:' .. next_message.targetSessionId .. ':messages:target')
+      or not exact_key(prefix, keys[17], ':deadline:messages')
+      or not exact_key(prefix, keys[18], ':session:' .. next_message.targetSessionId)
+      or not exact_key(prefix, keys[19], ':presence:session:' .. next_message.targetSessionId)
+      or not exact_key(prefix, keys[20], ':inbox:session:' .. next_message.targetSessionId)
+      or not exact_key(prefix, keys[21], ':events:global')
+      or not exact_key(prefix, keys[22], ':events:project:' .. request.expectedProjectId) then
+      return bridge_error('REDIS_ARGUMENT_INVALID')
+    end
+    if not type_is(keys[9], 'zset') or key_type(keys[10]) ~= 'none'
+      or key_type(keys[11]) ~= 'none' or key_type(keys[12]) ~= 'none'
+      or not type_is(keys[13], 'zset') or not type_is(keys[14], 'zset')
+      or not type_is(keys[15], 'zset') or not type_is(keys[16], 'zset')
+      or not type_is(keys[17], 'zset') or key_type(keys[18]) ~= 'hash'
+      or key_type(keys[19]) ~= 'string' or not type_is(keys[20], 'stream')
+      or not type_is(keys[21], 'stream') or not type_is(keys[22], 'stream') then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+    local current_score = redis.call('ZSCORE', keys[9], workflow[6])
+    if current_score == false or tonumber(current_score) ~= request.expectedRevision then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+    target = redis.call('HMGET', keys[18], 'id', 'agentId', 'projectId', 'status')
+    local target_presence = redis.call('GET', keys[19])
+    if target[1] ~= next_message.targetSessionId
+      or target[2] ~= next_message.targetAgentId
+      or target[4] == false or target[4] == 'completed' or target[4] == 'disconnected'
+      or target_presence ~= next_message.targetSessionId or redis.call('PTTL', keys[19]) <= 0 then
+      return bridge_error('TARGET_SESSION_UNAVAILABLE')
+    end
+    if target[3] ~= request.expectedProjectId then
+      return bridge_error('TARGET_PROJECT_MISMATCH')
+    end
+    if not stream_has_capacity(keys[20], 1)
+      or not stream_has_capacity(keys[21], 1)
+      or not stream_has_capacity(keys[22], 1) then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+    if request.proof.kind == 'human' and redis.call('ZSCORE', keys[7], request.workflowId) ~= false then
+      return bridge_error('REDIS_STATE_INVALID')
+    end
+  end
+
+  local clock = redis_now()
+  local next_revision = request.expectedRevision + 1
+  local result_workflow = {
+    id=workflow[1], projectId=workflow[2], coordinatorSessionId=workflow[3],
+    rootCorrelationId=workflow[10], objective=workflow[11], revision=next_revision,
+    state=workflow[5], currentMessageId=workflow[6],
+    createdAt=workflow[12], updatedAt=clock.timestamp
+  }
+  local committed = {status='updated', workflow=result_workflow}
+
+  if decision_kind == 'next_message' then
+    local deadline_ms = clock.milliseconds + next_message.timeoutMs
+    local deadline_at = iso_from_milliseconds(deadline_ms)
+    local stored_message = {
+      id=next_message.id, correlationId=next_message.correlationId,
+      projectId=request.expectedProjectId, sourceSessionId=request.actorSessionId,
+      sourceAgentId=actor[2], targetSessionId=next_message.targetSessionId,
+      targetAgentId=next_message.targetAgentId, selectionReason=next_message.selectionReason,
+      kind=next_message.kind, content=next_message.content,
+      evidenceRequirements=next_message.evidenceRequirements, state='queued',
+      createdAt=clock.timestamp, updatedAt=clock.timestamp, deadlineAt=deadline_at
+    }
+    if next_message.subject then stored_message.subject = next_message.subject end
+    local inbox_item = {
+      messageId=next_message.id, correlationId=next_message.correlationId,
+      itemKind='request', sourceSessionId=request.actorSessionId,
+      targetSessionId=next_message.targetSessionId, createdAt=clock.timestamp,
+      payload={
+        kind=next_message.kind, content=next_message.content,
+        evidenceRequirements=next_message.evidenceRequirements, deadlineAt=deadline_at
+      }
+    }
+    if next_message.subject then inbox_item.payload.subject = next_message.subject end
+    local event = {
+      id=args[4], version=1, type='message.requested', occurredAt=clock.timestamp,
+      workspaceId=args[3], projectId=request.expectedProjectId, agentId=actor[2],
+      sessionId=request.actorSessionId, correlationId=next_message.correlationId,
+      payload={
+        messageId=next_message.id, kind=next_message.kind, state='queued',
+        sourceSessionId=request.actorSessionId,
+        targetSessionId=next_message.targetSessionId,
+        selectionReason=next_message.selectionReason
+      }
+    }
+    if next_message.causationId then event.causationId = next_message.causationId end
+    local inbox_stream_id = redis.call('XADD', keys[20], '*', 'item', cjson.encode(inbox_item))
+    redis.call(
+      'HSET', keys[10],
+      'id', stored_message.id, 'correlationId', stored_message.correlationId,
+      'projectId', stored_message.projectId,
+      'sourceSessionId', stored_message.sourceSessionId,
+      'sourceAgentId', stored_message.sourceAgentId,
+      'targetSessionId', stored_message.targetSessionId,
+      'targetAgentId', stored_message.targetAgentId,
+      'selectionReason', stored_message.selectionReason,
+      'kind', stored_message.kind, 'content', stored_message.content,
+      'evidenceRequirements', evidence_json, 'state', stored_message.state,
+      'createdAt', stored_message.createdAt, 'updatedAt', stored_message.updatedAt,
+      'deadlineAt', stored_message.deadlineAt, 'deadlineMs', deadline_ms,
+      'requestFingerprint', next_message.requestFingerprint,
+      'targetInboxStreamId', inbox_stream_id,
+      'workflowId', request.workflowId, 'workflowRevision', next_revision
+    )
+    if next_message.subject then redis.call('HSET', keys[10], 'subject', next_message.subject) end
+    if next_message.causationId then redis.call('HSET', keys[10], 'causationId', next_message.causationId) end
+    redis.call('SET', keys[11], next_message.id)
+    redis.call('ZADD', keys[13], clock.milliseconds, next_message.id)
+    redis.call('ZADD', keys[14], clock.milliseconds, next_message.id)
+    redis.call('ZADD', keys[15], clock.milliseconds, next_message.id)
+    redis.call('ZADD', keys[16], clock.milliseconds, next_message.id)
+    redis.call('ZADD', keys[17], deadline_ms, next_message.id)
+    redis.call('ZADD', keys[9], next_revision, next_message.id)
+    append_event(keys[21], keys[22], cjson.encode(event))
+
+    if request.proof.kind == 'human' then
+      redis.call('ZREM', keys[4], request.workflowId)
+      redis.call('ZADD', keys[7], tonumber(coordinator_score), request.workflowId)
+      result_workflow.coordinatorSessionId = request.actorSessionId
+    end
+    result_workflow.state = 'active'
+    result_workflow.currentMessageId = next_message.id
+    redis.call(
+      'HSET', keys[1],
+      'revision', next_revision, 'state', 'active',
+      'currentMessageId', next_message.id,
+      'coordinatorSessionId', result_workflow.coordinatorSessionId,
+      'updatedAt', clock.timestamp
+    )
+    redis.call('HDEL', keys[1], 'currentWakeIntentId', 'currentHumanContinuationId', 'humanDecision')
+    committed.message = stored_message
+  elseif decision_kind == 'complete' then
+    result_workflow.state = 'completed'
+    result_workflow.currentMessageId = nil
+    redis.call(
+      'HSET', keys[1],
+      'revision', next_revision, 'state', 'completed', 'updatedAt', clock.timestamp
+    )
+    redis.call('HDEL', keys[1], 'currentMessageId', 'currentWakeIntentId', 'currentHumanContinuationId', 'humanDecision')
+  else
+    result_workflow.state = 'waiting_for_human'
+    result_workflow.currentHumanContinuationId = request.nextHumanContinuationId
+    result_workflow.humanDecision = request.decision.humanDecision
+    redis.call(
+      'HSET', keys[1],
+      'revision', next_revision, 'state', 'waiting_for_human',
+      'currentHumanContinuationId', request.nextHumanContinuationId,
+      'humanDecision', request.decision.humanDecision,
+      'updatedAt', clock.timestamp
+    )
+    redis.call('HDEL', keys[1], 'currentWakeIntentId')
+  end
+
+  redis.call('SET', keys[2], cjson.encode({
+    workflowId=request.workflowId, revision=request.expectedRevision,
+    fingerprint=request.decisionFingerprint, decisionKind=decision_kind,
+    result=committed
+  }))
+  return cjson.encode(committed)
+end`,
     'local function message_transition(keys, args, target_state)',
     '  if #keys ~= 10 or #args ~= 9 then',
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
@@ -2733,6 +3164,7 @@ end`,
     register(registry.functions.nativeLinkTrim, 'native_link_trim'),
     register(registry.functions.nativeDeclare, 'native_declare'),
     register(registry.functions.workflowCreate, 'workflow_create'),
+    register(registry.functions.workflowContinue, 'workflow_continue'),
     register(registry.functions.messageRequest, 'message_request'),
     register(registry.functions.messageDelivered, 'message_delivered'),
     register(registry.functions.messageAcknowledge, 'message_acknowledge'),
