@@ -3,6 +3,9 @@ import {
   LEASE_MAX_DURATION_MS,
   LEASE_MIN_DURATION_MS,
   type BridgeOwnerDeclaration,
+  type HostWakeDeclaration,
+  type NativeDeclarationRequest,
+  type NativeIdentityProvenance,
   type NativeSessionRef,
 } from '@luwi/protocol';
 
@@ -31,9 +34,11 @@ export type SessionBootstrapClient = {
     agentId: string;
     workingDirectory: string;
     native?: NativeSessionRef;
+    nativeIdentityProvenance?: NativeIdentityProvenance;
     metadata?: Record<string, unknown>;
     bridgeOwner?: BridgeOwnerDeclaration;
   }): Promise<{ id: string }>;
+  declareNative?(sessionId: string, declaration: NativeDeclarationRequest): Promise<void>;
   heartbeat(sessionId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
 };
@@ -71,6 +76,15 @@ export type SessionBootstrapOptions = {
    * to another session.
    */
   native?: NativeSessionRef;
+  /** Evidence that produced `native`; filesystem evidence is inspection-only. */
+  nativeIdentityProvenance?: NativeIdentityProvenance;
+  /**
+   * Publishes a same-session host wake proof after registration.
+   *
+   * This is deliberately separate from registration: the daemon-assigned LUWI
+   * session id is part of the proof, so the proof cannot exist beforehand.
+   */
+  hostWakeAdapter?: HostWakeDeclaration['adapter'];
   /** Free-form session metadata to register with, e.g. `{ model }`. */
   metadata?: Record<string, unknown>;
   /**
@@ -157,6 +171,22 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
   if (options.leaseClient !== undefined) {
     requirePositiveInteger(leaseRenewIntervalMs, 'leaseRenewIntervalMs');
   }
+  if (options.nativeIdentityProvenance !== undefined && options.native === undefined) {
+    throw new TypeError('nativeIdentityProvenance requires native.');
+  }
+  if (options.hostWakeAdapter !== undefined) {
+    if (
+      options.native === undefined ||
+      options.native.adapterId !== 'codex-native-v1' ||
+      options.native.nativeSubagentId !== undefined ||
+      options.nativeIdentityProvenance?.source !== 'host_launcher' ||
+      options.client.declareNative === undefined
+    ) {
+      throw new TypeError(
+        'hostWakeAdapter requires a main Codex native identity from the host launcher and a declaration client.',
+      );
+    }
+  }
 
   const report = (error: unknown): void => {
     try {
@@ -177,7 +207,12 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
     projectId: options.projectId,
     agentId: options.agentId,
     workingDirectory: options.workingDirectory,
-    ...(options.native === undefined ? {} : { native: options.native }),
+    ...(options.native === undefined || options.hostWakeAdapter !== undefined
+      ? {}
+      : { native: options.native }),
+    ...(options.nativeIdentityProvenance === undefined || options.hostWakeAdapter !== undefined
+      ? {}
+      : { nativeIdentityProvenance: options.nativeIdentityProvenance }),
     ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
     ...(options.bridgeOwner === undefined ? {} : { bridgeOwner: options.bridgeOwner }),
   };
@@ -269,6 +304,16 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
                   sessionId: registered.id,
                 } as const);
           try {
+            if (options.hostWakeAdapter !== undefined) {
+              await options.client.declareNative!(registered.id, {
+                native: options.native!,
+                identityProvenance: options.nativeIdentityProvenance!,
+                hostWake: {
+                  adapter: options.hostWakeAdapter,
+                  mcpSessionId: registered.id,
+                },
+              });
+            }
             await options.prepareSession?.(preparedChange);
           } catch (error) {
             await closeQuietly(registered.id);

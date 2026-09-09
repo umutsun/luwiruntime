@@ -88,6 +88,137 @@ describe('session bootstrap', () => {
     expect(client.register).toHaveBeenCalledWith(expect.objectContaining({ native }));
   });
 
+  it('publishes trusted host wake proof after registration and before the session id', async () => {
+    const native = { adapterId: 'codex-native-v1', nativeSessionId: 'native-session' };
+    const nativeIdentityProvenance = {
+      source: 'host_launcher' as const,
+      launcherInstanceId: 'launcher-1',
+    };
+    const order: string[] = [];
+    const declareNative = vi.fn(async () => void order.push('declared'));
+    const onSessionChanged = vi.fn(() => void order.push('published'));
+    const customClient = {
+      register: vi.fn(async () => {
+        order.push('registered');
+        return { id: 'session-1' };
+      }),
+      heartbeat: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+      declareNative,
+    };
+    const { bootstrap } = harness({
+      client: customClient,
+      native,
+      nativeIdentityProvenance,
+      hostWakeAdapter: 'codex-queue-v1',
+      onSessionChanged,
+    });
+
+    await bootstrap.start();
+
+    expect(customClient.register).toHaveBeenCalledWith(
+      expect.not.objectContaining({ native: expect.anything() }),
+    );
+    expect(declareNative).toHaveBeenCalledWith('session-1', {
+      native,
+      identityProvenance: nativeIdentityProvenance,
+      hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+    });
+    expect(order).toEqual(['registered', 'declared', 'published']);
+  });
+
+  it('re-declares trusted host wake proof for a recovered LUWI session', async () => {
+    let registrations = 0;
+    const native = { adapterId: 'codex-native-v1', nativeSessionId: 'native-session' };
+    const declareNative = vi.fn(async () => undefined);
+    const client = {
+      register: vi.fn(async () => ({ id: `session-${++registrations}` })),
+      declareNative,
+      heartbeat: vi.fn(async () => {
+        throw new ApplicationError('SESSION_TERMINAL', 'gone', 409);
+      }),
+      close: vi.fn(async () => undefined),
+    };
+    const { bootstrap, timers, advanceTime } = harness({
+      client,
+      native,
+      nativeIdentityProvenance: {
+        source: 'host_launcher',
+        launcherInstanceId: 'launcher-1',
+      },
+      hostWakeAdapter: 'codex-queue-v1',
+    });
+
+    await bootstrap.start();
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+
+    expect(declareNative).toHaveBeenNthCalledWith(
+      1,
+      'session-1',
+      expect.objectContaining({
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+      }),
+    );
+    expect(declareNative).toHaveBeenNthCalledWith(
+      2,
+      'session-2',
+      expect.objectContaining({
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-2' },
+      }),
+    );
+    expect(bootstrap.sessionId).toBe('session-2');
+  });
+
+  it.each([
+    {
+      name: 'filesystem evidence',
+      native: { adapterId: 'codex-native-v1', nativeSessionId: 'native-session' },
+      nativeIdentityProvenance: { source: 'filesystem_heuristic' as const },
+      declareNative: vi.fn(async () => undefined),
+    },
+    {
+      name: 'a non-Codex adapter',
+      native: { adapterId: 'claude-code', nativeSessionId: 'native-session' },
+      nativeIdentityProvenance: {
+        source: 'host_launcher' as const,
+        launcherInstanceId: 'launcher-1',
+      },
+      declareNative: vi.fn(async () => undefined),
+    },
+    {
+      name: 'a subagent identity',
+      native: {
+        adapterId: 'codex-native-v1',
+        nativeSessionId: 'native-session',
+        nativeSubagentId: 'child-1',
+      },
+      nativeIdentityProvenance: {
+        source: 'host_launcher' as const,
+        launcherInstanceId: 'launcher-1',
+      },
+      declareNative: vi.fn(async () => undefined),
+    },
+  ])('refuses host wake proof from $name', (input) => {
+    expect(() =>
+      harness({
+        native: input.native,
+        nativeIdentityProvenance: input.nativeIdentityProvenance,
+        hostWakeAdapter: 'codex-queue-v1',
+        client: {
+          register: vi.fn(async () => ({ id: 'session-1' })),
+          declareNative: input.declareNative,
+          heartbeat: vi.fn(async () => undefined),
+          close: vi.fn(async () => undefined),
+        },
+      }),
+    ).toThrow(/hostWakeAdapter/u);
+  });
+
   /**
    * A supervised bridge registers under a slot it already owns. The declaration
    * rides every registration, including a recovery, so a rotated session is

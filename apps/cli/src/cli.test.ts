@@ -1803,6 +1803,105 @@ describe('session attach', () => {
 
   const CODEX_NOW = 1_756_000_000_000;
 
+  it('publishes exact Codex launcher proof only after the daemon assigns the LUWI session', async () => {
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    let signalListener: (() => void) | undefined;
+    const nativeSessionId = 'exact-codex-session';
+    const nativeResponse = {
+      outcome: 'created',
+      binding: {
+        id: 'native-binding-1',
+        adapterId: 'codex-native-v1',
+        nativeSessionId,
+        kind: 'main',
+        openLinkId: 'native-link-1',
+        version: 1,
+        linkCount: 1,
+        trimmedLinkCount: 0,
+        firstLinkedAt: '2026-08-17T12:00:00.000Z',
+        lastLinkedAt: '2026-08-17T12:00:00.000Z',
+      },
+      link: {
+        id: 'native-link-1',
+        bindingId: 'native-binding-1',
+        sessionId: registered.id,
+        linkedAt: '2026-08-17T12:00:00.000Z',
+      },
+    };
+    const run = runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'codex-agent',
+        '--agent-kind',
+        'codex',
+        '--working-directory',
+        'C:/work',
+      ],
+      {
+        environment: {
+          CODEX_SESSION_ID: nativeSessionId,
+          CODEX_THREAD_ID: nativeSessionId,
+          USERPROFILE: 'C:\\Users\\umuts',
+        },
+        platform: 'win32',
+        now: () => new Date(CODEX_NOW),
+        canonicalizePath: async (path) => path,
+        transcriptFileSystem: rolloutFileSystem({
+          'C:/Users/umuts/.codex/sessions/2026/09/01/rollout-exact.jsonl': {
+            content: codexRollout(nativeSessionId, 'C:\\work'),
+            modifiedAtMs: CODEX_NOW - 1_000,
+          },
+        }),
+        fetch: async (url, init) => {
+          requests.push({
+            url,
+            ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }),
+          });
+          if (url.endsWith(`/api/v1/sessions/${registered.id}/native`)) {
+            return response(nativeResponse);
+          }
+          return response(registered);
+        },
+        setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+        clearInterval: (() => undefined) as never,
+        signals: {
+          once: (_signal: string, listener: () => void) => {
+            signalListener = listener;
+            return undefined;
+          },
+          off: () => undefined,
+        },
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      },
+    );
+
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+
+    expect(requests[0]).toMatchObject({
+      url: expect.stringMatching(/\/api\/v1\/sessions$/u),
+      body: { projectId: 'project-1', agentId: 'codex-agent', workingDirectory: 'C:/work' },
+    });
+    expect(requests[0]?.body).not.toHaveProperty('native');
+    expect(requests[0]?.body).not.toHaveProperty('nativeIdentityProvenance');
+    expect(requests[0]?.body).not.toHaveProperty('hostWake');
+    expect(requests[1]).toEqual({
+      url: `http://127.0.0.1:4782/api/v1/sessions/${registered.id}/native`,
+      body: {
+        native: { adapterId: 'codex-native-v1', nativeSessionId },
+        identityProvenance: { source: 'host_launcher', launcherInstanceId: nativeSessionId },
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: registered.id },
+      },
+    });
+
+    signalListener?.();
+    await run;
+  });
+
   it('recovers a Codex identity from the rollout tree when the environment carries none', async () => {
     // Codex Desktop and the VSCode extension export no session-id variable, so the
     // environment resolver finds nothing and the disk fallback (ADR 0028) recovers

@@ -39,6 +39,7 @@ import {
   NodeTranscriptFileSystem,
   resolveNativeIdentity,
   resolveNativeIdentityFromDisk,
+  type ResolvedNativeIdentity,
   type TranscriptFileSystem,
 } from '@luwi/adapters';
 import {
@@ -1420,6 +1421,16 @@ function createBootstrapSessionClient(
         connectTimeoutMs,
         jsonBody(input),
       ),
+    declareNative: async (sessionId: string, declaration: unknown) => {
+      await boundedRequest(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/native`,
+        nativeDeclarationResponseSchema,
+        connectTimeoutMs,
+        jsonBody(declaration),
+      );
+    },
     heartbeat: async (sessionId: string) => {
       await boundedRequest(
         dependencies,
@@ -2698,6 +2709,7 @@ export function createCli(dependencies: CliDependencies): Command {
         const declared = parseNativeRef(options);
         let kind: AgentKind = declared === undefined ? 'claude-code' : 'other';
         let native: NativeSessionRef | undefined = declared;
+        let resolvedIdentity: ResolvedNativeIdentity | undefined;
         if (declared !== undefined) {
           if (options.agentKind !== undefined) kind = agentKindSchema.parse(options.agentKind);
         } else {
@@ -2705,6 +2717,7 @@ export function createCli(dependencies: CliDependencies): Command {
             ? DETECTABLE_AGENT_KINDS
             : [agentKindSchema.parse(options.agentKind)]) {
             const resolvedNative = await resolve(candidate);
+            resolvedIdentity = resolvedNative;
             native = resolvedNative?.ref;
             if (native !== undefined || options.agentKind !== undefined) {
               kind = candidate;
@@ -2734,6 +2747,10 @@ export function createCli(dependencies: CliDependencies): Command {
           ...(native === undefined ? {} : { native }),
           ...(options.model === undefined ? {} : { metadata: { model: options.model } }),
         };
+        const wakeCapableCodexIdentity =
+          resolvedIdentity?.ref.adapterId === 'codex-native-v1' &&
+          resolvedIdentity.ref.nativeSubagentId === undefined &&
+          resolvedIdentity.provenance.source === 'host_launcher';
 
         if (options.dryRun === true) {
           printJson(dependencies, request_);
@@ -2741,25 +2758,12 @@ export function createCli(dependencies: CliDependencies): Command {
         }
 
         const bootstrap = createSessionBootstrap({
-          client: {
-            register: async (input) =>
-              callDaemon('/api/v1/sessions', sessionResponseSchema, jsonBody(input)),
-            heartbeat: async (sessionId) => {
-              await callDaemon(
-                `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
-                heartbeatResponseSchema,
-                jsonBody({}),
-              );
-            },
-            close: async (sessionId) => {
-              await callDaemon(
-                `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
-                sessionResponseSchema,
-                jsonBody({}),
-              );
-            },
-          },
+          client: createBootstrapSessionClient(dependencies, daemonUrl, connectTimeoutMs),
           ...request_,
+          ...(resolvedIdentity === undefined
+            ? {}
+            : { nativeIdentityProvenance: resolvedIdentity.provenance }),
+          ...(wakeCapableCodexIdentity ? { hostWakeAdapter: 'codex-queue-v1' as const } : {}),
           heartbeatIntervalMs: Number.parseInt(options.heartbeatMs, 10),
           leaseRenewIntervalMs: Number.parseInt(options.leaseRenewMs, 10),
           leaseClient: {
