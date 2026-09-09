@@ -40,6 +40,7 @@ import {
   mcpRequestOptimizationAnalysisInputSchema,
   type AgentMessage,
   type SessionView,
+  type WorkflowView,
 } from '@luwi/protocol';
 
 import { McpDaemonError, type McpDaemonClient } from './daemon-client.js';
@@ -97,6 +98,48 @@ function requireBoundMessage(message: AgentMessage, bound: SessionView): AgentMe
     );
   }
   return message;
+}
+
+function boundWorkflowResponseMismatch(): never {
+  throw new McpDaemonError(
+    'BOUND_PROJECT_MISMATCH',
+    'The workflow response is inconsistent with the bound LUWI session request.',
+    409,
+  );
+}
+
+function requireBoundWorkflow(
+  workflow: WorkflowView,
+  bound: SessionView,
+  expected: { workflowId?: string; rootCorrelationId?: string },
+): WorkflowView {
+  if (
+    workflow.projectId !== bound.projectId ||
+    workflow.coordinatorSessionId !== bound.id ||
+    (expected.workflowId !== undefined && workflow.id !== expected.workflowId) ||
+    (expected.rootCorrelationId !== undefined &&
+      workflow.rootCorrelationId !== expected.rootCorrelationId)
+  ) {
+    return boundWorkflowResponseMismatch();
+  }
+  return workflow;
+}
+
+function requireWorkflowMessage(
+  message: AgentMessage,
+  bound: SessionView,
+  expected: { correlationId?: string; targetAgentId?: string } = {},
+): AgentMessage {
+  const scoped = requireBoundMessage(message, bound);
+  if (
+    scoped.sourceSessionId !== bound.id ||
+    scoped.sourceAgentId !== bound.agentId ||
+    (expected.correlationId !== undefined && scoped.correlationId !== expected.correlationId) ||
+    (expected.targetAgentId !== undefined && scoped.targetAgentId !== expected.targetAgentId)
+  ) {
+    return boundWorkflowResponseMismatch();
+  }
+  return scoped;
 }
 
 export function createMcpToolHandlers(
@@ -275,15 +318,15 @@ export function createMcpToolHandlers(
         ...parsed,
         coordinatorSessionId: current.id,
       });
-      if (
-        result.workflow.projectId !== current.projectId ||
-        result.workflow.coordinatorSessionId !== current.id
-      ) {
-        throw new McpDaemonError(
-          'BOUND_PROJECT_MISMATCH',
-          'The workflow response is outside the bound LUWI session project.',
-          409,
-        );
+      const workflow = requireBoundWorkflow(result.workflow, current, {
+        rootCorrelationId: parsed.rootCorrelationId,
+      });
+      const message = requireWorkflowMessage(result.message, current, {
+        correlationId: parsed.rootCorrelationId,
+        targetAgentId: parsed.firstMessage.targetAgentId,
+      });
+      if (workflow.currentMessageId !== message.id) {
+        boundWorkflowResponseMismatch();
       }
       return result;
     },
@@ -291,12 +334,21 @@ export function createMcpToolHandlers(
       const parsed = mcpContinueWorkflowInputSchema.parse(input);
       const current = await requireCurrentBound();
       const result = await client.continueWorkflow(current.id, parsed.workflowId, parsed);
-      if (result.workflow.projectId !== current.projectId) {
-        throw new McpDaemonError(
-          'BOUND_PROJECT_MISMATCH',
-          'The workflow response is outside the bound LUWI session project.',
-          409,
-        );
+      const workflow = requireBoundWorkflow(result.workflow, current, {
+        workflowId: parsed.workflowId,
+      });
+      if (parsed.decision.kind === 'next_message') {
+        if (result.message === undefined) {
+          boundWorkflowResponseMismatch();
+        }
+        const message = requireWorkflowMessage(result.message, current, {
+          targetAgentId: parsed.decision.targetAgentId,
+        });
+        if (workflow.currentMessageId !== message.id) {
+          boundWorkflowResponseMismatch();
+        }
+      } else if (result.message !== undefined) {
+        boundWorkflowResponseMismatch();
       }
       return result;
     },

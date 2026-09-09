@@ -261,6 +261,182 @@ describe('MCP tool handlers', () => {
     ).rejects.toThrow();
   });
 
+  it('rejects create responses whose workflow or first-message anchors leave the bound request', async () => {
+    const createInput = {
+      objective: 'Finish the durable workflow.',
+      rootCorrelationId: 'correlation-root',
+      firstMessage: {
+        targetAgentId: 'claude-sim',
+        kind: 'instruction' as const,
+        content: 'Implement the next step.',
+      },
+    };
+    const workflow = {
+      id: 'workflow-1',
+      projectId: boundSession.projectId,
+      coordinatorSessionId: boundSession.id,
+      rootCorrelationId: createInput.rootCorrelationId,
+      objective: createInput.objective,
+      revision: 1,
+      state: 'active' as const,
+      currentMessageId: 'message-1',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const message = {
+      id: 'message-1',
+      correlationId: createInput.rootCorrelationId,
+      projectId: boundSession.projectId,
+      sourceSessionId: boundSession.id,
+      sourceAgentId: boundSession.agentId,
+      targetSessionId: 'target',
+      targetAgentId: 'claude-sim',
+      selectionReason: 'selected target',
+      kind: 'instruction' as const,
+      content: createInput.firstMessage.content,
+      evidenceRequirements: [],
+      state: 'queued' as const,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deadlineAt: timestamp,
+    };
+    const invalid = [
+      { workflow: { ...workflow, projectId: 'project-other' }, message },
+      { workflow: { ...workflow, coordinatorSessionId: 'session-other' }, message },
+      { workflow: { ...workflow, rootCorrelationId: 'correlation-other' }, message },
+      { workflow: { ...workflow, currentMessageId: 'message-other' }, message },
+      { workflow, message: { ...message, projectId: 'project-other' } },
+      {
+        workflow,
+        message: {
+          ...message,
+          sourceSessionId: 'session-other',
+          targetSessionId: boundSession.id,
+        },
+      },
+      { workflow, message: { ...message, correlationId: 'correlation-other' } },
+      { workflow, message: { ...message, targetAgentId: 'gemini-sim' } },
+    ];
+
+    for (const response of invalid) {
+      const daemon = client();
+      vi.mocked(daemon.createWorkflow).mockResolvedValue({ status: 'created', ...response });
+      const tools = createMcpToolHandlers(daemon, boundSession);
+
+      await expect(tools.createWorkflow(createInput)).rejects.toMatchObject({
+        code: 'BOUND_PROJECT_MISMATCH',
+      });
+    }
+  });
+
+  it('rejects continuation responses outside the requested bound workflow', async () => {
+    const continuation = {
+      workflowId: 'workflow-1',
+      expectedRevision: 1,
+      proof: { kind: 'wake' as const, wakeIntentId: 'wake-1' },
+      decision: { kind: 'complete' as const },
+    };
+    const workflow = {
+      id: continuation.workflowId,
+      projectId: boundSession.projectId,
+      coordinatorSessionId: boundSession.id,
+      rootCorrelationId: 'correlation-root',
+      objective: 'Finish the durable workflow.',
+      revision: 2,
+      state: 'completed' as const,
+      currentMessageId: 'message-1',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    for (const invalidWorkflow of [
+      { ...workflow, id: 'workflow-other' },
+      { ...workflow, projectId: 'project-other' },
+      { ...workflow, coordinatorSessionId: 'session-other' },
+    ]) {
+      const daemon = client();
+      vi.mocked(daemon.continueWorkflow).mockResolvedValue({
+        status: 'updated',
+        workflow: invalidWorkflow,
+      });
+      const tools = createMcpToolHandlers(daemon, boundSession);
+
+      await expect(tools.continueWorkflow(continuation)).rejects.toMatchObject({
+        code: 'BOUND_PROJECT_MISMATCH',
+      });
+    }
+  });
+
+  it('requires an optional continuation message to remain sourced by the bound coordinator', async () => {
+    const continuation = {
+      workflowId: 'workflow-1',
+      expectedRevision: 1,
+      proof: { kind: 'wake' as const, wakeIntentId: 'wake-1' },
+      decision: {
+        kind: 'next_message' as const,
+        targetAgentId: 'claude-sim',
+        message: { kind: 'instruction' as const, content: 'Continue.' },
+      },
+    };
+    const daemon = client();
+    vi.mocked(daemon.continueWorkflow).mockResolvedValue({
+      status: 'updated',
+      workflow: {
+        id: continuation.workflowId,
+        projectId: boundSession.projectId,
+        coordinatorSessionId: boundSession.id,
+        rootCorrelationId: 'correlation-root',
+        objective: 'Finish the durable workflow.',
+        revision: 2,
+        state: 'active',
+        currentMessageId: 'message-2',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      message: {
+        id: 'message-2',
+        correlationId: 'correlation-next',
+        projectId: boundSession.projectId,
+        sourceSessionId: 'session-other',
+        sourceAgentId: boundSession.agentId,
+        targetSessionId: boundSession.id,
+        targetAgentId: 'claude-sim',
+        selectionReason: 'selected target',
+        kind: 'instruction',
+        content: 'Continue.',
+        evidenceRequirements: [],
+        state: 'queued',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deadlineAt: timestamp,
+      },
+    });
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await expect(tools.continueWorkflow(continuation)).rejects.toMatchObject({
+      code: 'BOUND_PROJECT_MISMATCH',
+    });
+
+    vi.mocked(daemon.continueWorkflow).mockResolvedValue({
+      status: 'updated',
+      workflow: {
+        id: continuation.workflowId,
+        projectId: boundSession.projectId,
+        coordinatorSessionId: boundSession.id,
+        rootCorrelationId: 'correlation-root',
+        objective: 'Finish the durable workflow.',
+        revision: 2,
+        state: 'active',
+        currentMessageId: 'message-2',
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+    });
+    await expect(tools.continueWorkflow(continuation)).rejects.toMatchObject({
+      code: 'BOUND_PROJECT_MISMATCH',
+    });
+  });
+
   it('returns only the bound project state and rejects cross-project session reads', async () => {
     const daemon = client();
     daemon.getSession = vi.fn(async () => ({ ...boundSession, projectId: 'project-2' }));
