@@ -95,6 +95,9 @@ export function resourcesOf(input: PulseInput): PulseResources {
     findings: input.findings,
     runtime: input.runtime ?? { state: 'unavailable' },
     git: input.git ?? { state: 'unavailable' },
+    bridgeSlots: input.bridgeSlots ?? { state: 'unavailable' },
+    wakeIntents: input.wakeIntents ?? { state: 'unavailable' },
+    workflows: input.workflows ?? { state: 'unavailable' },
   };
 }
 

@@ -101,7 +101,7 @@ describe('loadPulseInput', () => {
       nowMs: vi.fn().mockReturnValueOnce(100).mockReturnValueOnce(124),
     });
 
-    expect(get).toHaveBeenCalledTimes(10);
+    expect(get).toHaveBeenCalledTimes(13);
     expect(input.measuredLatencyMs).toBe(24);
     expect(input.projects).toEqual({
       state: 'ready',

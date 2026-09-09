@@ -18,6 +18,9 @@ const resources = (): PulseResources => ({
   findings: { state: 'ready', data: [] },
   runtime: { state: 'unavailable' },
   git: { state: 'unavailable' },
+  bridgeSlots: { state: 'ready', data: { items: [], truncated: false } },
+  wakeIntents: { state: 'ready', data: { items: [], truncated: false } },
+  workflows: { state: 'ready', data: { items: [], truncated: false } },
 });
 
 describe('Pulse refresh state', () => {

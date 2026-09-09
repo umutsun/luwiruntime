@@ -20,6 +20,7 @@ import type {
 } from '../pulse/model.js';
 import { dashboardEventMessageSchema, toDashboardEvent } from '../realtime/schema.js';
 import type { DaemonClient, ResourceResult } from './client.js';
+import { loadWakeScope } from './wake-scope.js';
 
 const sessionCollectionBrowserSchema = z.object({
   sessions: z.array(
@@ -75,6 +76,9 @@ const pulseResourceKeys: PulseResourceKey[] = [
   'findings',
   'runtime',
   'git',
+  'bridgeSlots',
+  'wakeIntents',
+  'workflows',
 ];
 
 /**
@@ -322,6 +326,10 @@ export async function loadPulseResources(
   const entries = await Promise.all(requests);
   const resources = Object.fromEntries(entries) as Partial<PulseResources>;
 
+  if (requested.has('bridgeSlots') || requested.has('wakeIntents') || requested.has('workflows')) {
+    Object.assign(resources, await loadWakeScope(client, options));
+  }
+
   if (requested.has('git')) {
     // The fan-out needs the project list. Reuse the one from this batch when
     // it was requested; a git-only invalidation fetches it fresh.
@@ -370,5 +378,8 @@ export async function loadPulseInput(
     findings: resources.findings ?? { state: 'unavailable' },
     runtime: resources.runtime ?? { state: 'unavailable' },
     git: resources.git ?? { state: 'unavailable' },
+    bridgeSlots: resources.bridgeSlots ?? { state: 'unavailable' },
+    wakeIntents: resources.wakeIntents ?? { state: 'unavailable' },
+    workflows: resources.workflows ?? { state: 'unavailable' },
   };
 }

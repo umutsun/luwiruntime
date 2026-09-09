@@ -147,6 +147,7 @@ describe('resourcesOf', () => {
     expect(Object.keys(resourcesOf(input())).sort()).toEqual([
       'activity',
       'agents',
+      'bridgeSlots',
       'context',
       'findings',
       'git',
@@ -155,6 +156,8 @@ describe('resourcesOf', () => {
       'runtime',
       'sessions',
       'usage',
+      'wakeIntents',
+      'workflows',
     ]);
   });
 });

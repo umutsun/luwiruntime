@@ -153,6 +153,136 @@ a.stat:focus-visible {
   gap: var(--space-2h);
   align-items: start;
 }
+
+/*
+ * One observable path through the wake system. The numbered stages and arrows
+ * establish order; state remains written in text, so colour never carries the
+ * delivery result by itself. Details use the native disclosure control for
+ * keyboard access and intentionally contain no mutation actions.
+ */
+.panel--wake {
+  overflow: visible;
+}
+.wake-pipeline {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.wake-stage {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: var(--space-1);
+  padding: var(--space-3h) var(--panel-pad-x);
+  border-right: 1px solid var(--border);
+}
+.wake-stage:last-child {
+  border-right: 0;
+}
+.wake-stage:not(:last-child)::after {
+  position: absolute;
+  z-index: 1;
+  top: 29px;
+  right: -8px;
+  display: grid;
+  width: 15px;
+  height: 15px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface-1);
+  color: var(--text-dim);
+  font-size: var(--font-size-2xs);
+  content: '→';
+}
+.wake-stage__step {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.08em;
+}
+.wake-stage h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+}
+.wake-stage__headline,
+.wake-stage__measure {
+  margin: 0;
+}
+.wake-stage__headline {
+  min-height: 2.8em;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 1.4;
+}
+.wake-stage__headline--warning {
+  color: var(--warning);
+}
+.wake-stage__headline--danger {
+  color: var(--danger);
+}
+.wake-stage__measure {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}
+.wake-detail {
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border);
+}
+.wake-detail summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  cursor: pointer;
+}
+.wake-detail summary:focus-visible {
+  outline: none;
+  border-radius: var(--radius-xs);
+  box-shadow: var(--focus);
+}
+.wake-detail p,
+.wake-detail ul {
+  margin: var(--space-2) 0 0;
+}
+.wake-detail p {
+  color: var(--text-dim);
+  font-size: var(--font-size-2xs);
+}
+.wake-detail ul {
+  display: grid;
+  max-height: 180px;
+  gap: var(--space-1h);
+  overflow: auto;
+  padding: 0;
+  list-style: none;
+}
+.wake-detail li {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-0);
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--border-strong);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}
+.wake-detail li strong,
+.wake-detail li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wake-detail li strong {
+  color: var(--text-secondary);
+}
+.wake-detail li span {
+  color: var(--text-dim);
+}
 /*
  * 1060 px, not a round 1000: at 1.62fr of a narrower row the work panel lands
  * under the 640 px where its four columns stop fitting, and the pair would go
@@ -760,6 +890,22 @@ td small {
  * keeps agent and status on the first line where they are scanned.
  */
 @container (max-width: 639px) {
+  .wake-pipeline {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wake-stage {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .wake-stage:last-child {
+    border-bottom: 0;
+  }
+  .wake-stage:not(:last-child)::after {
+    top: auto;
+    right: 24px;
+    bottom: -8px;
+    transform: rotate(90deg);
+  }
   .work-columns {
     display: none;
   }

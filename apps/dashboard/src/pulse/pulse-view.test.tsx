@@ -130,6 +130,103 @@ describe('stat strip', () => {
   });
 });
 
+describe('Wake delivery', () => {
+  const withWakeDelivery = (): PulseInput => ({
+    ...input(),
+    bridgeSlots: {
+      state: 'ready',
+      data: {
+        truncated: false,
+        items: [
+          {
+            id: 'a'.repeat(64),
+            workspaceId: 'local',
+            projectId: 'project-1',
+            agentId: 'agent-1',
+            provider: 'antigravity',
+            executionProfile: 'workspace-write',
+            state: 'active',
+            revision: 1,
+            expiresAt: '2026-08-05T08:00:10.000Z',
+          },
+        ],
+      },
+    },
+    wakeIntents: {
+      state: 'ready',
+      data: {
+        truncated: false,
+        items: [
+          {
+            id: 'wake-1',
+            messageId: 'message-1',
+            workflowId: 'workflow-1',
+            sourceSessionId: 'session-1',
+            correlationId: 'correlation-1',
+            terminalState: 'responded',
+            adapter: 'codex-queue-v1',
+            state: 'indeterminate',
+            createdAt: '2026-08-05T07:59:00.000Z',
+            updatedAt: '2026-08-05T07:59:30.000Z',
+            reasonCode: 'dispatcher_recovered',
+          },
+        ],
+      },
+    },
+    workflows: {
+      state: 'ready',
+      data: {
+        truncated: false,
+        items: [
+          {
+            id: 'workflow-1',
+            projectId: 'project-1',
+            coordinatorSessionId: 'session-1',
+            rootCorrelationId: 'correlation-1',
+            objective: 'Complete the durable workflow.',
+            revision: 1,
+            state: 'active',
+            currentWakeIntentId: 'wake-1',
+            createdAt: '2026-08-05T07:58:00.000Z',
+            updatedAt: '2026-08-05T07:59:30.000Z',
+          },
+        ],
+      },
+    },
+  });
+
+  it('shows the observed supervisor, durable wake, and workflow path', () => {
+    renderPulse(withWakeDelivery());
+
+    const panel = screen.getByRole('region', { name: 'Wake delivery' });
+    expect(within(panel).getByText('Supervisor ownership observed')).toBeTruthy();
+    expect(
+      within(panel).getByText('Wake outcome is indeterminate; read the durable inbox response.'),
+    ).toBeTruthy();
+    expect(within(panel).getByText('Bridge slots').closest('details')).toBeTruthy();
+    expect(within(panel).getByText('Wake intents').closest('details')).toBeTruthy();
+    expect(within(panel).getByText('Workflows').closest('details')).toBeTruthy();
+    expect(within(panel).queryByRole('button')).toBeNull();
+  });
+
+  it('surfaces duplicate ownership observations and independent unavailable reads', () => {
+    const value = withWakeDelivery();
+    if (value.bridgeSlots?.state === 'ready') {
+      value.bridgeSlots.data.items.push({
+        ...value.bridgeSlots.data.items[0]!,
+        id: 'b'.repeat(64),
+      });
+    }
+    value.wakeIntents = { state: 'unavailable' };
+    renderPulse(value);
+
+    const panel = screen.getByRole('region', { name: 'Wake delivery' });
+    expect(within(panel).getByText('Duplicate bridge slots observed')).toBeTruthy();
+    expect(within(panel).getByText('Wake intents unavailable')).toBeTruthy();
+    expect(within(panel).getByText('1 active workflow')).toBeTruthy();
+  });
+});
+
 describe('realtime stream while paused', () => {
   it('says the stream is held rather than claiming a connection state', () => {
     const value = input();

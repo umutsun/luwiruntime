@@ -30,6 +30,80 @@ const baseInput = (): PulseInput => ({
 });
 
 describe('Pulse snapshot mapping', () => {
+  it('derives redacted wake delivery facts from three independent resources', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      bridgeSlots: {
+        state: 'ready',
+        data: {
+          truncated: false,
+          items: [
+            {
+              id: 'a'.repeat(64),
+              workspaceId: 'local',
+              projectId: 'project-1',
+              agentId: 'agent-1',
+              provider: 'antigravity',
+              executionProfile: 'workspace-write',
+              state: 'active',
+              revision: 1,
+              expiresAt: '2026-08-05T08:00:10.000Z',
+            },
+          ],
+        },
+      },
+      wakeIntents: {
+        state: 'ready',
+        data: {
+          truncated: false,
+          items: [
+            {
+              id: 'wake-1',
+              messageId: 'message-1',
+              workflowId: 'workflow-1',
+              sourceSessionId: 'session-1',
+              correlationId: 'correlation-1',
+              terminalState: 'responded',
+              adapter: 'codex-queue-v1',
+              state: 'indeterminate',
+              createdAt: '2026-08-05T07:59:00.000Z',
+              updatedAt: '2026-08-05T07:59:30.000Z',
+              reasonCode: 'dispatcher_recovered',
+            },
+          ],
+        },
+      },
+      workflows: {
+        state: 'ready',
+        data: {
+          truncated: false,
+          items: [
+            {
+              id: 'workflow-1',
+              projectId: 'project-1',
+              coordinatorSessionId: 'session-1',
+              rootCorrelationId: 'correlation-1',
+              objective: 'Complete the durable workflow.',
+              revision: 1,
+              state: 'active',
+              currentWakeIntentId: 'wake-1',
+              createdAt: '2026-08-05T07:58:00.000Z',
+              updatedAt: '2026-08-05T07:59:30.000Z',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(snapshot.wakeDelivery).toMatchObject({
+      supervisorOwnership: 'observed',
+      activeSlotCount: 1,
+      duplicateSlotCount: 0,
+      indeterminateWakeCount: 1,
+      activeWorkflowCount: 1,
+    });
+  });
+
   it('distinguishes empty projects and no active sessions from unavailable data', () => {
     const empty = buildPulseSnapshot(baseInput());
     const unavailable = buildPulseSnapshot({

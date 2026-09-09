@@ -192,6 +192,171 @@ function SessionContext({ context }: { context: SessionContextEvidence }) {
   );
 }
 
+function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['wakeDelivery']> }) {
+  const slotCount = delivery.activeSlotCount;
+  const wakeCount =
+    delivery.wakeIntents.state === 'ready' ? delivery.wakeIntents.data.items.length : undefined;
+  const workflowCount = delivery.activeWorkflowCount;
+  const ownershipLabel =
+    delivery.supervisorOwnership === 'observed'
+      ? 'Supervisor ownership observed'
+      : delivery.supervisorOwnership === 'unavailable'
+        ? 'Supervisor ownership unavailable'
+        : 'Supervisor ownership not observed';
+  const bridgeHeadline =
+    delivery.duplicateSlotCount !== undefined && delivery.duplicateSlotCount > 0
+      ? 'Duplicate bridge slots observed'
+      : ownershipLabel;
+
+  return (
+    <section className="panel panel--wake" aria-labelledby="wake-delivery-title">
+      <header className="panel__header">
+        <div>
+          <p className="eyebrow">Durable execution path</p>
+          <h2 id="wake-delivery-title">Wake delivery</h2>
+        </div>
+        <span className="panel__meta">Bridge slots → Wake intents → Workflows</span>
+      </header>
+
+      <div className="wake-pipeline">
+        <article className="wake-stage">
+          <span className="wake-stage__step" aria-hidden="true">
+            01
+          </span>
+          <h3>Supervisor</h3>
+          <p
+            className={`wake-stage__headline${
+              delivery.duplicateSlotCount !== undefined && delivery.duplicateSlotCount > 0
+                ? ' wake-stage__headline--danger'
+                : ''
+            }`}
+          >
+            {bridgeHeadline}
+          </p>
+          <p className="wake-stage__measure">
+            {slotCount === undefined
+              ? 'Bridge slots unavailable'
+              : `${String(slotCount)} active ${slotCount === 1 ? 'slot' : 'slots'}`}
+          </p>
+          <details className="wake-detail">
+            <summary>
+              <span>Bridge slots</span>
+              <span>
+                {delivery.bridgeSlots.state === 'ready'
+                  ? delivery.bridgeSlots.data.items.length
+                  : '—'}
+              </span>
+            </summary>
+            {delivery.bridgeSlots.state === 'unavailable' ? (
+              <p>Bridge slots unavailable</p>
+            ) : delivery.bridgeSlots.data.items.length === 0 ? (
+              <p>No retained bridge slots</p>
+            ) : (
+              <ul>
+                {delivery.bridgeSlots.data.items.map((slot) => (
+                  <li key={slot.id}>
+                    <strong>{slot.state}</strong>
+                    <span>{slot.projectId}</span>
+                    <span>{`${slot.agentId} · ${slot.provider} · ${slot.executionProfile}`}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {delivery.bridgeSlots.state === 'ready' && delivery.bridgeSlots.data.truncated ? (
+              <p>Showing the oldest 100 retained slots</p>
+            ) : null}
+          </details>
+        </article>
+
+        <article className="wake-stage">
+          <span className="wake-stage__step" aria-hidden="true">
+            02
+          </span>
+          <h3>Durable wake</h3>
+          {delivery.wakeIntents.state === 'unavailable' ? (
+            <p className="wake-stage__headline">Wake intents unavailable</p>
+          ) : delivery.indeterminateWakeCount !== undefined &&
+            delivery.indeterminateWakeCount > 0 ? (
+            <p className="wake-stage__headline wake-stage__headline--warning">
+              Wake outcome is indeterminate; read the durable inbox response.
+            </p>
+          ) : (
+            <p className="wake-stage__headline">No indeterminate wake outcomes</p>
+          )}
+          <p className="wake-stage__measure">
+            {wakeCount === undefined
+              ? 'Wake history unavailable'
+              : `${String(wakeCount)} retained ${wakeCount === 1 ? 'intent' : 'intents'}`}
+          </p>
+          <details className="wake-detail">
+            <summary>
+              <span>Wake intents</span>
+              <span>{wakeCount ?? '—'}</span>
+            </summary>
+            {delivery.wakeIntents.state === 'unavailable' ? (
+              <p>The retained wake collection could not be read.</p>
+            ) : delivery.wakeIntents.data.items.length === 0 ? (
+              <p>No retained wake intents</p>
+            ) : (
+              <ul>
+                {delivery.wakeIntents.data.items.map((intent) => (
+                  <li key={intent.id}>
+                    <strong>{intent.state}</strong>
+                    <span>{intent.workflowId}</span>
+                    <span>{intent.reasonCode ?? intent.terminalState}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {delivery.wakeIntents.state === 'ready' && delivery.wakeIntents.data.truncated ? (
+              <p>Showing the oldest 100 retained intents</p>
+            ) : null}
+          </details>
+        </article>
+
+        <article className="wake-stage">
+          <span className="wake-stage__step" aria-hidden="true">
+            03
+          </span>
+          <h3>Continuation</h3>
+          <p className="wake-stage__headline">
+            {workflowCount === undefined
+              ? 'Workflows unavailable'
+              : `${String(workflowCount)} active ${workflowCount === 1 ? 'workflow' : 'workflows'}`}
+          </p>
+          <p className="wake-stage__measure">Revision-fenced durable decisions</p>
+          <details className="wake-detail">
+            <summary>
+              <span>Workflows</span>
+              <span>
+                {delivery.workflows.state === 'ready' ? delivery.workflows.data.items.length : '—'}
+              </span>
+            </summary>
+            {delivery.workflows.state === 'unavailable' ? (
+              <p>Workflows unavailable</p>
+            ) : delivery.workflows.data.items.length === 0 ? (
+              <p>No retained workflows</p>
+            ) : (
+              <ul>
+                {delivery.workflows.data.items.map((workflow) => (
+                  <li key={workflow.id}>
+                    <strong>{workflow.state}</strong>
+                    <span>{workflow.objective}</span>
+                    <span>{`revision ${String(workflow.revision)}`}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {delivery.workflows.state === 'ready' && delivery.workflows.data.truncated ? (
+              <p>Showing the oldest 100 retained workflows</p>
+            ) : null}
+          </details>
+        </article>
+      </div>
+    </section>
+  );
+}
+
 export function PulseView({
   snapshot,
   websocketState,
@@ -540,6 +705,10 @@ export function PulseView({
           )}
         </section>
       </div>
+
+      {snapshot.wakeDelivery === undefined ? null : (
+        <WakeDeliveryPanel delivery={snapshot.wakeDelivery} />
+      )}
 
       <div className="pulse-grid">
         <section className="panel panel--stream" aria-labelledby="realtime-stream-title">

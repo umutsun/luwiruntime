@@ -67,6 +67,9 @@ describe('realtime snapshot invalidation', () => {
       'findings',
       'runtime',
       'git',
+      'bridgeSlots',
+      'wakeIntents',
+      'workflows',
     ]);
   });
 
@@ -112,6 +115,9 @@ describe('realtime snapshot invalidation', () => {
       findings: { state: 'ready', data: [] },
       runtime: { state: 'unavailable' },
       git: { state: 'unavailable' },
+      bridgeSlots: { state: 'ready', data: { items: [], truncated: false } },
+      wakeIntents: { state: 'ready', data: { items: [], truncated: false } },
+      workflows: { state: 'ready', data: { items: [], truncated: false } },
     };
     const onChange = vi.fn();
     const refreshController = createPulseRefreshController({
@@ -171,7 +177,10 @@ describe('realtime snapshot invalidation', () => {
     ['usage.reported', ['usage']],
     ['context.capability.loaded', ['context']],
     ['optimization.finding.detected', ['findings']],
-    ['message.responded', []],
+    ['message.responded', ['bridgeSlots', 'wakeIntents', 'workflows']],
+    ['bridge.slot.attached', ['bridgeSlots', 'wakeIntents', 'workflows']],
+    ['wake.dispatched', ['bridgeSlots', 'wakeIntents', 'workflows']],
+    ['workflow.continued', ['bridgeSlots', 'wakeIntents', 'workflows']],
     ['future.adapter.observed', []],
   ])('maps %s only to authoritative affected resources', (eventType, expected) => {
     expect(resourcesForEvent(eventType)).toEqual(expected);

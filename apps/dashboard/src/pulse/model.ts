@@ -1,4 +1,10 @@
 import type { DashboardEvent } from '../realtime/schema.js';
+import type {
+  BridgeSlot,
+  RetainedWakeCollection,
+  WakeIntent,
+  Workflow,
+} from '../api/wake-scope.js';
 
 export type Availability<T> = { state: 'ready'; data: T } | { state: 'unavailable' };
 export type ObservedBoolean = boolean | 'unknown';
@@ -128,9 +134,15 @@ export type PulseResources = {
   findings: Availability<PulseFinding[]>;
   runtime: Availability<PulseRuntimeInfo>;
   git: Availability<PulseGitResource>;
+  bridgeSlots: Availability<RetainedWakeCollection<BridgeSlot>>;
+  wakeIntents: Availability<RetainedWakeCollection<WakeIntent>>;
+  workflows: Availability<RetainedWakeCollection<Workflow>>;
 };
 
-export type PulseInput = Omit<PulseResources, 'runtime' | 'git'> & {
+export type PulseInput = Omit<
+  PulseResources,
+  'runtime' | 'git' | 'bridgeSlots' | 'wakeIntents' | 'workflows'
+> & {
   measuredLatencyMs: number;
   snapshotAt: string;
   /**
@@ -141,6 +153,9 @@ export type PulseInput = Omit<PulseResources, 'runtime' | 'git'> & {
    */
   runtime?: Availability<PulseRuntimeInfo>;
   git?: Availability<PulseGitResource>;
+  bridgeSlots?: Availability<RetainedWakeCollection<BridgeSlot>>;
+  wakeIntents?: Availability<RetainedWakeCollection<WakeIntent>>;
+  workflows?: Availability<RetainedWakeCollection<Workflow>>;
 };
 
 /**
@@ -435,6 +450,53 @@ export function buildPulseSnapshot(input: PulseInput) {
     ).length,
   };
 
+  const hasWakeDelivery =
+    input.bridgeSlots !== undefined ||
+    input.wakeIntents !== undefined ||
+    input.workflows !== undefined;
+  const bridgeSlots = input.bridgeSlots ?? { state: 'unavailable' as const };
+  const wakeIntents = input.wakeIntents ?? { state: 'unavailable' as const };
+  const workflows = input.workflows ?? { state: 'unavailable' as const };
+  const activeBridgeSlots =
+    bridgeSlots.state === 'ready'
+      ? bridgeSlots.data.items.filter(
+          (slot) =>
+            slot.state === 'active' && Date.parse(slot.expiresAt) > Date.parse(input.snapshotAt),
+        )
+      : [];
+  const slotCounts = new Map<string, number>();
+  for (const slot of activeBridgeSlots) {
+    const key = `${slot.workspaceId}\u0000${slot.projectId}\u0000${slot.agentId}`;
+    slotCounts.set(key, (slotCounts.get(key) ?? 0) + 1);
+  }
+  const duplicateSlotCount = [...slotCounts.values()].reduce(
+    (total, count) => total + Math.max(0, count - 1),
+    0,
+  );
+  const wakeDelivery = hasWakeDelivery
+    ? {
+        supervisorOwnership:
+          bridgeSlots.state === 'unavailable'
+            ? ('unavailable' as const)
+            : activeBridgeSlots.length > 0
+              ? ('observed' as const)
+              : ('not-observed' as const),
+        activeSlotCount: bridgeSlots.state === 'ready' ? activeBridgeSlots.length : undefined,
+        duplicateSlotCount: bridgeSlots.state === 'ready' ? duplicateSlotCount : undefined,
+        indeterminateWakeCount:
+          wakeIntents.state === 'ready'
+            ? wakeIntents.data.items.filter((intent) => intent.state === 'indeterminate').length
+            : undefined,
+        activeWorkflowCount:
+          workflows.state === 'ready'
+            ? workflows.data.items.filter((workflow) => workflow.state === 'active').length
+            : undefined,
+        bridgeSlots,
+        wakeIntents,
+        workflows,
+      }
+    : undefined;
+
   return {
     snapshotAt: input.snapshotAt,
     measuredLatencyMs: input.measuredLatencyMs,
@@ -473,6 +535,7 @@ export function buildPulseSnapshot(input: PulseInput) {
     findings: input.findings.state === 'ready' ? input.findings.data : [],
     findingsState: input.findings.state,
     sessionsState: input.sessions.state,
+    wakeDelivery,
     partial: [
       input.health,
       input.projects,
@@ -486,6 +549,9 @@ export function buildPulseSnapshot(input: PulseInput) {
       // failure marks the snapshot partial.
       ...(input.runtime === undefined ? [] : [input.runtime]),
       ...(input.git === undefined ? [] : [input.git]),
+      ...(input.bridgeSlots === undefined ? [] : [input.bridgeSlots]),
+      ...(input.wakeIntents === undefined ? [] : [input.wakeIntents]),
+      ...(input.workflows === undefined ? [] : [input.workflows]),
     ].some((resource) => resource.state === 'unavailable'),
   };
 }
