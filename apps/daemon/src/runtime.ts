@@ -13,6 +13,8 @@ import {
   createManagedRedisConnection,
   createLeaseRepository,
   createMessageRepository,
+  createWakeIntentRepository,
+  createWorkflowRepository,
   createControlPlaneRepository,
   createIntelligenceRepository,
   createRedisKeys,
@@ -68,6 +70,8 @@ import { createHostResourcesReader } from './host-resources.js';
 import { createProjectService } from './project-service.js';
 import { createRealtimeRelay } from './realtime-relay.js';
 import { createSessionService, isVersionConflict } from './session-service.js';
+import { createRedisWakeDispatchEvidence, createWakeIntentService } from './wake-intent-service.js';
+import { createWorkflowService } from './workflow-service.js';
 import {
   createTranscriptIngestService,
   createTranscriptIngestTick,
@@ -232,6 +236,7 @@ export type StartDaemonConnections = {
   command: ManagedRedisConnection;
   admin: ManagedRedisConnection;
   relay: ManagedRedisConnection;
+  wake: ManagedRedisConnection;
 };
 
 export type StartDaemonOptions = {
@@ -272,6 +277,8 @@ const defaults = {
   nativeLinkRetentionMax: 1_000,
   messageTimeoutSweepIntervalMs: 1_000,
   messageTimeoutBatchSize: 100,
+  wakeSweepIntervalMs: 1_000,
+  wakeSweepBatchSize: 100,
   messageMaxContentBytes: 32_768,
   messageMaxSubjectBytes: 512,
   messageMaxResponseBytes: 65_536,
@@ -349,7 +356,7 @@ class ConnectionHealthGateway implements RedisGateway {
   }
 
   async close(): Promise<void> {
-    // The owned runtime closes its three connections in drain order.
+    // The owned runtime closes its four connections in drain order.
   }
 }
 
@@ -436,6 +443,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       command: createConnection(),
       admin: createConnection(),
       relay: createConnection(),
+      wake: createConnection(),
     } satisfies StartDaemonConnections);
   const readiness = createRuntimeReadiness('starting');
   const ownership = createDaemonOwnershipLease({
@@ -449,6 +457,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let app: DaemonApp | undefined;
   let sweepTimer: NodeJS.Timeout | undefined;
   let messageTimeoutTimer: NodeJS.Timeout | undefined;
+  let wakeSweepTimer: NodeJS.Timeout | undefined;
   let leaseExpiryTimer: NodeJS.Timeout | undefined;
   let retentionTimer: NodeJS.Timeout | undefined;
   let gitScanTimer: NodeJS.Timeout | undefined;
@@ -456,6 +465,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let shutdownPromise: Promise<void> | undefined;
   let sweeping = false;
   let sweepingMessageTimeouts = false;
+  let sweepingWakeIntents = false;
   let sweepingLeaseExpiry = false;
   let retaining = false;
   const backgroundWork = createBackgroundWorkTracker();
@@ -477,6 +487,21 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   });
   const messageRepository = createMessageRepository({
     client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const workflowRepository = createWorkflowRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const wakeIntentRepository = createWakeIntentRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const wakeClaimRepository = createWakeIntentRepository({
+    client: connections.wake,
     keys,
     functions: registry,
   });
@@ -555,6 +580,23 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
           );
         },
       }),
+  });
+  const workflowService = createWorkflowService({
+    repository: workflowRepository,
+    sessions: sessionService,
+    workspaceId: config.workspaceId,
+    messageTimeoutMs: setting(config, 'messageDefaultTimeoutMs'),
+    maxContentBytes: setting(config, 'messageMaxContentBytes'),
+    maxSubjectBytes: setting(config, 'messageMaxSubjectBytes'),
+  });
+  const wakeIntentService = createWakeIntentService({
+    repository: wakeIntentRepository,
+    claimRepository: wakeClaimRepository,
+    evidence: createRedisWakeDispatchEvidence({
+      repository,
+      client: connections.command,
+      keys,
+    }),
   });
   const controlPlaneService = createControlPlaneService({
     repository: controlPlaneRepository,
@@ -806,6 +848,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
 
   const runRecovery = async ({ hasPendingRequest }: DaemonRecoveryRunContext): Promise<void> => {
     transitionDegraded();
+    // A BLOCKing wake claim must never hold recovery behind its own socket.
+    abortConnection(connections.wake);
     let backoff = setting(config, 'reconnectInitialMs');
     while (canRecover()) {
       try {
@@ -821,6 +865,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
           hasPendingRequest,
           recoverRuntimeState: async () => {
             await verifyOrLoadFunctionLibrary(connections.admin, library, ownership);
+            await connect(connections.wake);
+            await wakeClaimRepository.createGroupAtZero();
             await ensureRealtimeStreamGroup(
               connections.admin,
               keys.globalEvents,
@@ -889,6 +935,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       if (messageTimeoutTimer !== undefined) {
         clearInterval(messageTimeoutTimer);
       }
+      if (wakeSweepTimer !== undefined) {
+        clearInterval(wakeSweepTimer);
+      }
       if (leaseExpiryTimer !== undefined) {
         clearInterval(leaseExpiryTimer);
       }
@@ -901,6 +950,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       if (transcriptScanTimer !== undefined) {
         clearInterval(transcriptScanTimer);
       }
+      // Wake claims use a dedicated BLOCKing connection. Abort and close it
+      // before waiting for mutation drain so a long claim cannot deadlock
+      // cooperative shutdown.
+      abortConnection(connections.wake);
+      await closeConnection(connections.wake);
       const inFlightDrained = await readiness.waitForInFlight(Math.max(0, deadline - Date.now()));
       const backgroundDrained = await backgroundWork.waitForIdle(
         Math.max(0, deadline - Date.now()),
@@ -954,6 +1008,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     await ownership.acquire();
     readiness.transitionTo('recovering');
     await verifyOrLoadFunctionLibrary(connections.admin, library, ownership);
+    await connect(connections.wake);
+    await wakeClaimRepository.createGroupAtZero();
     await ensureRealtimeStreamGroup(connections.admin, keys.globalEvents, REALTIME_CONSUMER_GROUP);
     await connect(connections.relay);
     await clearStaleConfigFileLocks(canonicalStore.globalRoot);
@@ -987,6 +1043,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         messages: messageService,
         leases: leaseService,
         bridgeSlots: bridgeSlotService,
+        wakeIntents: wakeIntentService,
+        workflows: workflowService,
         controlPlane: controlPlaneService,
         configControl: configControlService,
         intelligence: intelligenceService,
@@ -1063,6 +1121,30 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       setting(config, 'messageTimeoutSweepIntervalMs'),
     );
     messageTimeoutTimer.unref?.();
+
+    wakeSweepTimer = setInterval(
+      () => {
+        if (sweepingWakeIntents || readiness.state !== 'ready') {
+          return;
+        }
+        sweepingWakeIntents = true;
+        const scheduled = backgroundWork.run(
+          async () => {
+            try {
+              await wakeIntentService.sweep(setting(config, 'wakeSweepBatchSize'));
+            } finally {
+              sweepingWakeIntents = false;
+            }
+          },
+          (error) => app?.log.error({ err: error }, 'Wake intent sweep failed'),
+        );
+        if (!scheduled) {
+          sweepingWakeIntents = false;
+        }
+      },
+      setting(config, 'wakeSweepIntervalMs'),
+    );
+    wakeSweepTimer.unref?.();
 
     leaseExpiryTimer = setInterval(
       () => {
@@ -1182,6 +1264,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     if (messageTimeoutTimer !== undefined) {
       clearInterval(messageTimeoutTimer);
     }
+    if (wakeSweepTimer !== undefined) {
+      clearInterval(wakeSweepTimer);
+    }
     if (leaseExpiryTimer !== undefined) {
       clearInterval(leaseExpiryTimer);
     }
@@ -1199,6 +1284,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     await app?.close().catch(() => undefined);
     await ownership.release().catch(() => false);
     await Promise.all([
+      closeConnection(connections.wake),
       closeConnection(connections.relay),
       closeConnection(connections.command),
       closeConnection(connections.admin),

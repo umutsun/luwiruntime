@@ -8,6 +8,7 @@ import {
   createFunctionRegistry,
   createManagedRedisConnection,
   createRedisKeys,
+  WAKE_CONSUMER_GROUP,
   type ManagedRedisConnection,
 } from '@luwi/redis';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -40,6 +41,8 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       relayBlockMs: 25,
       messageTimeoutSweepIntervalMs: 25,
       messageTimeoutBatchSize: 10,
+      wakeSweepIntervalMs: 25,
+      wakeSweepBatchSize: 10,
       retentionIntervalMs: 60_000,
       drainTimeoutMs: 1_000,
       allowedOrigins: ['http://127.0.0.1:48782'],
@@ -56,11 +59,13 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       command: ManagedRedisConnection;
       admin: ManagedRedisConnection;
       relay: ManagedRedisConnection;
+      wake: ManagedRedisConnection;
     } {
       return {
         command: createManagedRedisConnection({ url: testRedisUrl ?? '' }),
         admin: createManagedRedisConnection({ url: testRedisUrl ?? '' }),
         relay: createManagedRedisConnection({ url: testRedisUrl ?? '' }),
+        wake: createManagedRedisConnection({ url: testRedisUrl ?? '' }),
       };
     }
 
@@ -100,6 +105,16 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         connections: firstConnections,
       });
       expect(runtime.runtimeState()).toBe('ready');
+      await expect(
+        firstConnections.admin.sendCommand(['XINFO', 'GROUPS', keys.wakeStream]),
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: WAKE_CONSUMER_GROUP,
+            'last-delivered-id': '0-0',
+          }),
+        ]),
+      );
       expect((await runtime.app.inject({ method: 'GET', url: '/health' })).statusCode).toBe(200);
       await expect(
         runtime.app.injectWS('/api/v1/realtime', {

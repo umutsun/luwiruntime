@@ -42,6 +42,8 @@ const environmentSchema = z.object({
   LUWI_NATIVE_LINK_RETENTION_MAX: z.coerce.number().int().min(1).max(1_000_000).default(1_000),
   LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS: z.coerce.number().int().min(50).default(1_000),
   LUWI_MESSAGE_TIMEOUT_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  LUWI_WAKE_SWEEP_INTERVAL_MS: z.coerce.number().int().min(50).default(1_000),
+  LUWI_WAKE_SWEEP_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
   LUWI_MESSAGE_MAX_CONTENT_BYTES: z.coerce
     .number()
     .int()
@@ -166,6 +168,8 @@ export type DaemonConfig = {
   nativeLinkRetentionMax?: number;
   messageTimeoutSweepIntervalMs?: number;
   messageTimeoutBatchSize?: number;
+  wakeSweepIntervalMs?: number;
+  wakeSweepBatchSize?: number;
   messageMaxContentBytes?: number;
   messageMaxSubjectBytes?: number;
   messageMaxResponseBytes?: number;
@@ -303,6 +307,8 @@ export function loadDaemonConfig(
     capabilityRoots,
     messageTimeoutSweepIntervalMs: parsed.LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS,
     messageTimeoutBatchSize: parsed.LUWI_MESSAGE_TIMEOUT_BATCH_SIZE,
+    wakeSweepIntervalMs: parsed.LUWI_WAKE_SWEEP_INTERVAL_MS,
+    wakeSweepBatchSize: parsed.LUWI_WAKE_SWEEP_BATCH_SIZE,
     messageMaxContentBytes: parsed.LUWI_MESSAGE_MAX_CONTENT_BYTES,
     messageMaxSubjectBytes: parsed.LUWI_MESSAGE_MAX_SUBJECT_BYTES,
     messageMaxResponseBytes: parsed.LUWI_MESSAGE_MAX_RESPONSE_BYTES,

@@ -96,6 +96,32 @@ describe('daemon runtime', () => {
     expect(coordinatorBlock).toContain('void shutdownRuntime();');
   });
 
+  it('creates the wake consumer group only after v13 validation and drains its blocker first', () => {
+    const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
+    const startup = source.indexOf('await ownership.acquire();');
+    const validated = source.indexOf(
+      'await verifyOrLoadFunctionLibrary(connections.admin, library, ownership);',
+      startup,
+    );
+    const wakeConnected = source.indexOf('await connect(connections.wake);', validated);
+    const wakeGroup = source.indexOf(
+      'await wakeClaimRepository.createGroupAtZero();',
+      wakeConnected,
+    );
+    const listener = source.indexOf('await app.listen', wakeGroup);
+
+    expect(validated).toBeGreaterThan(startup);
+    expect(wakeConnected).toBeGreaterThan(validated);
+    expect(wakeGroup).toBeGreaterThan(wakeConnected);
+    expect(listener).toBeGreaterThan(wakeGroup);
+
+    const shutdown = source.indexOf('const shutdownRuntime = async');
+    const abortWake = source.indexOf('abortConnection(connections.wake);', shutdown);
+    const drain = source.indexOf('readiness.waitForInFlight', shutdown);
+    expect(abortWake).toBeGreaterThan(shutdown);
+    expect(abortWake).toBeLessThan(drain);
+  });
+
   it('restores canonical project projections before dependent control-plane state', () => {
     const source = readFileSync(new URL('./runtime.ts', import.meta.url), 'utf8');
     const restore = source.indexOf(
@@ -111,24 +137,27 @@ describe('daemon runtime', () => {
     const command = new FailingConnection();
     const admin = new FailingConnection();
     const relay = new FailingConnection();
+    const wake = new FailingConnection();
 
     await expect(
       startDaemon({
         config: ephemeralConfig,
         lifecycleToken: 'not-a-token',
-        connections: { command, admin, relay },
+        connections: { command, admin, relay, wake },
       }),
     ).rejects.toThrow('lifecycle token');
 
     expect(command.connectCalls).toBe(0);
     expect(admin.connectCalls).toBe(0);
     expect(relay.connectCalls).toBe(0);
+    expect(wake.connectCalls).toBe(0);
   });
 
   it('does not open the listener or signal handlers when Redis bootstrap fails', async () => {
     const command = new FailingConnection();
     const admin = new FailingConnection();
     const relay = new FailingConnection();
+    const wake = new FailingConnection();
     const signals = new CapturingSignals();
 
     await expect(
@@ -136,13 +165,14 @@ describe('daemon runtime', () => {
         config: ephemeralConfig,
         logger: false,
         signals,
-        connections: { command, admin, relay },
+        connections: { command, admin, relay, wake },
       }),
     ).rejects.toThrow('Redis unavailable');
 
     expect(command.connectCalls).toBe(1);
     expect(admin.connectCalls).toBe(0);
     expect(relay.connectCalls).toBe(0);
+    expect(wake.connectCalls).toBe(0);
     expect(signals.listeners.size).toBe(0);
   });
 
@@ -504,6 +534,7 @@ describe('native link retention repository', () => {
     expect(timerNames).toEqual([
       'sweepTimer',
       'messageTimeoutTimer',
+      'wakeSweepTimer',
       'leaseExpiryTimer',
       'retentionTimer',
       'gitScanTimer',

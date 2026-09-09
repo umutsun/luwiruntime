@@ -31,6 +31,8 @@ describe('daemon configuration', () => {
       capabilityRoots: [],
       messageTimeoutSweepIntervalMs: 1000,
       messageTimeoutBatchSize: 100,
+      wakeSweepIntervalMs: 1000,
+      wakeSweepBatchSize: 100,
       messageMaxContentBytes: 32768,
       messageMaxSubjectBytes: 512,
       messageMaxResponseBytes: 65536,
@@ -138,6 +140,8 @@ describe('daemon configuration', () => {
       nativeLinkRetentionMax: 1000,
       messageTimeoutSweepIntervalMs: 1000,
       messageTimeoutBatchSize: 100,
+      wakeSweepIntervalMs: 1000,
+      wakeSweepBatchSize: 100,
       messageMaxContentBytes: 32768,
       messageMaxSubjectBytes: 512,
       messageMaxResponseBytes: 65536,
@@ -191,6 +195,17 @@ describe('daemon configuration', () => {
     expect(loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: '32' }).nativeLinkRetentionMax).toBe(
       32,
     );
+  });
+
+  it('bounds wake sweep cadence and batch size', () => {
+    expect(
+      loadDaemonConfig({
+        LUWI_WAKE_SWEEP_INTERVAL_MS: '250',
+        LUWI_WAKE_SWEEP_BATCH_SIZE: '32',
+      }),
+    ).toMatchObject({ wakeSweepIntervalMs: 250, wakeSweepBatchSize: 32 });
+    expect(() => loadDaemonConfig({ LUWI_WAKE_SWEEP_INTERVAL_MS: '49' })).toThrow();
+    expect(() => loadDaemonConfig({ LUWI_WAKE_SWEEP_BATCH_SIZE: '1001' })).toThrow();
   });
 
   it('rejects a native link retention bound that would retain nothing', () => {

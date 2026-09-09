@@ -1,6 +1,7 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 import {
+  agentMessageSchema,
   agentDefinitionCollectionSchema,
   agentDefinitionCreateRequestSchema,
   agentDefinitionPatchRequestSchema,
@@ -124,6 +125,22 @@ import {
   usageListQuerySchema,
   usageRecordSchema,
   usageSummarySchema,
+  wakeIntentClaimRequestSchema,
+  wakeIntentClaimResponseSchema,
+  wakeIntentCollectionSchema,
+  wakeIntentCompleteRequestSchema,
+  wakeIntentCompleteResponseSchema,
+  wakeIntentDispatchingRequestSchema,
+  wakeIntentDispatchingResponseSchema,
+  wakeIntentListQuerySchema,
+  wakeIntentRecoverRequestSchema,
+  wakeIntentRecoverResponseSchema,
+  wakeIntentReclaimResponseSchema,
+  continueWorkflowRequestSchema,
+  workflowCollectionSchema,
+  workflowCreateRequestSchema,
+  workflowListQuerySchema,
+  workflowViewSchema,
 } from '@luwi/protocol';
 import { RedisRepositoryError, type RedisGateway } from '@luwi/redis';
 import {
@@ -148,6 +165,8 @@ import type { MessageService } from './message-service.js';
 import type { IntelligenceService } from './intelligence-service.js';
 import type { ProjectService } from './project-service.js';
 import type { SessionService } from './session-service.js';
+import type { WakeIntentService } from './wake-intent-service.js';
+import type { WorkflowService } from './workflow-service.js';
 import {
   type WebSocketHub,
   type WebSocketPeer,
@@ -173,6 +192,8 @@ export type BuildDaemonOptions = {
     messages?: MessageService;
     leases?: LeaseService;
     bridgeSlots?: BridgeSlotService;
+    wakeIntents?: WakeIntentService;
+    workflows?: WorkflowService;
     controlPlane?: ControlPlaneService;
     configControl?: ConfigControlService;
     intelligence?: IntelligenceService;
@@ -461,6 +482,16 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
     const leaseParamsSchema = z.strictObject({ leaseId: z.string().min(1).max(128) });
     const messageParamsSchema = z.strictObject({
       correlationId: z.string().trim().min(1).max(128),
+    });
+    const wakeIntentParamsSchema = z.strictObject({
+      intentId: z.string().trim().min(1).max(128),
+    });
+    const workflowParamsSchema = z.strictObject({
+      workflowId: z.string().trim().min(1).max(128),
+    });
+    const workflowContinuationParamsSchema = z.strictObject({
+      actorSessionId: z.string().trim().min(1).max(128),
+      workflowId: z.string().trim().min(1).max(128),
     });
 
     app.get('/api/v1/projects', async () =>
@@ -1146,6 +1177,105 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         const { slotId } = parseRequestInput(slotParamsSchema, request.params);
         return bridgeSlotViewSchema.parse(await withCurrentRead(() => bridgeSlots.get(slotId)));
       });
+    }
+
+    if (services.wakeIntents !== undefined) {
+      const wakeIntents = services.wakeIntents;
+
+      app.get('/api/v1/wake-intents', async (request) => {
+        const query = parseRequestInput(wakeIntentListQuerySchema, request.query);
+        return wakeIntentCollectionSchema.parse({
+          wakeIntents: await withCurrentRead(() => wakeIntents.list(query)),
+        });
+      });
+
+      app.post('/api/v1/wake-intents/claim', async (request) => {
+        const body = parseRequestInput(wakeIntentClaimRequestSchema, request.body);
+        return wakeIntentClaimResponseSchema.parse(
+          await withMutation(() => wakeIntents.claim(body)),
+        );
+      });
+
+      app.post('/api/v1/wake-intents/reclaim', async (request) => {
+        const body = parseRequestInput(wakeIntentRecoverRequestSchema, request.body);
+        return wakeIntentReclaimResponseSchema.parse(
+          await withMutation(() => wakeIntents.reclaim(body)),
+        );
+      });
+
+      app.post('/api/v1/wake-intents/recover', async (request) => {
+        const body = parseRequestInput(wakeIntentRecoverRequestSchema, request.body);
+        return wakeIntentRecoverResponseSchema.parse(
+          await withMutation(() => wakeIntents.recover(body)),
+        );
+      });
+
+      app.post('/api/v1/wake-intents/:intentId/dispatching', async (request) => {
+        const { intentId } = parseRequestInput(wakeIntentParamsSchema, request.params);
+        const body = parseRequestInput(wakeIntentDispatchingRequestSchema, request.body);
+        return wakeIntentDispatchingResponseSchema.parse(
+          await withMutation(() => wakeIntents.markDispatching(intentId, body)),
+        );
+      });
+
+      app.post('/api/v1/wake-intents/:intentId/complete', async (request) => {
+        const { intentId } = parseRequestInput(wakeIntentParamsSchema, request.params);
+        const body = parseRequestInput(wakeIntentCompleteRequestSchema, request.body);
+        return wakeIntentCompleteResponseSchema.parse(
+          await withMutation(() => wakeIntents.complete(intentId, body)),
+        );
+      });
+    }
+
+    if (services.workflows !== undefined) {
+      const workflows = services.workflows;
+      const workflowResult = (result: {
+        status: 'created' | 'existing' | 'updated';
+        workflow: unknown;
+        message?: unknown;
+      }) => ({
+        status: result.status,
+        workflow: workflowViewSchema.parse(result.workflow),
+        ...(result.message === undefined
+          ? {}
+          : { message: agentMessageSchema.parse(result.message) }),
+      });
+
+      app.get('/api/v1/workflows', async (request) => {
+        const query = parseRequestInput(workflowListQuerySchema, request.query);
+        return workflowCollectionSchema.parse({
+          workflows: await withCurrentRead(() => workflows.list(query)),
+        });
+      });
+
+      app.get('/api/v1/workflows/:workflowId', async (request) => {
+        const { workflowId } = parseRequestInput(workflowParamsSchema, request.params);
+        return workflowViewSchema.parse(await withCurrentRead(() => workflows.get(workflowId)));
+      });
+
+      app.post('/api/v1/workflows', async (request, reply) => {
+        const body = parseRequestInput(workflowCreateRequestSchema, request.body);
+        const result = workflowResult(await withMutation(() => workflows.create(body)));
+        if (result.status === 'existing') return reply.code(200).send(result);
+        return reply
+          .code(201)
+          .header('Location', `/api/v1/workflows/${result.workflow.id}`)
+          .send(result);
+      });
+
+      app.post(
+        '/api/v1/sessions/:actorSessionId/workflows/:workflowId/continue',
+        async (request) => {
+          const { actorSessionId, workflowId } = parseRequestInput(
+            workflowContinuationParamsSchema,
+            request.params,
+          );
+          const body = parseRequestInput(continueWorkflowRequestSchema, request.body);
+          return workflowResult(
+            await withMutation(() => workflows.continue(actorSessionId, workflowId, body)),
+          );
+        },
+      );
     }
 
     if (services.controlPlane !== undefined) {
