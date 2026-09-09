@@ -2,7 +2,6 @@ import type {
   WakeIntentClaimItem,
   WakeIntentClaimResponse,
   WakeIntentCompleteRequest,
-  WakeIntentDispatchingRequest,
   WakeIntentView,
 } from '@luwi/protocol';
 import { EventEmitter } from 'node:events';
@@ -41,7 +40,7 @@ function wakeClient(response: WakeIntentClaimResponse) {
   const client: CoordinatorWakeClient = {
     claim: vi.fn(async () => response),
     recover: vi.fn(async () => response),
-    markDispatching: vi.fn(async (_intentId: string, _input: WakeIntentDispatchingRequest) => ({
+    markDispatching: vi.fn(async () => ({
       status: 'updated' as const,
       intent: { ...claimedIntent, state: 'dispatching' as const },
     })),
@@ -50,10 +49,17 @@ function wakeClient(response: WakeIntentClaimResponse) {
   return { client, complete };
 }
 
-function childThat(events: (child: EventEmitter) => void): WakeQueueChild {
-  const child = new EventEmitter();
+type TestWakeQueueChild = WakeQueueChild & {
+  kill: ReturnType<typeof vi.fn<(_signal?: NodeJS.Signals) => boolean>>;
+  unref: ReturnType<typeof vi.fn<() => void>>;
+};
+
+function childThat(events: (child: EventEmitter) => void): TestWakeQueueChild {
+  const child = new EventEmitter() as EventEmitter & TestWakeQueueChild;
+  child.kill = vi.fn(() => true);
+  child.unref = vi.fn(() => undefined);
   queueMicrotask(() => events(child));
-  return child as WakeQueueChild;
+  return child;
 }
 
 describe('coordinator wake dispatcher', () => {
@@ -66,7 +72,7 @@ describe('coordinator wake dispatcher', () => {
         target: { adapter: 'codex-queue-v1', nativeSessionId: 'native-session' },
       }),
     );
-    vi.mocked(client.markDispatching).mockImplementation(async (_id, _input) => {
+    vi.mocked(client.markDispatching).mockImplementation(async () => {
       order.push('dispatching');
       return {
         status: 'updated',
@@ -285,8 +291,189 @@ describe('coordinator wake dispatcher', () => {
     expect(client.claim).not.toHaveBeenCalled();
   });
 
+  it('rechecks recovery after a bounded claim wait when work was not idle at startup', async () => {
+    const empty = { items: [], recoveredDispatching: [], terminalAcknowledged: 0 };
+    const recovered = {
+      ...claimedIntent,
+      state: 'indeterminate' as const,
+      reasonCode: 'dispatcher_recovered',
+    };
+    let finishClaim!: (response: WakeIntentClaimResponse) => void;
+    const pendingClaim = new Promise<WakeIntentClaimResponse>((resolve) => {
+      finishClaim = resolve;
+    });
+    const { client } = wakeClient(empty);
+    const order: string[] = [];
+    vi.mocked(client.recover)
+      .mockImplementationOnce(async () => {
+        order.push('recover-empty');
+        return empty;
+      })
+      .mockImplementationOnce(async () => {
+        order.push('recover-late');
+        return { items: [], recoveredDispatching: [recovered], terminalAcknowledged: 0 };
+      })
+      .mockImplementationOnce(async () => {
+        order.push('recover-drained');
+        return empty;
+      });
+    vi.mocked(client.claim)
+      .mockImplementationOnce(async () => {
+        order.push('claim-wait');
+        return empty;
+      })
+      .mockImplementationOnce(async () => {
+        order.push('claim-stop');
+        return pendingClaim;
+      });
+    const dispatcher = createCoordinatorWakeDispatcher({
+      client,
+      dispatcherInstanceId: 'dispatcher-1',
+      environment: {},
+    });
+
+    await dispatcher.start();
+    await vi.waitFor(() => expect(order).toContain('claim-stop'));
+    const stopping = dispatcher.stop();
+    finishClaim(empty);
+    await stopping;
+
+    expect(order.slice(0, 4)).toEqual([
+      'recover-empty',
+      'claim-wait',
+      'recover-late',
+      'recover-drained',
+    ]);
+  });
+
+  it('drains every stale recovery page before returning to the blocking claim', async () => {
+    const empty = { items: [], recoveredDispatching: [], terminalAcknowledged: 0 };
+    const secondIntent = {
+      ...claimedIntent,
+      id: 'message-2',
+      messageId: 'message-2',
+      correlationId: 'correlation-2',
+    };
+    const stale = [
+      claimed({
+        intent: claimedIntent,
+        claimId: 'claim-recovered-1',
+        target: { adapter: 'codex-queue-v1', nativeSessionId: 'native-session-1' },
+      }),
+      claimed({
+        intent: secondIntent,
+        claimId: 'claim-recovered-2',
+        target: { adapter: 'codex-queue-v1', nativeSessionId: 'native-session-2' },
+      }),
+    ];
+    let finishClaim!: (response: WakeIntentClaimResponse) => void;
+    const pendingClaim = new Promise<WakeIntentClaimResponse>((resolve) => {
+      finishClaim = resolve;
+    });
+    const { client } = wakeClient(empty);
+    const order: string[] = [];
+    vi.mocked(client.recover)
+      .mockImplementationOnce(async () => {
+        order.push('recover-1');
+        return stale[0]!;
+      })
+      .mockImplementationOnce(async () => {
+        order.push('recover-2');
+        return stale[1]!;
+      })
+      .mockImplementationOnce(async () => {
+        order.push('recover-empty');
+        return empty;
+      });
+    vi.mocked(client.claim).mockImplementationOnce(async () => {
+      order.push('claim');
+      return pendingClaim;
+    });
+    let attempts = 0;
+    const spawn = vi.fn(() =>
+      childThat((child) => {
+        child.emit('spawn');
+        child.emit('exit', 0, null);
+      }),
+    );
+    const dispatcher = createCoordinatorWakeDispatcher({
+      client,
+      dispatcherInstanceId: 'dispatcher-1',
+      spawn,
+      environment: {},
+      randomUUID: () => `attempt-${String(++attempts)}`,
+    });
+
+    await dispatcher.start();
+    await vi.waitFor(() => expect(order).toContain('claim'));
+    const stopping = dispatcher.stop();
+    finishClaim(empty);
+    await stopping;
+
+    expect(order).toEqual(['recover-1', 'recover-2', 'recover-empty', 'claim']);
+    expect(spawn).toHaveBeenCalledTimes(2);
+    expect(client.markDispatching).toHaveBeenCalledTimes(2);
+  });
+
+  it('revisits an unconfirmed dispatch completion without replaying its process', async () => {
+    const empty = { items: [], recoveredDispatching: [], terminalAcknowledged: 0 };
+    const item = claimed({
+      intent: claimedIntent,
+      claimId: 'claim-1',
+      target: { adapter: 'codex-queue-v1', nativeSessionId: 'native-session' },
+    });
+    const recovered = {
+      ...claimedIntent,
+      state: 'indeterminate' as const,
+      reasonCode: 'dispatcher_recovered',
+    };
+    let finishClaim!: (response: WakeIntentClaimResponse) => void;
+    const pendingClaim = new Promise<WakeIntentClaimResponse>((resolve) => {
+      finishClaim = resolve;
+    });
+    const { client, complete } = wakeClient(empty);
+    complete.mockRejectedValueOnce(new Error('daemon unavailable'));
+    vi.mocked(client.recover)
+      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce(empty)
+      .mockResolvedValueOnce({
+        items: [],
+        recoveredDispatching: [recovered],
+        terminalAcknowledged: 0,
+      })
+      .mockResolvedValueOnce(empty);
+    vi.mocked(client.claim)
+      .mockResolvedValueOnce(item)
+      .mockResolvedValueOnce(empty)
+      .mockImplementationOnce(async () => pendingClaim);
+    const spawn = vi.fn(() =>
+      childThat((child) => {
+        child.emit('spawn');
+        child.emit('exit', 0, null);
+      }),
+    );
+    const dispatcher = createCoordinatorWakeDispatcher({
+      client,
+      dispatcherInstanceId: 'dispatcher-1',
+      spawn,
+      environment: {},
+      randomUUID: () => 'attempt-1',
+    });
+
+    await dispatcher.start();
+    await vi.waitFor(() => expect(client.claim).toHaveBeenCalledTimes(3));
+    const stopping = dispatcher.stop();
+    finishClaim(empty);
+    await stopping;
+
+    expect(client.recover).toHaveBeenCalledTimes(4);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
   it('marks a spawned command indeterminate when its bounded outcome timer expires', async () => {
     let expire!: () => void;
+    let child!: TestWakeQueueChild;
     const { client, complete } = wakeClient(
       claimed({
         intent: claimedIntent,
@@ -297,11 +484,12 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
-      spawn: vi.fn(() =>
-        childThat((child) => {
-          child.emit('spawn');
-        }),
-      ),
+      spawn: vi.fn(() => {
+        child = childThat((spawned) => {
+          spawned.emit('spawn');
+        });
+        return child;
+      }),
       environment: {},
       randomUUID: () => 'attempt-1',
       setTimeout: ((callback: () => void) => {
@@ -323,6 +511,13 @@ describe('coordinator wake dispatcher', () => {
       'message-1',
       expect.objectContaining({ state: 'indeterminate', reasonCode: 'queue_timeout' }),
     );
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+    expect(child.unref).toHaveBeenCalledTimes(1);
+    child.emit('exit', 0, null);
+    expire();
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.unref).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it('marks an active spawned command indeterminate before supervisor shutdown completes', async () => {
@@ -338,11 +533,13 @@ describe('coordinator wake dispatcher', () => {
       recoveredDispatching: [],
       terminalAcknowledged: 0,
     });
-    const spawn = vi.fn(() =>
-      childThat((child) => {
-        child.emit('spawn');
-      }),
-    );
+    let child!: TestWakeQueueChild;
+    const spawn = vi.fn(() => {
+      child = childThat((spawned) => {
+        spawned.emit('spawn');
+      });
+      return child;
+    });
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
@@ -359,6 +556,13 @@ describe('coordinator wake dispatcher', () => {
       'message-1',
       expect.objectContaining({ state: 'indeterminate', reasonCode: 'dispatcher_stopped' }),
     );
+    expect(child.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+    expect(child.unref).toHaveBeenCalledTimes(1);
+    child.emit('error', new Error('late process error'));
+    child.emit('exit', null, 'SIGTERM');
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.unref).toHaveBeenCalledTimes(1);
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it('returns idle for an empty claim without touching the process boundary', async () => {

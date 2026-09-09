@@ -38,6 +38,8 @@ export interface WakeQueueChild {
     event: 'exit',
     listener: (code: number | null, signal: NodeJS.Signals | null) => void,
   ): unknown;
+  kill(signal?: NodeJS.Signals): boolean;
+  unref(): void;
 }
 
 export type WakeQueueSpawn = (
@@ -118,6 +120,14 @@ function defaultSpawn(
   options: Parameters<WakeQueueSpawn>[2],
 ): WakeQueueChild {
   return nodeSpawn(command, [...arguments_], options) as unknown as WakeQueueChild;
+}
+
+function batchHasRecoveryWork(batch: WakeIntentClaimResponse): boolean {
+  return (
+    batch.items.length > 0 ||
+    batch.recoveredDispatching.length > 0 ||
+    batch.terminalAcknowledged > 0
+  );
 }
 
 export function createCoordinatorWakeDispatcher(
@@ -239,21 +249,54 @@ export function createCoordinatorWakeDispatcher(
     return new Promise<CoordinatorWakeRunResult>((resolve) => {
       let spawned = false;
       let settled = false;
-      let timer: NodeJS.Timeout;
+      let childReleased = false;
+
+      const releaseUncertainChild = (): void => {
+        if (childReleased) return;
+        childReleased = true;
+        try {
+          child.kill('SIGTERM');
+        } catch (error) {
+          try {
+            report({
+              event: 'wake_process_termination_failed',
+              intentId: item.intent.id,
+              cause: String(error),
+            });
+          } catch {
+            // Cleanup must continue even when diagnostics are unavailable.
+          }
+        }
+        try {
+          child.unref();
+        } catch (error) {
+          try {
+            report({
+              event: 'wake_process_unref_failed',
+              intentId: item.intent.id,
+              cause: String(error),
+            });
+          } catch {
+            // Completion remains authoritative even when diagnostics are unavailable.
+          }
+        }
+      };
 
       const finish = (
         state: Exclude<CoordinatorWakeRunResult['state'], 'idle'>,
         reasonCode: string,
+        releaseChild = false,
       ): void => {
         if (settled) return;
         settled = true;
         disarm(timer);
         if (stopActiveDispatch === stopForShutdown) stopActiveDispatch = undefined;
+        if (releaseChild) releaseUncertainChild();
         void complete(item, attemptId, state, reasonCode, batch).then(resolve);
       };
-      const stopForShutdown = (): void => finish('indeterminate', 'dispatcher_stopped');
+      const stopForShutdown = (): void => finish('indeterminate', 'dispatcher_stopped', true);
       stopActiveDispatch = stopForShutdown;
-      timer = arm(() => finish('indeterminate', 'queue_timeout'), queueTimeoutMs);
+      const timer = arm(() => finish('indeterminate', 'queue_timeout', true), queueTimeoutMs);
 
       child.once('spawn', () => {
         spawned = true;
@@ -263,6 +306,7 @@ export function createCoordinatorWakeDispatcher(
         finish(
           spawned ? 'indeterminate' : 'fallback_only',
           spawned ? 'queue_outcome_unknown' : 'queue_spawn_failed',
+          spawned,
         );
       });
       child.once('exit', (code, signal) => {
@@ -321,19 +365,23 @@ export function createCoordinatorWakeDispatcher(
       if (running) return;
       running = true;
       loop = (async () => {
-        try {
-          await processBatch(
-            await options.client.recover({
+        while (running) {
+          let recovered: WakeIntentRecoverResponse;
+          try {
+            recovered = await options.client.recover({
               dispatcherInstanceId: options.dispatcherInstanceId,
               limit: 1,
               minIdleMs: WAKE_DEFAULT_MIN_IDLE_MS,
-            }),
-            () => running,
-          );
-        } catch (error) {
-          report({ event: 'wake_recovery_failed', cause: String(error) });
-        }
-        while (running) {
+            });
+            await processBatch(recovered, () => running);
+          } catch (error) {
+            report({ event: 'wake_recovery_failed', cause: String(error) });
+            if (running) await wait(DEFAULT_FAILURE_BACKOFF_MS);
+            continue;
+          }
+          if (!running) break;
+          if (batchHasRecoveryWork(recovered)) continue;
+
           try {
             await processBatch(
               await options.client.claim({
