@@ -90,6 +90,19 @@ export type SessionBootstrapOptions = {
   leaseClient?: SessionBootstrapLeaseClient;
   /** How often held leases are renewed. Defaults to half the default lease TTL. */
   leaseRenewIntervalMs?: number;
+  /** Runs after registration but before the session id becomes visible to callers. */
+  prepareSession?: (change: {
+    reason: 'registered' | 'recovered';
+    sessionId: string;
+    previousSessionId?: string;
+  }) => Promise<void>;
+  /** Classifies failures at the boundary where they occurred. */
+  classifyError?: (
+    phase: 'register' | 'prepare' | 'heartbeat',
+    error: unknown,
+  ) => 'transient' | 'lost_session' | 'fatal';
+  /** Called once when retrying would violate an ownership or trust boundary. */
+  onFatal?: (error: unknown) => void;
   onError?: (error: unknown) => void;
   onSessionChanged?: (change: SessionBootstrapChange) => void;
   now?: () => number;
@@ -146,7 +159,11 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
   }
 
   const report = (error: unknown): void => {
-    options.onError?.(error);
+    try {
+      options.onError?.(error);
+    } catch {
+      // Diagnostics must never prevent session cleanup or retry accounting.
+    }
   };
   const reportSessionChange = (change: SessionBootstrapChange): void => {
     try {
@@ -181,6 +198,37 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
     nextAttemptAt = 0;
   };
 
+  const classifyError = (
+    phase: 'register' | 'prepare' | 'heartbeat',
+    error: unknown,
+  ): 'transient' | 'lost_session' | 'fatal' =>
+    options.classifyError?.(phase, error) ??
+    (phase === 'heartbeat' && isLostSessionError(error) ? 'lost_session' : 'transient');
+
+  const haltFatal = async (error: unknown): Promise<void> => {
+    const current = sessionId;
+    active = false;
+    lifecycle += 1;
+    sessionId = undefined;
+    recoverySessionId = undefined;
+    resetBackoff();
+    if (timer !== undefined) {
+      disarm(timer);
+      timer = undefined;
+    }
+    if (renewalTimer !== undefined) {
+      disarm(renewalTimer);
+      renewalTimer = undefined;
+    }
+    if (current !== undefined) await closeQuietly(current);
+    report(error);
+    try {
+      options.onFatal?.(error);
+    } catch (observerError) {
+      report(observerError);
+    }
+  };
+
   const recordTransientFailure = (error: unknown): void => {
     report(error);
     consecutiveFailures += 1;
@@ -211,20 +259,41 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
             await closeQuietly(registered.id);
             return;
           }
+          const previousSessionId = recoverySessionId;
+          const preparedChange =
+            previousSessionId === undefined
+              ? ({ reason: 'registered', sessionId: registered.id } as const)
+              : ({
+                  reason: 'recovered',
+                  previousSessionId,
+                  sessionId: registered.id,
+                } as const);
+          try {
+            await options.prepareSession?.(preparedChange);
+          } catch (error) {
+            await closeQuietly(registered.id);
+            if (!active || generation !== lifecycle) return;
+            if (classifyError('prepare', error) === 'fatal') await haltFatal(error);
+            else recordTransientFailure(error);
+            return;
+          }
+          if (!active || generation !== lifecycle) {
+            await closeQuietly(registered.id);
+            return;
+          }
           sessionId = registered.id;
-          if (recoverySessionId === undefined) {
-            reportSessionChange({ reason: 'registered', sessionId: registered.id });
+          if (previousSessionId === undefined) {
+            reportSessionChange(preparedChange);
           } else {
-            reportSessionChange({
-              reason: 'recovered',
-              previousSessionId: recoverySessionId,
-              sessionId: registered.id,
-            });
+            reportSessionChange(preparedChange);
             recoverySessionId = undefined;
           }
           resetBackoff();
         } catch (error) {
-          if (active && generation === lifecycle) recordTransientFailure(error);
+          if (active && generation === lifecycle) {
+            if (classifyError('register', error) === 'fatal') await haltFatal(error);
+            else recordTransientFailure(error);
+          }
         }
         return;
       }
@@ -234,7 +303,12 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
         if (active && generation === lifecycle && sessionId === current) resetBackoff();
       } catch (error) {
         if (!active || generation !== lifecycle || sessionId !== current) return;
-        if (isLostSessionError(error)) {
+        const classification = classifyError('heartbeat', error);
+        if (classification === 'fatal') {
+          await haltFatal(error);
+          return;
+        }
+        if (classification === 'lost_session') {
           report(error);
           recoverySessionId = current;
           sessionId = undefined;

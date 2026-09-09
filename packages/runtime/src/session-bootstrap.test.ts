@@ -107,6 +107,154 @@ describe('session bootstrap', () => {
     expect(client.register).toHaveBeenCalledWith(expect.objectContaining({ bridgeOwner }));
   });
 
+  it('prepares a registered session before publishing it to callers', async () => {
+    let finishPreparation!: () => void;
+    const preparation = new Promise<void>((resolve) => {
+      finishPreparation = resolve;
+    });
+    const prepareSession = vi.fn(async () => preparation);
+    const changes: unknown[] = [];
+    const { bootstrap } = harness({
+      prepareSession,
+      onSessionChanged: (change: unknown) => changes.push(change),
+    });
+
+    const starting = bootstrap.start();
+    await flushAsyncWork();
+
+    expect(prepareSession).toHaveBeenCalledWith({
+      reason: 'registered',
+      sessionId: 'session-1',
+    });
+    expect(bootstrap.sessionId).toBeUndefined();
+    expect(changes).toEqual([]);
+
+    finishPreparation();
+    await starting;
+    expect(bootstrap.sessionId).toBe('session-1');
+    expect(changes).toEqual([{ reason: 'registered', sessionId: 'session-1' }]);
+  });
+
+  it('closes and retries a registration whose preparation fails transiently', async () => {
+    let registrations = 0;
+    const client = {
+      register: vi.fn(async () => ({ id: `session-${++registrations}` })),
+      heartbeat: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined),
+    };
+    const prepareSession = vi.fn(async () => {
+      if (prepareSession.mock.calls.length === 1) throw new Error('declaration unavailable');
+    });
+    const { bootstrap, timers, advanceTime } = harness({ client, prepareSession });
+
+    await bootstrap.start();
+    expect(bootstrap.sessionId).toBeUndefined();
+    expect(client.close).toHaveBeenCalledWith('session-1');
+
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+
+    expect(bootstrap.sessionId).toBe('session-2');
+    expect(prepareSession).toHaveBeenLastCalledWith({
+      reason: 'registered',
+      sessionId: 'session-2',
+    });
+  });
+
+  it('halts without publishing when preparation fails fatally', async () => {
+    const fatal = new ApplicationError('BRIDGE_SLOT_NOT_OWNER', 'slot lost', 409);
+    const onFatal = vi.fn();
+    const { bootstrap, client, timers } = harness({
+      prepareSession: vi.fn(async () => {
+        throw fatal;
+      }),
+      classifyError: (phase: string) => (phase === 'prepare' ? 'fatal' : 'transient'),
+      onFatal,
+    });
+
+    await bootstrap.start();
+
+    expect(bootstrap.sessionId).toBeUndefined();
+    expect(client.close).toHaveBeenCalledWith('session-1');
+    expect(onFatal).toHaveBeenCalledWith(fatal);
+    expect(timers).toHaveLength(0);
+  });
+
+  it('unpublishes and closes a live session when heartbeat failure is fatal', async () => {
+    const fatal = new ApplicationError('BRIDGE_SLOT_NOT_OWNER', 'slot lost', 409);
+    const client = {
+      register: vi.fn(async () => ({ id: 'session-1' })),
+      heartbeat: vi.fn(async () => {
+        throw fatal;
+      }),
+      close: vi.fn(async () => undefined),
+    };
+    const onFatal = vi.fn();
+    const { bootstrap, timers, advanceTime } = harness({
+      client,
+      classifyError: (phase: string) => (phase === 'heartbeat' ? 'fatal' : 'transient'),
+      onFatal,
+    });
+
+    await bootstrap.start();
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+
+    expect(bootstrap.sessionId).toBeUndefined();
+    expect(client.close).toHaveBeenCalledWith('session-1');
+    expect(onFatal).toHaveBeenCalledTimes(1);
+    timers[0]?.callback();
+    await flushAsyncWork();
+    expect(client.heartbeat).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears stale recovery identity after a fatal preparation before restart', async () => {
+    let registrations = 0;
+    const client = {
+      register: vi.fn(async () => ({ id: `session-${++registrations}` })),
+      heartbeat: vi.fn(async () => {
+        throw new ApplicationError('SESSION_TERMINAL', 'gone', 409);
+      }),
+      close: vi.fn(async () => undefined),
+    };
+    const prepared: unknown[] = [];
+    const fatal = new ApplicationError('BRIDGE_SLOT_NOT_OWNER', 'slot lost', 409);
+    const prepareSession = vi.fn(async (change: { reason: string }) => {
+      prepared.push(change);
+      if (change.reason === 'recovered') throw fatal;
+    });
+    const { bootstrap, timers, advanceTime } = harness({
+      client,
+      prepareSession,
+      classifyError: (phase: string, error: unknown) =>
+        phase === 'prepare' && error === fatal ? 'fatal' : 'lost_session',
+    });
+
+    await bootstrap.start();
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+    expect(bootstrap.sessionId).toBeUndefined();
+
+    prepareSession.mockImplementation(async (change: { reason: string }) => {
+      prepared.push(change);
+    });
+    await bootstrap.start();
+    if (bootstrap.sessionId === undefined) {
+      advanceTime(5_000);
+      timers.at(-1)?.callback();
+      await flushAsyncWork();
+    }
+
+    expect(bootstrap.sessionId).toBe('session-3');
+    expect(prepared.at(-1)).toEqual({ reason: 'registered', sessionId: 'session-3' });
+  });
+
   it('registers without a native block when identity could not be resolved', async () => {
     // A vendor whose identity is not resolvable is honestly unattributed. A
     // fabricated binding would attribute its tokens to the wrong session.
