@@ -1,5 +1,23 @@
 export { ApplicationError, toPublicError } from './application-error.js';
 export type { PublicError } from './application-error.js';
+export {
+  canTransitionBridgeSlot,
+  deriveBridgeSlotId,
+  evaluateProviderProfile,
+} from './bridge-slot.js';
+export type {
+  BridgeSlotIdentity,
+  ProviderProfileEvaluation,
+  ProviderProfileObservation,
+  ProviderProfileRefusalReason,
+} from './bridge-slot.js';
+export { canTransitionWakeIntent, classifyWakeProcessResult } from './wake-intent.js';
+export type { WakeProcessClassification, WakeProcessResult } from './wake-intent.js';
+export { authorizeWorkflowContinuation } from './workflow.js';
+export type {
+  WorkflowContinuationAuthorization,
+  WorkflowContinuationAuthorizationInput,
+} from './workflow.js';
 export { createRuntimeLifecycleEvent } from './runtime-lifecycle.js';
 export type { RuntimeLifecycleContext, RuntimeLifecyclePhase } from './runtime-lifecycle.js';
 export { createRuntimeState, getRuntimeUptimeMs } from './runtime-state.js';
