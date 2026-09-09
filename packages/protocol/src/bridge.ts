@@ -2,6 +2,8 @@ import { z } from 'zod';
 
 const idSchema = z.string().trim().min(1).max(128);
 const timestampSchema = z.iso.datetime({ offset: false });
+/** The SHA-256 digest `deriveBridgeSlotId` produces; the only shape a slot key accepts. */
+export const bridgeSlotIdSchema = z.string().regex(/^[a-f0-9]{64}$/u);
 
 export const bridgeProviderSchema = z.enum(['codex', 'claude-code', 'gemini-cli', 'antigravity']);
 export const bridgeExecutionProfileSchema = z.enum(['read-only', 'workspace-write']);
@@ -35,7 +37,7 @@ export const bridgeSlotCollectionSchema = z.strictObject({
 
 /** Private daemon/supervisor declaration used to fence session registration. */
 export const bridgeOwnerDeclarationSchema = z.strictObject({
-  slotId: idSchema,
+  slotId: bridgeSlotIdSchema,
   ownerToken: z.string().trim().min(1).max(256),
   provider: bridgeProviderSchema,
   executionProfile: bridgeExecutionProfileSchema,
@@ -48,6 +50,16 @@ export const bridgeSlotAcquireRequestSchema = z.strictObject({
   ownerToken: z.string().trim().min(1).max(256),
   provider: bridgeProviderSchema,
   executionProfile: bridgeExecutionProfileSchema,
+});
+
+/** The HTTP body: the daemon supplies its own workspace id, never the caller. */
+export const bridgeSlotAcquireBodySchema = bridgeSlotAcquireRequestSchema.omit({
+  workspaceId: true,
+});
+
+export const bridgeSlotTransitionResponseSchema = z.strictObject({
+  status: z.enum(['acquired', 'held', 'renewed', 'attached', 'released', 'unchanged']),
+  slot: bridgeSlotViewSchema,
 });
 
 export const bridgeSlotRenewRequestSchema = z.strictObject({
@@ -74,6 +86,8 @@ export type BridgeSlotView = z.infer<typeof bridgeSlotViewSchema>;
 export type BridgeSlotCollection = z.infer<typeof bridgeSlotCollectionSchema>;
 export type BridgeOwnerDeclaration = z.infer<typeof bridgeOwnerDeclarationSchema>;
 export type BridgeSlotAcquireRequest = z.infer<typeof bridgeSlotAcquireRequestSchema>;
+export type BridgeSlotAcquireBody = z.infer<typeof bridgeSlotAcquireBodySchema>;
+export type BridgeSlotTransitionResponse = z.infer<typeof bridgeSlotTransitionResponseSchema>;
 export type BridgeSlotRenewRequest = z.infer<typeof bridgeSlotRenewRequestSchema>;
 export type BridgeSlotAttachRequest = z.infer<typeof bridgeSlotAttachRequestSchema>;
 export type BridgeSlotReleaseRequest = z.infer<typeof bridgeSlotReleaseRequestSchema>;
