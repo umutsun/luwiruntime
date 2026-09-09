@@ -25,20 +25,52 @@ describe('bridge slot policy', () => {
     expect(deriveBridgeSlotId(tuple)).toBe(deriveBridgeSlotId({ ...tuple }));
   });
 
+  it('keeps adjacent tuple fields unambiguous', () => {
+    expect(deriveBridgeSlotId({ workspaceId: 'ab', projectId: 'c', agentId: 'd' })).not.toBe(
+      deriveBridgeSlotId({ workspaceId: 'a', projectId: 'bc', agentId: 'd' }),
+    );
+    expect(deriveBridgeSlotId({ workspaceId: 'a', projectId: 'bc', agentId: 'd' })).not.toBe(
+      deriveBridgeSlotId({ workspaceId: 'a', projectId: 'b', agentId: 'cd' }),
+    );
+  });
+
   it.each([
-    ['active', 'standby', true],
-    ['active', 'degraded', true],
-    ['active', 'expired', true],
-    ['standby', 'active', true],
-    ['standby', 'degraded', true],
-    ['degraded', 'active', true],
-    ['degraded', 'expired', true],
-    ['expired', 'active', true],
-    ['active', 'active', false],
-    ['standby', 'expired', false],
-    ['expired', 'standby', false],
-  ] as const)('allows bridge slot transition %s -> %s: %s', (from, to, expected) => {
+    { workspaceId: '', projectId: 'project-a', agentId: 'agent-a' },
+    { workspaceId: '   ', projectId: 'project-a', agentId: 'agent-a' },
+    { workspaceId: 'workspace-a', projectId: 'p'.repeat(129), agentId: 'agent-a' },
+    {
+      workspaceId: `workspace${String.fromCharCode(0)}a`,
+      projectId: 'project-a',
+      agentId: 'agent-a',
+    },
+  ])('rejects an ambiguous bridge slot tuple: %o', (identity) => {
+    expect(() => deriveBridgeSlotId(identity)).toThrow('Bridge slot identity is invalid.');
+  });
+
+  const bridgeSlotStates = ['active', 'standby', 'degraded', 'expired'] as const;
+  const allowedBridgeSlotTransitions = new Set([
+    'active:standby',
+    'active:degraded',
+    'active:expired',
+    'standby:active',
+    'standby:degraded',
+    'degraded:active',
+    'degraded:expired',
+    'expired:active',
+  ]);
+
+  it.each(
+    bridgeSlotStates.flatMap((from) =>
+      bridgeSlotStates.map((to) => [from, to, allowedBridgeSlotTransitions.has(`${from}:${to}`)]),
+    ),
+  )('uses the complete bridge slot transition matrix for %s -> %s', (from, to, expected) => {
     expect(canTransitionBridgeSlot(from, to)).toBe(expected);
+  });
+
+  it('preserves semantic slot transition examples', () => {
+    expect(canTransitionBridgeSlot('active', 'degraded')).toBe(true);
+    expect(canTransitionBridgeSlot('standby', 'active')).toBe(true);
+    expect(canTransitionBridgeSlot('expired', 'standby')).toBe(false);
   });
 });
 
@@ -83,7 +115,7 @@ describe('provider profile policy', () => {
     ['subagent', { nativeBinding: { kind: 'subagent' } }, 'native_subagent'],
     [
       'wrong host adapter',
-      { sourceSession: { hostWake: { adapter: 'other' } } },
+      { sourceSession: { hostWake: { adapter: 'other', mcpSessionId: 'mcp-session' } } },
       'adapter_mismatch',
     ],
     [
@@ -92,11 +124,47 @@ describe('provider profile policy', () => {
       'mcp_session_mismatch',
     ],
     ['trimmed links', { nativeBinding: { trimmedLinkCount: 1 } }, 'native_binding_trimmed'],
+    ['negative trimmed links', { nativeBinding: { trimmedLinkCount: -1 } }, 'evidence_invalid'],
+    ['fractional trimmed links', { nativeBinding: { trimmedLinkCount: 0.5 } }, 'evidence_invalid'],
+    ['blank source session id', { sourceSession: { id: ' ' } }, 'evidence_invalid'],
+    [
+      'over-bounded source session id',
+      { sourceSession: { id: 's'.repeat(129) } },
+      'evidence_invalid',
+    ],
+    ['blank MCP session id', { sourceSession: { mcpSessionId: '' } }, 'evidence_invalid'],
+    ['blank native adapter id', { nativeBinding: { adapterId: '' } }, 'evidence_invalid'],
+    [
+      'blank open-link session id',
+      { nativeBinding: { openLink: { sessionId: '' } } },
+      'evidence_invalid',
+    ],
     ['offline presence', { sourceSession: { presence: 'offline' } }, 'source_session_offline'],
     ['conflicting binding', { nativeBinding: { conflicted: true } }, 'native_binding_conflict'],
     [
       'missing launcher instance id',
       { nativeBinding: { identityProvenance: { source: 'host_launcher' } } },
+      'identity_untrusted',
+    ],
+    [
+      'over-bounded launcher instance id',
+      {
+        nativeBinding: {
+          identityProvenance: { source: 'host_launcher', launcherInstanceId: 'l'.repeat(129) },
+        },
+      },
+      'identity_untrusted',
+    ],
+    [
+      'NUL-containing launcher instance id',
+      {
+        nativeBinding: {
+          identityProvenance: {
+            source: 'host_launcher',
+            launcherInstanceId: `launcher${String.fromCharCode(0)}id`,
+          },
+        },
+      },
       'identity_untrusted',
     ],
     [
@@ -123,6 +191,30 @@ describe('provider profile policy', () => {
       eligible: false,
       mode: 'inbox_only',
       reasonCode,
+    });
+  });
+
+  it('rejects equal empty source and open-link identities as malformed evidence', () => {
+    expect(
+      evaluateProviderProfile({
+        ...trustedCodex,
+        sourceSession: { ...trustedCodex.sourceSession, id: '' },
+        nativeBinding: {
+          ...trustedCodex.nativeBinding,
+          openLink: { sessionId: '' },
+        },
+      }),
+    ).toEqual({ eligible: false, mode: 'inbox_only', reasonCode: 'evidence_invalid' });
+  });
+
+  it('rejects a missing open link as malformed evidence', () => {
+    const nativeBinding = { ...trustedCodex.nativeBinding };
+    delete nativeBinding.openLink;
+
+    expect(evaluateProviderProfile({ ...trustedCodex, nativeBinding })).toEqual({
+      eligible: false,
+      mode: 'inbox_only',
+      reasonCode: 'evidence_invalid',
     });
   });
 });

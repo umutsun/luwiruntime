@@ -9,6 +9,8 @@ import type {
 
 const SEPARATOR = String.fromCharCode(0);
 const CODEX_NATIVE_ADAPTER = 'codex-native-v1';
+const MAX_IDENTIFIER_LENGTH = 128;
+const IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 export type BridgeSlotIdentity = {
   workspaceId: string;
@@ -59,6 +61,7 @@ export type ProviderProfileRefusalReason =
   | 'effective_config_invalid'
   | 'source_session_not_live'
   | 'source_session_offline'
+  | 'evidence_invalid'
   | 'native_binding_trimmed'
   | 'native_binding_conflict'
   | 'native_binding_stale'
@@ -85,11 +88,49 @@ function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
+function isValidIdentifier(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length <= MAX_IDENTIFIER_LENGTH &&
+    !value.includes(SEPARATOR) &&
+    IDENTIFIER_PATTERN.test(value)
+  );
+}
+
+function isValidProviderEvidence(observation: ProviderProfileObservation): boolean {
+  const { nativeBinding, sourceSession } = observation;
+  const hostWake = sourceSession.hostWake;
+
+  return (
+    isValidIdentifier(sourceSession.id) &&
+    isValidIdentifier(sourceSession.mcpSessionId) &&
+    isValidIdentifier(nativeBinding.adapterId) &&
+    nativeBinding.openLink !== undefined &&
+    isValidIdentifier(nativeBinding.openLink.sessionId) &&
+    Number.isSafeInteger(nativeBinding.trimmedLinkCount) &&
+    nativeBinding.trimmedLinkCount >= 0 &&
+    typeof nativeBinding.conflicted === 'boolean' &&
+    (hostWake === undefined ||
+      (isValidIdentifier(hostWake.adapter) && isValidIdentifier(hostWake.mcpSessionId)))
+  );
+}
+
+function assertValidBridgeSlotIdentity(identity: BridgeSlotIdentity): void {
+  if (
+    !isValidIdentifier(identity.workspaceId) ||
+    !isValidIdentifier(identity.projectId) ||
+    !isValidIdentifier(identity.agentId)
+  ) {
+    throw new RangeError('Bridge slot identity is invalid.');
+  }
+}
+
 /**
  * Derives the singleton bridge ownership key for a workspace/project/agent tuple.
  * Provider is intentionally absent: providers contend for the same agent slot.
  */
 export function deriveBridgeSlotId(identity: BridgeSlotIdentity): string {
+  assertValidBridgeSlotIdentity(identity);
   return sha256([identity.workspaceId, identity.projectId, identity.agentId].join(SEPARATOR));
 }
 
@@ -136,6 +177,9 @@ export function evaluateProviderProfile(
   if (!observation.effectiveConfiguration.valid) {
     return { eligible: false, mode: 'inbox_only', reasonCode: 'effective_config_invalid' };
   }
+  if (!isValidProviderEvidence(observation)) {
+    return { eligible: false, mode: 'inbox_only', reasonCode: 'evidence_invalid' };
+  }
   if (!isLive(observation.sourceSession.status)) {
     return { eligible: false, mode: 'inbox_only', reasonCode: 'source_session_not_live' };
   }
@@ -161,7 +205,7 @@ export function evaluateProviderProfile(
   if (
     provenance?.source !== 'host_launcher' ||
     provenance.launcherInstanceId === undefined ||
-    provenance.launcherInstanceId.trim().length === 0
+    !isValidIdentifier(provenance.launcherInstanceId)
   ) {
     return { eligible: false, mode: 'inbox_only', reasonCode: 'identity_untrusted' };
   }

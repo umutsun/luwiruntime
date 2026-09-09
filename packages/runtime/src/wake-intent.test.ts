@@ -3,21 +3,37 @@ import { describe, expect, it } from 'vitest';
 import { canTransitionWakeIntent, classifyWakeProcessResult } from './wake-intent.js';
 
 describe('wake intent state machine', () => {
-  it.each([
-    ['pending', 'claimed', true],
-    ['claimed', 'dispatching', true],
-    ['claimed', 'fallback_only', true],
-    ['claimed', 'indeterminate', true],
-    ['dispatching', 'dispatched', true],
-    ['dispatching', 'fallback_only', true],
-    ['dispatching', 'indeterminate', true],
-    ['dispatching', 'claimed', false],
-    ['pending', 'fallback_only', false],
-    ['dispatched', 'claimed', false],
-    ['fallback_only', 'claimed', false],
-    ['indeterminate', 'claimed', false],
-  ] as const)('allows wake transition %s -> %s: %s', (from, to, expected) => {
+  const wakeIntentStates = [
+    'pending',
+    'claimed',
+    'dispatching',
+    'dispatched',
+    'fallback_only',
+    'indeterminate',
+  ] as const;
+  const allowedWakeTransitions = new Set([
+    'pending:claimed',
+    'claimed:dispatching',
+    'claimed:fallback_only',
+    'claimed:indeterminate',
+    'dispatching:dispatched',
+    'dispatching:fallback_only',
+    'dispatching:indeterminate',
+  ]);
+
+  it.each(
+    wakeIntentStates.flatMap((from) =>
+      wakeIntentStates.map((to) => [from, to, allowedWakeTransitions.has(`${from}:${to}`)]),
+    ),
+  )('uses the complete wake transition matrix for %s -> %s', (from, to, expected) => {
     expect(canTransitionWakeIntent(from, to)).toBe(expected);
+  });
+
+  it('preserves the safety-critical wake transition examples', () => {
+    expect(canTransitionWakeIntent('pending', 'claimed')).toBe(true);
+    expect(canTransitionWakeIntent('dispatching', 'dispatched')).toBe(true);
+    expect(canTransitionWakeIntent('dispatching', 'claimed')).toBe(false);
+    expect(canTransitionWakeIntent('indeterminate', 'claimed')).toBe(false);
   });
 });
 
