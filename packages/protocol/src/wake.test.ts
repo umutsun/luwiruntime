@@ -4,6 +4,7 @@ import {
   WAKE_MAX_CLAIM_LIMIT,
   parseWakeIntentView,
   wakeIntentClaimBatchResponseSchema,
+  wakeIntentClaimRequestSchema,
   wakeIntentClaimResponseSchema,
   wakeIntentCollectionSchema,
   wakeIntentCompleteRequestSchema,
@@ -130,6 +131,29 @@ describe('private wake claim response', () => {
   });
 });
 
+describe('private wake operational identifiers', () => {
+  const invalidIdentifiers = ['contains space', 'contains\nnewline', 'contains\0nul', '-leading'];
+
+  it.each(invalidIdentifiers)('rejects unsafe dispatcher identity %j', (dispatcherInstanceId) => {
+    expect(() => wakeIntentClaimRequestSchema.parse({ dispatcherInstanceId })).toThrow();
+    expect(() => wakeIntentRecoverRequestSchema.parse({ dispatcherInstanceId })).toThrow();
+  });
+
+  it.each(['dispatcherInstanceId', 'claimId', 'attemptId'] as const)(
+    'rejects unsafe %s fence identity',
+    (field) => {
+      expect(() =>
+        wakeIntentDispatchingRequestSchema.parse({
+          dispatcherInstanceId: 'dispatcher-1',
+          claimId: 'claim-1',
+          attemptId: 'attempt-1',
+          [field]: 'contains space',
+        }),
+      ).toThrow();
+    },
+  );
+});
+
 describe('private wake transition protocol', () => {
   const dispatchingResponse = {
     status: 'updated',
@@ -176,6 +200,12 @@ describe('private wake transition protocol', () => {
     expect(() =>
       wakeIntentCompleteResponseSchema.parse({ ...completeResponse, claimId: 'private' }),
     ).toThrow();
+    expect(() =>
+      wakeIntentCompleteResponseSchema.parse({
+        status: 'updated',
+        intent: { ...intent, state: 'fallback_only' },
+      }),
+    ).toThrow();
   });
 
   it('validates a bounded dispatcher recovery pass and redacted result', () => {
@@ -215,6 +245,12 @@ describe('private wake transition protocol', () => {
       wakeIntentRecoverResponseSchema.parse({
         ...response,
         recoveredDispatching: [{ ...recovered, dispatcherInstanceId: 'private' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      wakeIntentRecoverResponseSchema.parse({
+        ...response,
+        recoveredDispatching: [{ ...intent, state: 'indeterminate' }],
       }),
     ).toThrow();
     expect(() =>

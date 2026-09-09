@@ -11,8 +11,15 @@ describe('browser protocol exports', () => {
     });
     expect(browser).not.toHaveProperty('hostWakeDeclarationSchema');
     expect(browser).not.toHaveProperty('nativeIdentityProvenanceSchema');
+    expect(browser).not.toHaveProperty('bridgeOwnerDeclarationSchema');
+    expect(browser).not.toHaveProperty('bridgeSlotAcquireBodySchema');
+    expect(browser).not.toHaveProperty('bridgeSlotAcquireRequestSchema');
+    expect(browser).not.toHaveProperty('bridgeSlotRenewRequestSchema');
+    expect(browser).not.toHaveProperty('bridgeSlotAttachRequestSchema');
+    expect(browser).not.toHaveProperty('bridgeSlotReleaseRequestSchema');
     expect(browser).not.toHaveProperty('wakeDispatchTargetSchema');
     expect(browser).not.toHaveProperty('wakeIntentClaimBatchResponseSchema');
+    expect(browser).not.toHaveProperty('wakeIntentClaimItemSchema');
     expect(browser).not.toHaveProperty('wakeIntentClaimRequestSchema');
     expect(browser).not.toHaveProperty('wakeIntentClaimResponseSchema');
     expect(browser).not.toHaveProperty('wakeIntentDispatchingRequestSchema');

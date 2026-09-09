@@ -3,6 +3,12 @@ import { z } from 'zod';
 import { messageTerminalStateSchema } from './message.js';
 
 const idSchema = z.string().trim().min(1).max(128);
+const operationalIdentifierSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u);
 const timestampSchema = z.iso.datetime({ offset: false });
 const reasonCodeSchema = z
   .string()
@@ -58,7 +64,7 @@ export const wakeIntentListQuerySchema = z.strictObject({
 });
 
 export const wakeIntentClaimRequestSchema = z.strictObject({
-  dispatcherInstanceId: idSchema,
+  dispatcherInstanceId: operationalIdentifierSchema,
   limit: z.coerce.number().int().min(1).max(WAKE_MAX_CLAIM_LIMIT).default(WAKE_DEFAULT_CLAIM_LIMIT),
   blockMs: z.coerce.number().int().min(0).max(30_000).default(WAKE_DEFAULT_BLOCK_MS),
   minIdleMs: z.coerce.number().int().min(0).max(86_400_000).default(WAKE_DEFAULT_MIN_IDLE_MS),
@@ -77,18 +83,19 @@ const claimedWakeIntentViewSchema = wakeIntentViewSchema.extend({
 export const wakeIntentClaimItemSchema = z.union([
   z.strictObject({
     intent: claimedWakeIntentViewSchema,
-    claimId: idSchema,
+    claimId: operationalIdentifierSchema,
     target: wakeDispatchTargetSchema,
   }),
   z.strictObject({
     intent: claimedWakeIntentViewSchema,
-    claimId: idSchema,
+    claimId: operationalIdentifierSchema,
     refusalReasonCode: reasonCodeSchema,
   }),
 ]);
 
 const indeterminateWakeIntentViewSchema = wakeIntentViewSchema.extend({
   state: z.literal('indeterminate'),
+  reasonCode: reasonCodeSchema,
 });
 
 /**
@@ -106,9 +113,9 @@ export const wakeIntentClaimResponseSchema = wakeIntentClaimBatchResponseSchema;
 export const wakeIntentReclaimResponseSchema = wakeIntentClaimBatchResponseSchema;
 
 export const wakeIntentDispatchingRequestSchema = z.strictObject({
-  dispatcherInstanceId: idSchema,
-  claimId: idSchema,
-  attemptId: idSchema,
+  dispatcherInstanceId: operationalIdentifierSchema,
+  claimId: operationalIdentifierSchema,
+  attemptId: operationalIdentifierSchema,
 });
 
 const wakeIntentMutationStatusSchema = z.enum(['updated', 'unchanged']);
@@ -125,16 +132,19 @@ export const wakeIntentCompletionStateSchema = z.enum([
 ]);
 
 export const wakeIntentCompleteRequestSchema = z.strictObject({
-  dispatcherInstanceId: idSchema,
-  claimId: idSchema,
-  attemptId: idSchema,
+  dispatcherInstanceId: operationalIdentifierSchema,
+  claimId: operationalIdentifierSchema,
+  attemptId: operationalIdentifierSchema,
   state: wakeIntentCompletionStateSchema,
   reasonCode: reasonCodeSchema,
 });
 
 export const wakeIntentCompleteResponseSchema = z.strictObject({
   status: wakeIntentMutationStatusSchema,
-  intent: wakeIntentViewSchema.extend({ state: wakeIntentCompletionStateSchema }),
+  intent: wakeIntentViewSchema.extend({
+    state: wakeIntentCompletionStateSchema,
+    reasonCode: reasonCodeSchema,
+  }),
 });
 
 /**
@@ -142,7 +152,7 @@ export const wakeIntentCompleteResponseSchema = z.strictObject({
  * cannot name an intent, claim, or attempt; those fences come from Redis.
  */
 export const wakeIntentRecoverRequestSchema = z.strictObject({
-  dispatcherInstanceId: idSchema,
+  dispatcherInstanceId: operationalIdentifierSchema,
   limit: z.coerce.number().int().min(1).max(WAKE_MAX_CLAIM_LIMIT).default(WAKE_DEFAULT_CLAIM_LIMIT),
   minIdleMs: z.coerce.number().int().min(0).max(86_400_000).default(WAKE_DEFAULT_MIN_IDLE_MS),
 });
