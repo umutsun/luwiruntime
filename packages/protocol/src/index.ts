@@ -67,6 +67,74 @@ export {
   nativeSessionLinkSchema,
   nativeSessionRefSchema,
 } from './native-session.js';
+export {
+  bridgeExecutionProfileSchema,
+  bridgeOwnerDeclarationSchema,
+  bridgeProviderSchema,
+  bridgeSlotAcquireRequestSchema,
+  bridgeSlotAttachRequestSchema,
+  bridgeSlotCollectionSchema,
+  bridgeSlotReleaseRequestSchema,
+  bridgeSlotRenewRequestSchema,
+  bridgeSlotStateSchema,
+  bridgeSlotViewSchema,
+  parseBridgeSlotView,
+} from './bridge.js';
+export type {
+  BridgeExecutionProfile,
+  BridgeOwnerDeclaration,
+  BridgeProvider,
+  BridgeSlotAcquireRequest,
+  BridgeSlotAttachRequest,
+  BridgeSlotCollection,
+  BridgeSlotReleaseRequest,
+  BridgeSlotRenewRequest,
+  BridgeSlotState,
+  BridgeSlotView,
+} from './bridge.js';
+export {
+  WAKE_DEFAULT_BLOCK_MS,
+  WAKE_DEFAULT_CLAIM_LIMIT,
+  WAKE_DEFAULT_MIN_IDLE_MS,
+  WAKE_MAX_CLAIM_LIMIT,
+  parseWakeIntentView,
+  wakeAdapterSchema,
+  wakeIntentClaimRequestSchema,
+  wakeIntentCollectionSchema,
+  wakeIntentCompleteRequestSchema,
+  wakeIntentCompletionStateSchema,
+  wakeIntentDispatchingRequestSchema,
+  wakeIntentListQuerySchema,
+  wakeIntentStateSchema,
+  wakeIntentViewSchema,
+} from './wake.js';
+export type {
+  WakeAdapter,
+  WakeIntentClaimRequest,
+  WakeIntentCollection,
+  WakeIntentCompleteRequest,
+  WakeIntentDispatchingRequest,
+  WakeIntentListQuery,
+  WakeIntentState,
+  WakeIntentView,
+} from './wake.js';
+export {
+  continueWorkflowRequestSchema,
+  parseContinueWorkflowRequest,
+  workflowCollectionSchema,
+  workflowCreateRequestSchema,
+  workflowDecisionSchema,
+  workflowStateSchema,
+  workflowViewSchema,
+} from './workflow.js';
+export type {
+  ContinueWorkflowRequest,
+  WorkflowCollection,
+  WorkflowCreateRequest,
+  WorkflowDecision,
+  WorkflowState,
+  WorkflowView,
+} from './workflow.js';
 export type {
   NativeDeclarationOutcome,
   NativeDeclarationRequest,

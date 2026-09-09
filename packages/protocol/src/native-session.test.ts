@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  nativeIdentityProvenanceSchema,
+  parseHostWakeDeclaration,
   nativeDeclarationRequestSchema,
   nativeDeclarationResponseSchema,
   nativeSessionBindingSchema,
@@ -11,6 +13,28 @@ import {
 const timestamp = '2026-08-11T00:00:00.000Z';
 
 describe('native session ref', () => {
+  it('distinguishes trusted launcher proof from a filesystem heuristic', () => {
+    expect(
+      nativeIdentityProvenanceSchema.parse({
+        source: 'host_launcher',
+        launcherInstanceId: 'launcher-1',
+      }),
+    ).toEqual({ source: 'host_launcher', launcherInstanceId: 'launcher-1' });
+    expect(nativeIdentityProvenanceSchema.parse({ source: 'filesystem_heuristic' })).toEqual({
+      source: 'filesystem_heuristic',
+    });
+  });
+
+  it('rejects unknown host wake declaration fields', () => {
+    expect(() =>
+      parseHostWakeDeclaration({
+        adapter: 'codex-queue-v1',
+        mcpSessionId: 'other-session',
+        extra: true,
+      }),
+    ).toThrow();
+  });
+
   it('accepts a main session reference and a subagent reference', () => {
     expect(
       nativeSessionRefSchema.parse({
@@ -60,6 +84,11 @@ describe('native session binding', () => {
 
   it('accepts a binding with no open link', () => {
     expect(nativeSessionBindingSchema.parse(binding).openLinkId).toBeUndefined();
+  });
+
+  it('continues to parse bindings persisted before provenance and wake proof existed', () => {
+    expect(nativeSessionBindingSchema.parse(binding)).not.toHaveProperty('identityProvenance');
+    expect(nativeSessionBindingSchema.parse(binding)).not.toHaveProperty('hostWake');
   });
 
   /**

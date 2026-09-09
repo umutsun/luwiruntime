@@ -151,3 +151,22 @@ describe('native session event types', () => {
     }
   });
 });
+
+describe('bridge and wake event types', () => {
+  it('accepts every persisted bridge-slot and wake transition', () => {
+    for (const type of [
+      'bridge.slot.acquired',
+      'bridge.slot.attached',
+      'bridge.slot.released',
+      'bridge.slot.expired',
+      'wake.requested',
+      'wake.claimed',
+      'wake.dispatching',
+      'wake.dispatched',
+      'wake.fallback_only',
+      'wake.indeterminate',
+    ]) {
+      expect(runtimeEventTypeSchema.safeParse(type).success, type).toBe(true);
+    }
+  });
+});

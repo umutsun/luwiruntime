@@ -32,6 +32,22 @@ const nativeIdSchema = z
   .max(200)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/);
 
+/**
+ * Evidence for native identity is retained independently of the opaque native
+ * reference. A filesystem match can still support passive inspection, but it
+ * cannot become proof that an automatic host wake is safe.
+ */
+export const nativeIdentityProvenanceSchema = z.discriminatedUnion('source', [
+  z.strictObject({ source: z.literal('host_launcher'), launcherInstanceId: identifierSchema }),
+  z.strictObject({ source: z.literal('filesystem_heuristic') }),
+]);
+
+/** Private declaration used only to prove the local Codex MCP/session binding. */
+export const hostWakeDeclarationSchema = z.strictObject({
+  adapter: z.literal('codex-queue-v1'),
+  mcpSessionId: identifierSchema,
+});
+
 export const nativeSessionRefSchema = z.strictObject({
   adapterId: identifierSchema,
   nativeSessionId: nativeIdSchema,
@@ -53,6 +69,10 @@ export const nativeSessionBindingSchema = z.strictObject({
   /** Always 0 in A1; retention is A2. The field exists so A2 needs no migration. */
   trimmedLinkCount: z.number().int().nonnegative(),
   oldestRetainedLinkedAt: timestampSchema.optional(),
+  /** Optional for records written before wake capability/provenance existed. */
+  identityProvenance: nativeIdentityProvenanceSchema.optional(),
+  /** Kept private; public views project this only as a boolean capability. */
+  hostWake: hostWakeDeclarationSchema.optional(),
   /** Link creations, not declaration attempts: an `unchanged` outcome writes nothing. */
   firstLinkedAt: timestampSchema,
   lastLinkedAt: timestampSchema,
@@ -75,6 +95,8 @@ export const nativeSessionLinkSchema = z.strictObject({
  */
 export const nativeDeclarationRequestSchema = z.strictObject({
   native: nativeSessionRefSchema,
+  identityProvenance: nativeIdentityProvenanceSchema.optional(),
+  hostWake: hostWakeDeclarationSchema.optional(),
 });
 
 /**
@@ -94,9 +116,15 @@ export const nativeDeclarationResponseSchema = z.strictObject({
 });
 
 export type NativeSessionRef = z.infer<typeof nativeSessionRefSchema>;
+export type NativeIdentityProvenance = z.infer<typeof nativeIdentityProvenanceSchema>;
+export type HostWakeDeclaration = z.infer<typeof hostWakeDeclarationSchema>;
 export type NativeSessionKind = z.infer<typeof nativeSessionKindSchema>;
 export type NativeSessionBinding = z.infer<typeof nativeSessionBindingSchema>;
 export type NativeSessionLink = z.infer<typeof nativeSessionLinkSchema>;
 export type NativeDeclarationRequest = z.infer<typeof nativeDeclarationRequestSchema>;
 export type NativeDeclarationOutcome = z.infer<typeof nativeDeclarationOutcomeSchema>;
 export type NativeDeclarationResponse = z.infer<typeof nativeDeclarationResponseSchema>;
+
+export function parseHostWakeDeclaration(input: unknown): HostWakeDeclaration {
+  return hostWakeDeclarationSchema.parse(input);
+}

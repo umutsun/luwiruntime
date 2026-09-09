@@ -20,6 +20,7 @@ const session = {
   lastHeartbeatAt: '2026-07-28T12:00:00.000Z',
   metadata: {},
   presence: 'online',
+  wakeCapable: false,
 };
 
 describe('session protocol', () => {
@@ -76,6 +77,46 @@ describe('session protocol', () => {
     expect(sessionCollectionResponseSchema.parse({ sessions: [session] })).toEqual({
       sessions: [session],
     });
+  });
+
+  it('accepts private native provenance and a host wake declaration at registration', () => {
+    expect(
+      sessionRegistrationRequestSchema.parse({
+        projectId: 'project-1',
+        agentId: 'codex-sim',
+        workingDirectory: '.',
+        native: { adapterId: 'codex-native-v1', nativeSessionId: 'native-1' },
+        nativeIdentityProvenance: {
+          source: 'host_launcher',
+          launcherInstanceId: 'launcher-1',
+        },
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+      }),
+    ).toMatchObject({
+      nativeIdentityProvenance: { source: 'host_launcher' },
+      hostWake: { adapter: 'codex-queue-v1' },
+    });
+  });
+
+  it('accepts legacy public views without wake capability and parses the boolean when present', () => {
+    const { wakeCapable, ...legacySession } = session;
+    expect(wakeCapable).toBe(false);
+    expect(sessionViewSchema.parse(legacySession)).toEqual(legacySession);
+    expect(sessionViewSchema.parse({ ...session, wakeCapable: true }).wakeCapable).toBe(true);
+  });
+
+  it('does not expose either private proof through a public session view', () => {
+    for (const proof of [
+      { hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' } },
+      {
+        nativeIdentityProvenance: {
+          source: 'host_launcher',
+          launcherInstanceId: 'launcher-1',
+        },
+      },
+    ]) {
+      expect(sessionViewSchema.safeParse({ ...session, ...proof }).success).toBe(false);
+    }
   });
 
   it('bounds heartbeat metadata to 16 KiB of JSON', () => {

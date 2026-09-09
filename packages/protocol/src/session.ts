@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { nativeSessionRefSchema } from './native-session.js';
+import { bridgeOwnerDeclarationSchema } from './bridge.js';
+import {
+  hostWakeDeclarationSchema,
+  nativeIdentityProvenanceSchema,
+  nativeSessionRefSchema,
+} from './native-session.js';
 import { utf8ByteLength } from './utf8-bytes.js';
 
 const identifierSchema = z.string().trim().min(1).max(128);
@@ -56,6 +61,12 @@ export const sessionRegistrationRequestSchema = z.strictObject({
    * accepted a second time from the declaration.
    */
   native: nativeSessionRefSchema.optional(),
+  /** Private registration evidence, stored outside the opaque native ref. */
+  nativeIdentityProvenance: nativeIdentityProvenanceSchema.optional(),
+  /** Private same-session host wake proof. */
+  hostWake: hostWakeDeclarationSchema.optional(),
+  /** Private slot ownership fence, accepted only by the daemon. */
+  bridgeOwner: bridgeOwnerDeclarationSchema.optional(),
 });
 
 export const heartbeatRequestSchema = z.strictObject({
@@ -87,6 +98,8 @@ export const agentSessionSchema = z.strictObject({
 
 export const sessionViewSchema = agentSessionSchema.extend({
   presence: z.enum(['online', 'offline']),
+  /** The only public projection of host wake proof; absent on legacy records. */
+  wakeCapable: z.boolean().optional(),
 });
 
 export const sessionResponseSchema = sessionViewSchema;

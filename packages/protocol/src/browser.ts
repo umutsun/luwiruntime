@@ -28,6 +28,7 @@ export {
   usageSummarySchema,
 } from './intelligence.js';
 export { leaseCollectionSchema } from './lease.js';
+export { bridgeSlotCollectionSchema } from './bridge.js';
 export {
   MESSAGE_DEFAULT_TIMEOUT_MS,
   MESSAGE_MAX_CONTENT_BYTES,
@@ -38,6 +39,8 @@ export {
   messageCreateResponseSchema,
 } from './message.js';
 export { projectCollectionResponseSchema } from './project.js';
+export { wakeIntentCollectionSchema } from './wake.js';
+export { workflowCollectionSchema } from './workflow.js';
 /**
  * From the leaf module, never from `runtime-api.js`: that file reaches
  * `runtime-event.js` and its `node:crypto` import, which has no place in a
