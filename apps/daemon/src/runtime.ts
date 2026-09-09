@@ -7,6 +7,7 @@ import type { RuntimeStateName } from '@luwi/protocol';
 import {
   buildFunctionLibrary,
   claimSessionInbox,
+  createBridgeSlotRepository,
   createDaemonOwnershipLease,
   createFunctionRegistry,
   createManagedRedisConnection,
@@ -43,6 +44,7 @@ import {
 import { createTranscriptReader, NodeTranscriptFileSystem } from '@luwi/adapters';
 
 import { buildDaemon, type BuildDaemonOptions, type DaemonApp } from './app.js';
+import { createBridgeSlotService } from './bridge-slot-service.js';
 import {
   closeWithinDeadline,
   createBackgroundWorkTracker,
@@ -721,6 +723,25 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       expireLease: (leaseId) => leaseService.expire(leaseId),
     },
   });
+  const bridgeSlotService = createBridgeSlotService({
+    repository: createBridgeSlotRepository({
+      client: connections.command,
+      keys,
+      functions: registry,
+    }),
+    workspaceId: config.workspaceId,
+  });
+  // Rides the lease-expiry tick rather than owning a timer: the sweep is the
+  // same shape (a passed deadline becomes an `expired` transition and event),
+  // and one less timer is one less thing to clear on both teardown paths.
+  const bridgeSlotExpirySweeper = createLeaseExpirySweeper({
+    now: Date.now,
+    batchSize: setting(config, 'messageTimeoutBatchSize'),
+    repository: {
+      findDueLeases: (_nowMs, limit) => bridgeSlotService.findDue(limit),
+      expireLease: (slotId) => bridgeSlotService.expire(slotId),
+    },
+  });
   const nativeLinkRetentionSweeper = createNativeLinkRetentionSweeper({
     repository: createNativeLinkRetentionRepository({ repository }),
     retentionMax: setting(config, 'nativeLinkRetentionMax'),
@@ -860,6 +881,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       sweeper.stop();
       messageTimeoutSweeper.stop();
       leaseExpirySweeper.stop();
+      bridgeSlotExpirySweeper.stop();
       nativeLinkRetentionSweeper.stop();
       if (sweepTimer !== undefined) {
         clearInterval(sweepTimer);
@@ -964,6 +986,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         sessions: sessionService,
         messages: messageService,
         leases: leaseService,
+        bridgeSlots: bridgeSlotService,
         controlPlane: controlPlaneService,
         configControl: configControlService,
         intelligence: intelligenceService,
@@ -1051,6 +1074,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
           async () => {
             try {
               await leaseExpirySweeper.sweepOnce();
+              await bridgeSlotExpirySweeper.sweepOnce();
             } finally {
               sweepingLeaseExpiry = false;
             }
