@@ -7,6 +7,14 @@ import {
   agentDefinitionSchema,
   agentDetectionRequestSchema,
   agentDetectionResponseSchema,
+  bridgeSlotAcquireBodySchema,
+  bridgeSlotAttachRequestSchema,
+  bridgeSlotCollectionSchema,
+  bridgeSlotIdSchema,
+  bridgeSlotReleaseRequestSchema,
+  bridgeSlotRenewRequestSchema,
+  bridgeSlotTransitionResponseSchema,
+  bridgeSlotViewSchema,
   capabilityAssignmentRequestSchema,
   capabilityBindingSchema,
   capabilityCollectionSchema,
@@ -130,6 +138,7 @@ import websocketPlugin from '@fastify/websocket';
 import Fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { z } from 'zod';
 
+import type { BridgeSlotService } from './bridge-slot-service.js';
 import type { DaemonConfig } from './config.js';
 import { defaultDashboardDistRoot, readDashboardAsset } from './dashboard-assets.js';
 import type { ConfigControlService } from './config-control-service.js';
@@ -163,6 +172,7 @@ export type BuildDaemonOptions = {
     sessions: SessionService;
     messages?: MessageService;
     leases?: LeaseService;
+    bridgeSlots?: BridgeSlotService;
     controlPlane?: ControlPlaneService;
     configControl?: ConfigControlService;
     intelligence?: IntelligenceService;
@@ -1076,6 +1086,65 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       app.get('/api/v1/leases/:leaseId', async (request) => {
         const { leaseId } = parseRequestInput(leaseParamsSchema, request.params);
         return workLeaseSchema.parse(await withCurrentRead(() => leases.get(leaseId)));
+      });
+    }
+
+    if (services.bridgeSlots !== undefined) {
+      const bridgeSlots = services.bridgeSlots;
+      const slotParamsSchema = z.strictObject({ slotId: bridgeSlotIdSchema });
+      const slotListQuerySchema = z.strictObject({
+        limit: z.coerce.number().int().min(1).max(1000).default(100),
+      });
+
+      /**
+       * `held` is a 200 like a lease denial: the runtime answered who owns the
+       * tuple, and a contender reads that answer and stands by.
+       */
+      app.post('/api/v1/bridge-slots/acquire', async (request, reply) => {
+        const body = parseRequestInput(bridgeSlotAcquireBodySchema, request.body);
+        const result = await withMutation(() => bridgeSlots.acquire(body));
+        const parsed = bridgeSlotTransitionResponseSchema.parse(result);
+        if (parsed.status !== 'acquired') return reply.code(200).send(parsed);
+        return reply
+          .code(201)
+          .header('Location', `/api/v1/bridge-slots/${parsed.slot.id}`)
+          .send(parsed);
+      });
+
+      app.post('/api/v1/bridge-slots/:slotId/renew', async (request) => {
+        const { slotId } = parseRequestInput(slotParamsSchema, request.params);
+        const body = parseRequestInput(bridgeSlotRenewRequestSchema, request.body);
+        return bridgeSlotTransitionResponseSchema.parse(
+          await withMutation(() => bridgeSlots.renew(slotId, body.ownerToken)),
+        );
+      });
+
+      app.post('/api/v1/bridge-slots/:slotId/attach', async (request) => {
+        const { slotId } = parseRequestInput(slotParamsSchema, request.params);
+        const body = parseRequestInput(bridgeSlotAttachRequestSchema, request.body);
+        return bridgeSlotTransitionResponseSchema.parse(
+          await withMutation(() => bridgeSlots.attach(slotId, body.ownerToken, body.sessionId)),
+        );
+      });
+
+      app.post('/api/v1/bridge-slots/:slotId/release', async (request) => {
+        const { slotId } = parseRequestInput(slotParamsSchema, request.params);
+        const body = parseRequestInput(bridgeSlotReleaseRequestSchema, request.body);
+        return bridgeSlotTransitionResponseSchema.parse(
+          await withMutation(() => bridgeSlots.release(slotId, body.ownerToken)),
+        );
+      });
+
+      app.get('/api/v1/bridge-slots', async (request) => {
+        const query = parseRequestInput(slotListQuerySchema, request.query);
+        return bridgeSlotCollectionSchema.parse({
+          slots: await withCurrentRead(() => bridgeSlots.list(query.limit)),
+        });
+      });
+
+      app.get('/api/v1/bridge-slots/:slotId', async (request) => {
+        const { slotId } = parseRequestInput(slotParamsSchema, request.params);
+        return bridgeSlotViewSchema.parse(await withCurrentRead(() => bridgeSlots.get(slotId)));
       });
     }
 

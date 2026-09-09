@@ -511,6 +511,10 @@ describe('native link retention repository', () => {
     ]);
     expect(timerNames).not.toContain('nativeLinkRetentionTimer');
     expect(source).toContain('nativeLinkRetentionSweeper.stop()');
+    // Bridge slot expiry rides the lease-expiry tick the same way.
+    expect(timerNames).not.toContain('bridgeSlotExpiryTimer');
+    expect(source).toContain('bridgeSlotExpirySweeper.stop()');
+    expect(source).toContain('await bridgeSlotExpirySweeper.sweepOnce()');
   });
 
   /**
