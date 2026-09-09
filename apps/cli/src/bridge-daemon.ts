@@ -29,6 +29,7 @@ export interface BridgeDaemonClient {
       blockMs: number;
       minIdleMs: number;
     },
+    options?: { signal?: AbortSignal },
   ): Promise<InboxClaimResponse>;
   getMessage(correlationId: string): Promise<AgentMessage>;
   transitionMessage(

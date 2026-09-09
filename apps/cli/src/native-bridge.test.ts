@@ -235,26 +235,122 @@ describe('createNativeBridge', () => {
     expect(log.find((line) => line.startsWith('complete:fail'))).toContain('deadline');
   });
 
-  it('fails with a stopped reason when the operator stopped the bridge mid-run', async () => {
+  it('aborts an active executor and waits for the poll to settle when stopped', async () => {
     const log: string[] = [];
     const d = daemon(log, ['delivered', 'processing'], requestInbox());
-    let stopMidRun: () => Promise<void> = async () => undefined;
+    let executionStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      executionStarted = resolve;
+    });
+    let executionSignal: AbortSignal | undefined;
     const bridge = createNativeBridge(
       options({
         daemon: d.client,
         executor: {
-          run: vi.fn(async () => {
-            await stopMidRun();
+          run: vi.fn(async ({ signal }) => {
+            executionSignal = signal;
+            executionStarted();
+            await new Promise<void>((resolve) => {
+              signal.addEventListener('abort', () => resolve(), { once: true });
+            });
             return { result: 'completed', exitCode: 130, outputTail: '' };
           }),
         },
       }),
     );
-    stopMidRun = () => bridge.stop();
 
-    await bridge.pollOnce();
+    const polling = bridge.pollOnce();
+    await started;
+    const stopping = bridge.stop();
+
+    expect(executionSignal?.aborted).toBe(true);
+    await expect(stopping).resolves.toBeUndefined();
+    await expect(polling).resolves.toBe(1);
 
     expect(log.find((line) => line.startsWith('complete:fail'))).toContain('stopped');
+  });
+
+  it('aborts a blocking inbox claim and waits for it to settle when stopped', async () => {
+    const d = daemon([], ['delivered'], { items: [] });
+    let claimStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      claimStarted = resolve;
+    });
+    let claimSignal: AbortSignal | undefined;
+    d.client.claimInbox = vi.fn(async (_sessionId, _request, requestOptions) => {
+      claimSignal = requestOptions?.signal;
+      claimStarted();
+      await new Promise<void>((_resolve, reject) => {
+        requestOptions?.signal?.addEventListener(
+          'abort',
+          () => reject(new DOMException('Aborted', 'AbortError')),
+          { once: true },
+        );
+      });
+      return { items: [] };
+    });
+    const bridge = createNativeBridge(options({ daemon: d.client }));
+
+    const polling = bridge.pollOnce();
+    await started;
+    const stopping = bridge.stop();
+
+    expect(claimSignal?.aborted).toBe(true);
+    await expect(stopping).resolves.toBeUndefined();
+    await expect(polling).resolves.toBe(0);
+  });
+
+  it('does not start a claim when stopped during initial idle publication', async () => {
+    const d = daemon([], ['delivered'], { items: [] });
+    let statusStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      statusStarted = resolve;
+    });
+    let releaseStatus!: () => void;
+    const blockedStatus = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    d.client.setSessionStatus = vi.fn(async () => {
+      statusStarted();
+      await blockedStatus;
+    });
+    const bridge = createNativeBridge(options({ daemon: d.client }));
+
+    const polling = bridge.pollOnce();
+    await started;
+    const stopping = bridge.stop();
+    releaseStatus();
+
+    await expect(stopping).resolves.toBeUndefined();
+    await expect(polling).resolves.toBe(0);
+    expect(d.client.claimInbox).not.toHaveBeenCalled();
+  });
+
+  it('does not launch an executor when stopped during message inspection', async () => {
+    const d = daemon([], ['delivered'], requestInbox());
+    let inspectionStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      inspectionStarted = resolve;
+    });
+    let releaseInspection!: (value: AgentMessage) => void;
+    const inspection = new Promise<AgentMessage>((resolve) => {
+      releaseInspection = resolve;
+    });
+    d.client.getMessage = vi.fn(async () => {
+      inspectionStarted();
+      return inspection;
+    });
+    const exec = executor({ result: 'completed', exitCode: 0, outputTail: '' });
+    const bridge = createNativeBridge(options({ daemon: d.client, executor: exec }));
+
+    const polling = bridge.pollOnce();
+    await started;
+    const stopping = bridge.stop();
+    releaseInspection(message('delivered'));
+
+    await expect(stopping).resolves.toBeUndefined();
+    await expect(polling).resolves.toBe(1);
+    expect(exec.run).not.toHaveBeenCalled();
   });
 
   it('does not replay work recovered in the processing state', async () => {

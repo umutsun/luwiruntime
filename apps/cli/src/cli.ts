@@ -1046,13 +1046,16 @@ function createBridgeDaemonClient(
         jsonBody({}),
       );
     },
-    claimInbox: async (sessionId, input) =>
+    claimInbox: async (sessionId, input, options) =>
       request(
         dependencies,
         daemonUrl,
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/inbox/claim`,
         inboxClaimResponseSchema,
-        jsonBody(input),
+        {
+          ...jsonBody(input),
+          ...(options?.signal === undefined ? {} : { signal: options.signal }),
+        },
       ),
     getMessage: async (correlationId) =>
       request(
@@ -1631,7 +1634,9 @@ function createNativeBridgeWorker(
 
   const stop = (): void => {
     stopped = true;
-    void bridge?.stop();
+    void bridge
+      ?.stop()
+      .catch((error) => printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error));
     activeRun?.emit('SIGTERM');
   };
 
@@ -1655,7 +1660,7 @@ function createNativeBridgeWorker(
   });
 
   const runProcess = async (
-    { prompt, deadlineAt }: { prompt: string; deadlineAt: string },
+    { prompt, deadlineAt, signal }: { prompt: string; deadlineAt: string; signal: AbortSignal },
     sessionId: string | undefined,
   ): Promise<NativeBridgeRunResult> => {
     {
@@ -1672,7 +1677,9 @@ function createNativeBridgeWorker(
       delete inherited['LUWI_SESSION_ID'];
       let tail = '';
       try {
+        if (signal.aborted) throw new DOMException('The native bridge stopped.', 'AbortError');
         const launch = await options.launch({ prompt, sessionId });
+        if (signal.aborted) throw new DOMException('The native bridge stopped.', 'AbortError');
         const result = await dependencies.agentProcessRunner.run({
           executable: launch.executable,
           args: [...launch.args],
@@ -1683,6 +1690,7 @@ function createNativeBridgeWorker(
             ...(sessionId === undefined ? {} : { LUWI_SESSION_ID: sessionId }),
           },
           signals: runSignals,
+          signal,
           captureOutput: (chunk) => {
             tail = (tail + chunk).slice(-4096);
           },
@@ -1748,6 +1756,9 @@ function createNativeBridgeWorker(
           if (count === 0 && options.blockMs === 0 && !stopped) await dependencies.wait(100);
         }
       } finally {
+        await bridge
+          ?.stop()
+          .catch((error) => printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error));
         await bootstrap.stop();
         // A no-op after a loss: the token is already dead and a release would be refused.
         await owner.release();

@@ -108,6 +108,69 @@ describe('native agent process runner', () => {
     await expect(running).resolves.toEqual({ exitCode: 7, signal: undefined });
   });
 
+  it('does not spawn when the ownership signal is already aborted', async () => {
+    const { runner, spawnProcess } = processHarness();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      runner.run({
+        executable: 'codex',
+        args: [],
+        workingDirectory: '/work/project',
+        environment: {},
+        signals: new FakeSignals(),
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it('does not spawn when ownership is lost during executable resolution', async () => {
+    let finishResolution!: (path: string) => void;
+    const resolution = new Promise<string>((resolve) => {
+      finishResolution = resolve;
+    });
+    const { runner, spawnProcess } = processHarness({
+      resolveExecutable: vi.fn(async () => resolution),
+    });
+    const controller = new AbortController();
+    const running = runner.run({
+      executable: 'codex',
+      args: [],
+      workingDirectory: '/work/project',
+      environment: {},
+      signals: new FakeSignals(),
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    finishResolution('/tools/codex');
+
+    await expect(running).rejects.toMatchObject({ name: 'AbortError' });
+    expect(spawnProcess).not.toHaveBeenCalled();
+  });
+
+  it('terminates the owned child when the ownership signal aborts after spawn', async () => {
+    const { child, runner } = processHarness();
+    const controller = new AbortController();
+    const running = runner.run({
+      executable: 'codex',
+      args: [],
+      workingDirectory: '/work/project',
+      environment: {},
+      signals: new FakeSignals(),
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(child.listenerCount('exit')).toBe(1));
+
+    controller.abort();
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGTERM'));
+    child.exit(null, 'SIGTERM');
+
+    await expect(running).resolves.toEqual({ exitCode: 143, signal: 'SIGTERM' });
+  });
+
   it('pipes and forwards both streams when output capture is requested', async () => {
     const child = new FakeChild();
     child.stdout = new EventEmitter();

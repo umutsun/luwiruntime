@@ -24,7 +24,11 @@ export type NativeBridgeRunResult = {
 };
 
 export interface NativeBridgeExecutor {
-  run(input: { prompt: string; deadlineAt: string }): Promise<NativeBridgeRunResult>;
+  run(input: {
+    prompt: string;
+    deadlineAt: string;
+    signal: AbortSignal;
+  }): Promise<NativeBridgeRunResult>;
 }
 
 export type NativeBridgeOptions = {
@@ -108,6 +112,15 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
   const now = options.now ?? (() => new Date().toISOString());
   const seenSessions = new Set<string>();
   let stopping = false;
+  let claimController: AbortController | undefined;
+  let executionController: AbortController | undefined;
+  let inFlight: Promise<number> | undefined;
+
+  const isAbortError = (error: unknown): boolean =>
+    error instanceof Error && error.name === 'AbortError';
+  const throwIfAborted = (signal: AbortSignal): void => {
+    if (signal.aborted) throw new DOMException('The native bridge stopped.', 'AbortError');
+  };
 
   const failure = (answer: string): AgentMessageResponse => ({
     status: 'failed',
@@ -143,16 +156,21 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
     session: string,
     correlationId: string,
     payloadContent: string,
+    signal: AbortSignal,
   ): Promise<void> => {
+    throwIfAborted(signal);
     sessionForRequest = session;
     let current = await options.daemon.getMessage(correlationId);
+    throwIfAborted(signal);
     if (isTerminalMessageState(current.state)) return;
     const recoveredProcessing = current.state === 'processing';
     if (current.state === 'delivered') {
       current = await options.daemon.transitionMessage('acknowledge', session, correlationId);
+      throwIfAborted(signal);
     }
     if (current.state === 'acknowledged') {
       current = await options.daemon.transitionMessage('processing', session, correlationId);
+      throwIfAborted(signal);
     }
     if (current.state !== 'processing') return;
 
@@ -188,10 +206,12 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
 
     await options.daemon.setSessionStatus(session, 'tool_running');
     try {
+      throwIfAborted(signal);
       let run: NativeBridgeRunResult;
       try {
-        run = await options.executor.run({ prompt, deadlineAt: current.deadlineAt });
+        run = await options.executor.run({ prompt, deadlineAt: current.deadlineAt, signal });
       } catch (error) {
+        if (signal.aborted && isAbortError(error)) throw error;
         await completeSafely(
           correlationId,
           failure('The native agent process could not start or exited abnormally.'),
@@ -220,28 +240,75 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
 
   return {
     async pollOnce() {
-      const session = options.currentSessionId();
-      if (session === undefined) return 0;
-      if (!seenSessions.has(session)) {
-        seenSessions.add(session);
-        await options.daemon.setSessionStatus(session, 'idle');
+      if (stopping) return 0;
+      if (inFlight !== undefined) return inFlight;
+      const operation = (async (): Promise<number> => {
+        const session = options.currentSessionId();
+        if (session === undefined) return 0;
+        if (!seenSessions.has(session)) {
+          seenSessions.add(session);
+          await options.daemon.setSessionStatus(session, 'idle');
+        }
+        if (stopping) return 0;
+        claimController = new AbortController();
+        let claimed;
+        try {
+          claimed = await options.daemon.claimInbox(
+            session,
+            {
+              bridgeInstanceId: options.bridgeInstanceId,
+              limit: options.claimLimit,
+              blockMs: options.claimBlockMs,
+              minIdleMs: options.claimMinIdleMs,
+            },
+            { signal: claimController.signal },
+          );
+        } catch (error) {
+          if (stopping && isAbortError(error)) return 0;
+          throw error;
+        } finally {
+          claimController = undefined;
+        }
+        for (const item of claimed.items) {
+          if (stopping) break;
+          if (item.itemKind !== 'request') continue;
+          executionController = new AbortController();
+          try {
+            await processRequest(
+              session,
+              item.correlationId,
+              item.payload.content,
+              executionController.signal,
+            );
+          } catch (error) {
+            if (stopping && isAbortError(error)) break;
+            throw error;
+          } finally {
+            executionController = undefined;
+          }
+        }
+        return claimed.items.length;
+      })();
+      inFlight = operation;
+      try {
+        return await operation;
+      } finally {
+        if (inFlight === operation) inFlight = undefined;
       }
-      const claimed = await options.daemon.claimInbox(session, {
-        bridgeInstanceId: options.bridgeInstanceId,
-        limit: options.claimLimit,
-        blockMs: options.claimBlockMs,
-        minIdleMs: options.claimMinIdleMs,
-      });
-      for (const item of claimed.items) {
-        if (stopping) break;
-        if (item.itemKind !== 'request') continue;
-        await processRequest(session, item.correlationId, item.payload.content);
-      }
-      return claimed.items.length;
     },
 
     async stop() {
       stopping = true;
+      claimController?.abort();
+      executionController?.abort();
+      const pending = inFlight;
+      if (pending !== undefined) {
+        try {
+          await pending;
+        } catch (error) {
+          if (!isAbortError(error)) throw error;
+        }
+      }
     },
   };
 }

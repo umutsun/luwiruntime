@@ -90,6 +90,8 @@ export type NativeAgentProcessInput = {
   workingDirectory: string;
   environment: Readonly<Record<string, string | undefined>>;
   signals: NativeAgentSignalSource;
+  /** Ownership/lifecycle cancellation. A pre-aborted signal must never spawn. */
+  signal?: AbortSignal;
   onDiagnostic?: (error: unknown) => void;
   /** When set, stdout/stderr are piped (not inherited) and every chunk is forwarded as UTF-8. */
   captureOutput?: (chunk: string) => void;
@@ -208,9 +210,16 @@ export class NodeNativeAgentProcessRunner implements NativeAgentProcessRunner {
   }
 
   async run(input: NativeAgentProcessInput): Promise<NativeAgentProcessResult> {
+    const throwIfAborted = (): void => {
+      if (input.signal?.aborted === true) {
+        throw new DOMException('The native agent run was cancelled.', 'AbortError');
+      }
+    };
+    throwIfAborted();
     const candidate = isAbsolute(input.executable)
       ? input.executable
       : await this.#resolveExecutable(input.executable);
+    throwIfAborted();
     if (candidate === undefined) {
       throw new ApplicationError(
         'AGENT_EXECUTABLE_NOT_FOUND',
@@ -229,9 +238,11 @@ export class NodeNativeAgentProcessRunner implements NativeAgentProcessRunner {
         404,
       );
     }
+    throwIfAborted();
 
     const windowsUtilities =
       this.#platform === 'win32' ? await this.#resolveWindowsUtilities() : undefined;
+    throwIfAborted();
     const extension = extname(canonicalExecutable).toLowerCase();
     const commandShim =
       this.#platform === 'win32' && (extension === '.cmd' || extension === '.bat');
@@ -253,6 +264,7 @@ export class NodeNativeAgentProcessRunner implements NativeAgentProcessRunner {
         : posix.basename(executable);
     const rootCanonicalExecutablePath = executable;
     const rootSpawnedAtMs = this.#now();
+    throwIfAborted();
     let child: NativeAgentChildProcess;
     try {
       child = this.#spawnProcess(executable, args, {
@@ -365,8 +377,11 @@ export class NodeNativeAgentProcessRunner implements NativeAgentProcessRunner {
     };
     const onSigint = onSignal('SIGINT');
     const onSigterm = onSignal('SIGTERM');
+    const onAbort = onSignal('SIGTERM');
     input.signals.once('SIGINT', onSigint);
     input.signals.once('SIGTERM', onSigterm);
+    input.signal?.addEventListener('abort', onAbort, { once: true });
+    if (input.signal?.aborted === true) onAbort();
 
     try {
       const result = await outcome;
@@ -379,6 +394,7 @@ export class NodeNativeAgentProcessRunner implements NativeAgentProcessRunner {
     } finally {
       input.signals.off('SIGINT', onSigint);
       input.signals.off('SIGTERM', onSigterm);
+      input.signal?.removeEventListener('abort', onAbort);
     }
   }
 }
