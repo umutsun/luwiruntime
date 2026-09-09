@@ -2,6 +2,7 @@ import {
   LEASE_DEFAULT_DURATION_MS,
   LEASE_MAX_DURATION_MS,
   LEASE_MIN_DURATION_MS,
+  type BridgeOwnerDeclaration,
   type NativeSessionRef,
 } from '@luwi/protocol';
 
@@ -31,6 +32,7 @@ export type SessionBootstrapClient = {
     workingDirectory: string;
     native?: NativeSessionRef;
     metadata?: Record<string, unknown>;
+    bridgeOwner?: BridgeOwnerDeclaration;
   }): Promise<{ id: string }>;
   heartbeat(sessionId: string): Promise<void>;
   close(sessionId: string): Promise<void>;
@@ -71,6 +73,12 @@ export type SessionBootstrapOptions = {
   native?: NativeSessionRef;
   /** Free-form session metadata to register with, e.g. `{ model }`. */
   metadata?: Record<string, unknown>;
+  /**
+   * The bridge slot this process already owns. It rides every registration,
+   * including a recovery, so the same Function that registers a rotated
+   * session also attaches it to the slot atomically.
+   */
+  bridgeOwner?: BridgeOwnerDeclaration;
   /** Must stay well inside the presence TTL. Defaults to a third of 15 s. */
   heartbeatIntervalMs?: number;
   /** Caps exponential retry delay. Must be at least the heartbeat interval. */
@@ -154,6 +162,7 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
     workingDirectory: options.workingDirectory,
     ...(options.native === undefined ? {} : { native: options.native }),
     ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+    ...(options.bridgeOwner === undefined ? {} : { bridgeOwner: options.bridgeOwner }),
   };
 
   let sessionId: string | undefined;

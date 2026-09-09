@@ -88,6 +88,25 @@ describe('session bootstrap', () => {
     expect(client.register).toHaveBeenCalledWith(expect.objectContaining({ native }));
   });
 
+  /**
+   * A supervised bridge registers under a slot it already owns. The declaration
+   * rides every registration, including a recovery, so a rotated session is
+   * attached to the slot atomically by the same Function.
+   */
+  it('declares the bridge slot owner it was given on every registration', async () => {
+    const bridgeOwner = {
+      slotId: 'a'.repeat(64),
+      ownerToken: 'token-1',
+      provider: 'codex' as const,
+      executionProfile: 'workspace-write' as const,
+    };
+    const { bootstrap, client } = harness({ bridgeOwner });
+
+    await bootstrap.start();
+
+    expect(client.register).toHaveBeenCalledWith(expect.objectContaining({ bridgeOwner }));
+  });
+
   it('registers without a native block when identity could not be resolved', async () => {
     // A vendor whose identity is not resolvable is honestly unattributed. A
     // fabricated binding would attribute its tokens to the wrong session.
