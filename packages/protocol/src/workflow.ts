@@ -26,6 +26,13 @@ export const workflowCollectionSchema = z.strictObject({
   workflows: z.array(workflowViewSchema).max(1000),
 });
 
+/** Mirrors the bounded indexes the workflow repository can query without a scan. */
+export const workflowListQuerySchema = z.strictObject({
+  projectId: idSchema.optional(),
+  coordinatorSessionId: idSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+});
+
 export const workflowCreateRequestSchema = z.strictObject({
   objective: nonBlankStringSchema.max(4000),
   coordinatorSessionId: idSchema,
@@ -78,6 +85,7 @@ export function parseContinueWorkflowRequest(input: unknown): ContinueWorkflowRe
 export type WorkflowState = z.infer<typeof workflowStateSchema>;
 export type WorkflowView = z.infer<typeof workflowViewSchema>;
 export type WorkflowCollection = z.infer<typeof workflowCollectionSchema>;
+export type WorkflowListQuery = z.infer<typeof workflowListQuerySchema>;
 export type WorkflowCreateRequest = z.infer<typeof workflowCreateRequestSchema>;
 export type WorkflowDecision = z.infer<typeof workflowDecisionSchema>;
 export type WorkflowContinuationProof = z.infer<typeof workflowContinuationProofSchema>;

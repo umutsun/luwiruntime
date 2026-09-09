@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   bridgeOwnerDeclarationSchema,
   bridgeSlotAcquireBodySchema,
+  bridgeSlotListQuerySchema,
   bridgeSlotTransitionResponseSchema,
   nativeBridgeExecutionProfileSchema,
   parseBridgeSlotView,
@@ -75,6 +76,16 @@ describe('bridge slot transition response', () => {
       }),
     ).toThrow();
     expect(() => bridgeSlotTransitionResponseSchema.parse({ status: 'stolen', slot })).toThrow();
+  });
+});
+
+describe('bridge slot list query', () => {
+  it('coerces a bounded limit and rejects undeclared filters', () => {
+    expect(bridgeSlotListQuerySchema.parse({ limit: '25' })).toEqual({ limit: 25 });
+    expect(bridgeSlotListQuerySchema.parse({})).toEqual({ limit: 100 });
+    expect(() => bridgeSlotListQuerySchema.parse({ limit: 0 })).toThrow();
+    expect(() => bridgeSlotListQuerySchema.parse({ limit: 1001 })).toThrow();
+    expect(() => bridgeSlotListQuerySchema.parse({ projectId: 'project-1' })).toThrow();
   });
 });
 

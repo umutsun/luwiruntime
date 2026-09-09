@@ -1,6 +1,51 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseContinueWorkflowRequest } from './workflow.js';
+import {
+  parseContinueWorkflowRequest,
+  workflowCollectionSchema,
+  workflowListQuerySchema,
+} from './workflow.js';
+
+const workflow = {
+  id: 'workflow-1',
+  projectId: 'project-1',
+  coordinatorSessionId: 'session-1',
+  rootCorrelationId: 'correlation-1',
+  objective: 'Complete the durable workflow.',
+  revision: 1,
+  state: 'active',
+  createdAt: '2026-09-09T12:00:00.000Z',
+  updatedAt: '2026-09-09T12:00:00.000Z',
+};
+
+describe('workflow collection and list query', () => {
+  it('accepts only bounded repository-backed list filters', () => {
+    expect(
+      workflowListQuerySchema.parse({
+        projectId: 'project-1',
+        coordinatorSessionId: 'session-1',
+        limit: '25',
+      }),
+    ).toEqual({ projectId: 'project-1', coordinatorSessionId: 'session-1', limit: 25 });
+    expect(workflowListQuerySchema.parse({})).toEqual({ limit: 100 });
+    expect(() => workflowListQuerySchema.parse({ limit: 0 })).toThrow();
+    expect(() => workflowListQuerySchema.parse({ limit: 1001 })).toThrow();
+    expect(() => workflowListQuerySchema.parse({ state: 'active' })).toThrow();
+  });
+
+  it('rejects private continuation and dispatcher fields from public workflows', () => {
+    expect(() =>
+      workflowCollectionSchema.parse({
+        workflows: [{ ...workflow, continuationId: 'private' }],
+      }),
+    ).toThrow();
+    expect(() =>
+      workflowCollectionSchema.parse({
+        workflows: [{ ...workflow, dispatcherInstanceId: 'private' }],
+      }),
+    ).toThrow();
+  });
+});
 
 describe('workflow continuation request', () => {
   it.each([

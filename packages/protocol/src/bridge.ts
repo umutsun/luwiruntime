@@ -35,6 +35,10 @@ export const bridgeSlotCollectionSchema = z.strictObject({
   slots: z.array(bridgeSlotViewSchema).max(1000),
 });
 
+export const bridgeSlotListQuerySchema = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+});
+
 /** Private daemon/supervisor declaration used to fence session registration. */
 export const bridgeOwnerDeclarationSchema = z.strictObject({
   slotId: bridgeSlotIdSchema,
@@ -84,6 +88,7 @@ export type BridgeExecutionProfile = z.infer<typeof bridgeExecutionProfileSchema
 export type BridgeSlotState = z.infer<typeof bridgeSlotStateSchema>;
 export type BridgeSlotView = z.infer<typeof bridgeSlotViewSchema>;
 export type BridgeSlotCollection = z.infer<typeof bridgeSlotCollectionSchema>;
+export type BridgeSlotListQuery = z.infer<typeof bridgeSlotListQuerySchema>;
 export type BridgeOwnerDeclaration = z.infer<typeof bridgeOwnerDeclarationSchema>;
 export type BridgeSlotAcquireRequest = z.infer<typeof bridgeSlotAcquireRequestSchema>;
 export type BridgeSlotAcquireBody = z.infer<typeof bridgeSlotAcquireBodySchema>;
