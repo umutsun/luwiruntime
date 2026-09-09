@@ -2,6 +2,9 @@ import type { AgentMessageResponse, EvidenceType, MessageKind } from '@luwi/prot
 
 import { boundedAnswer, isTerminalMessageState, type BridgeDaemonClient } from './bridge-daemon.js';
 import type { NativeAgentName } from './agent-runner.js';
+import { providerLaunchArguments, type ProviderLaunchPlan } from './provider-execution-profiles.js';
+
+export { codexMcpBindingArgs } from './provider-execution-profiles.js';
 
 /**
  * ADR 0031: serve one LUWI session's durable inbox unattended by running the
@@ -65,23 +68,12 @@ export function nativeHeadlessArguments(
   }
 }
 
-/**
- * codex exec needs two things claude does not (both measured 2026-09-08): it does not
- * forward the bridge's `LUWI_SESSION_ID` to an MCP server subprocess, and its default
- * `approval: never` policy denies MCP tool calls outright. So the session binding is
- * injected straight into the `luwi-runtime` MCP server's own env with `-c`, and
- * `--approve-for-me` auto-approves the tool call through codex's automatic review.
- * Requires a `[mcp_servers.luwi-runtime]` entry in the user's codex config.
- */
-export function codexMcpBindingArgs(sessionId: string, daemonUrl: string): string[] {
-  return [
-    '--approve-for-me',
-    '--skip-git-repo-check',
-    '-c',
-    `mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="${sessionId}"`,
-    '-c',
-    `mcp_servers.luwi-runtime.env.LUWI_DAEMON_URL="${daemonUrl}"`,
-  ];
+/** Materialize the sole variable argument in a validated supervised plan. */
+export function supervisedHeadlessArguments(
+  plan: ProviderLaunchPlan,
+  prompt: string,
+): readonly string[] {
+  return providerLaunchArguments(plan, prompt);
 }
 
 export function framePrompt(input: {

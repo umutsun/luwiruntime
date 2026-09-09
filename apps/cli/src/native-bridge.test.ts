@@ -7,6 +7,7 @@ import {
   createNativeBridge,
   framePrompt,
   nativeHeadlessArguments,
+  supervisedHeadlessArguments,
   type NativeBridgeExecutor,
   type NativeBridgeRunResult,
 } from './native-bridge.js';
@@ -137,6 +138,27 @@ describe('codexMcpBindingArgs', () => {
     expect(args).toContain('-c');
     expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="sess-9"');
     expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_DAEMON_URL="http://127.0.0.1:4782"');
+  });
+});
+
+describe('supervisedHeadlessArguments', () => {
+  it('replaces only the fixed prompt slot from a ready no-shell plan', () => {
+    expect(
+      supervisedHeadlessArguments(
+        {
+          kind: 'ready',
+          provider: 'codex',
+          executionProfile: 'read-only',
+          executable: 'C:/tools/codex.exe',
+          args: ['exec', '--sandbox', 'read-only', '__LUWI_SUPERVISED_MESSAGE_PROMPT__'],
+          promptIndex: 3,
+          workingDirectory: 'C:/work/project',
+          environment: {},
+          shell: false,
+        },
+        'Read the durable request.',
+      ),
+    ).toEqual(['exec', '--sandbox', 'read-only', 'Read the durable request.']);
   });
 });
 

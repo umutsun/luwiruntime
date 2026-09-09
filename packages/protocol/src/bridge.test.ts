@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { parseBridgeSlotView } from './bridge.js';
+import { nativeBridgeExecutionProfileSchema, parseBridgeSlotView } from './bridge.js';
 
 const slot = {
   id: 'slot-1',
@@ -17,5 +17,29 @@ const slot = {
 describe('bridge slot view', () => {
   it('rejects a private owner token from its redacted public shape', () => {
     expect(() => parseBridgeSlotView({ ...slot, ownerToken: 'secret' })).toThrow();
+  });
+});
+
+describe('native bridge execution profile', () => {
+  it('accepts only the strict enabled provider/profile leaf', () => {
+    expect(
+      nativeBridgeExecutionProfileSchema.parse({
+        enabled: true,
+        provider: 'codex',
+        executionProfile: 'read-only',
+      }),
+    ).toEqual({
+      enabled: true,
+      provider: 'codex',
+      executionProfile: 'read-only',
+    });
+    expect(() =>
+      nativeBridgeExecutionProfileSchema.parse({
+        enabled: true,
+        provider: 'codex',
+        executionProfile: 'read-only',
+        additionalArgs: ['--dangerously-bypass-approvals-and-sandbox'],
+      }),
+    ).toThrow();
   });
 });

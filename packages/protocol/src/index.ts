@@ -78,6 +78,7 @@ export {
   bridgeSlotRenewRequestSchema,
   bridgeSlotStateSchema,
   bridgeSlotViewSchema,
+  nativeBridgeExecutionProfileSchema,
   parseBridgeSlotView,
 } from './bridge.js';
 export type {
@@ -91,6 +92,7 @@ export type {
   BridgeSlotRenewRequest,
   BridgeSlotState,
   BridgeSlotView,
+  NativeBridgeExecutionProfile,
 } from './bridge.js';
 export {
   WAKE_DEFAULT_BLOCK_MS,

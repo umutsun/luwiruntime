@@ -6,6 +6,11 @@ const timestampSchema = z.iso.datetime({ offset: false });
 export const bridgeProviderSchema = z.enum(['codex', 'claude-code', 'gemini-cli', 'antigravity']);
 export const bridgeExecutionProfileSchema = z.enum(['read-only', 'workspace-write']);
 export const bridgeSlotStateSchema = z.enum(['active', 'standby', 'degraded', 'expired']);
+export const nativeBridgeExecutionProfileSchema = z.strictObject({
+  enabled: z.literal(true),
+  provider: bridgeProviderSchema,
+  executionProfile: bridgeExecutionProfileSchema,
+});
 
 /**
  * A redacted slot projection. The owner token exists only in mutation requests
@@ -72,3 +77,4 @@ export type BridgeSlotAcquireRequest = z.infer<typeof bridgeSlotAcquireRequestSc
 export type BridgeSlotRenewRequest = z.infer<typeof bridgeSlotRenewRequestSchema>;
 export type BridgeSlotAttachRequest = z.infer<typeof bridgeSlotAttachRequestSchema>;
 export type BridgeSlotReleaseRequest = z.infer<typeof bridgeSlotReleaseRequestSchema>;
+export type NativeBridgeExecutionProfile = z.infer<typeof nativeBridgeExecutionProfileSchema>;

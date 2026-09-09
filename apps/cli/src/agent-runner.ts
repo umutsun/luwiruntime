@@ -414,7 +414,7 @@ export type AgentRunContext = {
   executable: string;
 };
 
-function pathContains(root: string, candidate: string, platform: NodeJS.Platform): boolean {
+export function pathContains(root: string, candidate: string, platform: NodeJS.Platform): boolean {
   const path = platform === 'win32' ? win32 : posix;
   const normalizedRoot = path.resolve(root);
   const normalizedCandidate = path.resolve(candidate);
