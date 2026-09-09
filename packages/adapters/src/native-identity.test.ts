@@ -17,8 +17,14 @@ describe('native identity resolution', () => {
         CLAUDE_CODE_SESSION_ID: '64c3e219-18aa-4539-9104-89d3d2ac5629',
       }),
     ).toEqual({
-      adapterId: 'claude-code',
-      nativeSessionId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      ref: {
+        adapterId: 'claude-code',
+        nativeSessionId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      },
+      provenance: {
+        source: 'host_launcher',
+        launcherInstanceId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      },
     });
   });
 
@@ -33,9 +39,15 @@ describe('native identity resolution', () => {
         CLAUDE_PID: '56876',
       }),
     ).toEqual({
-      adapterId: 'claude-code',
-      nativeSessionId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
-      nativeSubagentId: '56876',
+      ref: {
+        adapterId: 'claude-code',
+        nativeSessionId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+        nativeSubagentId: '56876',
+      },
+      provenance: {
+        source: 'host_launcher',
+        launcherInstanceId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      },
     });
   });
 
@@ -68,22 +80,24 @@ describe('native identity resolution', () => {
         CLAUDE_PID: 'not a pid',
       }),
     ).toEqual({
-      adapterId: 'claude-code',
-      nativeSessionId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      ref: {
+        adapterId: 'claude-code',
+        nativeSessionId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      },
+      provenance: {
+        source: 'host_launcher',
+        launcherInstanceId: '64c3e219-18aa-4539-9104-89d3d2ac5629',
+      },
     });
   });
 
-  it('resolves Codex from CODEX_SESSION_ID when a Codex exports one', () => {
-    // The registry is extensible: a vendor that carries its session id in the
-    // environment wires up the same way Claude does. Codex records a UUIDv7
-    // session id in its rollout file; a build that exports it as CODEX_SESSION_ID
-    // resolves here.
+  it('does not trust Codex launcher ids until disk proves their exact rollout header', () => {
     expect(
-      resolveNativeIdentity('codex', { CODEX_SESSION_ID: '019f839b-20be-7480-be44-f9c4446b59a1' }),
-    ).toEqual({
-      adapterId: 'codex',
-      nativeSessionId: '019f839b-20be-7480-be44-f9c4446b59a1',
-    });
+      resolveNativeIdentity('codex', {
+        CODEX_SESSION_ID: '019f839b-20be-7480-be44-f9c4446b59a1',
+        CODEX_THREAD_ID: '019f839b-20be-7480-be44-f9c4446b59a2',
+      }),
+    ).toBeUndefined();
   });
 
   it('resolves nothing for Codex when no session-id variable is present (the measured case)', () => {
@@ -94,6 +108,7 @@ describe('native identity resolution', () => {
     expect(resolveNativeIdentity('codex', {})).toBeUndefined();
     expect(resolveNativeIdentity('codex', { CODEX_HOME: 'C:/Users/umuts/.codex' })).toBeUndefined();
     expect(resolveNativeIdentity('codex', { CODEX_SESSION_ID: 'has spaces' })).toBeUndefined();
+    expect(resolveNativeIdentity('codex', { CODEX_THREAD_ID: 'thread-only' })).toBeUndefined();
   });
 
   it('resolves nothing for Gemini, which has no per-session identity at all', () => {

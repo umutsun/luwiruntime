@@ -1,4 +1,10 @@
-import { nativeSessionRefSchema, type AgentKind, type NativeSessionRef } from '@luwi/protocol';
+import {
+  nativeIdentityProvenanceSchema,
+  nativeSessionRefSchema,
+  type AgentKind,
+  type NativeIdentityProvenance,
+  type NativeSessionRef,
+} from '@luwi/protocol';
 
 /**
  * Resolves the vendor-native identity a session should declare about itself.
@@ -14,17 +20,21 @@ import { nativeSessionRefSchema, type AgentKind, type NativeSessionRef } from '@
  *   registers without a native block is honestly unattributed; one that registers
  *   with a fabricated block is silently wrong.
  * - **Vendors are a registry, so a new agent is one entry.** Each vendor is a
- *   resolver keyed by its `AgentKind`. An env-based vendor uses
- *   `envSessionResolver`; a vendor with richer rules gets its own function; a
- *   vendor whose identity LUWI cannot read has no entry and registers without a
- *   native block.
+ *   resolver keyed by its `AgentKind`. A vendor with richer rules gets its own
+ *   function; a vendor whose identity LUWI cannot read has no entry and registers
+ *   without a native block.
  */
 
 export type NativeIdentityEnvironment = Readonly<Record<string, string | undefined>>;
 
+export type ResolvedNativeIdentity = {
+  ref: NativeSessionRef;
+  provenance: NativeIdentityProvenance;
+};
+
 type NativeIdentityResolver = (
   environment: NativeIdentityEnvironment,
-) => NativeSessionRef | undefined;
+) => ResolvedNativeIdentity | undefined;
 
 function usable(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -50,15 +60,16 @@ function validated(
   return parsed.success ? parsed.data : undefined;
 }
 
-/**
- * The common case: a vendor that carries its session id in one environment
- * variable, exactly as Claude does. Adding such a vendor is one registry entry.
- */
-function envSessionResolver(adapterId: string, variable: string): NativeIdentityResolver {
-  return (environment) => {
-    const nativeSessionId = usable(environment[variable]);
-    return nativeSessionId === undefined ? undefined : validated(adapterId, nativeSessionId);
-  };
+function fromHostLauncher(
+  ref: NativeSessionRef | undefined,
+  launcherInstanceId: string,
+): ResolvedNativeIdentity | undefined {
+  if (ref === undefined) return undefined;
+  const provenance = nativeIdentityProvenanceSchema.safeParse({
+    source: 'host_launcher',
+    launcherInstanceId,
+  });
+  return provenance.success ? { ref, provenance: provenance.data } : undefined;
 }
 
 /**
@@ -69,7 +80,9 @@ function envSessionResolver(adapterId: string, variable: string): NativeIdentity
  * its own: its tokens belong to the session that spawned it, and inventing a
  * second main session would split that evidence in two.
  */
-function resolveClaudeCode(environment: NativeIdentityEnvironment): NativeSessionRef | undefined {
+function resolveClaudeCode(
+  environment: NativeIdentityEnvironment,
+): ResolvedNativeIdentity | undefined {
   const nativeSessionId = usable(environment['CLAUDE_CODE_SESSION_ID']);
   if (nativeSessionId === undefined) return undefined;
 
@@ -77,25 +90,23 @@ function resolveClaudeCode(environment: NativeIdentityEnvironment): NativeSessio
   const nativeSubagentId = isChild ? usable(environment['CLAUDE_PID']) : undefined;
 
   const withSubagent = validated('claude-code', nativeSessionId, nativeSubagentId);
-  if (withSubagent !== undefined) return withSubagent;
+  if (withSubagent !== undefined) return fromHostLauncher(withSubagent, nativeSessionId);
 
   // A bad subagent id must not cost the session id, which is still good evidence.
-  return nativeSubagentId === undefined ? undefined : validated('claude-code', nativeSessionId);
+  return nativeSubagentId === undefined
+    ? undefined
+    : fromHostLauncher(validated('claude-code', nativeSessionId), nativeSessionId);
 }
 
 /**
- * Codex records a per-session `session_id` (a UUIDv7) in its rollout file
- * `~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl`. On this machine every
- * Codex session is launched by Codex Desktop or the VSCode extension, which
- * export no session-id environment variable (measured 2026-09-01; see
- * `docs/superpowers/specs/2026-09-01-codex-gemini-identity-measurement.md`). A
- * Codex that exports `CODEX_SESSION_ID` resolves here, deterministically and with
- * no guess. Absent it, the owner-approved filesystem fallback in
- * `native-identity-disk.ts` (ADR 0028) recovers the id from the rollout tree —
- * cwd-matched and freshness-gated — and this environment path stays the preferred,
- * first-tried resolver so a future env-exporting Codex never touches disk.
+ * Codex launcher evidence is not complete until its two environment ids match
+ * one exact fresh rollout header. That proof needs cwd and filesystem access, so
+ * it lives in `native-identity-disk.ts`; the pure environment resolver must not
+ * upgrade either id on its own.
  */
-const resolveCodex = envSessionResolver('codex', 'CODEX_SESSION_ID');
+function resolveCodex(): undefined {
+  return undefined;
+}
 
 /**
  * Gemini CLI keeps history per project (`~/.gemini/history/<project>/`, git-backed)
@@ -104,7 +115,7 @@ const resolveCodex = envSessionResolver('codex', 'CODEX_SESSION_ID');
  * a missing measurement. If a future Gemini exports a session id, wire it here the
  * way Codex is wired.
  */
-function resolveGemini(): NativeSessionRef | undefined {
+function resolveGemini(): undefined {
   return undefined;
 }
 
@@ -123,6 +134,6 @@ const RESOLVERS: Partial<Record<AgentKind, NativeIdentityResolver>> = {
 export function resolveNativeIdentity(
   kind: AgentKind,
   environment: NativeIdentityEnvironment,
-): NativeSessionRef | undefined {
+): ResolvedNativeIdentity | undefined {
   return RESOLVERS[kind]?.(environment);
 }

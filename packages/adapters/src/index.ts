@@ -6,7 +6,7 @@ export {
   createKimiAdapter,
 } from './adapter.js';
 export { resolveNativeIdentity } from './native-identity.js';
-export type { NativeIdentityEnvironment } from './native-identity.js';
+export type { NativeIdentityEnvironment, ResolvedNativeIdentity } from './native-identity.js';
 export { resolveNativeIdentityFromDisk } from './native-identity-disk.js';
 export type { DiskNativeIdentityContext } from './native-identity-disk.js';
 export {

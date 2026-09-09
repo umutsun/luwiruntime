@@ -25,7 +25,7 @@ type FakeFile = { content: string; modifiedAtMs: number };
 function rollout(
   sessionId: string,
   cwd: string,
-  extra: { id?: string; parent?: string } = {},
+  extra: { id?: string; parent?: string; source?: unknown } = {},
 ): string {
   const meta = {
     timestamp: '2026-09-01T10:00:00.000Z',
@@ -36,6 +36,7 @@ function rollout(
       parent_thread_id: extra.parent,
       cwd,
       originator: 'Codex Desktop',
+      ...(extra.source === undefined ? {} : { source: extra.source }),
     },
   };
   const conversation = {
@@ -104,7 +105,174 @@ const base = {
 
 const dayDirectory = 'C:/Users/umuts/.codex/sessions/2026/09/01';
 
+const codexRef = (nativeSessionId: string) => ({
+  ref: { adapterId: 'codex-native-v1', nativeSessionId },
+  provenance: { source: 'filesystem_heuristic' },
+});
+
+const trustedCodexRef = (nativeSessionId: string, launcherInstanceId: string) => ({
+  ref: { adapterId: 'codex-native-v1', nativeSessionId },
+  provenance: { source: 'host_launcher', launcherInstanceId },
+});
+
 describe('codex disk native identity', () => {
+  it('trusts launcher identity only when both ids match one exact fresh main rollout', async () => {
+    const nativeSessionId = '019f839b-20be-7480-be44-f9c4446b59a1';
+    const launcherInstanceId = '019f839b-20be-7480-be44-f9c4446b59a2';
+    const fileSystem = createFileSystem({
+      [`${dayDirectory}/rollout-launcher.jsonl`]: {
+        content: rollout(nativeSessionId, PROJECT, { id: launcherInstanceId }),
+        modifiedAtMs: FRESH,
+      },
+    });
+
+    await expect(
+      resolveNativeIdentityFromDisk('codex', {
+        ...base,
+        environment: {
+          USERPROFILE: 'C:\\Users\\umuts',
+          CODEX_SESSION_ID: nativeSessionId,
+          CODEX_THREAD_ID: launcherInstanceId,
+        },
+        fileSystem,
+      }),
+    ).resolves.toEqual(trustedCodexRef(nativeSessionId, launcherInstanceId));
+  });
+
+  it.each([
+    {
+      label: 'missing queue target',
+      environment: { CODEX_THREAD_ID: 'launcher-1' },
+    },
+    {
+      label: 'missing launcher id',
+      environment: { CODEX_SESSION_ID: 'queue-1' },
+    },
+    {
+      label: 'blank launcher id',
+      environment: { CODEX_SESSION_ID: 'queue-1', CODEX_THREAD_ID: '   ' },
+    },
+    {
+      label: 'launcher id longer than the protocol limit',
+      environment: { CODEX_SESSION_ID: 'queue-1', CODEX_THREAD_ID: 'l'.repeat(129) },
+    },
+    {
+      label: 'launcher id with surrounding whitespace',
+      environment: { CODEX_SESSION_ID: 'queue-1', CODEX_THREAD_ID: ' launcher-1' },
+    },
+    {
+      label: 'invalid queue target',
+      environment: { CODEX_SESSION_ID: 'has spaces', CODEX_THREAD_ID: 'launcher-1' },
+    },
+  ])('fails closed for $label without using a heuristic rollout', async ({ environment }) => {
+    const fileSystem = createFileSystem({
+      [`${dayDirectory}/rollout-heuristic.jsonl`]: {
+        content: rollout('heuristic-session', PROJECT),
+        modifiedAtMs: FRESH,
+      },
+    });
+
+    await expect(
+      resolveNativeIdentityFromDisk('codex', {
+        ...base,
+        environment: { USERPROFILE: 'C:\\Users\\umuts', ...environment },
+        fileSystem,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['beyond the provenance protocol limit', 'l'.repeat(129)],
+    ['outside the safe identifier alphabet', 'launcher id'],
+    ['with a leading delimiter', '-launcher-id'],
+  ])('rejects a matching launcher id %s', async (_label, launcherInstanceId) => {
+    const fileSystem = createFileSystem({
+      [`${dayDirectory}/rollout-oversized-launcher.jsonl`]: {
+        content: rollout('queue-1', PROJECT, { id: launcherInstanceId }),
+        modifiedAtMs: FRESH,
+      },
+    });
+
+    await expect(
+      resolveNativeIdentityFromDisk('codex', {
+        ...base,
+        environment: {
+          USERPROFILE: 'C:\\Users\\umuts',
+          CODEX_SESSION_ID: 'queue-1',
+          CODEX_THREAD_ID: launcherInstanceId,
+        },
+        fileSystem,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each([
+    {
+      label: 'session id mismatch',
+      content: rollout('different-session', PROJECT, { id: 'launcher-1' }),
+      modifiedAtMs: FRESH,
+    },
+    {
+      label: 'launcher id mismatch',
+      content: rollout('queue-1', PROJECT, { id: 'different-launcher' }),
+      modifiedAtMs: FRESH,
+    },
+    {
+      label: 'missing rollout id',
+      content: rollout('queue-1', PROJECT),
+      modifiedAtMs: FRESH,
+    },
+    {
+      label: 'cwd mismatch',
+      content: rollout('queue-1', 'C:\\other', { id: 'launcher-1' }),
+      modifiedAtMs: FRESH,
+    },
+    {
+      label: 'stale rollout',
+      content: rollout('queue-1', PROJECT, { id: 'launcher-1' }),
+      modifiedAtMs: STALE,
+    },
+    {
+      label: 'subagent rollout',
+      content: rollout('queue-1', PROJECT, {
+        id: 'launcher-1',
+        source: { subagent: 'worker-1' },
+      }),
+      modifiedAtMs: FRESH,
+    },
+    {
+      label: 'rollout carrying even a false subagent marker',
+      content: rollout('queue-1', PROJECT, {
+        id: 'launcher-1',
+        source: { subagent: false },
+      }),
+      modifiedAtMs: FRESH,
+    },
+  ])(
+    'rejects $label launcher evidence without heuristic fallback',
+    async ({ content, modifiedAtMs }) => {
+      const fileSystem = createFileSystem({
+        [`${dayDirectory}/rollout-candidate.jsonl`]: { content, modifiedAtMs },
+        [`${dayDirectory}/rollout-heuristic.jsonl`]: {
+          content: rollout('heuristic-session', PROJECT),
+          modifiedAtMs: NOW - 2_000,
+        },
+      });
+
+      await expect(
+        resolveNativeIdentityFromDisk('codex', {
+          ...base,
+          environment: {
+            USERPROFILE: 'C:\\Users\\umuts',
+            CODEX_SESSION_ID: 'queue-1',
+            CODEX_THREAD_ID: 'launcher-1',
+          },
+          fileSystem,
+        }),
+      ).resolves.toBeUndefined();
+    },
+  );
+
   it('resolves the freshest cwd-matching rollout to its session id', async () => {
     const fileSystem = createFileSystem({
       [`${dayDirectory}/rollout-2026-09-01T14-25-40-01a05c80.jsonl`]: {
@@ -112,10 +280,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: FRESH,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: '01a05c7d-d90a-7a62-8856-ebd3bf43f1c7',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('01a05c7d-d90a-7a62-8856-ebd3bf43f1c7'),
+    );
   });
 
   it('picks the most recently written of several fresh cwd-matching rollouts', async () => {
@@ -133,10 +300,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: NOW - 2_000,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: 'newest-session',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('newest-session'),
+    );
   });
 
   it('returns the logical session id of a resumed session, never the rollout file id', async () => {
@@ -151,10 +317,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: FRESH,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: '01a05c7d-root',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('01a05c7d-root'),
+    );
   });
 
   it('binds nothing when the freshest rollout is stale', async () => {
@@ -194,7 +359,7 @@ describe('codex disk native identity', () => {
         fileSystem,
         workingDirectory: 'c:/xampp/htdocs/luwiruntime',
       }),
-    ).resolves.toEqual({ adapterId: 'codex', nativeSessionId: 'case-session' });
+    ).resolves.toEqual(codexRef('case-session'));
   });
 
   it('reads the sessions root under CODEX_HOME when it is set', async () => {
@@ -210,7 +375,7 @@ describe('codex disk native identity', () => {
         environment: { CODEX_HOME: 'D:\\codex-home' },
         fileSystem,
       }),
-    ).resolves.toEqual({ adapterId: 'codex', nativeSessionId: 'home-session' });
+    ).resolves.toEqual(codexRef('home-session'));
   });
 
   it('honors LUWI_CODEX_SESSION_FRESHNESS_MS to widen the window', async () => {
@@ -235,7 +400,7 @@ describe('codex disk native identity', () => {
         },
         fileSystem,
       }),
-    ).resolves.toEqual({ adapterId: 'codex', nativeSessionId: 'idle-session' });
+    ).resolves.toEqual(codexRef('idle-session'));
   });
 
   it('skips a malformed first line and resolves a later valid candidate', async () => {
@@ -249,10 +414,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: NOW - 1_500,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: 'valid-session',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('valid-session'),
+    );
   });
 
   it('finds a live session whose rollout sits in an older day directory (freshness bounds the scan, not a day count)', async () => {
@@ -274,10 +438,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: NOW - 1_000,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: 'day1-live',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('day1-live'),
+    );
   });
 
   it('skips a fresher rollout in another project for this project\u2019s older-but-fresh rollout (no cross-project shadowing)', async () => {
@@ -294,10 +457,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: NOW - 5_000,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: 'my-session',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('my-session'),
+    );
   });
 
   it('never trusts a future-dated rollout over the genuinely live one', async () => {
@@ -313,10 +475,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: NOW - 3_000,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: 'genuinely-live',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('genuinely-live'),
+    );
   });
 
   it('binds nothing when the only rollout is dated in the future beyond clock jitter', async () => {
@@ -338,10 +499,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: NOW + 1_000,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: 'near-now-session',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('near-now-session'),
+    );
   });
 
   it('descends across a month boundary just after midnight', async () => {
@@ -362,7 +522,7 @@ describe('codex disk native identity', () => {
         fileSystem,
         now: () => new Date(1_759_276_980_000),
       }),
-    ).resolves.toEqual({ adapterId: 'codex', nativeSessionId: 'carryover-session' });
+    ).resolves.toEqual(codexRef('carryover-session'));
   });
 
   it('descends across a year boundary just after midnight', async () => {
@@ -376,10 +536,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: NOW - 2 * 60 * 1_000,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: 'year-carryover',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('year-carryover'),
+    );
   });
 
   it('skips a structurally valid session_meta that is missing cwd or session_id', async () => {
@@ -394,10 +553,9 @@ describe('codex disk native identity', () => {
         modifiedAtMs: NOW - 1_500,
       },
     });
-    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual({
-      adapterId: 'codex',
-      nativeSessionId: 'complete-session',
-    });
+    await expect(resolveNativeIdentityFromDisk('codex', { ...base, fileSystem })).resolves.toEqual(
+      codexRef('complete-session'),
+    );
   });
 
   it('does not match a parent- or child-directory rollout (exact cwd, not containment)', async () => {
@@ -447,7 +605,7 @@ describe('codex disk native identity', () => {
         environment: { CODEX_HOME: 'D:\\codex-home', USERPROFILE: 'C:\\Users\\umuts' },
         fileSystem,
       }),
-    ).resolves.toEqual({ adapterId: 'codex', nativeSessionId: 'home-session' });
+    ).resolves.toEqual(codexRef('home-session'));
   });
 
   it('resolves from a POSIX HOME root and compares cwd case-sensitively off Windows', async () => {
@@ -466,7 +624,7 @@ describe('codex disk native identity', () => {
         now: () => new Date(NOW),
         fileSystem,
       }),
-    ).resolves.toEqual({ adapterId: 'codex', nativeSessionId: 'posix-session' });
+    ).resolves.toEqual(codexRef('posix-session'));
 
     // Case differs — on a case-sensitive filesystem these are distinct directories.
     await expect(

@@ -1,26 +1,37 @@
-import { nativeSessionRefSchema, type AgentKind, type NativeSessionRef } from '@luwi/protocol';
+import {
+  nativeIdentityProvenanceSchema,
+  nativeSessionRefSchema,
+  type AgentKind,
+  type NativeIdentityProvenance,
+  type NativeSessionRef,
+} from '@luwi/protocol';
 
+import type { ResolvedNativeIdentity } from './native-identity.js';
 import { NodeTranscriptFileSystem } from './node-collaborators.js';
 import type { TranscriptFileSystem } from './types.js';
 
 /**
- * Filesystem-backed native-identity resolution — the strict fallback to the pure
- * environment resolver in `native-identity.ts`.
+ * Filesystem-aware native-identity resolution for vendors whose proof includes
+ * on-disk evidence.
  *
  * Some vendors keep their session id only on disk. Codex is the measured case
  * (2026-09-01, `docs/superpowers/specs/2026-09-01-codex-gemini-identity-measurement.md`):
- * the id lives in a rollout file and no environment variable exposes it when Codex
- * is launched by Codex Desktop or the VSCode extension. With the owner's approval
- * (2026-09-01, ADR 0028) this recovers it from the rollout tree.
+ * the id lives in a rollout file. With the owner's approval (2026-09-01, ADR 0028)
+ * this recovers it from the rollout tree.
  *
  * The design keeps the environment resolver's "never bind a guess" rule as strong
  * as the evidence allows, so a wrong binding — which would attribute one session's
  * tokens to another — stays impossible in every case but a genuinely ambiguous
  * one:
  *
- * - **Environment wins.** This runs only when the pure resolver returned nothing,
- *   so a Codex build that ever exports `CODEX_SESSION_ID` is resolved by the
- *   deterministic path and never reaches disk.
+ * - **Launcher proof is all-or-nothing.** If either `CODEX_SESSION_ID` or
+ *   `CODEX_THREAD_ID` exists, both must be exact, protocol-valid values matching
+ *   one fresh main rollout's `session_id` and `id`. Partial, malformed, stale,
+ *   wrong-cwd, mismatched, or subagent evidence resolves to nothing and never
+ *   falls through to the heuristic path.
+ * - **No launcher ids means heuristic evidence.** The freshest exact-cwd rollout
+ *   may identify a session for passive attribution, but its
+ *   `filesystem_heuristic` provenance cannot grant automatic wake capability.
  * - **cwd must match.** A rollout is a candidate only if its recorded `cwd` equals
  *   the attaching session's working directory (normalized, case-insensitive on
  *   Windows). A Codex session in another project is never bound to this one.
@@ -28,13 +39,14 @@ import type { TranscriptFileSystem } from './types.js';
  *   freshness window is treated as not-the-current-session and skipped, so an
  *   attach in a directory where Codex ran yesterday binds nothing rather than a
  *   dead session.
- * - **The logical session id, not the file.** A resumed Codex session writes a new
- *   rollout file whose own `id` differs from `session_id`; the binding takes
- *   `session_id`, the stable root of the resume chain.
+ * - **The logical session id, not the rollout id.** A resumed Codex session writes
+ *   a new rollout header whose `id` differs from `session_id`; the native binding
+ *   takes `session_id`, while exact launcher proof separately retains that `id` as
+ *   its launcher instance.
  *
- * The residual, owner-accepted risk is two live Codex sessions sharing one working
- * directory: "freshest" then names one of them. That is the only case the
- * environment resolver's rule is relaxed for, and it is bounded to it.
+ * The residual, owner-accepted heuristic risk is two live Codex sessions sharing
+ * one working directory: "freshest" then names one of them. The result remains
+ * passive filesystem evidence; exact launcher evidence does not use this tie-break.
  */
 
 export type DiskNativeIdentityContext = {
@@ -49,7 +61,7 @@ export type DiskNativeIdentityContext = {
 
 type DiskNativeIdentityResolver = (
   context: DiskNativeIdentityContext,
-) => Promise<NativeSessionRef | undefined>;
+) => Promise<ResolvedNativeIdentity | undefined>;
 
 /** A rollout untouched for this long is not the current session. Env-overridable. */
 const DEFAULT_CODEX_FRESHNESS_MS = 900_000;
@@ -172,7 +184,14 @@ async function newestDayDirectories(
   return dayDirectories;
 }
 
-function parseSessionMeta(line: string): { sessionId: string; cwd: string } | undefined {
+type CodexSessionMeta = {
+  sessionId: string;
+  rolloutId?: string;
+  cwd: string;
+  isSubagent: boolean;
+};
+
+function parseSessionMeta(line: string): CodexSessionMeta | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(line);
@@ -185,17 +204,52 @@ function parseSessionMeta(line: string): { sessionId: string; cwd: string } | un
   const payload = record['payload'];
   if (typeof payload !== 'object' || payload === null) return undefined;
   const fields = payload as Record<string, unknown>;
-  // `session_id` is the logical root, stable across a resume chain; the file's own
-  // `id` is per-rollout and is deliberately not read here.
+  // `session_id` is the logical root, stable across a resume chain. `id` identifies
+  // this rollout and is required only when proving exact host-launcher evidence.
   const sessionId = fields['session_id'];
+  const rolloutId = fields['id'];
   const cwd = fields['cwd'];
   if (typeof sessionId !== 'string' || typeof cwd !== 'string') return undefined;
-  return { sessionId, cwd };
+  const source = fields['source'];
+  const isSubagent =
+    typeof source === 'object' &&
+    source !== null &&
+    !Array.isArray(source) &&
+    Object.prototype.hasOwnProperty.call(source, 'subagent');
+  return {
+    sessionId,
+    ...(typeof rolloutId === 'string' ? { rolloutId } : {}),
+    cwd,
+    isSubagent,
+  };
 }
 
 function codexRef(nativeSessionId: string): NativeSessionRef | undefined {
-  const parsed = nativeSessionRefSchema.safeParse({ adapterId: 'codex', nativeSessionId });
+  const parsed = nativeSessionRefSchema.safeParse({
+    adapterId: 'codex-native-v1',
+    nativeSessionId,
+  });
   return parsed.success ? parsed.data : undefined;
+}
+
+function exactNativeSessionValue(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0 || value !== value.trim()) return undefined;
+  return codexRef(value) === undefined ? undefined : value;
+}
+
+function exactHostLauncherProvenance(
+  value: string | undefined,
+): Extract<NativeIdentityProvenance, { source: 'host_launcher' }> | undefined {
+  if (value === undefined || value.length === 0 || value !== value.trim()) return undefined;
+  // Launcher ids cross the same Redis/process boundary as native ids. Reuse the
+  // protocol's narrow native-id alphabet in addition to the provenance length.
+  if (codexRef(value) === undefined) return undefined;
+  const parsed = nativeIdentityProvenanceSchema.safeParse({
+    source: 'host_launcher',
+    launcherInstanceId: value,
+  });
+  if (!parsed.success || parsed.data.source !== 'host_launcher') return undefined;
+  return parsed.data.launcherInstanceId === value ? parsed.data : undefined;
 }
 
 const resolveCodexFromDisk: DiskNativeIdentityResolver = async (context) => {
@@ -203,6 +257,17 @@ const resolveCodexFromDisk: DiskNativeIdentityResolver = async (context) => {
   const platform = context.platform ?? process.platform;
   const fileSystem = context.fileSystem ?? new NodeTranscriptFileSystem();
   const nowMs = (context.now ?? (() => new Date()))().getTime();
+  const rawSessionId = environment['CODEX_SESSION_ID'];
+  const rawLauncherId = environment['CODEX_THREAD_ID'];
+  const hasLauncherEvidence = rawSessionId !== undefined || rawLauncherId !== undefined;
+  const launcherSessionId = exactNativeSessionValue(rawSessionId);
+  const launcherProvenance = exactHostLauncherProvenance(rawLauncherId);
+  if (
+    hasLauncherEvidence &&
+    (launcherSessionId === undefined || launcherProvenance === undefined)
+  ) {
+    return undefined;
+  }
 
   const root = codexSessionsRoot(environment);
   if (root === undefined) return undefined;
@@ -238,7 +303,25 @@ const resolveCodexFromDisk: DiskNativeIdentityResolver = async (context) => {
     const meta = parseSessionMeta(firstLine);
     if (meta === undefined) continue;
     if (normalizeForCompare(meta.cwd, platform) !== targetCwd) continue;
-    return codexRef(meta.sessionId);
+    if (hasLauncherEvidence) {
+      if (launcherSessionId === undefined || launcherProvenance === undefined) return undefined;
+      if (
+        meta.sessionId !== launcherSessionId ||
+        meta.rolloutId !== launcherProvenance.launcherInstanceId ||
+        meta.isSubagent
+      ) {
+        continue;
+      }
+      const ref = codexRef(meta.sessionId);
+      return ref === undefined
+        ? undefined
+        : {
+            ref,
+            provenance: launcherProvenance,
+          };
+    }
+    const ref = codexRef(meta.sessionId);
+    return ref === undefined ? undefined : { ref, provenance: { source: 'filesystem_heuristic' } };
   }
   return undefined;
 };
@@ -261,7 +344,7 @@ const DISK_RESOLVERS: Partial<Record<AgentKind, DiskNativeIdentityResolver>> = {
 export async function resolveNativeIdentityFromDisk(
   kind: AgentKind,
   context: DiskNativeIdentityContext,
-): Promise<NativeSessionRef | undefined> {
+): Promise<ResolvedNativeIdentity | undefined> {
   const resolver = DISK_RESOLVERS[kind];
   if (resolver === undefined) return undefined;
   try {
