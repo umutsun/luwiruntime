@@ -1201,7 +1201,7 @@ end`,
     "  if type(message.evidenceRequirements) ~= 'table' or type(message.timeoutMs) ~= 'number' or message.timeoutMs < 1 or message.timeoutMs ~= math.floor(message.timeoutMs) or args[2] == '' or args[3] == '' or (args[4] ~= '0' and args[4] ~= '1') then",
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
-    '  if message.timeoutMs > 86400000 or not bridge_id(args[2]) or not bridge_id(args[3]) then',
+    '  if message.timeoutMs > 86400000 or not bridge_id(args[3]) then',
     "    return cjson.encode({status='error', code='REDIS_ARGUMENT_INVALID'})",
     '  end',
     '  local evidence_count = 0',
@@ -1349,6 +1349,26 @@ end`,
     if receipt.fingerprint ~= workflow.createFingerprint then
       return cjson.encode({status='error', code='WORKFLOW_CREATE_CONFLICT'})
     end
+    if receipt.workflowId ~= workflow.id or receipt.messageId ~= message.id then
+      return cjson.encode({status='replay_required', workflowId=receipt.workflowId, messageId=receipt.messageId})
+    end
+    if key_type(keys[1]) ~= 'hash' or key_type(keys[7]) ~= 'hash' then
+      return cjson.encode({status='error', code='REDIS_STATE_INVALID'})
+    end
+    local stored_workflow = redis.call('HMGET', keys[1], 'id', 'rootCorrelationId', 'firstMessageId', 'createFingerprint', 'revision')
+    local stored_message = redis.call('HMGET', keys[7], 'id', 'correlationId', 'workflowId', 'workflowRevision')
+    local workflow_revision = tonumber(stored_workflow[5])
+    if stored_workflow[1] ~= receipt.workflowId
+      or stored_workflow[2] ~= workflow.rootCorrelationId
+      or stored_workflow[3] ~= receipt.messageId
+      or stored_workflow[4] ~= receipt.fingerprint
+      or not bridge_integer(workflow_revision, 1)
+      or stored_message[1] ~= receipt.messageId
+      or stored_message[2] ~= workflow.rootCorrelationId
+      or stored_message[3] ~= receipt.workflowId
+      or stored_message[4] ~= '1' then
+      return cjson.encode({status='error', code='REDIS_STATE_INVALID'})
+    end
     return cjson.encode({status='existing', workflowId=receipt.workflowId, messageId=receipt.messageId})
   end
   if not type_is(keys[1], 'hash') or not type_is(keys[3], 'zset')
@@ -1377,6 +1397,7 @@ end`,
     'coordinatorSessionId', stored_workflow.coordinatorSessionId,
     'rootCorrelationId', stored_workflow.rootCorrelationId, 'objective', stored_workflow.objective,
     'revision', 1, 'state', 'active', 'currentMessageId', stored_workflow.currentMessageId,
+    'firstMessageId', message.id,
     'createdAt', stored_workflow.createdAt, 'updatedAt', stored_workflow.updatedAt,
     'createFingerprint', workflow.createFingerprint)
   redis.call('HSET', keys[7], 'workflowId', workflow.id, 'workflowRevision', 1)

@@ -73,6 +73,40 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       };
     };
 
+    const workflowCommand = (
+      value: CreateWorkflowInput,
+      projectEventProjectId = value.firstMessage.projectId,
+    ) => [
+      'FCALL',
+      registry.functions.workflowCreate,
+      '21',
+      keys.workflow(value.workflow.id),
+      keys.workflowRootCorrelation(value.workflow.rootCorrelationId),
+      keys.workflowsIndex,
+      keys.projectWorkflows(value.workflow.projectId),
+      keys.coordinatorSessionWorkflows(value.workflow.coordinatorSessionId),
+      keys.workflowMessages(value.workflow.id),
+      keys.message(value.firstMessage.id),
+      keys.messageCorrelation(value.firstMessage.correlationId),
+      keys.messageIdempotency(value.firstMessage.sourceSessionId, value.firstMessage.id),
+      keys.messagesIndex,
+      keys.projectMessages(value.firstMessage.projectId),
+      keys.sourceSessionMessages(value.firstMessage.sourceSessionId),
+      keys.targetSessionMessages(value.firstMessage.targetSessionId),
+      keys.messageDeadlines,
+      keys.session(value.firstMessage.sourceSessionId),
+      keys.sessionPresence(value.firstMessage.sourceSessionId),
+      keys.session(value.firstMessage.targetSessionId),
+      keys.sessionPresence(value.firstMessage.targetSessionId),
+      keys.sessionInbox(value.firstMessage.targetSessionId),
+      keys.globalEvents,
+      keys.projectEvents(projectEventProjectId),
+      JSON.stringify(value.workflow),
+      JSON.stringify(value.firstMessage),
+      value.workspaceId,
+      value.eventId,
+    ];
+
     beforeAll(async () => {
       client = createClient({ url: testRedisUrl });
       client.on('error', () => undefined);
@@ -240,6 +274,144 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       ]);
     });
 
+    it('replays through the immutable first message after the active step advances', async () => {
+      const value = input('advanced');
+      const first = await workflows.create(value);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.workflow(value.workflow.id),
+        'revision',
+        '2',
+        'currentMessageId',
+        'message-advanced-next',
+      ]);
+
+      await expect(
+        workflows.getByRootCorrelation(value.workflow.rootCorrelationId),
+      ).resolves.toMatchObject({
+        id: value.workflow.id,
+        revision: 2,
+        currentMessageId: 'message-advanced-next',
+      });
+      const retry = input('advanced', {
+        workflow: { id: 'workflow-advanced-regenerated' } as CreateWorkflowInput['workflow'],
+        firstMessage: {
+          id: 'message-advanced-regenerated',
+        } as CreateWorkflowInput['firstMessage'],
+        eventId: 'event-advanced-regenerated',
+      });
+      await expect(workflows.create(retry)).resolves.toEqual({
+        status: 'existing',
+        workflow: {
+          ...first.workflow,
+          revision: 2,
+          currentMessageId: 'message-advanced-next',
+        },
+        message: first.message,
+      });
+    });
+
+    it('replays through the immutable first message after completion clears the current step', async () => {
+      const value = input('completed');
+      const first = await workflows.create(value);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.workflow(value.workflow.id),
+        'revision',
+        '2',
+        'state',
+        'completed',
+      ]);
+      await commandClient.sendCommand([
+        'HDEL',
+        keys.workflow(value.workflow.id),
+        'currentMessageId',
+      ]);
+
+      const retry = input('completed', {
+        workflow: { id: 'workflow-completed-regenerated' } as CreateWorkflowInput['workflow'],
+        firstMessage: {
+          id: 'message-completed-regenerated',
+        } as CreateWorkflowInput['firstMessage'],
+        eventId: 'event-completed-regenerated',
+      });
+      await expect(workflows.create(retry)).resolves.toEqual({
+        status: 'existing',
+        workflow: {
+          ...first.workflow,
+          revision: 2,
+          state: 'completed',
+          currentMessageId: undefined,
+        },
+        message: first.message,
+      });
+    });
+
+    it('rejects an existing receipt when the authoritative workflow fingerprint is corrupt', async () => {
+      const value = input('corrupt-workflow-fingerprint');
+      await workflows.create(value);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.workflow(value.workflow.id),
+        'createFingerprint',
+        'd'.repeat(64),
+      ]);
+
+      const reply = JSON.parse(String(await commandClient.sendCommand(workflowCommand(value)))) as {
+        status: string;
+        code?: string;
+      };
+
+      expect(reply).toEqual({ status: 'error', code: 'REDIS_STATE_INVALID' });
+    });
+
+    it('rejects semantic replay when the private message workflow link is corrupt', async () => {
+      const value = input('corrupt-message-link');
+      await workflows.create(value);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.message(value.firstMessage.id),
+        'workflowId',
+        'workflow-other',
+        'workflowRevision',
+        '2',
+      ]);
+
+      const retry = input('corrupt-message-link', {
+        workflow: {
+          id: 'workflow-corrupt-message-link-regenerated',
+        } as CreateWorkflowInput['workflow'],
+        firstMessage: {
+          id: 'message-corrupt-message-link-regenerated',
+        } as CreateWorkflowInput['firstMessage'],
+        eventId: 'event-corrupt-message-link-regenerated',
+      });
+      await expect(workflows.create(retry)).rejects.toMatchObject({
+        code: 'REDIS_STATE_INVALID',
+      });
+    });
+
+    it('rejects a root lookup whose stored workflow identity was replaced', async () => {
+      const value = input('replaced-workflow-identity');
+      await workflows.create(value);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.workflow(value.workflow.id),
+        'id',
+        'workflow-other',
+      ]);
+      await commandClient.sendCommand([
+        'HSET',
+        keys.message(value.firstMessage.id),
+        'workflowId',
+        'workflow-other',
+      ]);
+
+      await expect(
+        workflows.getByRootCorrelation(value.workflow.rootCorrelationId),
+      ).rejects.toMatchObject({ code: 'REDIS_DATA_INVALID' });
+    });
+
     it('rejects a conflicting root and unavailable participants without partial writes', async () => {
       await workflows.create(input('conflict'));
       const before = await Promise.all([
@@ -288,36 +460,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
 
     it('rejects an aliased declared key before any mutation', async () => {
       const value = input('alias');
-      const command = [
-        'FCALL',
-        registry.functions.workflowCreate,
-        '21',
-        keys.workflow(value.workflow.id),
-        keys.workflowRootCorrelation(value.workflow.rootCorrelationId),
-        keys.workflowsIndex,
-        keys.projectWorkflows(value.workflow.projectId),
-        keys.coordinatorSessionWorkflows(value.workflow.coordinatorSessionId),
-        keys.workflowMessages(value.workflow.id),
-        keys.message(value.firstMessage.id),
-        keys.messageCorrelation(value.firstMessage.correlationId),
-        keys.messageIdempotency(value.firstMessage.sourceSessionId, value.firstMessage.id),
-        keys.messagesIndex,
-        keys.projectMessages(value.firstMessage.projectId),
-        keys.sourceSessionMessages(value.firstMessage.sourceSessionId),
-        keys.targetSessionMessages(value.firstMessage.targetSessionId),
-        keys.messageDeadlines,
-        keys.session(value.firstMessage.sourceSessionId),
-        keys.sessionPresence(value.firstMessage.sourceSessionId),
-        keys.session(value.firstMessage.targetSessionId),
-        keys.sessionPresence(value.firstMessage.targetSessionId),
-        keys.sessionInbox(value.firstMessage.targetSessionId),
-        keys.globalEvents,
-        keys.projectEvents('wrong-project'),
-        JSON.stringify(value.workflow),
-        JSON.stringify(value.firstMessage),
-        value.workspaceId,
-        value.eventId,
-      ];
+      const command = workflowCommand(value, 'wrong-project');
 
       const reply = JSON.parse(String(await commandClient.sendCommand(command))) as {
         status: string;

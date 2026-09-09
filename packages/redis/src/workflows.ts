@@ -106,6 +106,65 @@ function normalizeMessage(value: unknown): unknown {
   return { ...value, evidenceRequirements: normalizeArray(value.evidenceRequirements) };
 }
 
+const redisIdentifierPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const sha256Pattern = /^[a-f0-9]{64}$/;
+
+type WorkflowReceipt = {
+  workflowId: string;
+  messageId: string;
+  fingerprint: string;
+};
+
+function parseWorkflowReceipt(value: unknown): WorkflowReceipt {
+  if (
+    !isRecord(value) ||
+    typeof value.workflowId !== 'string' ||
+    !redisIdentifierPattern.test(value.workflowId) ||
+    typeof value.messageId !== 'string' ||
+    !redisIdentifierPattern.test(value.messageId) ||
+    typeof value.fingerprint !== 'string' ||
+    !sha256Pattern.test(value.fingerprint)
+  ) {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow receipt is invalid.');
+  }
+  return {
+    workflowId: value.workflowId,
+    messageId: value.messageId,
+    fingerprint: value.fingerprint,
+  };
+}
+
+function parseWorkflowLink(reply: unknown): { workflowId: string; revision: number } {
+  if (
+    !Array.isArray(reply) ||
+    reply.length !== 2 ||
+    typeof reply[0] !== 'string' ||
+    !redisIdentifierPattern.test(reply[0]) ||
+    typeof reply[1] !== 'string'
+  ) {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow link is invalid.');
+  }
+  const revision = Number(reply[1]);
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow link is invalid.');
+  }
+  return { workflowId: reply[0], revision };
+}
+
+function parseWorkflowPrivate(reply: unknown): { fingerprint: string; firstMessageId: string } {
+  if (
+    !Array.isArray(reply) ||
+    reply.length !== 2 ||
+    typeof reply[0] !== 'string' ||
+    !sha256Pattern.test(reply[0]) ||
+    typeof reply[1] !== 'string' ||
+    !redisIdentifierPattern.test(reply[1])
+  ) {
+    throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow metadata is invalid.');
+  }
+  return { fingerprint: reply[0], firstMessageId: reply[1] };
+}
+
 function parseStoredWorkflow(reply: unknown): WorkflowView | null {
   const record = pairsToRecord(reply);
   if (record === null) {
@@ -179,6 +238,87 @@ export function createWorkflowRepository(options: {
     parseStoredWorkflow(
       await options.client.sendCommand(['HGETALL', options.keys.workflow(workflowId)]),
     );
+  const loadAuthoritativeWorkflow = async (
+    receipt: WorkflowReceipt,
+    expectedRootCorrelationId: string,
+    expectedFingerprint: string,
+  ): Promise<{ workflow: WorkflowView; message: AgentMessage }> => {
+    const [workflow, message, rawWorkflowPrivate, rawLink] = await Promise.all([
+      get(receipt.workflowId),
+      messagesForRead.getMessageById(receipt.messageId),
+      options.client.sendCommand([
+        'HMGET',
+        options.keys.workflow(receipt.workflowId),
+        'createFingerprint',
+        'firstMessageId',
+      ]),
+      options.client.sendCommand([
+        'HMGET',
+        options.keys.message(receipt.messageId),
+        'workflowId',
+        'workflowRevision',
+      ]),
+    ]);
+    const workflowPrivate = parseWorkflowPrivate(rawWorkflowPrivate);
+    const link = parseWorkflowLink(rawLink);
+    if (
+      workflow === null ||
+      message === null ||
+      workflow.id !== receipt.workflowId ||
+      message.id !== receipt.messageId ||
+      workflowPrivate.fingerprint !== receipt.fingerprint ||
+      workflowPrivate.fingerprint !== expectedFingerprint ||
+      workflowPrivate.firstMessageId !== receipt.messageId ||
+      workflow.rootCorrelationId !== expectedRootCorrelationId ||
+      workflow.projectId !== message.projectId ||
+      message.correlationId !== expectedRootCorrelationId ||
+      link.workflowId !== workflow.id ||
+      link.revision !== 1
+    ) {
+      throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow receipt is invalid.');
+    }
+    return { workflow, message };
+  };
+  const callCreate = async (
+    input: CreateWorkflowInput,
+    workflowId: string,
+    messageId: string,
+  ): Promise<unknown> => {
+    const workflow = { ...input.workflow, id: workflowId };
+    const firstMessage = { ...input.firstMessage, id: messageId };
+    return decodeJsonReply(
+      await options.client.sendCommand([
+        'FCALL',
+        options.functions.functions.workflowCreate,
+        '21',
+        options.keys.workflow(workflow.id),
+        options.keys.workflowRootCorrelation(workflow.rootCorrelationId),
+        options.keys.workflowsIndex,
+        options.keys.projectWorkflows(workflow.projectId),
+        options.keys.coordinatorSessionWorkflows(workflow.coordinatorSessionId),
+        options.keys.workflowMessages(workflow.id),
+        options.keys.message(firstMessage.id),
+        options.keys.messageCorrelation(firstMessage.correlationId),
+        options.keys.messageIdempotency(firstMessage.sourceSessionId, firstMessage.id),
+        options.keys.messagesIndex,
+        options.keys.projectMessages(firstMessage.projectId),
+        options.keys.sourceSessionMessages(firstMessage.sourceSessionId),
+        options.keys.targetSessionMessages(firstMessage.targetSessionId),
+        options.keys.messageDeadlines,
+        options.keys.session(firstMessage.sourceSessionId),
+        options.keys.sessionPresence(firstMessage.sourceSessionId),
+        options.keys.session(firstMessage.targetSessionId),
+        options.keys.sessionPresence(firstMessage.targetSessionId),
+        options.keys.sessionInbox(firstMessage.targetSessionId),
+        options.keys.globalEvents,
+        options.keys.projectEvents(firstMessage.projectId),
+        JSON.stringify(workflow),
+        JSON.stringify(firstMessage),
+        input.workspaceId,
+        input.eventId,
+      ]),
+    );
+  };
   const getByRootCorrelation = async (rootCorrelationId: string): Promise<WorkflowView | null> => {
     const rawReceipt = await options.client.sendCommand([
       'GET',
@@ -187,24 +327,9 @@ export function createWorkflowRepository(options: {
     if (rawReceipt === null) {
       return null;
     }
-    const receipt = decodeJsonReply(rawReceipt);
-    if (
-      !isRecord(receipt) ||
-      typeof receipt.workflowId !== 'string' ||
-      typeof receipt.messageId !== 'string' ||
-      typeof receipt.fingerprint !== 'string'
-    ) {
-      throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow receipt is invalid.');
-    }
-    const workflow = await get(receipt.workflowId);
-    if (
-      workflow === null ||
-      workflow.rootCorrelationId !== rootCorrelationId ||
-      workflow.currentMessageId !== receipt.messageId
-    ) {
-      throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow receipt is invalid.');
-    }
-    return workflow;
+    const receipt = parseWorkflowReceipt(decodeJsonReply(rawReceipt));
+    return (await loadAuthoritativeWorkflow(receipt, rootCorrelationId, receipt.fingerprint))
+      .workflow;
   };
 
   return {
@@ -220,59 +345,33 @@ export function createWorkflowRepository(options: {
           'The workflow and first message are inconsistent.',
         );
       }
-      const reply = decodeJsonReply(
-        await options.client.sendCommand([
-          'FCALL',
-          options.functions.functions.workflowCreate,
-          '21',
-          options.keys.workflow(input.workflow.id),
-          options.keys.workflowRootCorrelation(input.workflow.rootCorrelationId),
-          options.keys.workflowsIndex,
-          options.keys.projectWorkflows(input.workflow.projectId),
-          options.keys.coordinatorSessionWorkflows(input.workflow.coordinatorSessionId),
-          options.keys.workflowMessages(input.workflow.id),
-          options.keys.message(input.firstMessage.id),
-          options.keys.messageCorrelation(input.firstMessage.correlationId),
-          options.keys.messageIdempotency(
-            input.firstMessage.sourceSessionId,
-            input.firstMessage.id,
-          ),
-          options.keys.messagesIndex,
-          options.keys.projectMessages(input.firstMessage.projectId),
-          options.keys.sourceSessionMessages(input.firstMessage.sourceSessionId),
-          options.keys.targetSessionMessages(input.firstMessage.targetSessionId),
-          options.keys.messageDeadlines,
-          options.keys.session(input.firstMessage.sourceSessionId),
-          options.keys.sessionPresence(input.firstMessage.sourceSessionId),
-          options.keys.session(input.firstMessage.targetSessionId),
-          options.keys.sessionPresence(input.firstMessage.targetSessionId),
-          options.keys.sessionInbox(input.firstMessage.targetSessionId),
-          options.keys.globalEvents,
-          options.keys.projectEvents(input.firstMessage.projectId),
-          JSON.stringify(input.workflow),
-          JSON.stringify(input.firstMessage),
-          input.workspaceId,
-          input.eventId,
-        ]),
-      );
+      let reply = await callCreate(input, input.workflow.id, input.firstMessage.id);
+      if (isRecord(reply) && reply.status === 'replay_required') {
+        const replay = parseWorkflowReceipt({
+          workflowId: reply.workflowId,
+          messageId: reply.messageId,
+          fingerprint: input.workflow.createFingerprint,
+        });
+        reply = await callCreate(input, replay.workflowId, replay.messageId);
+        if (isRecord(reply) && reply.status === 'replay_required') {
+          throw new RedisRepositoryError(
+            'REDIS_DATA_INVALID',
+            'Redis workflow replay result is invalid.',
+          );
+        }
+      }
       if (isRecord(reply) && reply.status === 'existing') {
-        if (typeof reply.workflowId !== 'string' || typeof reply.messageId !== 'string') {
-          throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow result is invalid.');
-        }
-        const [storedWorkflow, storedMessage] = await Promise.all([
-          get(reply.workflowId),
-          messagesForRead.getMessageById(reply.messageId),
-        ]);
-        if (
-          storedWorkflow === null ||
-          storedMessage === null ||
-          storedWorkflow.currentMessageId !== storedMessage.id ||
-          storedWorkflow.rootCorrelationId !== storedMessage.correlationId ||
-          storedWorkflow.projectId !== storedMessage.projectId
-        ) {
-          throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis workflow result is invalid.');
-        }
-        return { status: 'existing', workflow: storedWorkflow, message: storedMessage };
+        const receipt = parseWorkflowReceipt({
+          workflowId: reply.workflowId,
+          messageId: reply.messageId,
+          fingerprint: input.workflow.createFingerprint,
+        });
+        const stored = await loadAuthoritativeWorkflow(
+          receipt,
+          input.workflow.rootCorrelationId,
+          input.workflow.createFingerprint,
+        );
+        return { status: 'existing', ...stored };
       }
       return parseCreateResult(reply);
     },

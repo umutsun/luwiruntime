@@ -164,6 +164,26 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       ).resolves.not.toBeNull();
     });
 
+    it('preserves a non-empty workspace name in the requested event', async () => {
+      const result = await messageRepository.createMessage({
+        ...request({
+          id: 'message-dubai-workspace',
+          correlationId: 'correlation-dubai-workspace',
+          idempotencyKeyHash: undefined,
+        }),
+        workspaceId: 'Dubai Workspace',
+        eventId: 'event-dubai-workspace',
+      });
+
+      expect(result).toMatchObject({
+        status: 'created',
+        event: {
+          id: 'event-dubai-workspace',
+          workspaceId: 'Dubai Workspace',
+        },
+      });
+    });
+
     it('returns the original message for a same-payload retry and conflicts on reuse', async () => {
       const globalLength = Number(await commandClient.sendCommand(['XLEN', keys.globalEvents]));
       const inboxLength = Number(

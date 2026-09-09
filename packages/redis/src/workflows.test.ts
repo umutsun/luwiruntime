@@ -144,6 +144,8 @@ describe('workflow repository boundary', () => {
         ...storedMessage,
         evidenceRequirements: JSON.stringify(storedMessage.evidenceRequirements),
       }).flatMap(([key, value]) => [key, String(value)]),
+      [workflow.createFingerprint, firstMessage.id],
+      [workflow.id, '1'],
     ];
     const repository = createWorkflowRepository({
       client,
