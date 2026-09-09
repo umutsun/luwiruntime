@@ -91,7 +91,19 @@ export type {
   WorkflowRepository,
 } from './workflows.js';
 export { createWakeIntentRepository } from './wake-intents.js';
-export type { WakeIntentRepository } from './wake-intents.js';
+export type {
+  ClaimedWakeIntent,
+  CompleteWakeIntentInput,
+  MarkWakeDispatchingInput,
+  RecoverDispatchingWakeInput,
+  SweepWakeIntentsInput,
+  SweepWakeIntentsResult,
+  WakeClaimBatch,
+  WakeClaimInput,
+  WakeIntentMutationResult,
+  WakeIntentRepository,
+  WakeReclaimInput,
+} from './wake-intents.js';
 export { createLeaseRepository } from './lease-repository.js';
 export type {
   AcquireLeaseResult,

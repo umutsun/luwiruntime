@@ -13,6 +13,8 @@ describe('wake intent state machine', () => {
   ] as const;
   const allowedWakeTransitions = new Set([
     'pending:claimed',
+    'pending:fallback_only',
+    'claimed:claimed',
     'claimed:dispatching',
     'claimed:fallback_only',
     'claimed:indeterminate',
@@ -31,6 +33,8 @@ describe('wake intent state machine', () => {
 
   it('preserves the safety-critical wake transition examples', () => {
     expect(canTransitionWakeIntent('pending', 'claimed')).toBe(true);
+    expect(canTransitionWakeIntent('pending', 'fallback_only')).toBe(true);
+    expect(canTransitionWakeIntent('claimed', 'claimed')).toBe(true);
     expect(canTransitionWakeIntent('dispatching', 'dispatched')).toBe(true);
     expect(canTransitionWakeIntent('dispatching', 'claimed')).toBe(false);
     expect(canTransitionWakeIntent('indeterminate', 'claimed')).toBe(false);

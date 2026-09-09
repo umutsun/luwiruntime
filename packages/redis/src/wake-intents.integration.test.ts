@@ -711,5 +711,262 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         await expect(snapshotAtomicState(atomicCase.keys, suffix)).resolves.toEqual(before);
       },
     );
+
+    const preparePendingWake = async (suffix: string) => {
+      const atomicCase = await prepareAtomicCase(suffix);
+      await atomicCase.messages.transitionMessage('responded', {
+        correlationId: `correlation-${suffix}`,
+        responderSessionId: 'target',
+        workspaceId: 'local',
+        eventId: `terminal-event-${suffix}`,
+        responseJson: responseJson('responded', suffix),
+      });
+      return atomicCase;
+    };
+
+    const wakeRepository = (caseKeys: RedisKeys, prefix: string): WakeIntentRepository => {
+      let generated = 0;
+      return createWakeIntentRepository({
+        client: commandClient,
+        keys: caseKeys,
+        functions: registry,
+        createId: () => `${prefix}-${++generated}`,
+      });
+    };
+
+    it('claims, fences, replays dispatching safely, and completes one acknowledged wake', async () => {
+      const suffix = 'task9-lifecycle';
+      const atomicCase = await preparePendingWake(suffix);
+      const repository = wakeRepository(atomicCase.keys, 'lifecycle');
+      await expect(repository.createGroupAtZero()).resolves.toEqual({ created: true });
+
+      const claimed = await repository.claim({
+        dispatcherInstanceId: 'dispatcher-lifecycle',
+        limit: 1,
+        blockMs: 0,
+      });
+      expect(claimed).toMatchObject({
+        items: [{ intent: { id: `message-${suffix}`, state: 'claimed' } }],
+        recoveredDispatching: [],
+        terminalAcknowledged: 0,
+      });
+      const claimId = claimed.items[0]?.claimId;
+      if (claimId === undefined) throw new Error('Expected a claimed wake intent.');
+
+      const dispatchingInput = {
+        intentId: `message-${suffix}`,
+        dispatcherInstanceId: 'dispatcher-lifecycle',
+        claimId,
+        attemptId: 'attempt-lifecycle',
+        eventId: 'event-dispatching-lifecycle',
+      };
+      await expect(repository.markDispatching(dispatchingInput)).resolves.toMatchObject({
+        status: 'updated',
+        intent: { state: 'dispatching' },
+      });
+      const eventsBeforeReplay = await client.xLen(atomicCase.keys.globalEvents);
+      await expect(repository.markDispatching(dispatchingInput)).resolves.toMatchObject({
+        status: 'unchanged',
+        intent: { state: 'dispatching' },
+      });
+      await expect(client.xLen(atomicCase.keys.globalEvents)).resolves.toBe(eventsBeforeReplay);
+
+      await expect(
+        repository.complete({
+          ...dispatchingInput,
+          eventId: 'event-dispatched-lifecycle',
+          state: 'dispatched',
+          reasonCode: 'queue_accepted',
+        }),
+      ).resolves.toMatchObject({ status: 'updated', intent: { state: 'dispatched' } });
+      const pendingAfterCompletion = (await commandClient.sendCommand([
+        'XPENDING',
+        atomicCase.keys.wakeStream,
+        'luwi-wake-v1',
+      ])) as unknown[];
+      expect(pendingAfterCompletion[0]).toBe(0);
+      await expect(
+        client.hGet(atomicCase.keys.wakeIntent(`message-${suffix}`), 'streamAcknowledgedAt'),
+      ).resolves.toEqual(expect.any(String));
+    });
+
+    it('recovers a crash after XAUTOCLAIM transferred a pending entry before claim persistence', async () => {
+      const suffix = 'task9-transfer-crash';
+      const atomicCase = await preparePendingWake(suffix);
+      const repository = wakeRepository(atomicCase.keys, 'transfer');
+      await repository.createGroupAtZero();
+      await commandClient.sendCommand([
+        'XREADGROUP',
+        'GROUP',
+        'luwi-wake-v1',
+        'dispatcher-old',
+        'COUNT',
+        '1',
+        'STREAMS',
+        atomicCase.keys.wakeStream,
+        '>',
+      ]);
+      await commandClient.sendCommand([
+        'XAUTOCLAIM',
+        atomicCase.keys.wakeStream,
+        'luwi-wake-v1',
+        'dispatcher-crashed',
+        '0',
+        '0-0',
+        'COUNT',
+        '1',
+      ]);
+      await expect(repository.get(`message-${suffix}`)).resolves.toMatchObject({
+        state: 'pending',
+      });
+
+      const recovered = await repository.reclaim({
+        dispatcherInstanceId: 'dispatcher-retry',
+        limit: 1,
+        minIdleMs: 0,
+      });
+      expect(recovered).toMatchObject({
+        items: [{ intent: { id: `message-${suffix}`, state: 'claimed' } }],
+        recoveredDispatching: [],
+      });
+      await expect(
+        client.hGet(atomicCase.keys.wakeIntent(`message-${suffix}`), 'dispatcherInstanceId'),
+      ).resolves.toBe('dispatcher-retry');
+    });
+
+    it('rejects an old completion fence after a newer claimed reassignment', async () => {
+      const suffix = 'task9-stale-completion';
+      const atomicCase = await preparePendingWake(suffix);
+      const first = wakeRepository(atomicCase.keys, 'stale-first');
+      const second = wakeRepository(atomicCase.keys, 'stale-second');
+      await first.createGroupAtZero();
+      const oldBatch = await first.claim({
+        dispatcherInstanceId: 'dispatcher-old',
+        limit: 1,
+        blockMs: 0,
+      });
+      const oldClaimId = oldBatch.items[0]?.claimId;
+      if (oldClaimId === undefined) throw new Error('Expected the old claim.');
+      const newBatch = await second.reclaim({
+        dispatcherInstanceId: 'dispatcher-new',
+        limit: 1,
+        minIdleMs: 0,
+      });
+      expect(newBatch.items[0]?.claimId).not.toBe(oldClaimId);
+      const eventsBefore = await client.xLen(atomicCase.keys.globalEvents);
+
+      await expect(
+        first.complete({
+          intentId: `message-${suffix}`,
+          dispatcherInstanceId: 'dispatcher-old',
+          claimId: oldClaimId,
+          attemptId: 'attempt-old',
+          state: 'fallback_only',
+          reasonCode: 'spawn_failed',
+          eventId: 'event-stale-complete',
+        }),
+      ).rejects.toMatchObject({ code: 'WAKE_FENCE_MISMATCH' });
+      await expect(second.get(`message-${suffix}`)).resolves.toMatchObject({ state: 'claimed' });
+      await expect(client.xLen(atomicCase.keys.globalEvents)).resolves.toBe(eventsBefore);
+    });
+
+    it('recovers transferred dispatching work as indeterminate without replay and exposes human continuation', async () => {
+      const suffix = 'task9-dispatching-recovery';
+      const atomicCase = await preparePendingWake(suffix);
+      const first = wakeRepository(atomicCase.keys, 'recover-first');
+      const recovery = wakeRepository(atomicCase.keys, 'recover-next');
+      await first.createGroupAtZero();
+      const claimed = await first.claim({
+        dispatcherInstanceId: 'dispatcher-before-crash',
+        limit: 1,
+        blockMs: 0,
+      });
+      const claimId = claimed.items[0]?.claimId;
+      if (claimId === undefined) throw new Error('Expected a claim before recovery.');
+      await first.markDispatching({
+        intentId: `message-${suffix}`,
+        dispatcherInstanceId: 'dispatcher-before-crash',
+        claimId,
+        attemptId: 'attempt-before-crash',
+        eventId: 'event-before-crash',
+      });
+
+      const recovered = await recovery.reclaim({
+        dispatcherInstanceId: 'dispatcher-recovery',
+        limit: 1,
+        minIdleMs: 0,
+      });
+      expect(recovered).toMatchObject({
+        items: [],
+        recoveredDispatching: [
+          {
+            id: `message-${suffix}`,
+            state: 'indeterminate',
+            reasonCode: 'dispatcher_recovered',
+          },
+        ],
+        terminalAcknowledged: 0,
+      });
+      await expect(
+        client.hGet(atomicCase.keys.workflow(`workflow-${suffix}`), 'state'),
+      ).resolves.toBe('waiting_for_human');
+      await expect(
+        client.hGet(atomicCase.keys.workflow(`workflow-${suffix}`), 'currentHumanContinuationId'),
+      ).resolves.toBe(`human-continuation-${suffix}`);
+      const pendingAfterRecovery = (await commandClient.sendCommand([
+        'XPENDING',
+        atomicCase.keys.wakeStream,
+        'luwi-wake-v1',
+      ])) as unknown[];
+      expect(pendingAfterRecovery[0]).toBe(0);
+    });
+
+    it.each(['pending', 'claimed'] as const)(
+      'sweeps an expired %s wake to fallback-only and drains lagging terminal work safely',
+      async (initialState) => {
+        const suffix = `task9-sweep-${initialState}`;
+        const atomicCase = await preparePendingWake(suffix);
+        const repository = wakeRepository(atomicCase.keys, `sweep-${initialState}`);
+        await repository.createGroupAtZero();
+        if (initialState === 'claimed') {
+          await repository.claim({
+            dispatcherInstanceId: 'dispatcher-sweep',
+            limit: 1,
+            blockMs: 0,
+          });
+        }
+        const expiredAt = Date.now() - 1_000;
+        await client.hSet(atomicCase.keys.wakeIntent(`message-${suffix}`), {
+          deadlineMs: String(expiredAt),
+        });
+        await client.zAdd(atomicCase.keys.wakeIntentDeadlines, {
+          score: expiredAt,
+          value: `message-${suffix}`,
+        });
+
+        await expect(repository.sweep({ nowMs: 0, limit: 10 })).resolves.toEqual({
+          candidates: 1,
+          fallbackOnly: 1,
+          unchanged: 0,
+        });
+        await expect(repository.get(`message-${suffix}`)).resolves.toMatchObject({
+          state: 'fallback_only',
+          reasonCode: 'wake_deadline_elapsed',
+        });
+        await expect(
+          client.hGet(atomicCase.keys.workflow(`workflow-${suffix}`), 'currentHumanContinuationId'),
+        ).resolves.toBe(`human-continuation-${suffix}`);
+
+        if (initialState === 'pending') {
+          await expect(
+            client.hGet(atomicCase.keys.wakeIntent(`message-${suffix}`), 'streamAcknowledgedAt'),
+          ).resolves.toEqual(expect.any(String));
+          await expect(client.xRange(atomicCase.keys.wakeStream, '-', '+')).resolves.toEqual([]);
+        }
+        await expect(
+          client.hGet(atomicCase.keys.wakeIntent(`message-${suffix}`), 'streamAcknowledgedAt'),
+        ).resolves.toEqual(expect.any(String));
+      },
+    );
   },
 );

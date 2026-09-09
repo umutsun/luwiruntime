@@ -29,9 +29,11 @@ function hasPostSpawnEvidence(result: WakeProcessResult): boolean {
 export function canTransitionWakeIntent(from: WakeIntentState, to: WakeIntentState): boolean {
   switch (from) {
     case 'pending':
-      return to === 'claimed';
+      return to === 'claimed' || to === 'fallback_only';
     case 'claimed':
-      return to === 'dispatching' || to === 'fallback_only' || to === 'indeterminate';
+      return (
+        to === 'claimed' || to === 'dispatching' || to === 'fallback_only' || to === 'indeterminate'
+      );
     case 'dispatching':
       return to === 'dispatched' || to === 'fallback_only' || to === 'indeterminate';
     case 'dispatched':

@@ -33,6 +33,11 @@ export type RedisFunctionRegistry = {
     messageReject: string;
     messageFail: string;
     messageTimeout: string;
+    wakeClaim: string;
+    wakeDispatching: string;
+    wakeComplete: string;
+    wakeRecoverDispatching: string;
+    wakeSweep: string;
     leaseAcquire: string;
     leaseRenew: string;
     leaseRelease: string;
@@ -72,6 +77,11 @@ const productionFunctions = {
   messageReject: 'luwi_message_reject_v1',
   messageFail: 'luwi_message_fail_v1',
   messageTimeout: 'luwi_message_timeout_v1',
+  wakeClaim: 'luwi_wake_claim_v1',
+  wakeDispatching: 'luwi_wake_dispatching_v1',
+  wakeComplete: 'luwi_wake_complete_v1',
+  wakeRecoverDispatching: 'luwi_wake_recover_dispatching_v1',
+  wakeSweep: 'luwi_wake_sweep_v1',
   leaseAcquire: 'luwi_lease_acquire_v1',
   leaseRenew: 'luwi_lease_renew_v1',
   leaseRelease: 'luwi_lease_release_v1',

@@ -27,6 +27,7 @@ describe('message retention', () => {
         idempotencyKeyHash: 'a'.repeat(64),
       },
       0,
+      {},
       1,
       1,
       1,
@@ -52,16 +53,82 @@ describe('message retention', () => {
       projectionCandidates: 1,
       projectionsPruned: 1,
       projectionsDeferredForIdempotency: 0,
+      projectionsDeferredForWake: 0,
+      deferredWakeIntentIds: [],
+      wakeIntentsPruned: 0,
       inboxesTrimmed: 0,
       inboxesDeferred: 0,
     });
     const prune = client.commands.find((command) => command[0] === 'EVAL');
     expect(prune?.slice(2, 5)).toEqual([
-      '7',
+      '12',
       keys.message('message-1'),
       keys.messageCorrelation('correlation-1'),
     ]);
     expect(prune).toContain(keys.terminalMessages);
+  });
+
+  it('defers terminal message cleanup until its wake is terminal and stream-acknowledged', async () => {
+    const client = new FakeClient();
+    const keys = createRedisKeys();
+    client.replies = [
+      ['message-1', 'message-2'],
+      {
+        id: 'message-1',
+        correlationId: 'correlation-1',
+        projectId: 'project-1',
+        sourceSessionId: 'source',
+        targetSessionId: 'target',
+      },
+      {
+        id: 'message-1',
+        messageId: 'message-1',
+        projectId: 'project-1',
+        state: 'dispatching',
+        streamId: '1-0',
+      },
+      {
+        id: 'message-2',
+        correlationId: 'correlation-2',
+        projectId: 'project-1',
+        sourceSessionId: 'source',
+        targetSessionId: 'target',
+      },
+      {
+        id: 'message-2',
+        messageId: 'message-2',
+        projectId: 'project-1',
+        state: 'fallback_only',
+        streamId: '2-0',
+        streamAcknowledgedAt: '2026-09-09T12:05:00.000Z',
+      },
+      2,
+    ];
+
+    await expect(
+      runMessageRetention({
+        client,
+        keys,
+        nowMs: 100_000,
+        terminalProjectionRetentionMs: 10_000,
+        maxInboxLength: 100,
+        batchSize: 10,
+        sessionIds: [],
+      }),
+    ).resolves.toEqual({
+      projectionCandidates: 2,
+      projectionsPruned: 1,
+      projectionsDeferredForIdempotency: 0,
+      projectionsDeferredForWake: 1,
+      deferredWakeIntentIds: ['message-1'],
+      wakeIntentsPruned: 1,
+      inboxesTrimmed: 0,
+      inboxesDeferred: 0,
+    });
+    expect(client.commands.some(([name]) => name === 'XTRIM')).toBe(false);
+    const prune = client.commands.find((command) => command[0] === 'EVAL');
+    expect(prune).toContain(keys.wakeIntent('message-2'));
+    expect(prune).toContain(keys.wakeStream);
   });
 
   it('defers inbox trimming while pending recovery or consumer lag exists', async () => {

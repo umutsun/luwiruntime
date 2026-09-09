@@ -98,4 +98,104 @@ describe.skipIf(testRedisUrl === undefined)('message retention integration', () 
     expect(trimmed).toMatchObject({ inboxesTrimmed: 1, inboxesDeferred: 0 });
     await expect(commandClient.sendCommand(['XLEN', stream])).resolves.toBe(2);
   });
+
+  it('defers a terminal message for nonterminal or lagging wake work, then prunes both after ACK', async () => {
+    const messageId = 'message-with-wake';
+    const projectId = 'project-with-wake';
+    const correlationId = 'correlation-with-wake';
+    await client.hSet(keys.message(messageId), {
+      id: messageId,
+      correlationId,
+      projectId,
+      sourceSessionId: 'source-with-wake',
+      targetSessionId: 'target-with-wake',
+    });
+    await client.set(keys.messageCorrelation(correlationId), messageId);
+    const oldScore = Date.now() - 60_000;
+    for (const index of [
+      keys.messagesIndex,
+      keys.projectMessages(projectId),
+      keys.sourceSessionMessages('source-with-wake'),
+      keys.targetSessionMessages('target-with-wake'),
+      keys.terminalMessages,
+    ]) {
+      await client.zAdd(index, { score: oldScore, value: messageId });
+    }
+    await commandClient.sendCommand([
+      'XGROUP',
+      'CREATE',
+      keys.wakeStream,
+      'luwi-wake-v1',
+      '0-0',
+      'MKSTREAM',
+    ]);
+    const streamId = await client.xAdd(keys.wakeStream, '*', { wakeIntentId: messageId });
+    await client.hSet(keys.wakeIntent(messageId), {
+      id: messageId,
+      messageId,
+      projectId,
+      state: 'dispatching',
+      streamId,
+    });
+    for (const index of [
+      keys.wakeIntentsIndex,
+      keys.projectWakeIntents(projectId),
+      keys.wakeIntentDeadlines,
+    ]) {
+      await client.zAdd(index, { score: oldScore, value: messageId });
+    }
+
+    const options = {
+      client: commandClient,
+      keys,
+      nowMs: Date.now(),
+      terminalProjectionRetentionMs: 1,
+      maxInboxLength: 10,
+      batchSize: 10,
+      sessionIds: [],
+    };
+    await expect(runMessageRetention(options)).resolves.toMatchObject({
+      projectionsPruned: 0,
+      projectionsDeferredForWake: 1,
+      deferredWakeIntentIds: [messageId],
+    });
+    await expect(client.exists(keys.message(messageId))).resolves.toBe(1);
+
+    await client.hSet(keys.wakeIntent(messageId), { state: 'fallback_only' });
+    await expect(runMessageRetention(options)).resolves.toMatchObject({
+      projectionsPruned: 0,
+      projectionsDeferredForWake: 1,
+      deferredWakeIntentIds: [messageId],
+    });
+    await expect(client.xLen(keys.wakeStream)).resolves.toBe(1);
+
+    const delivered = (await commandClient.sendCommand([
+      'XREADGROUP',
+      'GROUP',
+      'luwi-wake-v1',
+      'retention-drain',
+      'COUNT',
+      '1',
+      'STREAMS',
+      keys.wakeStream,
+      '>',
+    ])) as Record<string, Array<[string, string[]]>>;
+    const deliveredId = delivered[keys.wakeStream]?.[0]?.[0];
+    if (deliveredId === undefined) throw new Error('Expected lagging wake Stream work.');
+    await commandClient.sendCommand(['XACK', keys.wakeStream, 'luwi-wake-v1', deliveredId]);
+    await client.hSet(keys.wakeIntent(messageId), {
+      streamAcknowledgedAt: new Date().toISOString(),
+    });
+
+    await expect(runMessageRetention(options)).resolves.toMatchObject({
+      projectionsPruned: 1,
+      projectionsDeferredForWake: 0,
+      deferredWakeIntentIds: [],
+      wakeIntentsPruned: 1,
+    });
+    await expect(client.exists(keys.message(messageId))).resolves.toBe(0);
+    await expect(client.exists(keys.wakeIntent(messageId))).resolves.toBe(0);
+    await expect(client.xLen(keys.wakeStream)).resolves.toBe(0);
+    await expect(client.zScore(keys.wakeIntentsIndex, messageId)).resolves.toBeNull();
+  });
 });

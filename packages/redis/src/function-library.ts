@@ -1943,6 +1943,388 @@ end`,
     "local function message_reject(keys, args) return workflow_terminal_transition(keys, args, 'rejected') end",
     "local function message_fail(keys, args) return workflow_terminal_transition(keys, args, 'failed') end",
     "local function message_timeout(keys, args) return workflow_terminal_transition(keys, args, 'timed_out') end",
+    `local WAKE_TERMINAL = {dispatched=true, fallback_only=true, indeterminate=true}
+local function wake_reason(value)
+  return type(value) == 'string' and #value > 0 and #value <= 128
+    and string.match(value, '^[a-z][a-z0-9_]*$') ~= nil
+end
+local function wake_projection(key)
+  local fields = redis.call('HGETALL', key)
+  if #fields == 0 then return nil end
+  local raw = {}
+  for index = 1, #fields, 2 do raw[fields[index]] = fields[index + 1] end
+  local required = {
+    'id', 'messageId', 'workflowId', 'sourceSessionId', 'correlationId',
+    'terminalState', 'adapter', 'state', 'createdAt', 'updatedAt'
+  }
+  for _, field in ipairs(required) do
+    if type(raw[field]) ~= 'string' or raw[field] == '' then return nil end
+  end
+  local result = {
+    id=raw.id, messageId=raw.messageId, workflowId=raw.workflowId,
+    sourceSessionId=raw.sourceSessionId, correlationId=raw.correlationId,
+    terminalState=raw.terminalState, adapter=raw.adapter, state=raw.state,
+    createdAt=raw.createdAt, updatedAt=raw.updatedAt
+  }
+  if raw.reasonCode then result.reasonCode = raw.reasonCode end
+  return result
+end
+local function wake_load(key, intent_id)
+  if key_type(key) ~= 'hash' then return nil, 'REDIS_STATE_INVALID' end
+  local fields = redis.call('HGETALL', key)
+  local raw = {}
+  for index = 1, #fields, 2 do raw[fields[index]] = fields[index + 1] end
+  local required = {
+    'id', 'messageId', 'workflowId', 'sourceSessionId', 'correlationId',
+    'terminalState', 'adapter', 'state', 'createdAt', 'updatedAt',
+    'workspaceId', 'projectId', 'sourceAgentId', 'workflowRevision',
+    'streamId', 'deadlineMs', 'fallbackContinuationId', 'requestedEventId', 'lastEventId'
+  }
+  for _, field in ipairs(required) do
+    if type(raw[field]) ~= 'string' or raw[field] == '' then return nil, 'REDIS_STATE_INVALID' end
+  end
+  if raw.id ~= intent_id or raw.messageId ~= intent_id or raw.adapter ~= 'codex-queue-v1'
+    or not bridge_id(raw.id) or not bridge_id(raw.workflowId)
+    or not bridge_id(raw.sourceSessionId) or not bridge_id(raw.correlationId)
+    or not bridge_id(raw.workspaceId) or not bridge_id(raw.projectId)
+    or not bridge_id(raw.sourceAgentId) or not bridge_id(raw.fallbackContinuationId)
+    or not bridge_id(raw.requestedEventId) or not bridge_id(raw.lastEventId)
+    or string.match(raw.streamId, '^%d+%-%d+$') == nil then
+    return nil, 'REDIS_STATE_INVALID'
+  end
+  local revision = tonumber(raw.workflowRevision)
+  local deadline = tonumber(raw.deadlineMs)
+  if not bridge_integer(revision, 1) or not bridge_integer(deadline, 1) then
+    return nil, 'REDIS_STATE_INVALID'
+  end
+  if raw.state == 'claimed' then
+    if not bridge_id(raw.dispatcherInstanceId) or not bridge_id(raw.claimId) then
+      return nil, 'REDIS_STATE_INVALID'
+    end
+  elseif raw.state == 'dispatching' then
+    if not bridge_id(raw.dispatcherInstanceId) or not bridge_id(raw.claimId)
+      or not bridge_id(raw.attemptId) then
+      return nil, 'REDIS_STATE_INVALID'
+    end
+  elseif raw.state ~= 'pending' and not WAKE_TERMINAL[raw.state] then
+    return nil, 'REDIS_STATE_INVALID'
+  end
+  if WAKE_TERMINAL[raw.state] and not wake_reason(raw.reasonCode) then
+    return nil, 'REDIS_STATE_INVALID'
+  end
+  return raw, nil
+end
+local function wake_types(keys, terminal)
+  local expected = terminal and {'hash', 'stream', 'stream', 'stream', 'zset', 'hash'}
+    or {'hash', 'stream', 'stream', 'stream'}
+  if #keys ~= #expected then return false end
+  for index, wanted in ipairs(expected) do
+    if not type_is(keys[index], wanted) then return false end
+    for previous = 1, index - 1 do if keys[index] == keys[previous] then return false end end
+  end
+  return true
+end
+local function wake_keys_match(keys, raw, terminal)
+  local prefix = key_namespace(keys[3])
+  if prefix == nil
+    or not exact_key(prefix, keys[1], ':wake-intent:' .. raw.id)
+    or not exact_key(prefix, keys[2], ':stream:wake')
+    or not exact_key(prefix, keys[3], ':events:global')
+    or not exact_key(prefix, keys[4], ':events:project:' .. raw.projectId) then
+    return false
+  end
+  if terminal and (
+    not exact_key(prefix, keys[5], ':deadline:wake-intents')
+    or not exact_key(prefix, keys[6], ':workflow:' .. raw.workflowId)
+  ) then return false end
+  return true
+end
+local function wake_pending_owner(stream, group_name, stream_id)
+  if not stream_has_group(stream, group_name) then return nil end
+  local pending = redis.call('XPENDING', stream, group_name, stream_id, stream_id, 1)
+  if #pending ~= 1 or type(pending[1]) ~= 'table' or pending[1][1] ~= stream_id
+    or type(pending[1][2]) ~= 'string' then return nil end
+  return pending[1][2]
+end
+local function wake_stream_entry_matches(stream, stream_id, intent_id)
+  local entries = redis.call('XRANGE', stream, stream_id, stream_id, 'COUNT', 1)
+  if #entries ~= 1 or type(entries[1]) ~= 'table' or entries[1][1] ~= stream_id
+    or type(entries[1][2]) ~= 'table' or #entries[1][2] ~= 2 then return false end
+  return entries[1][2][1] == 'wakeIntentId' and entries[1][2][2] == intent_id
+end
+local function wake_event(raw, event_id, target_state, previous_state, reason_code, clock)
+  local event = {
+    id=event_id, version=1, type='wake.' .. target_state, occurredAt=clock.timestamp,
+    workspaceId=raw.workspaceId, projectId=raw.projectId,
+    agentId=raw.sourceAgentId, sessionId=raw.sourceSessionId,
+    correlationId=raw.correlationId, causationId=raw.lastEventId,
+    payload={
+      wakeIntentId=raw.id, messageId=raw.messageId, workflowId=raw.workflowId,
+      previousState=previous_state, currentState=target_state
+    }
+  }
+  if reason_code then event.payload.reasonCode = reason_code end
+  return event
+end
+local function wake_workflow_fallback_preflight(workflow_key, raw)
+  if key_type(workflow_key) ~= 'hash' then return false, false end
+  local values = redis.call(
+    'HMGET', workflow_key,
+    'id', 'projectId', 'revision', 'state', 'currentMessageId', 'currentWakeIntentId'
+  )
+  local revision = tonumber(values[3])
+  if values[1] ~= raw.workflowId or values[2] ~= raw.projectId
+    or not bridge_integer(revision, 1) then return false, false end
+  local current = revision == tonumber(raw.workflowRevision)
+    and values[4] == 'active' and values[5] == raw.messageId and values[6] == raw.id
+  return true, current
+end
+local function wake_apply_workflow_fallback(workflow_key, raw, clock, current)
+  if not current then return end
+  redis.call(
+    'HSET', workflow_key,
+    'state', 'waiting_for_human',
+    'currentHumanContinuationId', raw.fallbackContinuationId,
+    'humanDecision', 'Review the durable terminal response and continue this workflow.',
+    'updatedAt', clock.timestamp
+  )
+  redis.call('HDEL', workflow_key, 'currentWakeIntentId')
+end
+local function wake_claim(keys, args)
+  if not wake_types(keys, false) or #args ~= 6 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if not bridge_id(args[1]) or string.match(args[2], '^%d+%-%d+$') == nil
+    or not bridge_id(args[3]) or not bridge_id(args[4]) or not bridge_id(args[5])
+    or not bridge_id(args[6]) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  local raw, load_error = wake_load(keys[1], args[1])
+  if load_error then return bridge_error(load_error) end
+  if raw.streamId ~= args[2] or not wake_keys_match(keys, raw, false) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  local owner = wake_pending_owner(keys[2], args[6], args[2])
+  if owner ~= args[3] then return bridge_error('WAKE_FENCE_MISMATCH') end
+  local clock = redis_now()
+  if WAKE_TERMINAL[raw.state] then
+    local acknowledged = redis.call('XACK', keys[2], args[6], args[2])
+    if acknowledged == 1 then redis.call('HSET', keys[1], 'streamAcknowledgedAt', clock.timestamp) end
+    return cjson.encode({status='terminal_acknowledged'})
+  end
+  if raw.state == 'dispatching' then return cjson.encode({status='recover_dispatching'}) end
+  if raw.state ~= 'pending' and raw.state ~= 'claimed' then
+    return bridge_error('WAKE_TRANSITION_INVALID')
+  end
+  if raw.state == 'claimed' and raw.dispatcherInstanceId == args[3]
+    and raw.claimId == args[4] then
+    local projection = wake_projection(keys[1])
+    if not projection then return bridge_error('REDIS_STATE_INVALID') end
+    return cjson.encode({status='unchanged', intent=projection, claimId=args[4]})
+  end
+  if not stream_has_capacity(keys[3], 1) or not stream_has_capacity(keys[4], 1) then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local previous = raw.state
+  local event = wake_event(raw, args[5], 'claimed', previous, nil, clock)
+  redis.call(
+    'HSET', keys[1], 'state', 'claimed', 'dispatcherInstanceId', args[3],
+    'claimId', args[4], 'claimedAt', clock.timestamp, 'updatedAt', clock.timestamp,
+    'lastEventId', args[5]
+  )
+  redis.call('HDEL', keys[1], 'attemptId', 'dispatchingAt', 'reasonCode', 'streamAcknowledgedAt')
+  append_event(keys[3], keys[4], cjson.encode(event))
+  local projection = wake_projection(keys[1])
+  if not projection then return bridge_error('REDIS_STATE_INVALID') end
+  return cjson.encode({status='updated', intent=projection, claimId=args[4]})
+end
+local function wake_dispatching(keys, args)
+  if not wake_types(keys, false) or #args ~= 7 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  for index = 1, 7 do if not bridge_id(args[index]) then return bridge_error('REDIS_ARGUMENT_INVALID') end end
+  local raw, load_error = wake_load(keys[1], args[1])
+  if load_error then return bridge_error(load_error) end
+  if raw.streamId ~= args[2] or not wake_keys_match(keys, raw, false) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  if raw.state == 'dispatching' then
+    if raw.dispatcherInstanceId ~= args[3] or raw.claimId ~= args[4]
+      or raw.attemptId ~= args[5] then return bridge_error('WAKE_FENCE_MISMATCH') end
+    local projection = wake_projection(keys[1])
+    if not projection then return bridge_error('REDIS_STATE_INVALID') end
+    return cjson.encode({status='unchanged', intent=projection})
+  end
+  if WAKE_TERMINAL[raw.state] then
+    if raw.dispatcherInstanceId ~= args[3] or raw.claimId ~= args[4]
+      or raw.attemptId ~= args[5] then return bridge_error('WAKE_FENCE_MISMATCH') end
+    return bridge_error('WAKE_TRANSITION_INVALID')
+  end
+  if raw.state ~= 'claimed' then return bridge_error('WAKE_TRANSITION_INVALID') end
+  if raw.dispatcherInstanceId ~= args[3] or raw.claimId ~= args[4]
+    or wake_pending_owner(keys[2], args[7], args[2]) ~= args[3] then
+    return bridge_error('WAKE_FENCE_MISMATCH')
+  end
+  if not stream_has_capacity(keys[3], 1) or not stream_has_capacity(keys[4], 1) then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local clock = redis_now()
+  local event = wake_event(raw, args[6], 'dispatching', 'claimed', nil, clock)
+  redis.call(
+    'HSET', keys[1], 'state', 'dispatching', 'attemptId', args[5],
+    'dispatchingAt', clock.timestamp, 'updatedAt', clock.timestamp, 'lastEventId', args[6]
+  )
+  append_event(keys[3], keys[4], cjson.encode(event))
+  local projection = wake_projection(keys[1])
+  if not projection then return bridge_error('REDIS_STATE_INVALID') end
+  return cjson.encode({status='updated', intent=projection})
+end
+local function wake_terminal_apply(
+  keys, raw, target_state, reason_code, event_id, clock, current_workflow, group_name
+)
+  local previous = raw.state
+  local event = wake_event(raw, event_id, target_state, previous, reason_code, clock)
+  redis.call(
+    'HSET', keys[1], 'state', target_state, 'reasonCode', reason_code,
+    'updatedAt', clock.timestamp, 'terminalEventId', event_id, 'lastEventId', event_id
+  )
+  redis.call('ZREM', keys[5], raw.id)
+  local acknowledged = redis.call('XACK', keys[2], group_name, raw.streamId)
+  if acknowledged == 1 then redis.call('HSET', keys[1], 'streamAcknowledgedAt', clock.timestamp) end
+  if target_state ~= 'dispatched' then
+    wake_apply_workflow_fallback(keys[6], raw, clock, current_workflow)
+  end
+  append_event(keys[3], keys[4], cjson.encode(event))
+  return wake_projection(keys[1])
+end
+local function wake_complete(keys, args)
+  if not wake_types(keys, true) or #args ~= 9 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  for index = 1, 5 do if not bridge_id(args[index]) then return bridge_error('REDIS_ARGUMENT_INVALID') end end
+  if args[6] ~= 'dispatched' and args[6] ~= 'fallback_only' and args[6] ~= 'indeterminate' then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  if not wake_reason(args[7]) or not bridge_id(args[8]) or not bridge_id(args[9]) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  local raw, load_error = wake_load(keys[1], args[1])
+  if load_error then return bridge_error(load_error) end
+  if raw.streamId ~= args[2] or not wake_keys_match(keys, raw, true) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  if WAKE_TERMINAL[raw.state] then
+    if raw.dispatcherInstanceId ~= args[3] or raw.claimId ~= args[4]
+      or raw.attemptId ~= args[5] then return bridge_error('WAKE_FENCE_MISMATCH') end
+    if raw.state ~= args[6] or raw.reasonCode ~= args[7] then
+      return bridge_error('WAKE_TERMINAL')
+    end
+    local projection = wake_projection(keys[1])
+    if not projection then return bridge_error('REDIS_STATE_INVALID') end
+    return cjson.encode({status='unchanged', intent=projection})
+  end
+  if raw.state ~= 'claimed' and raw.state ~= 'dispatching' then
+    return bridge_error('WAKE_TRANSITION_INVALID')
+  end
+  if raw.dispatcherInstanceId ~= args[3] or raw.claimId ~= args[4]
+    or (raw.state == 'dispatching' and raw.attemptId ~= args[5])
+    or wake_pending_owner(keys[2], args[9], args[2]) ~= args[3] then
+    return bridge_error('WAKE_FENCE_MISMATCH')
+  end
+  if raw.state == 'claimed' and args[6] == 'dispatched' then
+    return bridge_error('WAKE_TRANSITION_INVALID')
+  end
+  local workflow_ok, current_workflow = wake_workflow_fallback_preflight(keys[6], raw)
+  if not workflow_ok then return bridge_error('REDIS_STATE_INVALID') end
+  if not stream_has_capacity(keys[3], 1) or not stream_has_capacity(keys[4], 1) then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local clock = redis_now()
+  if raw.state == 'claimed' then redis.call('HSET', keys[1], 'attemptId', args[5]) end
+  local projection = wake_terminal_apply(
+    keys, raw, args[6], args[7], args[8], clock, current_workflow, args[9]
+  )
+  if not projection then return bridge_error('REDIS_STATE_INVALID') end
+  return cjson.encode({status='updated', intent=projection})
+end
+local function wake_recover_dispatching(keys, args)
+  if not wake_types(keys, true) or #args ~= 5 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  for index = 1, 5 do if not bridge_id(args[index]) then return bridge_error('REDIS_ARGUMENT_INVALID') end end
+  local raw, load_error = wake_load(keys[1], args[1])
+  if load_error then return bridge_error(load_error) end
+  if raw.streamId ~= args[2] or not wake_keys_match(keys, raw, true) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  if WAKE_TERMINAL[raw.state] then
+    local projection = wake_projection(keys[1])
+    if not projection then return bridge_error('REDIS_STATE_INVALID') end
+    return cjson.encode({status='unchanged', intent=projection})
+  end
+  if raw.state ~= 'dispatching' then return bridge_error('WAKE_TRANSITION_INVALID') end
+  if wake_pending_owner(keys[2], args[5], args[2]) ~= args[3] then
+    return bridge_error('WAKE_FENCE_MISMATCH')
+  end
+  local workflow_ok, current_workflow = wake_workflow_fallback_preflight(keys[6], raw)
+  if not workflow_ok then return bridge_error('REDIS_STATE_INVALID') end
+  if not stream_has_capacity(keys[3], 1) or not stream_has_capacity(keys[4], 1) then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local clock = redis_now()
+  redis.call('HSET', keys[1], 'recoveryDispatcherInstanceId', args[3])
+  local projection = wake_terminal_apply(
+    keys, raw, 'indeterminate', 'dispatcher_recovered', args[4], clock, current_workflow, args[5]
+  )
+  if not projection then return bridge_error('REDIS_STATE_INVALID') end
+  return cjson.encode({status='updated', intent=projection})
+end
+local function wake_sweep(keys, args)
+  if not wake_types(keys, true) or #args ~= 6 then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  if not bridge_id(args[1]) or string.match(args[2], '^%d+%-%d+$') == nil
+    or not bridge_id(args[4]) or not bridge_id(args[5]) or not wake_reason(args[6]) then
+    return bridge_error('REDIS_ARGUMENT_INVALID')
+  end
+  local expected_deadline = tonumber(args[3])
+  if not bridge_integer(expected_deadline, 1) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  local raw, load_error = wake_load(keys[1], args[1])
+  if load_error then return bridge_error(load_error) end
+  if raw.streamId ~= args[2] or tonumber(raw.deadlineMs) ~= expected_deadline
+    or not wake_keys_match(keys, raw, true) then return bridge_error('REDIS_ARGUMENT_INVALID') end
+  local projection = wake_projection(keys[1])
+  if not projection then return bridge_error('REDIS_STATE_INVALID') end
+  if WAKE_TERMINAL[raw.state] then
+    redis.call('ZREM', keys[5], raw.id)
+    return cjson.encode({status='unchanged', intent=projection})
+  end
+  if raw.state == 'dispatching' then
+    redis.call('ZREM', keys[5], raw.id)
+    return cjson.encode({status='unchanged', intent=projection})
+  end
+  if raw.state ~= 'pending' and raw.state ~= 'claimed' then
+    return bridge_error('WAKE_TRANSITION_INVALID')
+  end
+  if not stream_has_group(keys[2], args[5]) then return bridge_error('REDIS_STATE_INVALID') end
+  if not wake_stream_entry_matches(keys[2], raw.streamId, raw.id) then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local clock = redis_now()
+  if clock.milliseconds < expected_deadline then
+    return cjson.encode({status='unchanged', intent=projection})
+  end
+  local workflow_ok, current_workflow = wake_workflow_fallback_preflight(keys[6], raw)
+  if not workflow_ok then return bridge_error('REDIS_STATE_INVALID') end
+  if not stream_has_capacity(keys[3], 1) or not stream_has_capacity(keys[4], 1) then
+    return bridge_error('REDIS_STATE_INVALID')
+  end
+  local event = wake_event(raw, args[4], 'fallback_only', raw.state, args[6], clock)
+  redis.call(
+    'HSET', keys[1], 'state', 'fallback_only', 'reasonCode', args[6],
+    'updatedAt', clock.timestamp, 'terminalEventId', args[4], 'lastEventId', args[4]
+  )
+  redis.call('ZREM', keys[5], raw.id)
+  local acknowledged = redis.call('XACK', keys[2], args[5], raw.streamId)
+  if acknowledged == 0 then
+    local removed = redis.call('XDEL', keys[2], raw.streamId)
+    if removed ~= 1 then return bridge_error('REDIS_STATE_INVALID') end
+  end
+  redis.call('HSET', keys[1], 'streamAcknowledgedAt', clock.timestamp)
+  wake_apply_workflow_fallback(keys[6], raw, clock, current_workflow)
+  append_event(keys[3], keys[4], cjson.encode(event))
+  projection = wake_projection(keys[1])
+  if not projection then return bridge_error('REDIS_STATE_INVALID') end
+  return cjson.encode({status='updated', intent=projection})
+end`,
     'local function control_append_event(global_stream, project_stream, event_json)',
     "  local global_stream_id = redis.call('XADD', global_stream, '*', 'event', event_json)",
     '  local project_stream_id = global_stream_id',
@@ -2359,6 +2741,11 @@ end`,
     register(registry.functions.messageReject, 'message_reject'),
     register(registry.functions.messageFail, 'message_fail'),
     register(registry.functions.messageTimeout, 'message_timeout'),
+    register(registry.functions.wakeClaim, 'wake_claim'),
+    register(registry.functions.wakeDispatching, 'wake_dispatching'),
+    register(registry.functions.wakeComplete, 'wake_complete'),
+    register(registry.functions.wakeRecoverDispatching, 'wake_recover_dispatching'),
+    register(registry.functions.wakeSweep, 'wake_sweep'),
     register(registry.functions.leaseAcquire, 'lease_acquire'),
     register(registry.functions.leaseRenew, 'lease_renew'),
     register(registry.functions.leaseRelease, 'lease_release'),
