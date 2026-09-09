@@ -69,10 +69,6 @@ export const nativeSessionBindingSchema = z.strictObject({
   /** Always 0 in A1; retention is A2. The field exists so A2 needs no migration. */
   trimmedLinkCount: z.number().int().nonnegative(),
   oldestRetainedLinkedAt: timestampSchema.optional(),
-  /** Optional for records written before wake capability/provenance existed. */
-  identityProvenance: nativeIdentityProvenanceSchema.optional(),
-  /** Kept private; public views project this only as a boolean capability. */
-  hostWake: hostWakeDeclarationSchema.optional(),
   /** Link creations, not declaration attempts: an `unchanged` outcome writes nothing. */
   firstLinkedAt: timestampSchema,
   lastLinkedAt: timestampSchema,

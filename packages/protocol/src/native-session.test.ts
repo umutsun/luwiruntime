@@ -91,6 +91,21 @@ describe('native session binding', () => {
     expect(nativeSessionBindingSchema.parse(binding)).not.toHaveProperty('hostWake');
   });
 
+  it('rejects proof-bearing fields from the public binding view', () => {
+    expect(
+      nativeSessionBindingSchema.safeParse({
+        ...binding,
+        identityProvenance: { source: 'host_launcher', launcherInstanceId: 'launcher-1' },
+      }).success,
+    ).toBe(false);
+    expect(
+      nativeSessionBindingSchema.safeParse({
+        ...binding,
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+      }).success,
+    ).toBe(false);
+  });
+
   /**
    * The binding is identity, not liveness and not scope. A presence, project,
    * agent or confidence field here would be a claim the record cannot support.
@@ -126,6 +141,22 @@ describe('native declaration request', () => {
         },
       }).native.adapterId,
     ).toBe('claude-code-native-v1');
+  });
+
+  it('accepts private provenance and host wake proof only as declaration input', () => {
+    expect(
+      nativeDeclarationRequestSchema.parse({
+        native: {
+          adapterId: 'claude-code-native-v1',
+          nativeSessionId: 'fcc53779-5974-4794-8b47-f5515ea3a34c',
+        },
+        identityProvenance: { source: 'host_launcher', launcherInstanceId: 'launcher-1' },
+        hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+      }),
+    ).toMatchObject({
+      identityProvenance: { source: 'host_launcher' },
+      hostWake: { adapter: 'codex-queue-v1' },
+    });
   });
 
   /**
@@ -197,6 +228,29 @@ describe('native declaration response', () => {
         staleLink: { ...link, id: 's'.repeat(64), unlinkedAt: timestamped },
       }).staleLink?.unlinkedAt,
     ).toBe(timestamped);
+  });
+
+  it('rejects proof-bearing fields from its returned binding', () => {
+    expect(
+      nativeDeclarationResponseSchema.safeParse({
+        outcome: 'created',
+        binding: {
+          ...binding,
+          identityProvenance: { source: 'host_launcher', launcherInstanceId: 'launcher-1' },
+        },
+        link,
+      }).success,
+    ).toBe(false);
+    expect(
+      nativeDeclarationResponseSchema.safeParse({
+        outcome: 'created',
+        binding: {
+          ...binding,
+          hostWake: { adapter: 'codex-queue-v1', mcpSessionId: 'session-1' },
+        },
+        link,
+      }).success,
+    ).toBe(false);
   });
 
   it('rejects the outcomes this surface refuses instead of returning', () => {
