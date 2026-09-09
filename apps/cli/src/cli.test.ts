@@ -1098,7 +1098,7 @@ describe('LUWI CLI', () => {
       workingDirectory: 'C:/workspace',
       startedAt: '2026-08-24T00:00:00.000Z',
       lastHeartbeatAt: '2026-08-24T00:00:00.000Z',
-      metadata: { bridge: 'deepseek-harness-acp', experimental: true },
+      metadata: { harness: 'deepseek-acp', experimental: true },
       presence: 'online',
     };
     const createFactory = vi.fn((options: unknown) => {
@@ -1212,7 +1212,7 @@ describe('LUWI CLI', () => {
       workingDirectory: 'C:/workspace',
       startedAt: '2026-08-24T00:00:00.000Z',
       lastHeartbeatAt: '2026-08-24T00:00:00.000Z',
-      metadata: { bridge: 'deepseek-harness-acp', experimental: true },
+      metadata: { harness: 'deepseek-acp', experimental: true },
       presence: 'online',
     };
     const acpFactory: DeepSeekAcpFactory = {
@@ -2732,6 +2732,31 @@ describe('session bridge native', () => {
     metadata: { bridge: 'native-headless', provider: 'claude' },
     presence: 'online',
   };
+  const slotId = 'a'.repeat(64);
+  const slot = {
+    id: slotId,
+    workspaceId: 'local',
+    projectId: project.id,
+    agentId: agent.id,
+    provider: 'claude-code',
+    executionProfile: 'workspace-write',
+    state: 'active',
+    revision: 1,
+    expiresAt: '2026-09-08T00:00:15.000Z',
+  };
+  /** The slot routes every bridge talks to before and after its session. */
+  const slotRoutes = (url: string, init?: { method?: string }) => {
+    if (url.endsWith('/api/v1/bridge-slots/acquire') && init?.method === 'POST') {
+      return response({ status: 'acquired', slot }, { status: 201 });
+    }
+    if (url.endsWith(`/api/v1/bridge-slots/${slotId}/renew`)) {
+      return response({ status: 'renewed', slot });
+    }
+    if (url.endsWith(`/api/v1/bridge-slots/${slotId}/release`)) {
+      return response({ status: 'released', slot: { ...slot, state: 'standby' } });
+    }
+    return undefined;
+  };
   const message = (state: string) => ({
     id: 'message-1',
     correlationId: 'correlation-1',
@@ -2811,6 +2836,8 @@ describe('session bridge native', () => {
         if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
           return response({ bindings: [binding] });
         }
+        const slotResponse = slotRoutes(url, init);
+        if (slotResponse !== undefined) return slotResponse;
         if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
           return response(session, { status: 201 });
         }
@@ -2864,14 +2891,42 @@ describe('session bridge native', () => {
     expect(runInput.environment.LUWI_SESSION_ID).toBe('session-1');
     expect(runInput.environment.LUWI_DAEMON_URL).toBe('http://127.0.0.1:4782');
 
-    const register = requests.find(
+    // The slot is owned before the session exists, declared on registration so
+    // the daemon writes the reserved bridge metadata itself, and released after
+    // the session is closed.
+    const acquireIndex = requests.findIndex((entry) =>
+      entry.url.endsWith('/api/v1/bridge-slots/acquire'),
+    );
+    const registerIndex = requests.findIndex(
       (entry) => entry.url.endsWith('/api/v1/sessions') && entry.method === 'POST',
     );
+    expect(acquireIndex).toBeGreaterThanOrEqual(0);
+    expect(acquireIndex).toBeLessThan(registerIndex);
+    const acquire = requests[acquireIndex]!.body as Record<string, unknown>;
+    expect(acquire).toMatchObject({
+      projectId: 'project-app',
+      agentId: 'claude-code',
+      provider: 'claude-code',
+      executionProfile: 'workspace-write',
+    });
+    expect(typeof acquire['ownerToken']).toBe('string');
+    const register = requests[registerIndex];
     expect(register?.body).toMatchObject({
       projectId: 'project-app',
       agentId: 'claude-code',
-      metadata: { bridge: 'native-headless', provider: 'claude' },
+      bridgeOwner: {
+        slotId,
+        ownerToken: acquire['ownerToken'],
+        provider: 'claude-code',
+        executionProfile: 'workspace-write',
+      },
     });
+    expect(register?.body).not.toHaveProperty('metadata.bridge');
+    const closeIndex = requests.findIndex((entry) => entry.url.includes('/close'));
+    const releaseIndex = requests.findIndex((entry) =>
+      entry.url.endsWith(`/api/v1/bridge-slots/${slotId}/release`),
+    );
+    expect(releaseIndex).toBeGreaterThan(closeIndex);
     const claim = requests.find((entry) => entry.url.includes('/inbox/claim'));
     expect(claim?.body).toMatchObject({
       bridgeInstanceId: 'native-bridge',
@@ -2920,6 +2975,8 @@ describe('session bridge native', () => {
         if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
           return response({ bindings: [codexBinding] });
         }
+        const slotResponse = slotRoutes(url, init);
+        if (slotResponse !== undefined) return slotResponse;
         if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
           return response(codexSession, { status: 201 });
         }
@@ -3006,6 +3063,8 @@ describe('session bridge native', () => {
         if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
           return response({ bindings: [agyBinding] });
         }
+        const slotResponse = slotRoutes(url, init);
+        if (slotResponse !== undefined) return slotResponse;
         if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
           return response(agySession, { status: 201 });
         }
@@ -3051,5 +3110,380 @@ describe('session bridge native', () => {
     // Antigravity binds through the inherited env like claude — no codex-style -c injection.
     expect(args.some((a) => a.includes('mcp_servers.luwi-runtime'))).toBe(false);
     expect(recorded?.environment.LUWI_SESSION_ID).toBe('agy-session-1');
+  });
+
+  /**
+   * One bridge per project and agent. A held slot is refused before any
+   * session exists, so a second operator start cannot become a second target.
+   */
+  it('stands down without registering when another bridge owns the slot', async () => {
+    const requests: string[] = [];
+    let acquireBody: Record<string, unknown> | undefined;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      signals: {
+        once: () => undefined,
+        off: () => undefined,
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      wait: async () => undefined,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: async (url, init) => {
+        requests.push(url);
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [agent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [binding] });
+        }
+        if (url.endsWith('/api/v1/bridge-slots/acquire')) {
+          acquireBody = JSON.parse(init?.body ?? '{}') as Record<string, unknown>;
+          return response({ status: 'held', slot: { ...slot, executionProfile: 'read-only' } });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await expect(
+      runCli(
+        [
+          'session',
+          'bridge',
+          'native',
+          'claude',
+          '--working-directory',
+          'C:/work/app',
+          '--execution-profile',
+          'read-only',
+        ],
+        dependencies,
+      ),
+    ).rejects.toMatchObject({ code: 'BRIDGE_SLOT_HELD' });
+
+    expect(acquireBody).toMatchObject({ executionProfile: 'read-only' });
+    expect(requests.some((url) => url.endsWith('/api/v1/sessions'))).toBe(false);
+  });
+
+  /**
+   * A refused renewal means another owner took the tuple. The bridge stops
+   * claiming, closes its session, and exits with the loss named — it never
+   * keeps serving an inbox it no longer owns.
+   */
+  it('stops serving and closes its session when slot ownership is lost', async () => {
+    const signalSource = new EventEmitter();
+    const timers: Array<() => void> = [];
+    const requests: string[] = [];
+    let claims = 0;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: {
+        run: vi.fn(async () => ({ exitCode: 0 })),
+      } as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (s: 'SIGINT' | 'SIGTERM', l: () => void) => signalSource.once(s, l),
+        off: (s: 'SIGINT' | 'SIGTERM', l: () => void) => signalSource.off(s, l),
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn((callback: () => void) => {
+        timers.push(callback);
+        return timers.length as unknown as NodeJS.Timeout;
+      }) as CliDependencies['setInterval'],
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      wait: async () => undefined,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: async (url, init) => {
+        requests.push(url);
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [agent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [binding] });
+        }
+        if (url.endsWith(`/api/v1/bridge-slots/${slotId}/renew`)) {
+          return response(
+            { error: { code: 'BRIDGE_SLOT_NOT_OWNER', message: 'Another owner holds it.' } },
+            { ok: false, status: 409 },
+          );
+        }
+        const slotResponse = slotRoutes(url, init);
+        if (slotResponse !== undefined) return slotResponse;
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(session, { status: 201 });
+        }
+        if (url.includes('/inbox/claim')) {
+          claims += 1;
+          // The renewal tick fires while the bridge is idle between claims.
+          if (claims === 1) {
+            for (const tick of timers) tick();
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+          // Safety valve: a bridge that ignores the loss must still end the test.
+          if (claims === 3) signalSource.emit('SIGINT');
+          return response({ items: [] });
+        }
+        if (url.includes('/status')) return response(session);
+        if (url.includes('/heartbeat')) return response({ acknowledgedAt: timestamp });
+        if (url.includes('/close')) {
+          return response({ ...session, status: 'completed', presence: 'offline' });
+        }
+        if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await expect(
+      runCli(
+        ['session', 'bridge', 'native', 'claude', '--working-directory', 'C:/work/app'],
+        dependencies,
+      ),
+    ).rejects.toMatchObject({ code: 'BRIDGE_SLOT_LOST' });
+
+    expect(requests.filter((url) => url.includes('/inbox/claim')).length).toBeLessThanOrEqual(2);
+    expect(requests.some((url) => url.includes('/close'))).toBe(true);
+    // Nothing is released: the token is already dead, and a release would be refused.
+    expect(requests.some((url) => url.endsWith('/release'))).toBe(false);
+  });
+});
+
+describe('wake serve', () => {
+  const timestamp = '2026-09-09T00:00:00.000Z';
+  const project = {
+    id: 'project-app',
+    name: 'App',
+    localPath: 'C:/work/app',
+    canonicalPath: 'C:/work/app',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+  const codexAgent = {
+    id: 'codex',
+    kind: 'codex',
+    displayName: 'Codex',
+    executable: 'C:/tools/codex.exe',
+    enabled: true,
+    adapterId: 'codex',
+    nativeConfigRoots: [],
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    metadata: {},
+  };
+  const claudeAgent = {
+    ...codexAgent,
+    id: 'claude-code',
+    kind: 'claude-code',
+    adapterId: 'claude-code',
+  };
+  const binding = (agentId: string) => ({
+    id: `binding-${agentId}`,
+    projectId: project.id,
+    agentId,
+    enabled: true,
+    profileIds: [],
+    capabilityBindingIds: [],
+    overrides: {},
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  const effectiveConfig = (agentKind: string, settings: Record<string, unknown>) => ({
+    projectId: project.id,
+    agentId: agentKind,
+    agentKind,
+    valid: true,
+    settings,
+  });
+  const slotId = 'b'.repeat(64);
+  const slot = {
+    id: slotId,
+    workspaceId: 'local',
+    projectId: project.id,
+    agentId: 'codex',
+    provider: 'codex',
+    executionProfile: 'workspace-write',
+    state: 'active',
+    revision: 1,
+    expiresAt: '2026-09-09T00:00:15.000Z',
+  };
+  const session = {
+    id: 'codex-session-1',
+    projectId: project.id,
+    agentId: 'codex',
+    status: 'starting',
+    workingDirectory: 'C:/work/app',
+    startedAt: timestamp,
+    lastHeartbeatAt: timestamp,
+    metadata: {},
+    presence: 'online',
+  };
+  const message = (state: string) => ({
+    id: 'message-1',
+    correlationId: 'correlation-1',
+    projectId: project.id,
+    sourceSessionId: 'source-1',
+    sourceAgentId: 'claude-code',
+    targetSessionId: session.id,
+    targetAgentId: 'codex',
+    selectionReason: 'native-headless bridge preference',
+    kind: 'instruction',
+    content: 'Inspect and report.',
+    evidenceRequirements: [],
+    state,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    deadlineAt: '2026-09-09T02:00:00.000Z',
+  });
+  const requestItem = {
+    streamId: '1-0',
+    itemKind: 'request',
+    messageId: 'message-1',
+    correlationId: 'correlation-1',
+    sourceSessionId: 'source-1',
+    targetSessionId: session.id,
+    createdAt: timestamp,
+    payload: {
+      kind: 'instruction',
+      content: 'Inspect and report.',
+      evidenceRequirements: [],
+      deadlineAt: '2026-09-09T02:00:00.000Z',
+    },
+  };
+
+  /**
+   * The supervisor discovers the one enabled codex binding with a strict
+   * `luwiNativeBridge` leaf, owns its slot, registers under it, and launches
+   * the measured supervised argv — never the operator's free arguments. The
+   * claude binding carries no leaf and gets no worker.
+   */
+  it('supervises a configured codex binding with a fixed no-shell profile launch', async () => {
+    const signalSource = new EventEmitter();
+    const requests: Array<{ url: string; method?: string; body?: unknown }> = [];
+    let recorded:
+      { executable: string; args: string[]; environment: Record<string, string> } | undefined;
+    let claims = 0;
+    let getMessageCalls = 0;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: {
+        run: vi.fn(async (input: unknown) => {
+          recorded = input as typeof recorded;
+          return { exitCode: 0 };
+        }),
+      } as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (s: 'SIGINT' | 'SIGTERM', l: () => void) => signalSource.once(s, l),
+        off: (s: 'SIGINT' | 'SIGTERM', l: () => void) => signalSource.off(s, l),
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      wait: async () => undefined,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: async (url, init) => {
+        requests.push({
+          url,
+          method: init?.method,
+          body: init?.body === undefined ? undefined : JSON.parse(init.body),
+        });
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [codexAgent, claudeAgent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [binding('codex'), binding('claude-code')] });
+        }
+        if (url.endsWith(`/agents/codex/effective-config`)) {
+          return response(
+            effectiveConfig('codex', {
+              luwiNativeBridge: {
+                enabled: true,
+                provider: 'codex',
+                executionProfile: 'workspace-write',
+              },
+            }),
+          );
+        }
+        if (url.endsWith(`/agents/claude-code/effective-config`)) {
+          return response(effectiveConfig('claude-code', {}));
+        }
+        if (url.endsWith('/api/v1/bridge-slots/acquire')) {
+          return response({ status: 'acquired', slot }, { status: 201 });
+        }
+        if (url.endsWith(`/api/v1/bridge-slots/${slotId}/release`)) {
+          return response({ status: 'released', slot: { ...slot, state: 'standby' } });
+        }
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(session, { status: 201 });
+        }
+        if (url.includes('/inbox/claim')) {
+          claims += 1;
+          if (claims === 2) signalSource.emit('SIGINT');
+          return response({ items: claims === 1 ? [requestItem] : [] });
+        }
+        if (url.includes('/status')) return response(session);
+        if (url.includes('/heartbeat')) return response({ acknowledgedAt: timestamp });
+        if (url.includes('/close')) {
+          return response({ ...session, status: 'completed', presence: 'offline' });
+        }
+        if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        if (url.endsWith('/acknowledge')) return response(message('acknowledged'));
+        if (url.endsWith('/processing')) return response(message('processing'));
+        if (url.endsWith('/api/v1/messages/correlation-1')) {
+          getMessageCalls += 1;
+          return response(message(getMessageCalls === 1 ? 'delivered' : 'responded'));
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(['wake', 'serve'], dependencies);
+
+    expect(recorded?.executable).toBe('C:/tools/codex.exe');
+    expect(recorded?.args.slice(0, 3)).toEqual(['-a', 'never', 'exec']);
+    expect(recorded?.args).toContain('--sandbox');
+    expect(recorded?.args).toContain('workspace-write');
+    expect(recorded?.args.slice(-1)[0]).toContain('LUWI message');
+    expect(recorded?.environment.LUWI_SESSION_ID).toBe('codex-session-1');
+    const acquires = requests.filter((entry) => entry.url.endsWith('/api/v1/bridge-slots/acquire'));
+    expect(acquires).toHaveLength(1);
+    expect(acquires[0]?.body).toMatchObject({
+      projectId: 'project-app',
+      agentId: 'codex',
+      provider: 'codex',
+      executionProfile: 'workspace-write',
+    });
+    const register = requests.find(
+      (entry) => entry.url.endsWith('/api/v1/sessions') && entry.method === 'POST',
+    );
+    expect(register?.body).toMatchObject({ agentId: 'codex', bridgeOwner: { slotId } });
+    expect(
+      requests.some((entry) => entry.url.endsWith(`/api/v1/bridge-slots/${slotId}/release`)),
+    ).toBe(true);
+  });
+
+  it('reports slot ownership through wake status', async () => {
+    const lines: string[] = [];
+    const dependencies: Partial<CliDependencies> = {
+      stdout: { write: (text: string) => lines.push(text) },
+      stderr: { write: () => undefined },
+      setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      fetch: async (url) => {
+        if (url.endsWith('/api/v1/bridge-slots?limit=100')) return response({ slots: [slot] });
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(['wake', 'status'], dependencies);
+
+    expect(JSON.parse(lines.join(''))).toEqual({ slots: [slot] });
   });
 });

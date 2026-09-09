@@ -240,7 +240,9 @@ export function createDeepSeekBridge(options: DeepSeekBridgeOptions): DeepSeekBr
           projectId: options.projectId,
           agentId: options.agentId,
           workingDirectory: options.workingDirectory,
-          metadata: { bridge: 'deepseek-harness-acp', experimental: true },
+          // `bridge` is a reserved key the daemon writes only for a slot-owning
+          // native bridge; this experimental harness names itself differently.
+          metadata: { harness: 'deepseek-acp', experimental: true },
         });
         luwiSessionId = registered.id;
         try {
