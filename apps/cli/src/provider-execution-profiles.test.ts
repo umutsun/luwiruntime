@@ -71,8 +71,6 @@ describe('supervised provider execution profiles', () => {
         '--skip-git-repo-check',
         '--strict-config',
         '-c',
-        'sandbox_permissions=[]',
-        '-c',
         'sandbox_workspace_write.writable_roots=[]',
         '-c',
         'sandbox_workspace_write.network_access=false',
@@ -99,6 +97,7 @@ describe('supervised provider execution profiles', () => {
         '__LUWI_SUPERVISED_MESSAGE_PROMPT__',
       ]);
       expect(result.args).not.toContain('--approve-for-me');
+      expect(result.args).not.toContain('sandbox_permissions=[]');
       expect(result.args.join('\n')).not.toContain('luwi_ask_agent');
       expect(result.args.join('\n')).not.toContain('luwi_acquire_lease');
       expect(result.args.join('\n')).not.toContain('luwi_continue_workflow');

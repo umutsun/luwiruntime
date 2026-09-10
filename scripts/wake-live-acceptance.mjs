@@ -551,8 +551,6 @@ function coordinatorArguments(input) {
     '--skip-git-repo-check',
     '--strict-config',
     '-c',
-    'sandbox_permissions=[]',
-    '-c',
     'sandbox_workspace_write.writable_roots=[]',
     '-c',
     'sandbox_workspace_write.network_access=false',
@@ -877,7 +875,7 @@ async function main() {
         } catch {
           cleanupErrors.push('CODEX_THREAD_DELETE_FAILED');
         }
-      } else if (coordinatorThreadCreationAttempted) {
+      } else if (coordinatorThreadCreationAttempted && coordinatorThreadCreationUncertain) {
         cleanupEvidence.coordinatorThreadDeleted = false;
         cleanupEvidence.coordinatorThreadCreationUncertain = true;
         cleanupErrors.push('CODEX_THREAD_CREATION_UNRECOVERABLE');
@@ -1350,6 +1348,11 @@ async function main() {
       const completedThreadId = parseThreadId(coordinatorRun.stdout);
       if (completedThreadId !== undefined) {
         coordinatorThreadId = completedThreadId;
+        coordinatorThreadCreationUncertain = false;
+      } else if (coordinatorRun.signal === null && coordinatorRun.code !== null) {
+        // `thread.started` is Codex JSONL's first persistence event. A normal
+        // process exit without it proves that there is no disposable thread to
+        // delete, including strict-config validation failures.
         coordinatorThreadCreationUncertain = false;
       }
       if (

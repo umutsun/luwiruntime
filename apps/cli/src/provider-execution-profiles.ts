@@ -247,8 +247,6 @@ export async function resolveProviderExecutionProfile(
     '--skip-git-repo-check',
     '--strict-config',
     '-c',
-    'sandbox_permissions=[]',
-    '-c',
     'sandbox_workspace_write.writable_roots=[]',
     '-c',
     'sandbox_workspace_write.network_access=false',
