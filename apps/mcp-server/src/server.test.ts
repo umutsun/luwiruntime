@@ -80,6 +80,7 @@ describe('LUWI MCP server', () => {
         'luwi_get_technology_inventory',
         'luwi_get_optimization_proposal',
         'luwi_inbox_next',
+        'luwi_join',
         'luwi_list_projects',
         'luwi_list_agents',
         'luwi_list_capabilities',

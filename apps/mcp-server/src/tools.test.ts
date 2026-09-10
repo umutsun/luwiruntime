@@ -22,6 +22,11 @@ function client(): McpDaemonClient {
     listProjects: vi.fn(async () => ({ projects: [] })),
     listProjectSessions: vi.fn(async () => ({ sessions: [boundSession] })),
     getSession: vi.fn(async () => boundSession),
+    setSessionStatus: vi.fn(async (sessionId, status) => ({
+      ...boundSession,
+      id: sessionId,
+      status,
+    })),
     getProject: vi.fn(async () => ({
       id: 'project-1',
       name: 'LUWI',
@@ -214,6 +219,80 @@ describe('MCP tool handlers', () => {
     expect(daemon.askAgent).not.toHaveBeenCalled();
   });
 
+  it('uses one rotated identity snapshot through an ask-and-wait request', async () => {
+    const daemon = client();
+    const rotated = { ...boundSession, id: 'source-rotated' };
+    daemon.verifyBoundSession = vi.fn(async () => rotated);
+    daemon.waitForMessage = vi.fn(async () => ({
+      id: 'message-1',
+      correlationId: 'correlation-1',
+      projectId: rotated.projectId,
+      sourceSessionId: rotated.id,
+      sourceAgentId: rotated.agentId,
+      targetSessionId: 'target',
+      targetAgentId: 'gemini-sim',
+      selectionReason: 'selected target',
+      kind: 'question' as const,
+      content: 'Status?',
+      evidenceRequirements: [],
+      state: 'responded' as const,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deadlineAt: '2026-07-29T12:02:00.000Z',
+    }));
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await expect(
+      tools.askAgent({
+        targetAgentId: 'gemini-sim',
+        kind: 'question',
+        content: 'Status?',
+        waitMs: 1,
+      }),
+    ).resolves.toMatchObject({ state: 'responded' });
+    expect(daemon.verifyBoundSession).toHaveBeenCalledTimes(1);
+    expect(daemon.askAgent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sourceSessionId: rotated.id }),
+      undefined,
+    );
+  });
+
+  it('resolves a fresh verified session for consecutive operations', async () => {
+    const daemon = client();
+    const sessions = [
+      { ...boundSession, id: 'source-1' },
+      { ...boundSession, id: 'source-2' },
+    ];
+    const resolveBoundSession = vi.fn(async () => sessions.shift() ?? boundSession);
+    const tools = createMcpToolHandlers(daemon, boundSession, resolveBoundSession);
+
+    await tools.acquireLease({ path: 'src/one', reason: 'first' });
+    await tools.acquireLease({ path: 'src/two', reason: 'second' });
+
+    expect(daemon.acquireLease).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ sessionId: 'source-1' }),
+    );
+    expect(daemon.acquireLease).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ sessionId: 'source-2' }),
+    );
+  });
+
+  it('rejects a rotated session outside the startup project before mutation', async () => {
+    const daemon = client();
+    const tools = createMcpToolHandlers(daemon, boundSession, async () => ({
+      ...boundSession,
+      id: 'foreign',
+      projectId: 'project-2',
+    }));
+
+    await expect(tools.acquireLease({ path: 'src', reason: 'foreign' })).rejects.toMatchObject({
+      code: 'BOUND_PROJECT_MISMATCH',
+    });
+    expect(daemon.acquireLease).not.toHaveBeenCalled();
+  });
+
   it('bounds Phase 3 read tools to the current project and exposes no apply operation', async () => {
     const daemon = client();
     daemon.listAgents = vi.fn(async () => [
@@ -306,6 +385,26 @@ describe('work lease tools', () => {
       reason: 'editing routes',
       durationMs: 300_000,
     });
+  });
+
+  it('joins as a ready worker, then blocks on its own inbox for the next task', async () => {
+    const daemon = client();
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    const result = (await tools.join({})) as {
+      session: SessionView;
+      ready: boolean;
+      inbox: { items: unknown[] };
+    };
+
+    expect(daemon.setSessionStatus).toHaveBeenCalledWith('source', 'idle');
+    expect(daemon.claimInbox).toHaveBeenCalledWith(
+      'source',
+      expect.objectContaining({ bridgeInstanceId: 'gui-join' }),
+    );
+    expect(result.ready).toBe(true);
+    expect(result.session.status).toBe('idle');
+    expect(result.inbox.items).toEqual([]);
   });
 
   it('rejects an acquire that tries to name its own holder', async () => {

@@ -56,6 +56,7 @@ import {
   type MessageCreateRequest,
   type MessageCreateResponse,
   type Project,
+  type SessionStatus,
   type ProjectAgentBinding,
   type ProjectCollectionResponse,
   type SessionCollectionResponse,
@@ -173,6 +174,7 @@ export type McpDaemonClient = {
     responderSessionId: string,
     response?: AgentMessageResponse,
   ): Promise<AgentMessage>;
+  setSessionStatus(sessionId: string, status: SessionStatus): Promise<SessionView>;
 };
 
 function endpoint(base: string, path: string): string {
@@ -271,6 +273,10 @@ export function createDaemonClient(options: {
         sessionCollectionResponseSchema,
       ),
     getSession,
+    setSessionStatus: (sessionId, status) =>
+      post(`/api/v1/sessions/${encodeURIComponent(sessionId)}/status`, sessionResponseSchema, {
+        status,
+      }),
     getProject: (projectId) =>
       request(`/api/v1/projects/${encodeURIComponent(projectId)}`, projectResponseSchema),
     listAgents: async () =>

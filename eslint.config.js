@@ -12,6 +12,7 @@ export default tseslint.config(
       '**/node_modules/**',
       'temp/**',
       '.claude/worktrees/**',
+      '.worktrees/**',
     ],
   },
   eslint.configs.recommended,

@@ -58,6 +58,7 @@ const bridgeInstanceIdSchema = z
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
 
 export const mcpListProjectsInputSchema = z.strictObject({});
+export const mcpJoinInputSchema = z.strictObject({});
 export const mcpListSessionsInputSchema = z.strictObject({
   online: z.boolean().default(false),
 });
@@ -249,6 +250,11 @@ export const mcpListProjectsOutputSchema = z.strictObject({
   projects: z.array(projectSchema).max(MCP_MAX_COLLECTION_ITEMS),
   truncated: z.boolean(),
 });
+export const mcpJoinOutputSchema = z.strictObject({
+  session: sessionViewSchema,
+  ready: z.boolean(),
+  inbox: inboxClaimResponseSchema,
+});
 export const mcpListSessionsOutputSchema = z.strictObject({
   sessions: z.array(sessionViewSchema).max(MCP_MAX_COLLECTION_ITEMS),
   truncated: z.boolean(),
@@ -338,6 +344,8 @@ export const mcpIntelligenceDisplayLabelsSchema = z.strictObject({
 
 export type McpAskAgentInput = z.infer<typeof mcpAskAgentInputSchema>;
 export type McpListProjectsInput = z.infer<typeof mcpListProjectsInputSchema>;
+export type McpJoinInput = z.infer<typeof mcpJoinInputSchema>;
+export type McpJoinOutput = z.infer<typeof mcpJoinOutputSchema>;
 export type McpListSessionsInput = z.infer<typeof mcpListSessionsInputSchema>;
 export type McpGetSessionInput = z.infer<typeof mcpGetSessionInputSchema>;
 export type McpGetProjectStateInput = z.infer<typeof mcpGetProjectStateInputSchema>;

@@ -19,11 +19,16 @@
  * Register it in `~/.gemini/config/hooks.json` under `PreInvocation`.
  */
 import { spawn } from 'node:child_process';
-import { readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { clearInterval, setInterval } from 'node:timers';
+import {
+  conversationPidFile,
+  conversationSessionFile,
+  writePrivateTextFile,
+} from './native-mcp-binding.mjs';
 
 const LUWI_CLI = join(import.meta.dirname, '..', 'apps', 'cli', 'dist', 'main.js');
 // ponytail: a fixed idle window; make it a setting if conversations regularly
@@ -31,7 +36,7 @@ const LUWI_CLI = join(import.meta.dirname, '..', 'apps', 'cli', 'dist', 'main.js
 const IDLE_MS = 30 * 60_000;
 const POLL_MS = 60_000;
 
-const pidFileFor = (conversationId) => join(tmpdir(), `luwi-antigravity-${conversationId}.pid`);
+const pidFileFor = (conversationId) => conversationPidFile(tmpdir(), 'antigravity', conversationId);
 
 function alive(pidFile) {
   try {
@@ -47,9 +52,11 @@ function alive(pidFile) {
 // so the launched LUWI MCP server binds to the most-recently-active Antigravity
 // conversation (fine for one workspace at a time).
 const currentFile = join(tmpdir(), 'luwi-antigravity-current.json');
+const lastFile = join(tmpdir(), 'luwi-antigravity-last.json');
 
 if (process.argv[2] === 'supervise') {
   const [conversationId, workspace, transcriptPath] = process.argv.slice(3);
+  const sessionFile = conversationSessionFile(tmpdir(), 'antigravity', conversationId);
   const startedAt = Date.now();
   const attach = spawn(
     process.execPath,
@@ -67,6 +74,8 @@ if (process.argv[2] === 'supervise') {
       conversationId,
       '--working-directory',
       workspace,
+      '--session-out',
+      sessionFile,
     ],
     { cwd: workspace, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true },
   );
@@ -80,15 +89,16 @@ if (process.argv[2] === 'supervise') {
     try {
       const attached = JSON.parse(buffer).attached;
       if (attached !== undefined) {
-        writeFileSync(
-          currentFile,
-          JSON.stringify({
-            sessionId: attached,
-            conversationId,
-            workspace,
-            at: new Date().toISOString(),
-          }),
-        );
+        const payload = JSON.stringify({
+          sessionId: attached,
+          conversationId,
+          workspace,
+          transcriptPath,
+          sessionFile,
+          at: new Date().toISOString(),
+        });
+        writePrivateTextFile(currentFile, payload);
+        writePrivateTextFile(lastFile, payload);
         published = true;
       }
     } catch {
@@ -145,7 +155,7 @@ if (process.argv[2] === 'supervise') {
         ],
         { cwd: workspace, detached: true, stdio: 'ignore', windowsHide: true },
       );
-      writeFileSync(pidFile, String(supervisor.pid));
+      writePrivateTextFile(pidFile, String(supervisor.pid));
       supervisor.unref();
     }
   }

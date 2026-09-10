@@ -1,7 +1,8 @@
 import { posix } from 'node:path';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -207,6 +208,42 @@ describe('CLI lifecycle', () => {
       await reacquired?.();
 
       expect(await readFile(path, 'utf8')).toBe('{"version":2}\n');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims a stale lock whose owner process is gone', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-lifecycle-stale-'));
+    try {
+      const fileSystem = new NodeLifecycleFileSystem();
+      const lockPath = join(directory, 'lifecycle.lock');
+      // spawnSync runs the child to completion, so its pid is already dead here.
+      const { pid } = spawnSync(process.execPath, ['--version']);
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({ pid, acquiredAt: '2026-09-10T11:39:52.072Z' })}\n`,
+      );
+
+      const release = await fileSystem.tryAcquireLock(lockPath);
+      expect(release).toBeTypeOf('function');
+      await release?.();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reclaim a lock still held by a live process', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-lifecycle-live-'));
+    try {
+      const fileSystem = new NodeLifecycleFileSystem();
+      const lockPath = join(directory, 'lifecycle.lock');
+      await writeFile(
+        lockPath,
+        `${JSON.stringify({ pid: process.pid, acquiredAt: '2026-09-10T11:39:52.072Z' })}\n`,
+      );
+
+      expect(await fileSystem.tryAcquireLock(lockPath)).toBeUndefined();
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

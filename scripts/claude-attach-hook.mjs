@@ -13,18 +13,20 @@
  * The project comes from the hook's `cwd`, the model from `model` when present —
  * nothing is inferred. A SessionEnd hook has 1.5 s, so `end` only signals.
  *
- * The attach's stdout ({ attached: <luwiSessionId> }) is kept in
- * `%TEMP%/luwi-attach-<claudeSid>.out`, and `%TEMP%/luwi-attach-pid-<claudePid>`
- * names the Claude session running under that Claude process, so
- * `claude-mcp-launch.mjs` — which Claude Code starts without any session id —
- * can bind the LUWI MCP server to this same session.
+ * `session attach --session-out` atomically rewrites
+ * `%TEMP%/luwi-attach-<claudeSid>.out` with { attached: <luwiSessionId> } on every
+ * (re)registration — so a daemon-restart rotation is reflected instead of the first,
+ * now-terminal id — and `%TEMP%/luwi-attach-pid-<claudePid>` names the Claude session
+ * running under that Claude process, so `claude-mcp-launch.mjs` — which Claude Code
+ * starts without any session id — can bind the LUWI MCP server to this current session.
  */
 import { spawn } from 'node:child_process';
-import { closeSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { claudeProcessId } from './claude-mcp-launch.mjs';
+import { writePrivateTextFile } from './native-mcp-binding.mjs';
 
 const LUWI_CLI = join(import.meta.dirname, '..', 'apps', 'cli', 'dist', 'main.js');
 
@@ -52,21 +54,26 @@ if (process.argv[2] === 'start') {
   const environment = { ...process.env };
   delete environment.CLAUDE_CODE_CHILD_SESSION;
   delete environment.CLAUDE_PID;
-  const out = openSync(outFile, 'w');
   const child = spawn(
     process.execPath,
-    [LUWI_CLI, 'session', 'attach', ...(input.model ? ['--model', input.model] : [])],
+    [
+      LUWI_CLI,
+      'session',
+      'attach',
+      '--session-out',
+      outFile,
+      ...(input.model ? ['--model', input.model] : []),
+    ],
     {
       cwd: input.cwd,
       env: { ...environment, CLAUDE_CODE_SESSION_ID: input.session_id },
       detached: true,
-      stdio: ['ignore', out, 'ignore'],
+      stdio: 'ignore',
       windowsHide: true,
     },
   );
-  closeSync(out);
-  writeFileSync(pidFile, String(child.pid));
-  if (mapFile !== undefined) writeFileSync(mapFile, input.session_id);
+  writePrivateTextFile(pidFile, String(child.pid));
+  if (mapFile !== undefined) writePrivateTextFile(mapFile, input.session_id);
   child.unref();
 } else {
   try {

@@ -332,7 +332,12 @@ LUWI session without transferring work leases. `luwi session attach` bounds disc
 heartbeats, cleanup, lease listing, and lease renewal with `--connect-timeout-ms` (2,000 ms by
 default), and disarms its timers before its bounded best-effort cleanup. `agent run` and Claude have
 exact native-end signals; Antigravity has none, so its existing helper remains bounded by 30 minutes
-without activity.
+without activity. An attach-owned MCP process uses the absolute `--session-out` path as
+`LUWI_SESSION_FILE`; the MCP server re-reads that atomically replaced file for every tool call, so a
+rotation does not strand it on the terminal predecessor. Claude, Codex, and Antigravity launchers use
+this path for the attach sessions they own. Antigravity's application-global MCP remains limited to
+the conversation selected when that launcher starts; file rotation does not add cross-conversation
+routing.
 
 ## Architecture and security
 
@@ -684,11 +689,14 @@ install MCP configuration, or add a general orchestration framework.
 
 ### MCP server
 
-The MCP server is a stdio process bound to one existing online LUWI session:
+The MCP server is a stdio process bound to one existing online LUWI session. Use exactly one binding
+source: a static ID for a session whose lifecycle is owned elsewhere, or an absolute rotating file
+written by `session attach --session-out`:
 
 ```text
 LUWI_DAEMON_URL=http://127.0.0.1:4782
 LUWI_SESSION_ID=<registeredSourceSessionId>
+# or: LUWI_SESSION_FILE=C:/absolute/per-user/session.out
 LUWI_MCP_REQUEST_TIMEOUT_MS=30000
 pnpm --filter @luwi/mcp-server dev
 pnpm --filter @luwi/mcp-server harness
@@ -701,16 +709,19 @@ optimization-analysis request is available, but proposal acceptance, plan approv
 rollback, graph rebuild, and Git mutation are not exposed. The server never connects to
 Redis, accepts a source/responder override for bound mutations, or starts for a missing,
 offline, or terminal bound session. It revalidates that binding before every tool
-operation. Build first, then pass a tool name and JSON object to `harness` for a concrete
+operation. File-backed mode reads one secure filesystem snapshot per operation and rejects symbolic
+links, malformed or oversized content, non-regular files, and non-private POSIX modes. The startup
+session's project remains the immutable project boundary across rotations. Build first, then pass a
+tool name and JSON object to `harness` for a concrete
 stdio test.
 
 Every tool advertises and validates an output schema. Successful results use MCP
 `structuredContent` plus a concise bounded text summary; project and session discovery
 results are capped at 100 entries and explicitly report truncation.
 
-The inventory is 36 tools: 25 read and 11 write coordination state (the seven messaging
-transitions, a bounded optimization-analysis request, and three of the four work-lease
-tools). Control-plane writes — config approval and apply, rollback, graph rebuild, Git
+The inventory is 37 tools: 25 read and 12 write coordination state (the seven messaging
+transitions, `luwi_join`, a bounded optimization-analysis request, and three of the four
+work-lease tools). Control-plane writes — config approval and apply, rollback, graph rebuild, Git
 mutation — are never exposed. The graph surface carries the two rooted reads (neighbors
 and path); the whole-runtime summary and subgraph reads stay on the HTTP API and CLI.
 
@@ -741,11 +752,14 @@ or, on a machine without the `claude` CLI, hand-edit the local scope in `~/.clau
 }
 ```
 
-Two facts make a naive registration fail. A session id is runtime identity, not
-configuration: it goes stale on every daemon restart, so the env value must name a
-currently online session. And the server verifies that binding before connecting the
-transport, so with a missing or terminal session it exits 1 without ever speaking MCP —
-which a client reports as a startup failure, not a tool error.
+Two facts make a naive static registration fail. A session id is runtime identity, not
+configuration: it goes stale after presence loss. A long-lived attach integration must therefore
+start `session attach --session-out <absolute-private-path>` and configure that same path as
+`LUWI_SESSION_FILE`, not copy its first value into `LUWI_SESSION_ID`. The server verifies the initial
+binding before connecting the transport; later tool calls fail closed while the file is absent or
+invalid and resume against the replacement ID after the attach helper publishes it. Changing from
+static to file-backed binding requires rebuilding and restarting the MCP process once; rotations
+after that require no MCP restart.
 
 ## HTTP and WebSocket API
 

@@ -58,7 +58,12 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
       (candidate) =>
         candidate.agentId === targetAgentId &&
         candidate.projectId === input.sourceSession.projectId &&
-        isAvailable(candidate),
+        isAvailable(candidate) &&
+        // ponytail: 'starting' means no inbox reader has confirmed readiness yet, so
+        // auto-routing to it guarantees a message.timed_out. A worker becomes selectable
+        // only once it leaves 'starting' (reader-readiness transition, ADR 0031). A direct
+        // targetSessionId is intentionally unaffected — a caller naming a session gets it.
+        candidate.status !== 'starting',
     )
     .toSorted((left, right) => {
       const rankDifference = statusRank[left.status] - statusRank[right.status];

@@ -1,3 +1,5 @@
+export { projectRoleSchema, projectRoleListSchema, humanGateRuleSchema } from './project-role.js';
+export type { ProjectRole, HumanGateRule } from './project-role.js';
 export {
   createRuntimeEvent,
   parseRuntimeEvent,
@@ -232,6 +234,8 @@ export {
   mcpGetSessionOutputSchema,
   mcpInboxNextInputSchema,
   mcpInboxOutputSchema,
+  mcpJoinInputSchema,
+  mcpJoinOutputSchema,
   mcpListProjectsInputSchema,
   mcpListProjectsOutputSchema,
   mcpListSessionsInputSchema,

@@ -456,11 +456,21 @@ tools configures DeepSeek's own MCP client plugin; the bridge provides the child
 the already-registered `LUWI_SESSION_ID` and exact loopback daemon origin needed by LUWI's
 existing bound-session MCP server.
 
-The implemented MCP server verifies `LUWI_SESSION_ID` at startup, rejects offline/terminal
-bindings, derives source and responder identity from that binding, and limits message reads
-to the bound project/session. It exposes stdio tools through the official SDK and never
+The implemented MCP server accepts exactly one binding source: a backward-compatible static
+`LUWI_SESSION_ID`, or an absolute `LUWI_SESSION_FILE` atomically replaced by `session attach
+--session-out`. It verifies the initial session at startup, anchors the process to that project, and
+resolves and verifies one current session snapshot per tool call. File-backed binding rejects
+symlinks, non-regular, empty, oversized, malformed, or non-private POSIX files; a rotated session
+from another project is rejected. Source and responder identity come from the per-call snapshot, and
+message reads stay inside its anchored project/session. It exposes stdio tools through the official SDK and never
 receives Redis credentials. Every tool advertises a protocol-owned output schema, validates
 daemon output, returns `structuredContent`, and emits only a concise bounded text summary.
+Claude, Codex, and Antigravity attach launchers pass conversation-scoped session files. Codex moves
+registration ownership into its long-lived launcher so the existing session bootstrap performs
+heartbeat and recovery; its SessionStart hook only publishes the validated attach request, and the
+launcher claims it by exact native Codex conversation identity. Antigravity accepts only its hook's
+current conversation record; arbitrary online-session lookup and fabricated-project startup are not
+valid fallback paths.
 MCP discovery collections are capped and report truncation. Phase 3 adds project-bounded
 read-only tools for AgentDefinitions, capabilities, effective config, context footprint, and
 drift. Phase 4 adds project-scoped usage, context intelligence, Git, package, technology,

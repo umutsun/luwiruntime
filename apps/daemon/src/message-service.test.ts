@@ -309,4 +309,67 @@ describe('message service', () => {
       expect.objectContaining({ blockMs: 0 }),
     );
   });
+
+  it('marks a starting reader idle when it claims its inbox (readiness signal)', async () => {
+    const starting: SessionView = { ...target, status: 'starting' };
+    const sessions = sessionService([source, starting]);
+    const service = createMessageService({
+      repository: repository(),
+      sessions,
+      workspaceId: 'local',
+      claimInbox: async () => ({ items: [] }),
+    });
+
+    await service.claimInbox('target', {
+      bridgeInstanceId: 'bridge-1',
+      limit: 10,
+      blockMs: 0,
+      minIdleMs: 0,
+    });
+
+    expect(sessions.updateStatus).toHaveBeenCalledWith('target', 'idle');
+  });
+
+  it('leaves the status of a reader already past starting untouched', async () => {
+    const working: SessionView = { ...target, status: 'thinking' };
+    const sessions = sessionService([source, working]);
+    const service = createMessageService({
+      repository: repository(),
+      sessions,
+      workspaceId: 'local',
+      claimInbox: async () => ({ items: [] }),
+    });
+
+    await service.claimInbox('target', {
+      bridgeInstanceId: 'bridge-1',
+      limit: 10,
+      blockMs: 0,
+      minIdleMs: 0,
+    });
+
+    expect(sessions.updateStatus).not.toHaveBeenCalled();
+  });
+
+  it('still claims when the readiness transition is refused (best-effort)', async () => {
+    const starting: SessionView = { ...target, status: 'starting' };
+    const sessions = sessionService([source, starting]);
+    sessions.updateStatus = vi.fn(async () => {
+      throw new Error('status write failed');
+    });
+    const service = createMessageService({
+      repository: repository(),
+      sessions,
+      workspaceId: 'local',
+      claimInbox: async () => ({ items: [] }),
+    });
+
+    await expect(
+      service.claimInbox('target', {
+        bridgeInstanceId: 'bridge-1',
+        limit: 10,
+        blockMs: 0,
+        minIdleMs: 0,
+      }),
+    ).resolves.toEqual({ items: [] });
+  });
 });

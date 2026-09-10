@@ -392,6 +392,18 @@ export function createMessageService(options: MessageServiceOptions): MessageSer
       if (options.claimInbox === undefined) {
         throw new ApplicationError('INBOX_UNAVAILABLE', 'The session inbox is unavailable.', 503);
       }
+      // ponytail: reading the inbox is the readiness proof. A session that claims work is
+      // a live reader, not a reader-less 'starting' ghost, so mark it idle — that is the
+      // signal selectMessageTarget routes on (a 'starting' session is never auto-selected).
+      // Only 'starting' moves; a session already working keeps its status. Best-effort: a
+      // status write must never fail the claim — LUWI must not stop the tool it coordinates.
+      if (session.status === 'starting') {
+        try {
+          await options.sessions.updateStatus(sessionId, 'idle');
+        } catch {
+          // Readiness is advisory; the claim proceeds even if the transition is refused.
+        }
+      }
       try {
         const deadline = now() + request.blockMs;
         const nonBlockingRequest = { ...request, blockMs: 0 };

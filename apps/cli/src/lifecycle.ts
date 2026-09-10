@@ -487,8 +487,19 @@ export class NodeLifecycleFileSystem implements LifecycleFileSystem {
     try {
       lock = await open(path, 'wx', 0o600);
     } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return undefined;
-      throw error;
+      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') {
+        // ponytail: a crashed lifecycle op leaves this lock forever (no TTL). If the pid
+        // that wrote it is gone, reclaim it once and retry; a live owner — or an
+        // unreadable in-progress write — stays blocked, so a real lock is never stolen.
+        if (!(await this.reclaimStaleLock(path))) return undefined;
+        try {
+          lock = await open(path, 'wx', 0o600);
+        } catch {
+          return undefined;
+        }
+      } else {
+        throw error;
+      }
     }
     try {
       await lock.writeFile(
@@ -508,6 +519,34 @@ export class NodeLifecycleFileSystem implements LifecycleFileSystem {
       await lock.close();
       await rm(path, { force: true });
     };
+  }
+
+  async reclaimStaleLock(path: string): Promise<boolean> {
+    let pid: number;
+    try {
+      const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        typeof (parsed as { pid?: unknown }).pid !== 'number'
+      ) {
+        return false;
+      }
+      pid = (parsed as { pid: number }).pid;
+    } catch {
+      // Missing or half-written by an in-progress acquire — never steal it.
+      return false;
+    }
+    try {
+      process.kill(pid, 0);
+      return false; // the recorded owner is alive; a real lifecycle op holds the lock.
+    } catch (error) {
+      // EPERM: the process exists under another owner (alive). ESRCH (or other): it is
+      // gone, so the lock is stale and safe to reclaim.
+      if (error instanceof Error && 'code' in error && error.code === 'EPERM') return false;
+    }
+    await rm(path, { force: true }).catch(() => undefined);
+    return true;
   }
 }
 

@@ -52,6 +52,8 @@ import {
   mcpGetUsageSummaryOutputSchema,
   mcpInboxNextInputSchema,
   mcpInboxOutputSchema,
+  mcpJoinInputSchema,
+  mcpJoinOutputSchema,
   mcpListProjectsInputSchema,
   mcpListProjectsOutputSchema,
   mcpListSessionsInputSchema,
@@ -596,6 +598,24 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
         mcpMessageOutputSchema,
         ({ correlationId, state }) => `Message ${correlationId} is ${state}.`,
         () => handlers.getMessage(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_join',
+    {
+      description:
+        "Join the bound session's own project as a ready worker and wait briefly for its next task. Call it again after handling each task to keep listening — an MCP tool cannot loop on its own.",
+      inputSchema: mcpJoinInputSchema,
+      outputSchema: mcpJoinOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpJoinOutputSchema,
+        ({ session, inbox }) =>
+          inbox.items.length > 0
+            ? `Joined project ${session.projectId}; claimed ${String(inbox.items.length)} inbox item(s) to handle.`
+            : `Joined project ${session.projectId} as a ready worker; no task yet — call luwi_join again to keep listening.`,
+        () => handlers.join(input),
       ),
   );
   server.registerTool(

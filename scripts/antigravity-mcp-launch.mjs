@@ -8,8 +8,8 @@
  * conversation id nor `LUWI_SESSION_ID`. LUWI's MCP server, by contrast, binds
  * to exactly one live session. `antigravity-attach-hook.mjs` records the session
  * it attaches for the active conversation in `%TEMP%/luwi-antigravity-current.json`;
- * this launcher waits for that file, verifies the session is online, then execs
- * the MCP server with `LUWI_SESSION_ID`.
+ * this launcher waits for that file, verifies the attach-owned session file,
+ * then starts the MCP server with `LUWI_SESSION_FILE`.
  *
  * ponytail: single global "current conversation" file → the MCP binds to the
  * most-recently-active Antigravity conversation. Fine for one workspace at a
@@ -26,11 +26,18 @@
  * command (see docs/ for the exact block).
  */
 import { spawn } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import {
+  environmentSessionBinding,
+  loopbackDaemonUrl,
+  mcpServerEnvironment,
+  readBoundedJsonFile,
+  readSessionBindingFile,
+  writePrivateJsonFile,
+} from './native-mcp-binding.mjs';
 
 const MCP_SERVER = join(import.meta.dirname, '..', 'apps', 'mcp-server', 'dist', 'main.js');
 const CURRENT_FILE = join(tmpdir(), 'luwi-antigravity-current.json');
@@ -38,28 +45,22 @@ const DIAG_FILE = join(tmpdir(), 'luwi-antigravity-mcp-launch.diag.json');
 // Antigravity starts MCP servers at app launch, before the first message fires
 // the attach hook, and keeps a slow-connecting stdio server alive for minutes,
 // so wait generously for the hook to publish the current session.
-const WAIT_MS = 5 * 60_000;
+const WAIT_MS = 10 * 60_000;
 const POLL_MS = 500;
 
-// One-shot diagnostics: what Antigravity actually hands an MCP child. Read it
-// once (%TEMP%/luwi-antigravity-mcp-launch.diag.json) to decide whether a
-// conversation-scoped binding is even possible here.
-try {
-  const relevant = Object.fromEntries(
-    Object.entries(process.env).filter(([k]) =>
-      /ANTIGRAVITY|GEMINI|CONVERSAT|WORKSPACE|CODEIUM|CASCADE|LUWI/i.test(k),
-    ),
-  );
-  writeFileSync(
-    DIAG_FILE,
-    JSON.stringify(
-      { at: new Date().toISOString(), cwd: process.cwd(), argv: process.argv, env: relevant },
-      null,
-      2,
-    ),
-  );
-} catch {
-  // Diagnostics are best-effort; never block the launch on them.
+// Optional key-name-only diagnostics for checking what categories of context an
+// Antigravity build exposes. Values and argv are never recorded. Current builds
+// expose conversation/project keys, but the global MCP process still follows the
+// hook-published current conversation until a per-conversation MCP contract exists.
+if (process.env.LUWI_ANTIGRAVITY_DIAGNOSTICS === '1') {
+  try {
+    const environmentKeys = Object.keys(process.env)
+      .filter((key) => /ANTIGRAVITY|GEMINI|CONVERSAT|WORKSPACE|CODEIUM|CASCADE|LUWI/i.test(key))
+      .sort();
+    writePrivateJsonFile(DIAG_FILE, { at: new Date().toISOString(), environmentKeys });
+  } catch {
+    // Diagnostics are best-effort; never block the launch on them.
+  }
 }
 
 async function online(sessionId, daemonUrl) {
@@ -71,18 +72,28 @@ async function online(sessionId, daemonUrl) {
   }
 }
 
-async function resolveSessionId() {
-  if (process.env.LUWI_SESSION_ID) return process.env.LUWI_SESSION_ID;
-  const daemonUrl = process.env.LUWI_DAEMON_URL ?? 'http://127.0.0.1:4782';
+async function resolveSessionBinding() {
+  const configured = environmentSessionBinding(process.env);
+  if (configured !== undefined) return configured;
+  const daemonUrl = loopbackDaemonUrl(process.env.LUWI_DAEMON_URL ?? 'http://127.0.0.1:4782');
   const deadline = Date.now() + WAIT_MS;
   let seen;
   while (Date.now() < deadline) {
     try {
-      seen = JSON.parse(readFileSync(CURRENT_FILE, 'utf8')).sessionId;
+      const current = readBoundedJsonFile(CURRENT_FILE);
+      if (typeof current.sessionFile === 'string') {
+        seen = readSessionBindingFile(current.sessionFile);
+        if (await online(seen, daemonUrl)) {
+          return { sessionId: seen, sessionFile: current.sessionFile };
+        }
+      } else if (typeof current.sessionId === 'string') {
+        // One-release migration for an already running legacy attach helper.
+        seen = current.sessionId;
+        if (await online(seen, daemonUrl)) return { sessionId: seen };
+      }
     } catch {
       seen = undefined;
     }
-    if (seen && (await online(seen, daemonUrl))) return seen;
     await sleep(POLL_MS);
   }
   throw new Error(
@@ -92,10 +103,10 @@ async function resolveSessionId() {
   );
 }
 
-resolveSessionId().then(
-  (sessionId) => {
+resolveSessionBinding().then(
+  (binding) => {
     const server = spawn(process.execPath, [MCP_SERVER], {
-      env: { ...process.env, LUWI_SESSION_ID: sessionId },
+      env: mcpServerEnvironment(process.env, binding),
       stdio: 'inherit',
       windowsHide: true,
     });

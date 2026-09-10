@@ -6,6 +6,10 @@ import { runCli, type CliDependencies, type CliWebSocket, type HttpResponseLike 
 import { DeepSeekBridgeStartupCancelledError, type DeepSeekAcpFactory } from './deepseek-bridge.js';
 import type { LifecycleService } from './lifecycle.js';
 import type { ProjectDiscoveryService } from './project-discovery.js';
+import { existsSync } from 'node:fs';
+import { link, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const runtimeResponse = {
   version: '0.1.0',
@@ -2098,6 +2102,86 @@ describe('session attach', () => {
       agentId: 'codex',
       native: { adapterId: 'codex', nativeSessionId: '01a0577b-9555-7741-b8f1-395df30a7003' },
     });
+  });
+
+  it('rewrites --session-out with the current session id on registration', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-attach-out-'));
+    const sessionOut = join(directory, 'session.out');
+    const sentinel = join(directory, 'sentinel');
+    try {
+      await writeFile(sentinel, 'do-not-touch', 'utf8');
+      await link(sentinel, `${sessionOut}.tmp`);
+      let signalListener: (() => void) | undefined;
+      const run = runCli(
+        ['session', 'attach', '--working-directory', 'C:/work/app', '--session-out', sessionOut],
+        {
+          environment: { CLAUDE_CODE_SESSION_ID: '64c3e219-18aa-4539-9104-89d3d2ac5629' },
+          platform: 'win32',
+          now: () => new Date(CODEX_NOW),
+          canonicalizePath: async (path: string) => path,
+          transcriptFileSystem: rolloutFileSystem({}),
+          fetch: async (url) => {
+            if (url.endsWith('/api/v1/projects'))
+              return response({
+                projects: [
+                  {
+                    id: 'project-1',
+                    name: 'Work',
+                    localPath: 'C:/work',
+                    canonicalPath: 'C:/work',
+                    createdAt: '2026-07-28T12:00:00.000Z',
+                    updatedAt: '2026-07-28T12:00:00.000Z',
+                  },
+                ],
+              });
+            return response(registered);
+          },
+          setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+          clearInterval: (() => undefined) as never,
+          signals: {
+            once: (_signal: string, listener: () => void) => {
+              signalListener = listener;
+              return undefined;
+            },
+            off: () => undefined,
+          },
+          stdout: { write: () => undefined },
+          stderr: { write: () => undefined },
+        },
+      );
+
+      // onSessionChanged('registered') writes the mapping fire-and-forget; wait for it.
+      for (let i = 0; i < 200 && !existsSync(sessionOut); i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(JSON.parse(await readFile(sessionOut, 'utf8'))).toEqual({ attached: registered.id });
+      expect(await readFile(sentinel, 'utf8')).toBe('do-not-touch');
+
+      signalListener?.();
+      await run;
+      expect(existsSync(sessionOut)).toBe(false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a relative --session-out path before registration', async () => {
+    const fetch = vi.fn(async () => response(registered));
+    await expect(
+      runCli(
+        ['session', 'attach', '--working-directory', 'C:/work/app', '--session-out', 'session.out'],
+        {
+          environment: { CLAUDE_CODE_SESSION_ID: '64c3e219-18aa-4539-9104-89d3d2ac5629' },
+          platform: 'win32',
+          canonicalizePath: async (path: string) => path,
+          transcriptFileSystem: rolloutFileSystem({}),
+          fetch,
+          stdout: { write: () => undefined },
+          stderr: { write: () => undefined },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'CLI_OPTION_INVALID' });
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it('declares an explicit native reference outright and resolves nothing on its behalf', async () => {

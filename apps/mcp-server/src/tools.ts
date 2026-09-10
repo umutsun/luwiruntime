@@ -29,6 +29,7 @@ import {
   mcpGetTechnologyInventoryInputSchema,
   mcpGetUsageSummaryInputSchema,
   mcpInboxNextInputSchema,
+  mcpJoinInputSchema,
   mcpListProjectsInputSchema,
   mcpListSessionsInputSchema,
   mcpListOptimizationFindingsInputSchema,
@@ -46,6 +47,7 @@ export type McpToolHandlers = {
   listProjects(input: unknown): Promise<unknown>;
   listSessions(input: unknown): Promise<unknown>;
   getSession(input: unknown): Promise<unknown>;
+  join(input: unknown): Promise<unknown>;
   getProjectState(input: unknown): Promise<unknown>;
   acquireLease(input: unknown): Promise<unknown>;
   renewLease(input: unknown): Promise<unknown>;
@@ -81,6 +83,8 @@ export type McpToolHandlers = {
   requestOptimizationAnalysis(input: unknown): Promise<unknown>;
 };
 
+export type BoundSessionResolver = () => Promise<SessionView>;
+
 function requireBoundMessage(message: AgentMessage, bound: SessionView): AgentMessage {
   if (
     message.projectId !== bound.projectId ||
@@ -98,9 +102,10 @@ function requireBoundMessage(message: AgentMessage, bound: SessionView): AgentMe
 export function createMcpToolHandlers(
   client: McpDaemonClient,
   boundSession: SessionView,
+  resolveBoundSession: BoundSessionResolver = () => client.verifyBoundSession(boundSession.id),
 ): McpToolHandlers {
   const requireCurrentBound = async (): Promise<SessionView> => {
-    const current = await client.verifyBoundSession(boundSession.id);
+    const current = await resolveBoundSession();
     if (current.projectId !== boundSession.projectId) {
       throw new McpDaemonError(
         'BOUND_PROJECT_MISMATCH',
@@ -114,15 +119,15 @@ export function createMcpToolHandlers(
     const current = await requireCurrentBound();
     return requireBoundMessage(await client.getMessage(correlationId), current);
   };
-  const boundBindings = async () => {
-    const current = await requireCurrentBound();
+  const boundBindings = async (snapshot?: SessionView) => {
+    const current = snapshot ?? (await requireCurrentBound());
     return {
       current,
       bindings: await client.listProjectAgents(current.projectId),
     };
   };
-  const requireBoundAgent = async (agentId: string) => {
-    const state = await boundBindings();
+  const requireBoundAgent = async (agentId: string, snapshot?: SessionView) => {
+    const state = await boundBindings(snapshot);
     if (!state.bindings.some((binding) => binding.agentId === agentId)) {
       throw new McpDaemonError(
         'BOUND_PROJECT_MISMATCH',
@@ -167,6 +172,23 @@ export function createMcpToolHandlers(
         );
       }
       return session;
+    },
+    async join(input) {
+      mcpJoinInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      // Declare this session a ready worker for its own project (never from input),
+      // then block briefly on its own inbox: one call = "join and listen for my next
+      // task". A caller loops this to stay a continuous listener — an MCP tool cannot
+      // run a background loop itself. Both the status transition and the claim reuse
+      // existing endpoints and act only on the bound session.
+      const session = await client.setSessionStatus(current.id, 'idle');
+      const inbox = await client.claimInbox(current.id, {
+        bridgeInstanceId: 'gui-join',
+        limit: 10,
+        blockMs: 25_000,
+        minIdleMs: 15_000,
+      });
+      return { session, ready: session.status === 'idle', inbox };
     },
     async getProjectState(input) {
       mcpGetProjectStateInputSchema.parse(input);
@@ -241,7 +263,7 @@ export function createMcpToolHandlers(
       }
       const latest = requireBoundMessage(
         await client.waitForMessage(created.message.correlationId, parsed.waitMs),
-        boundSession,
+        current,
       );
       return {
         correlationId: latest.correlationId,
@@ -399,7 +421,7 @@ export function createMcpToolHandlers(
       const parsed = mcpGetContextIntelligenceInputSchema.parse(input);
       const current = await requireCurrentBound();
       const agentId = parsed.agentId ?? current.agentId;
-      if (agentId !== current.agentId) await requireBoundAgent(agentId);
+      if (agentId !== current.agentId) await requireBoundAgent(agentId, current);
       const result = await client.getContextIntelligence(current.projectId, agentId);
       return {
         summary: result.summary,
@@ -520,7 +542,7 @@ export function createMcpToolHandlers(
       const parsed = mcpRequestOptimizationAnalysisInputSchema.parse(input);
       const current = await requireCurrentBound();
       const agentId = parsed.agentId ?? current.agentId;
-      if (agentId !== current.agentId) await requireBoundAgent(agentId);
+      if (agentId !== current.agentId) await requireBoundAgent(agentId, current);
       return client.requestOptimizationAnalysis({
         projectId: current.projectId,
         agentId,

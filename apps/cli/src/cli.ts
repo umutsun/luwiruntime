@@ -43,8 +43,9 @@ import {
 } from '@luwi/adapters';
 import { ApplicationError, createSessionBootstrap } from '@luwi/runtime';
 import { Command } from 'commander';
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { realpath } from 'node:fs/promises';
+import { realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
@@ -2065,6 +2066,10 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--heartbeat-ms <milliseconds>', 'Heartbeat interval', '5000')
     .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
     .option('--connect-timeout-ms <milliseconds>', 'Per-request LUWI connection timeout', '2000')
+    .option(
+      '--session-out <path>',
+      'Machine-readable file atomically rewritten with the current LUWI session id on every (re)registration, so an MCP launcher rebinds after a rotation instead of holding a terminal id',
+    )
     .option('--dry-run', 'Print what would be declared and exit without registering')
     .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
     .action(
@@ -2080,6 +2085,7 @@ export function createCli(dependencies: CliDependencies): Command {
         heartbeatMs: string;
         leaseRenewMs: string;
         connectTimeoutMs: string;
+        sessionOut?: string;
         dryRun?: boolean;
         url: string;
       }) => {
@@ -2090,6 +2096,13 @@ export function createCli(dependencies: CliDependencies): Command {
           100,
           30_000,
         );
+        if (options.sessionOut !== undefined && !isAbsolute(options.sessionOut)) {
+          throw new ApplicationError(
+            'CLI_OPTION_INVALID',
+            '--session-out must be an absolute path.',
+            400,
+          );
+        }
         const callDaemon = <Output>(
           path: string,
           parser: Parser<Output>,
@@ -2171,6 +2184,47 @@ export function createCli(dependencies: CliDependencies): Command {
           return;
         }
 
+        // Atomically rewrite --session-out with whatever session id is current now.
+        // A daemon restart rotates the id (bootstrap re-registers), and an MCP
+        // launcher that keeps reading the first id binds to a terminal session; this
+        // keeps the file pointing at the live one, temp-then-rename so a poll never
+        // reads a half-written path.
+        const writeSessionOut = async (id: string): Promise<void> => {
+          if (options.sessionOut === undefined) return;
+          const temporary = `${options.sessionOut}.${randomUUID()}.tmp`;
+          try {
+            await writeFile(temporary, `${JSON.stringify({ attached: id })}\n`, {
+              encoding: 'utf8',
+              flag: 'wx',
+              mode: 0o600,
+            });
+            await rename(temporary, options.sessionOut);
+          } finally {
+            await rm(temporary, { force: true }).catch(() => undefined);
+          }
+        };
+        let sessionOutGeneration = 0;
+        let sessionOutOperation = Promise.resolve();
+        const publishSessionChange = (change: {
+          reason: 'registered' | 'recovered' | 'stopped';
+          sessionId?: string;
+        }): void => {
+          if (options.sessionOut === undefined) return;
+          const generation = ++sessionOutGeneration;
+          sessionOutOperation = sessionOutOperation
+            .then(async () => {
+              if (generation !== sessionOutGeneration && change.reason !== 'stopped') return;
+              if (change.reason === 'registered' || change.reason === 'recovered') {
+                await writeSessionOut(change.sessionId!);
+              } else {
+                await rm(options.sessionOut!, { force: true });
+              }
+            })
+            .catch((error: unknown) => {
+              dependencies.stderr.write(`${String(error)}\n`);
+            });
+        };
+
         const bootstrap = createSessionBootstrap({
           client: {
             register: async (input) =>
@@ -2218,6 +2272,7 @@ export function createCli(dependencies: CliDependencies): Command {
             // Reported, never thrown: LUWI must not stop the tool it coordinates.
             dependencies.stderr.write(`${String(error)}\n`);
           },
+          onSessionChanged: publishSessionChange,
           setInterval: dependencies.setInterval,
           clearInterval: dependencies.clearInterval,
         });
@@ -2247,6 +2302,7 @@ export function createCli(dependencies: CliDependencies): Command {
           dependencies.signals.off('SIGINT', stop);
           dependencies.signals.off('SIGTERM', stop);
           await bootstrap.stop();
+          await sessionOutOperation;
         }
       },
     );

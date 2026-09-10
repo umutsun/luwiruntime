@@ -7,6 +7,7 @@ import {
   mcpGetProjectStateInputSchema,
   mcpGetSessionInputSchema,
   mcpInboxNextInputSchema,
+  mcpJoinInputSchema,
   mcpListProjectsInputSchema,
   mcpListProjectsOutputSchema,
   mcpListSessionsInputSchema,
@@ -23,6 +24,8 @@ describe('MCP tool contracts', () => {
       sessionId: 'session-1',
     });
     expect(mcpGetProjectStateInputSchema.parse({})).toEqual({});
+    expect(mcpJoinInputSchema.parse({})).toEqual({});
+    expect(() => mcpJoinInputSchema.parse({ projectId: 'sneaky' })).toThrow();
     expect(() => mcpListProjectsInputSchema.parse({ redisUrl: 'redis://secret' })).toThrow();
   });
 

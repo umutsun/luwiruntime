@@ -1,14 +1,35 @@
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
 
-const environmentSchema = z.object({
-  LUWI_DAEMON_URL: z.url().default('http://127.0.0.1:4782'),
-  LUWI_SESSION_ID: z.string().trim().min(1).max(128),
-  LUWI_MCP_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(30_000),
-});
+const environmentSchema = z
+  .object({
+    LUWI_DAEMON_URL: z.url().default('http://127.0.0.1:4782'),
+    LUWI_SESSION_ID: z.string().trim().min(1).max(128).optional(),
+    LUWI_SESSION_FILE: z.string().trim().min(1).max(4096).optional(),
+    LUWI_MCP_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1).max(120_000).default(30_000),
+  })
+  .superRefine((value, context) => {
+    if ((value.LUWI_SESSION_ID === undefined) === (value.LUWI_SESSION_FILE === undefined)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Exactly one LUWI session binding source is required.',
+      });
+    }
+    if (value.LUWI_SESSION_FILE !== undefined && !isAbsolute(value.LUWI_SESSION_FILE)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['LUWI_SESSION_FILE'],
+        message: 'LUWI_SESSION_FILE must be absolute.',
+      });
+    }
+  });
+
+export type McpSessionBindingConfig =
+  { kind: 'static'; sessionId: string } | { kind: 'file'; path: string };
 
 export type McpServerConfig = {
   daemonUrl: string;
-  sessionId: string;
+  sessionBinding: McpSessionBindingConfig;
   requestTimeoutMs: number;
 };
 
@@ -32,7 +53,10 @@ export function loadMcpServerConfig(
   }
   return {
     daemonUrl: daemon.origin,
-    sessionId: parsed.LUWI_SESSION_ID,
+    sessionBinding:
+      parsed.LUWI_SESSION_ID === undefined
+        ? { kind: 'file', path: parsed.LUWI_SESSION_FILE! }
+        : { kind: 'static', sessionId: parsed.LUWI_SESSION_ID },
     requestTimeoutMs: parsed.LUWI_MCP_REQUEST_TIMEOUT_MS,
   };
 }

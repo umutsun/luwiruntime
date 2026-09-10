@@ -14,7 +14,8 @@
  * This launcher walks its own ancestry to the nearest `claude` process, follows
  * those two files, waits until the daemon reports that session online (the hook
  * and the MCP spawn race at SessionStart), then execs the MCP server with
- * `LUWI_SESSION_ID` over inherited stdio. An inherited `LUWI_SESSION_ID`
+ * `LUWI_SESSION_FILE` over inherited stdio. The server re-reads that atomically
+ * replaced file for every tool call. An inherited `LUWI_SESSION_ID`
  * (`luwi agent run`) short-circuits all of that. Nothing is guessed: no mapping,
  * or a session that never comes online, fails closed with the MCP unavailable.
  *
@@ -22,11 +23,19 @@
  *   node C:/xampp/htdocs/luwiruntime/scripts/claude-mcp-launch.mjs
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { setTimeout as sleep } from 'node:timers/promises';
+import {
+  environmentSessionBinding,
+  loopbackDaemonUrl,
+  mcpServerEnvironment,
+  readBoundedTextFile,
+  readSessionBindingFile,
+} from './native-mcp-binding.mjs';
+
+export { mcpServerEnvironment };
 
 const MCP_SERVER = join(import.meta.dirname, '..', 'apps', 'mcp-server', 'dist', 'main.js');
 const WAIT_MS = 20_000;
@@ -34,6 +43,11 @@ const POLL_MS = 250;
 
 /** Nearest ancestor process named `claude` (the Claude Code process), or undefined. */
 export function claudeProcessId() {
+  return ancestorProcessId(/^claude(\.exe)?$/i);
+}
+
+/** Nearest ancestor whose image name matches `pattern`, or undefined. Shared with the Codex pair. */
+export function ancestorProcessId(pattern) {
   // ponytail: Windows only (one WMI snapshot, walked in JS); add `ps -o ppid=,comm=`
   // when a hook on macOS/Linux needs this.
   if (process.platform !== 'win32') return undefined;
@@ -56,7 +70,7 @@ export function claudeProcessId() {
   for (let depth = 0; pid && depth < 8; depth += 1) {
     const row = byPid.get(pid);
     if (!row) return undefined;
-    if (/^claude(\.exe)?$/i.test(row.name)) return pid;
+    if (pattern.test(row.name)) return pid;
     pid = row.parent;
   }
   return undefined;
@@ -64,53 +78,81 @@ export function claudeProcessId() {
 
 const readText = (path) => {
   try {
-    return readFileSync(path, 'utf8').trim();
+    return readBoundedTextFile(path).trim();
   } catch {
     return undefined;
   }
 };
 
-async function online(sessionId, daemonUrl) {
+async function sessionState(sessionId, daemonUrl) {
   try {
     const response = await fetch(`${daemonUrl}/api/v1/sessions/${encodeURIComponent(sessionId)}`);
-    return response.ok && (await response.json()).presence === 'online';
+    if (!response.ok) return { online: false, terminal: false };
+    const session = await response.json();
+    return {
+      online: session.presence === 'online',
+      terminal: session.status === 'completed' || session.status === 'disconnected',
+    };
   } catch {
-    return false;
+    return { online: false, terminal: false };
   }
 }
 
-async function resolveSessionId() {
-  if (process.env.LUWI_SESSION_ID) return process.env.LUWI_SESSION_ID;
+async function resolveSessionBinding() {
+  const configured = environmentSessionBinding(process.env);
+  if (configured !== undefined) return configured;
   const claudePid = claudeProcessId();
   if (claudePid === undefined)
     throw new Error('no Claude Code process among the ancestors of this launcher');
-  const daemonUrl = process.env.LUWI_DAEMON_URL ?? 'http://127.0.0.1:4782';
+  const daemonUrl = loopbackDaemonUrl(process.env.LUWI_DAEMON_URL ?? 'http://127.0.0.1:4782');
   const deadline = Date.now() + WAIT_MS;
   let seen;
+  let sessionFile;
   while (Date.now() < deadline) {
-    // Re-read every turn: the hook truncates and rewrites these files at SessionStart.
+    // Re-read every turn: `session attach --session-out` atomically rewrites this file
+    // with the current session id, so a daemon-restart rotation is picked up right here.
     const claudeSid = readText(join(tmpdir(), `luwi-attach-pid-${claudePid}`));
-    const out = claudeSid && readText(join(tmpdir(), `luwi-attach-${claudeSid}.out`));
+    sessionFile = claudeSid && join(tmpdir(), `luwi-attach-${claudeSid}.out`);
     try {
-      seen = JSON.parse(out).attached;
+      seen = sessionFile ? readSessionBindingFile(sessionFile) : undefined;
     } catch {
       seen = undefined;
     }
-    if (seen && (await online(seen, daemonUrl))) return seen;
+    if (seen && sessionFile && (await sessionState(seen, daemonUrl)).online) {
+      return { sessionId: seen, sessionFile };
+    }
     await sleep(POLL_MS);
   }
+  // ponytail: presence is heartbeat-derived and often not yet 'online' in a
+  // session's first seconds — exactly when this launcher runs — so on timeout we
+  // start anyway with a hook-recorded id (read, not guessed); the MCP server
+  // reconnects to the daemon itself. But NEVER bind a *terminal* id: a daemon
+  // restart makes the recorded session `disconnected`, and binding it only makes
+  // the MCP server exit at once, leaving a heartbeating session with no reader.
+  // Fail closed instead — the attach process rewrites --session-out with the
+  // rotated id, so the next launcher run recovers. Upgrade path: have the MCP
+  // server block on presence itself.
+  if (seen) {
+    if (!(await sessionState(seen, daemonUrl)).terminal) {
+      process.stderr.write(
+        `${JSON.stringify({ code: 'MCP_PRESENCE_TIMEOUT', message: `LUWI session ${seen} not online within ${WAIT_MS} ms; starting MCP anyway` })}\n`,
+      );
+      return { sessionId: seen, sessionFile };
+    }
+    throw new Error(
+      `recorded LUWI session ${seen} is terminal (a daemon restart likely rotated it); not binding a dead session`,
+    );
+  }
   throw new Error(
-    seen === undefined
-      ? `claude-attach-hook recorded no LUWI session for Claude process ${claudePid} within ${WAIT_MS} ms`
-      : `LUWI session ${seen} did not come online within ${WAIT_MS} ms`,
+    `claude-attach-hook recorded no LUWI session for Claude process ${claudePid} within ${WAIT_MS} ms`,
   );
 }
 
 if (process.argv[1] === import.meta.filename) {
-  resolveSessionId().then(
-    (sessionId) => {
+  resolveSessionBinding().then(
+    (binding) => {
       const server = spawn(process.execPath, [MCP_SERVER], {
-        env: { ...process.env, LUWI_SESSION_ID: sessionId },
+        env: mcpServerEnvironment(process.env, binding),
         stdio: 'inherit',
         windowsHide: true,
       });

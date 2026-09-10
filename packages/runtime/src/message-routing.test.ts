@@ -111,4 +111,49 @@ describe('message target routing', () => {
       }),
     ).toEqual({ status: 'unavailable', selector: 'gemini-sim' });
   });
+
+  it('never auto-selects a starting session, failing fast instead of timing out', () => {
+    expect(
+      selectMessageTarget({
+        sourceSession: source,
+        sessions: [
+          session('ghost-1', 'gemini-sim', 'starting', '2026-07-29T12:05:00.000Z'),
+          session('ghost-2', 'gemini-sim', 'starting', '2026-07-29T12:06:00.000Z'),
+        ],
+        targetAgentId: 'gemini-sim',
+      }),
+    ).toEqual({ status: 'unavailable', selector: 'gemini-sim' });
+  });
+
+  it('prefers a ready worker over a starting one for the same agent', () => {
+    const ready = session('ready', 'gemini-sim', 'idle', '2026-07-29T12:01:00.000Z');
+
+    expect(
+      selectMessageTarget({
+        sourceSession: source,
+        sessions: [session('ghost', 'gemini-sim', 'starting', '2026-07-29T12:09:00.000Z'), ready],
+        targetAgentId: 'gemini-sim',
+      }),
+    ).toEqual({
+      status: 'selected',
+      session: ready,
+      reason: 'selected agent gemini-sim session ready by status, heartbeat, and session ID',
+    });
+  });
+
+  it('still honours a direct target that is starting (bound-session continuation)', () => {
+    const target = session('bound', 'gemini-sim', 'starting', '2026-07-29T12:00:01.000Z');
+
+    expect(
+      selectMessageTarget({
+        sourceSession: source,
+        sessions: [target],
+        targetSessionId: 'bound',
+      }),
+    ).toEqual({
+      status: 'selected',
+      session: target,
+      reason: 'direct target session bound',
+    });
+  });
 });
