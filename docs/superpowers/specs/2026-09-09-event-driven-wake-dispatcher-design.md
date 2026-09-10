@@ -367,7 +367,7 @@ New strict protocol records and loopback routes are:
 - `BridgeSlotView` and `GET /api/v1/bridge-slots` for redacted ownership and health;
 - `WorkflowView`, `POST /api/v1/workflows`, and
   `POST /api/v1/workflows/:workflowId/continue` for bounded objectives and fenced continuation;
-- `POST /api/v1/bridge-slots/:slotId/acquire|renew|attach|release` for supervisor ownership;
+- `POST /api/v1/bridge-slots/:slotId/acquire|renew|attach|release` for bridge ownership;
 - `WakeIntentView` and `GET /api/v1/wake-intents` with bounded project, state, and limit filters;
 - `POST /api/v1/wake-intents/claim` with dispatcher instance, limit, block, and min-idle bounds;
 - `POST /api/v1/wake-intents/:intentId/dispatching` with the exact claim and attempt IDs;

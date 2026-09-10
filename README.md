@@ -28,6 +28,13 @@ realtime Pulse and the Phase 1–4 runtime foundation:
 - delivered, acknowledged, processing, responded, rejected, failed, and timed-out states;
 - bounded HTTP waits, timeout race protection, and pending/lag-aware message retention;
 - CLI message/inbox commands plus manual, echo, and status-responder bridge simulations;
+- singleton bridge-slot ownership and an opt-in wake supervisor with managed Windows lifecycle;
+- a durable wake Stream with fenced `pending`, `claimed`, `dispatching`, `dispatched`,
+  `fallback_only`, and `indeterminate` outcomes;
+- exact-thread Codex notification through a trusted `codex-queue-v1` binding, while the durable
+  source inbox remains authoritative for every unsupported or uncertain outcome;
+- explicit workflows with atomic first-message creation and exactly-once, revision-fenced
+  continuation receipts;
 - a thin bound-session stdio MCP server that uses only the daemon HTTP API;
 - filesystem-canonical AgentDefinitions, project-agent bindings, capability packages, and
   profiles with Redis operational projections;
@@ -561,6 +568,10 @@ pnpm --filter @luwi/cli dev runtime
 ```text
 pnpm --filter @luwi/cli dev -- doctor --json
 pnpm --filter @luwi/cli dev -- status --json
+pnpm --filter @luwi/cli dev -- wake status --json
+pnpm --filter @luwi/cli dev -- wake serve
+pnpm --filter @luwi/cli dev -- wake start
+pnpm --filter @luwi/cli dev -- wake stop
 pnpm --filter @luwi/cli dev -- agent run claude -- <native arguments>
 pnpm --filter @luwi/cli dev -- agent run codex -- <native arguments>
 pnpm --filter @luwi/cli dev -- agent run gemini -- <native arguments>
@@ -631,6 +642,55 @@ The Phase 4 temporary-repository intelligence and optimization walkthrough is in
 4 demo guide](docs/guides/phase-4-intelligence-demo.md). After `pnpm build`, run
 `pnpm demo:phase4`. It labels all telemetry as simulated, applies configuration only through
 an explicitly approved Phase 3 plan, and cleans its run-specific Redis/filesystem state.
+
+### Event-driven wake dispatcher (opt-in)
+
+The wake dispatcher closes the gap between a durable LUWI response and a new host turn. The daemon
+persists and validates work; the CLI owns every external process. A blocking Redis Stream consumer
+is the correctness path, so WebSocket disconnects do not stop delivery. The response also remains in
+the coordinator's source inbox and is never claimed or acknowledged by the dispatcher.
+
+Wake supervision is disabled by default. A project-agent binding participates only when its
+effective configuration contains this strict leaf:
+
+```json
+{
+  "settings": {
+    "luwiNativeBridge": {
+      "enabled": true,
+      "provider": "codex",
+      "executionProfile": "workspace-write"
+    }
+  }
+}
+```
+
+Apply that setting through the existing inspect, propose, approve, and apply configuration flow.
+`luwi wake serve` runs the foreground supervisor. `luwi wake start`, `stop`, and `status` manage an
+identity-checked background process; `luwi setup --yes --wake-autostart` installs the independent
+per-user Windows logon task. Installing or upgrading LUWI never enables unattended work by itself.
+
+Supervised execution currently supports only measured Codex `read-only` and `workspace-write`
+profiles. Claude Code and Gemini CLI retain explicit manual bridge operation. Antigravity remains on
+its explicit observed path and durable inbox. Their automatic profiles remain unavailable until the
+installed clients pass the same no-shell, scoped-write, lease, response, and permission tests.
+
+An interactive Codex session is wake-capable only when the exact main `codex-native-v1` identity came
+from a trusted host launcher, its MCP session matches the LUWI session, and the enabled Codex
+AgentDefinition names an absolute executable whose `queue --thread --message` interface passes a
+bounded probe. The dispatcher resolves and probes that same canonical executable again before use.
+Immediately before launch it writes a durable `dispatching` fence, then starts the absolute
+executable without a shell. The fixed message contains only validated workflow pointers. A proven
+pre-spawn failure becomes `fallback_only`; timeout, signal, post-spawn failure, lost ownership, or
+crash becomes `indeterminate` and is never automatically replayed.
+
+The MCP server exposes `luwi_create_workflow` and `luwi_continue_workflow`. It derives coordinator
+identity from the bound session. Redis atomically verifies workflow revision, wake or human proof,
+project scope, and target scope. Within the configured terminal-message retention window, an exact
+replay returns the retained decision receipt without creating another downstream message.
+
+The isolated acceptance command and redacted evidence format are documented in [the event-driven
+wake dispatcher acceptance guide](docs/runtime/event-driven-wake-dispatcher-acceptance.md).
 
 ### Experimental DeepSeek Harness ACP bridge
 
@@ -708,9 +768,9 @@ Every tool advertises and validates an output schema. Successful results use MCP
 `structuredContent` plus a concise bounded text summary; project and session discovery
 results are capped at 100 entries and explicitly report truncation.
 
-The inventory is 36 tools: 25 read and 11 write coordination state (the seven messaging
-transitions, a bounded optimization-analysis request, and three of the four work-lease
-tools). Control-plane writes — config approval and apply, rollback, graph rebuild, Git
+The inventory is 38 tools: 25 read and 13 write coordination state (the seven messaging
+transitions, two workflow operations, a bounded optimization-analysis request, and three of the
+four work-lease tools). Control-plane writes — config approval and apply, rollback, graph rebuild, Git
 mutation — are never exposed. The graph surface carries the two rooted reads (neighbors
 and path); the whole-runtime summary and subgraph reads stay on the HTTP API and CLI.
 

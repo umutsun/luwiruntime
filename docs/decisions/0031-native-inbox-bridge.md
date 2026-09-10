@@ -74,6 +74,52 @@ messages beyond what the operator passes as a native resume argument. No termina
 native-configuration write. Antigravity is not verified headless: `agy` is not installed on this
 machine, so the `gemini` shape is carried but only claude and codex are proven live.
 
+## 2026-09-10 amendment: durable event-driven wake dispatch
+
+The section above records the boundary of ADR 0031 when it first shipped. The owner later approved a
+host-side event-driven wake dispatcher after the Albanoosh deployment proved that a heartbeat-only
+interactive session still does not consume its inbox. This amendment supersedes the original
+statements that no daemon route, Redis shape, supervision, or recovery exists. The detailed design is
+`docs/superpowers/specs/2026-09-09-event-driven-wake-dispatcher-design.md`.
+
+Redis Function library version 13 adds bridge slots, explicit workflows, and a durable wake Stream.
+A terminal workflow response atomically keeps the source-inbox response, advances the message and
+workflow projections, appends the terminal event, and creates at most one eligible wake intent. The
+daemon exposes strict loopback services for bridge-slot ownership, workflows, and wake transitions;
+it creates the wake consumer group at `0-0`, runs bounded expiry sweeps, and never starts a vendor
+process.
+
+The CLI owns one opt-in supervisor process. `luwi wake serve` discovers bindings whose effective
+configuration contains `settings.luwiNativeBridge.enabled: true`, acquires a deterministic singleton
+slot before registering a bridge session, renews that ownership, and stops the worker when ownership
+is lost. `luwi wake start|stop|status` uses identity-checked lifecycle receipts. Windows logon
+autostart is explicit through `luwi setup --wake-autostart`; other platforms report autostart as
+unsupported while retaining foreground operation.
+
+Automatic provider execution is narrower than ADR 0031's explicit manual bridge. Only measured
+Codex `read-only` and `workspace-write` profiles are enabled initially. Claude Code, Gemini CLI, and
+Antigravity remain manual or durable-inbox providers until their installed versions pass the
+required no-shell, scoped-write, lease, response, and permission checks.
+
+Existing-conversation wake is also Codex-only. A session must prove an exact main
+`codex-native-v1` identity from the host launcher and bind `codex-queue-v1` to the same LUWI MCP
+session. Its enabled Codex AgentDefinition must name an absolute executable whose queue interface is
+probed at declaration and again at dispatch. After a durable dispatching fence, the CLI invokes that
+canonical executable without a shell and with a fixed pointer-only message. Proven pre-spawn failure
+is `fallback_only`. Any result that may have started the host process but cannot prove acceptance is
+`indeterminate`; LUWI never automatically replays it. The source inbox remains the recovery path in
+every state.
+
+Workflow continuation is a separate fenced operation. The bound coordinator supplies the expected
+revision and the current wake or human-continuation proof. Redis stores an immutable decision receipt
+for the configured terminal-message retention window and creates at most one next message. Duplicate
+host turns within that window return the receipt instead of duplicating work.
+
+This feature is disabled by default and requires a coordinated protocol, daemon, Redis Function,
+CLI, MCP, and dashboard release. Startup refuses a Function library other than version 13. Disabling
+the supervisor leaves direct-session messages, manual inbox reads, and explicit native bridges
+available.
+
 ## Consequences
 
 A message to a bridged agent is picked up within one claim block (30 s), executed unattended, and
