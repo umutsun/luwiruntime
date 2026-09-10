@@ -31,13 +31,13 @@ export interface WakeWorker {
 }
 
 export type WakeSupervisorOptions = {
-  discover(): Promise<WakeCandidate[]>;
+  discover(signal?: AbortSignal): Promise<WakeCandidate[]>;
   createWorker(candidate: WakeCandidate): WakeWorker;
   /** How long a held or lost tuple waits before a fresh worker tries again. */
   standbyMs: number;
   /** How often bindings are rediscovered. */
   rescanMs: number;
-  wait(milliseconds: number): Promise<void>;
+  wait(milliseconds: number, signal?: AbortSignal): Promise<void>;
   setInterval?: (callback: () => void, intervalMs: number) => NodeJS.Timeout;
   clearInterval?: (timer: NodeJS.Timeout) => void;
   report?: (line: object) => void;
@@ -54,16 +54,34 @@ function keyOf(candidate: WakeCandidate): string {
   return `${candidate.projectId}\u0000${candidate.agentId}`;
 }
 
+function sameCandidate(left: WakeCandidate, right: WakeCandidate): boolean {
+  return (
+    left.projectId === right.projectId &&
+    left.agentId === right.agentId &&
+    left.agentKind === right.agentKind &&
+    left.provider === right.provider &&
+    left.executionProfile === right.executionProfile &&
+    left.localPath === right.localPath &&
+    left.executable === right.executable
+  );
+}
+
 export function createWakeSupervisor(options: WakeSupervisorOptions): WakeSupervisor {
   const arm = options.setInterval ?? setInterval;
   const disarm = options.clearInterval ?? clearInterval;
   const report = options.report ?? (() => undefined);
 
-  type Loop = { candidate: WakeCandidate; worker: WakeWorker | undefined; done: Promise<void> };
+  type Loop = {
+    candidate: WakeCandidate;
+    worker: WakeWorker | undefined;
+    standbyController: AbortController | undefined;
+    done: Promise<void>;
+  };
   const loops = new Map<string, Loop>();
   let stopping = false;
   let timer: NodeJS.Timeout | undefined;
-  let scanning = false;
+  let scanInFlight: Promise<void> | undefined;
+  let discoveryController: AbortController | undefined;
 
   const runLoop = async (key: string, candidate: WakeCandidate): Promise<void> => {
     const loop = loops.get(key);
@@ -82,39 +100,70 @@ export function createWakeSupervisor(options: WakeSupervisorOptions): WakeSuperv
       loop.worker = undefined;
       report({ event: `worker_${outcome}`, ...identity(candidate) });
       if (stopping || loops.get(key) !== loop) break;
-      await options.wait(options.standbyMs);
+      const standbyController = new AbortController();
+      loop.standbyController = standbyController;
+      try {
+        await options.wait(options.standbyMs, standbyController.signal);
+      } catch (error) {
+        if (!standbyController.signal.aborted) throw error;
+      } finally {
+        if (loop.standbyController === standbyController) loop.standbyController = undefined;
+      }
     }
   };
 
-  const reconcile = async (): Promise<void> => {
-    if (scanning || stopping) return;
-    scanning = true;
+  const performReconcile = async (): Promise<void> => {
+    let candidates: WakeCandidate[];
+    const controller = new AbortController();
+    discoveryController = controller;
     try {
-      let candidates: WakeCandidate[];
-      try {
-        candidates = await options.discover();
-      } catch (error) {
-        report({ event: 'discovery_failed', cause: String(error) });
-        return;
-      }
-      if (stopping) return;
-      const wanted = new Map(candidates.map((candidate) => [keyOf(candidate), candidate]));
-      for (const [key, loop] of loops) {
-        if (wanted.has(key)) continue;
-        loops.delete(key);
-        loop.worker?.stop();
-        report({ event: 'binding_removed', ...identity(loop.candidate) });
-      }
-      for (const [key, candidate] of wanted) {
-        if (loops.has(key)) continue;
-        const loop: Loop = { candidate, worker: undefined, done: Promise.resolve() };
-        loops.set(key, loop);
-        loop.done = runLoop(key, candidate);
-        report({ event: 'binding_added', ...identity(candidate) });
-      }
+      candidates = await options.discover(controller.signal);
+    } catch (error) {
+      if (stopping && controller.signal.aborted) return;
+      report({ event: 'discovery_failed', cause: String(error) });
+      return;
     } finally {
-      scanning = false;
+      if (discoveryController === controller) discoveryController = undefined;
     }
+    if (stopping) return;
+    const wanted = new Map(candidates.map((candidate) => [keyOf(candidate), candidate]));
+    const retired: Loop[] = [];
+    for (const [key, loop] of loops) {
+      const replacement = wanted.get(key);
+      if (replacement !== undefined && sameCandidate(loop.candidate, replacement)) continue;
+      loops.delete(key);
+      retired.push(loop);
+      loop.standbyController?.abort();
+      loop.worker?.stop();
+      report({
+        event: replacement === undefined ? 'binding_removed' : 'binding_changed',
+        ...identity(loop.candidate),
+      });
+    }
+    await Promise.all(retired.map((loop) => loop.done));
+    if (stopping) return;
+    for (const [key, candidate] of wanted) {
+      if (loops.has(key)) continue;
+      const loop: Loop = {
+        candidate,
+        worker: undefined,
+        standbyController: undefined,
+        done: Promise.resolve(),
+      };
+      loops.set(key, loop);
+      loop.done = runLoop(key, candidate);
+      report({ event: 'binding_added', ...identity(candidate) });
+    }
+  };
+
+  const reconcile = (): Promise<void> => {
+    if (stopping) return Promise.resolve();
+    if (scanInFlight !== undefined) return scanInFlight;
+    const operation = performReconcile().finally(() => {
+      if (scanInFlight === operation) scanInFlight = undefined;
+    });
+    scanInFlight = operation;
+    return operation;
   };
 
   return {
@@ -125,6 +174,7 @@ export function createWakeSupervisor(options: WakeSupervisorOptions): WakeSuperv
     async start() {
       stopping = false;
       await reconcile();
+      if (stopping) return;
       timer = arm(() => {
         void reconcile();
       }, options.rescanMs);
@@ -132,13 +182,18 @@ export function createWakeSupervisor(options: WakeSupervisorOptions): WakeSuperv
 
     async stop() {
       stopping = true;
+      discoveryController?.abort();
       if (timer !== undefined) {
         disarm(timer);
         timer = undefined;
       }
+      await scanInFlight;
       const pending = [...loops.values()];
       loops.clear();
-      for (const loop of pending) loop.worker?.stop();
+      for (const loop of pending) {
+        loop.standbyController?.abort();
+        loop.worker?.stop();
+      }
       await Promise.all(pending.map((loop) => loop.done));
     },
   };

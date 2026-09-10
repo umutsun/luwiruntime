@@ -118,6 +118,119 @@ describe('wake supervisor', () => {
     await supervisor.stop();
   });
 
+  it('stops a changed binding before starting its replacement worker', async () => {
+    const readOnly: WakeCandidate = { ...codex, executionProfile: 'read-only' };
+    const { supervisor, workers, timers } = harness([[codex], [readOnly]]);
+    await supervisor.start();
+    await flush();
+    const original = workers[0]!;
+    original.stop = () => {
+      original.stopped += 1;
+    };
+
+    timers[0]!();
+    await flush();
+
+    expect(workers[0]!.stopped).toBe(1);
+    expect(workers).toHaveLength(1);
+
+    original.finish('stopped');
+    await flush();
+
+    expect(workers).toHaveLength(2);
+    expect(workers[1]!.candidate.executionProfile).toBe('read-only');
+    await supervisor.stop();
+  });
+
+  it('stops all changed bindings before joining their cleanup in parallel', async () => {
+    const changedCodex: WakeCandidate = { ...codex, executionProfile: 'read-only' };
+    const changedClaude: WakeCandidate = { ...claude, executionProfile: 'read-only' };
+    const { supervisor, workers, timers } = harness([
+      [codex, claude],
+      [changedCodex, changedClaude],
+    ]);
+    await supervisor.start();
+    await flush();
+    const originals = workers.slice(0, 2);
+    for (const original of originals) {
+      original!.stop = () => {
+        original!.stopped += 1;
+      };
+    }
+
+    timers[0]!();
+    await flush();
+
+    expect(originals.map((worker) => worker!.stopped)).toEqual([1, 1]);
+    expect(workers).toHaveLength(2);
+
+    for (const original of originals) original!.finish('stopped');
+    await flush();
+    expect(workers).toHaveLength(4);
+    await supervisor.stop();
+  });
+
+  it('joins a racing rescan before stop and can restart with the replacement', async () => {
+    const readOnly: WakeCandidate = { ...codex, executionProfile: 'read-only' };
+    const { supervisor, workers, timers } = harness([[codex], [readOnly]]);
+    await supervisor.start();
+    await flush();
+    const original = workers[0]!;
+    original.stop = () => {
+      original.stopped += 1;
+    };
+
+    timers[0]!();
+    await flush();
+    let stopped = false;
+    const stopping = supervisor.stop().then(() => {
+      stopped = true;
+    });
+    await flush();
+
+    expect(stopped).toBe(false);
+    original.finish('stopped');
+    await stopping;
+    expect(supervisor.active).toBe(0);
+    expect(workers).toHaveLength(1);
+
+    await supervisor.start();
+    await flush();
+    expect(workers).toHaveLength(2);
+    expect(workers[1]!.candidate.executionProfile).toBe('read-only');
+    await supervisor.stop();
+  });
+
+  it('interrupts a standby delay when the supervisor stops', async () => {
+    let standbySignal: AbortSignal | undefined;
+    const worker: WakeWorker = {
+      start: async () => 'held',
+      stop: vi.fn(),
+    };
+    const supervisor = createWakeSupervisor({
+      discover: async () => [codex],
+      createWorker: () => worker,
+      standbyMs: 15_000,
+      rescanMs: 60_000,
+      wait: (_milliseconds, signal) =>
+        new Promise<void>((resolve) => {
+          standbySignal = signal;
+          signal?.addEventListener('abort', () => resolve(), { once: true });
+        }),
+      setInterval: (() => 1 as unknown as NodeJS.Timeout) as never,
+      clearInterval: vi.fn() as never,
+    });
+
+    await supervisor.start();
+    await flush();
+    expect(standbySignal?.aborted).toBe(false);
+
+    await supervisor.stop();
+
+    expect(standbySignal?.aborted).toBe(true);
+    expect(supervisor.active).toBe(0);
+  });
+
   it('reports a discovery failure and keeps running until the next scan', async () => {
     const lines: object[] = [];
     const supervisor = createWakeSupervisor({
