@@ -32,6 +32,7 @@ import {
   wakeIntentCompleteResponseSchema,
   wakeIntentDispatchingResponseSchema,
   wakeIntentRecoverResponseSchema,
+  WAKE_DEFAULT_BLOCK_MS,
   workLeaseSchema,
   type AgentKind,
   type AgentMessage,
@@ -65,6 +66,7 @@ import { createInterface } from 'node:readline/promises';
 import { registerControlPlaneCli } from './control-plane-cli.js';
 import {
   createCoordinatorWakeDispatcher,
+  resolveTrustedCodexQueueExecutable,
   type CoordinatorWakeClient,
   type CoordinatorWakeDispatcher,
 } from './coordinator-wake.js';
@@ -122,6 +124,7 @@ import {
   type ProjectDiscoveryPlan,
   type ProjectDiscoveryService,
 } from './project-discovery.js';
+import { sanitizeWakeChildEnvironment } from './wake-environment.js';
 
 export type FetchInitLike = {
   method?: string;
@@ -151,7 +154,7 @@ export interface CliWebSocket {
 }
 
 export interface WakeDispatcherHook {
-  start(input: { daemonUrl: string }): Promise<void>;
+  start(input: { daemonUrl: string; requestTimeoutMs: number }): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -293,10 +296,11 @@ async function boundedRequest<Output>(
   init?: FetchInitLike,
 ): Promise<Output> {
   const controller = new AbortController();
+  const callerSignal = init?.signal;
+  let detachCallerAbort: (() => void) | undefined;
   let timeout: NodeJS.Timeout | undefined;
   const timedOut = new Promise<never>((_resolve, reject) => {
     timeout = dependencies.setTimeout(() => {
-      controller.abort();
       reject(
         new ApplicationError(
           'DAEMON_REQUEST_TIMEOUT',
@@ -304,14 +308,32 @@ async function boundedRequest<Output>(
           503,
         ),
       );
+      controller.abort();
     }, timeoutMs);
   });
+  const callerAborted =
+    callerSignal === undefined
+      ? undefined
+      : new Promise<never>((_resolve, reject) => {
+          const abort = (): void => {
+            controller.abort();
+            reject(new DOMException('The LUWI daemon request was cancelled.', 'AbortError'));
+          };
+          if (callerSignal.aborted) {
+            abort();
+            return;
+          }
+          callerSignal.addEventListener('abort', abort, { once: true });
+          detachCallerAbort = () => callerSignal.removeEventListener('abort', abort);
+        });
   try {
     return await Promise.race([
       request(dependencies, base, path, parser, { ...init, signal: controller.signal }),
       timedOut,
+      ...(callerAborted === undefined ? [] : [callerAborted]),
     ]);
   } finally {
+    detachCallerAbort?.();
     if (timeout !== undefined) dependencies.clearTimeout(timeout);
   }
 }
@@ -1060,75 +1082,62 @@ function exactLoopbackUrl(value: string): string {
   return parsed.origin;
 }
 
-/**
- * The loopback daemon surface every CLI bridge drives (ADR 0025, ADR 0031). Message
- * claims long-poll for up to 30 s, so these are deliberately unbounded `request`s, not
- * the 2 s bounded ones the session bootstrap uses for register/heartbeat/close.
- */
+/** The loopback daemon surface every CLI bridge drives (ADR 0025, ADR 0031). */
 function createBridgeDaemonClient(
   dependencies: CliDependencies,
   daemonUrl: string,
+  requestTimeoutMs = WAKE_DAEMON_REQUEST_TIMEOUT_MS,
 ): BridgeDaemonClient {
+  const bounded = <Output>(
+    path: string,
+    parser: Parser<Output>,
+    init?: FetchInitLike,
+    timeoutMs = requestTimeoutMs,
+  ) => boundedRequest(dependencies, daemonUrl, path, parser, timeoutMs, init);
   return {
     registerSession: async (input) =>
-      request(dependencies, daemonUrl, '/api/v1/sessions', sessionResponseSchema, jsonBody(input)),
+      bounded('/api/v1/sessions', sessionResponseSchema, jsonBody(input)),
     heartbeatSession: async (sessionId) => {
-      await request(
-        dependencies,
-        daemonUrl,
+      await bounded(
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
         heartbeatResponseSchema,
         jsonBody({}),
       );
     },
     setSessionStatus: async (sessionId, status) => {
-      await request(
-        dependencies,
-        daemonUrl,
+      await bounded(
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/status`,
         sessionResponseSchema,
         jsonBody({ status }),
       );
     },
     closeSession: async (sessionId) => {
-      await request(
-        dependencies,
-        daemonUrl,
+      await bounded(
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
         sessionResponseSchema,
         jsonBody({}),
       );
     },
     claimInbox: async (sessionId, input, options) =>
-      request(
-        dependencies,
-        daemonUrl,
+      bounded(
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/inbox/claim`,
         inboxClaimResponseSchema,
         {
           ...jsonBody(input),
           ...(options?.signal === undefined ? {} : { signal: options.signal }),
         },
+        input.blockMs + requestTimeoutMs,
       ),
     getMessage: async (correlationId) =>
-      request(
-        dependencies,
-        daemonUrl,
-        `/api/v1/messages/${encodeURIComponent(correlationId)}`,
-        messageResponseSchema,
-      ),
+      bounded(`/api/v1/messages/${encodeURIComponent(correlationId)}`, messageResponseSchema),
     transitionMessage: async (action, sessionId, correlationId) =>
-      request(
-        dependencies,
-        daemonUrl,
+      bounded(
         `/api/v1/messages/${encodeURIComponent(correlationId)}/${action}`,
         messageResponseSchema,
         jsonBody({ responderSessionId: sessionId }),
       ),
     completeMessage: async (action, sessionId, correlationId, response) =>
-      request(
-        dependencies,
-        daemonUrl,
+      bounded(
         `/api/v1/messages/${encodeURIComponent(correlationId)}/${action}`,
         messageResponseSchema,
         jsonBody({ responderSessionId: sessionId, response }),
@@ -1178,11 +1187,12 @@ async function runDeepSeekBridge(
   const daemon: DeepSeekBridgeDaemonClient = {
     ...createBridgeDaemonClient(dependencies, daemonUrl),
     declareNative: async (sessionId, native) => {
-      await request(
+      await boundedRequest(
         dependencies,
         daemonUrl,
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/native`,
         nativeDeclarationResponseSchema,
+        WAKE_DAEMON_REQUEST_TIMEOUT_MS,
         jsonBody({ native }),
       );
     },
@@ -1390,9 +1400,12 @@ function createAgentRunDiscoveryClient(
   dependencies: CliDependencies,
   daemonUrl: string,
   connectTimeoutMs: number,
+  signal?: AbortSignal,
 ) {
   const get = <Output>(path: string, parser: Parser<Output>) =>
-    boundedRequest(dependencies, daemonUrl, path, parser, connectTimeoutMs);
+    boundedRequest(dependencies, daemonUrl, path, parser, connectTimeoutMs, {
+      ...(signal === undefined ? {} : { signal }),
+    });
   return {
     listProjects: async () =>
       (await get('/api/v1/projects', projectCollectionResponseSchema)).projects.map((project) => ({
@@ -1468,20 +1481,36 @@ function createBootstrapSessionClient(
 function createCoordinatorWakeClient(
   dependencies: CliDependencies,
   daemonUrl: string,
+  requestTimeoutMs: number,
 ): CoordinatorWakeClient {
-  const post = <Output>(path: string, parser: Parser<Output>, body: unknown): Promise<Output> =>
-    boundedRequest(
-      dependencies,
-      daemonUrl,
-      path,
-      parser,
-      WAKE_DAEMON_REQUEST_TIMEOUT_MS,
-      jsonBody(body),
-    );
+  const post = <Output>(
+    path: string,
+    parser: Parser<Output>,
+    body: unknown,
+    timeoutMs = requestTimeoutMs,
+    signal?: AbortSignal,
+  ): Promise<Output> =>
+    boundedRequest(dependencies, daemonUrl, path, parser, timeoutMs, {
+      ...jsonBody(body),
+      ...(signal === undefined ? {} : { signal }),
+    });
   return {
-    claim: (input) => post('/api/v1/wake-intents/claim', wakeIntentClaimResponseSchema, input),
-    recover: (input) =>
-      post('/api/v1/wake-intents/recover', wakeIntentRecoverResponseSchema, input),
+    claim: (input, options) =>
+      post(
+        '/api/v1/wake-intents/claim',
+        wakeIntentClaimResponseSchema,
+        input,
+        (input.blockMs ?? WAKE_DEFAULT_BLOCK_MS) + requestTimeoutMs,
+        options?.signal,
+      ),
+    recover: (input, options) =>
+      post(
+        '/api/v1/wake-intents/recover',
+        wakeIntentRecoverResponseSchema,
+        input,
+        requestTimeoutMs,
+        options?.signal,
+      ),
     markDispatching: (intentId, input) =>
       post(
         `/api/v1/wake-intents/${encodeURIComponent(intentId)}/dispatching`,
@@ -1497,14 +1526,180 @@ function createCoordinatorWakeClient(
   };
 }
 
+async function probeCodexQueueExecutable(
+  dependencies: CliDependencies,
+  executable: string,
+  detectedVersion: string,
+  workingDirectory: string,
+  timeoutMs: number,
+  callerSignal?: AbortSignal,
+): Promise<boolean> {
+  const run = async (args: readonly string[]): Promise<{ exitCode: number; output: string }> => {
+    const controller = new AbortController();
+    const timer = dependencies.setTimeout(() => controller.abort(), timeoutMs);
+    const abort = (): void => controller.abort();
+    if (callerSignal?.aborted === true) controller.abort();
+    else callerSignal?.addEventListener('abort', abort, { once: true });
+    let output = '';
+    try {
+      const result = await dependencies.agentProcessRunner.run({
+        executable,
+        args,
+        workingDirectory,
+        environment: sanitizeWakeChildEnvironment(dependencies.environment),
+        signals: dependencies.signals,
+        signal: controller.signal,
+        captureOutput: (chunk) => {
+          output = (output + chunk).slice(0, 65_536);
+        },
+      });
+      return { exitCode: result.exitCode, output };
+    } finally {
+      callerSignal?.removeEventListener('abort', abort);
+      dependencies.clearTimeout(timer);
+    }
+  };
+
+  const version = await run(['--version']);
+  if (version.exitCode !== 0 || version.output.trim().slice(0, 200) !== detectedVersion) {
+    return false;
+  }
+  const help = await run(['queue', '--help']);
+  return (
+    help.exitCode === 0 && help.output.includes('--thread') && help.output.includes('--message')
+  );
+}
+
+async function boundedCanonicalizePath(
+  dependencies: CliDependencies,
+  path: string,
+  timeoutMs: number,
+  callerSignal?: AbortSignal,
+): Promise<string> {
+  if (callerSignal?.aborted === true) {
+    throw new DOMException('Executable canonicalization was cancelled.', 'AbortError');
+  }
+  let timeout: NodeJS.Timeout | undefined;
+  let detachCallerAbort: (() => void) | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = dependencies.setTimeout(
+      () =>
+        reject(
+          new ApplicationError(
+            'WAKE_EXECUTABLE_RESOLUTION_TIMEOUT',
+            'The measured wake executable could not be resolved within the bounded timeout.',
+            503,
+          ),
+        ),
+      timeoutMs,
+    );
+  });
+  const callerAborted =
+    callerSignal === undefined
+      ? undefined
+      : new Promise<never>((_resolve, reject) => {
+          const abort = (): void =>
+            reject(new DOMException('Executable canonicalization was cancelled.', 'AbortError'));
+          callerSignal.addEventListener('abort', abort, { once: true });
+          detachCallerAbort = () => callerSignal.removeEventListener('abort', abort);
+          if (callerSignal.aborted) abort();
+        });
+  try {
+    return await Promise.race([
+      dependencies.canonicalizePath(path),
+      timedOut,
+      ...(callerAborted === undefined ? [] : [callerAborted]),
+    ]);
+  } finally {
+    detachCallerAbort?.();
+    if (timeout !== undefined) dependencies.clearTimeout(timeout);
+  }
+}
+
+function trustedCodexQueueResolver(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+  requestTimeoutMs: number,
+  workingDirectory: string,
+  expectedAgentId?: string,
+): (options?: { signal?: AbortSignal }) => Promise<string | undefined> {
+  const listAgentDefinitions = async (signal?: AbortSignal) =>
+    (
+      await boundedRequest(
+        dependencies,
+        daemonUrl,
+        '/api/v1/agents',
+        agentDefinitionCollectionSchema,
+        requestTimeoutMs,
+        signal === undefined ? undefined : { signal },
+      )
+    ).agents;
+  return (options = {}) =>
+    resolveTrustedCodexQueueExecutable({
+      listAgentDefinitions,
+      ...(expectedAgentId === undefined ? {} : { expectedAgentId }),
+      canonicalize: (path) =>
+        boundedCanonicalizePath(dependencies, path, requestTimeoutMs, options.signal),
+      probe: (executable, detectedVersion, signal) =>
+        probeCodexQueueExecutable(
+          dependencies,
+          executable,
+          detectedVersion,
+          workingDirectory,
+          requestTimeoutMs,
+          signal,
+        ),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+    });
+}
+
+function trustedCodexQueueResolverForSourceSession(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+  requestTimeoutMs: number,
+  workingDirectory: string,
+): (sourceSessionId: string, options?: { signal?: AbortSignal }) => Promise<string | undefined> {
+  return async (sourceSessionId, options: { signal?: AbortSignal } = {}) => {
+    const sourceSession = await boundedRequest(
+      dependencies,
+      daemonUrl,
+      `/api/v1/sessions/${encodeURIComponent(sourceSessionId)}`,
+      sessionResponseSchema,
+      requestTimeoutMs,
+      options.signal === undefined ? undefined : { signal: options.signal },
+    );
+    if (
+      sourceSession.id !== sourceSessionId ||
+      sourceSession.wakeCapable !== true ||
+      sourceSession.presence !== 'online' ||
+      sourceSession.status === 'completed' ||
+      sourceSession.status === 'disconnected'
+    )
+      return undefined;
+    return await trustedCodexQueueResolver(
+      dependencies,
+      daemonUrl,
+      requestTimeoutMs,
+      workingDirectory,
+      sourceSession.agentId,
+    )(options);
+  };
+}
+
 function createCliWakeDispatcher(dependencies: CliDependencies): WakeDispatcherHook {
   let active: CoordinatorWakeDispatcher | undefined;
   return {
-    async start({ daemonUrl }) {
+    async start({ daemonUrl, requestTimeoutMs }) {
       if (active !== undefined) return;
       const dispatcher = createCoordinatorWakeDispatcher({
-        client: createCoordinatorWakeClient(dependencies, daemonUrl),
+        client: createCoordinatorWakeClient(dependencies, daemonUrl, requestTimeoutMs),
         dispatcherInstanceId: randomUUID(),
+        resolveQueueExecutable: trustedCodexQueueResolverForSourceSession(
+          dependencies,
+          daemonUrl,
+          requestTimeoutMs,
+          dependencies.cwd(),
+        ),
         environment: dependencies.environment,
         setTimeout: dependencies.setTimeout,
         clearTimeout: dependencies.clearTimeout,
@@ -1792,25 +1987,24 @@ function createNativeBridgeWorker(
         deadlineFired = true;
         runSignals.emit('SIGTERM');
       }, delayMs);
-      const inherited: Record<string, string | undefined> = { ...dependencies.environment };
+      const inherited: Record<string, string | undefined> = sanitizeWakeChildEnvironment(
+        dependencies.environment,
+      );
       delete inherited['LUWI_DAEMON_URL'];
       delete inherited['LUWI_SESSION_ID'];
-      delete inherited[WAKE_CONTROL_TOKEN_ENV];
-      delete inherited[WAKE_INSTANCE_ID_ENV];
       let tail = '';
       try {
         if (signal.aborted) throw new DOMException('The native bridge stopped.', 'AbortError');
         const launch = await options.launch({ prompt, sessionId });
         if (signal.aborted) throw new DOMException('The native bridge stopped.', 'AbortError');
-        const childEnvironment: Record<string, string | undefined> = {
-          ...(launch.environment ?? {
+        const childEnvironment = sanitizeWakeChildEnvironment(
+          launch.environment ?? {
             ...inherited,
             LUWI_DAEMON_URL: daemonUrl,
             ...(sessionId === undefined ? {} : { LUWI_SESSION_ID: sessionId }),
-          }),
-        };
-        delete childEnvironment[WAKE_CONTROL_TOKEN_ENV];
-        delete childEnvironment[WAKE_INSTANCE_ID_ENV];
+          },
+          { preserveLuwiBinding: true },
+        );
         const result = await dependencies.agentProcessRunner.run({
           executable: launch.executable,
           args: [...launch.args],
@@ -1858,7 +2052,7 @@ function createNativeBridgeWorker(
       try {
         await bootstrap.start();
         bridge = createNativeBridge({
-          daemon: createBridgeDaemonClient(dependencies, daemonUrl),
+          daemon: createBridgeDaemonClient(dependencies, daemonUrl, options.connectTimeoutMs),
           executor: { run: (input) => runProcess(input, bootstrap.sessionId) },
           currentSessionId: () => bootstrap.sessionId,
           agentId: options.agentId,
@@ -1910,29 +2104,40 @@ function createWakeDiscovery(
   dependencies: CliDependencies,
   daemonUrl: string,
   connectTimeoutMs: number,
-): () => Promise<WakeCandidate[]> {
-  const client = createAgentRunDiscoveryClient(dependencies, daemonUrl, connectTimeoutMs);
-  return async () => {
+): (signal?: AbortSignal) => Promise<WakeCandidate[]> {
+  return async (signal) => {
+    const client = createAgentRunDiscoveryClient(dependencies, daemonUrl, connectTimeoutMs, signal);
     const [projects, agents] = await Promise.all([client.listProjects(), client.listAgents()]);
     const definitions = new Map(agents.map((agent) => [agent.id, agent]));
-    const candidates: WakeCandidate[] = [];
-    for (const project of projects) {
-      for (const binding of await client.listProjectAgentBindings(project.id)) {
+    const projectBindings = await Promise.all(
+      projects.map(async (project) => ({
+        project,
+        bindings: await client.listProjectAgentBindings(project.id),
+      })),
+    );
+    const eligible = projectBindings.flatMap(({ project, bindings }) =>
+      bindings.flatMap((binding) => {
         const definition = definitions.get(binding.agentId);
-        if (!binding.enabled || definition === undefined || !definition.enabled) continue;
+        if (!binding.enabled || definition === undefined || !definition.enabled) return [];
+        return [{ project, binding, definition }];
+      }),
+    );
+    const resolved = await Promise.all(
+      eligible.map(async ({ project, binding, definition }) => {
         const config = await boundedRequest(
           dependencies,
           daemonUrl,
           `/api/v1/projects/${encodeURIComponent(project.id)}/agents/${encodeURIComponent(binding.agentId)}/effective-config`,
           wakeEffectiveConfigSchema,
           connectTimeoutMs,
+          { ...(signal === undefined ? {} : { signal }) },
         );
-        if (!config.valid) continue;
+        if (!config.valid) return undefined;
         const leaf = nativeBridgeExecutionProfileSchema.safeParse(
           config.settings['luwiNativeBridge'],
         );
-        if (!leaf.success) continue;
-        candidates.push({
+        if (!leaf.success) return undefined;
+        return {
           projectId: project.id,
           agentId: binding.agentId,
           agentKind: definition.kind,
@@ -1940,10 +2145,10 @@ function createWakeDiscovery(
           executionProfile: leaf.data.executionProfile,
           localPath: project.localPath,
           ...(definition.executable === undefined ? {} : { executable: definition.executable }),
-        });
-      }
-    }
-    return candidates;
+        } satisfies WakeCandidate;
+      }),
+    );
+    return resolved.filter((candidate): candidate is WakeCandidate => candidate !== undefined);
   };
 }
 
@@ -2038,9 +2243,16 @@ async function runWakeServe(
     dependencies.environment[WAKE_CONTROL_TOKEN_ENV] !== undefined ||
     dependencies.environment[WAKE_INSTANCE_ID_ENV] !== undefined;
   const lifecycleLease = managed ? await dependencies.wakeLifecycle.beginManagedServe() : undefined;
+  let shutdownRequested = false;
   const managedStop = lifecycleLease?.stopRequested.then(
-    () => ({ kind: 'managed-stop' }) as const,
-    (error: unknown) => ({ kind: 'managed-error', error }) as const,
+    () => {
+      shutdownRequested = true;
+      return { kind: 'managed-stop' } as const;
+    },
+    (error: unknown) => {
+      shutdownRequested = true;
+      return { kind: 'managed-error', error } as const;
+    },
   );
   const supervisor = createWakeSupervisor({
     discover: createWakeDiscovery(dependencies, daemonUrl, options.connectTimeoutMs),
@@ -2048,7 +2260,24 @@ async function runWakeServe(
       createSupervisedWorker(dependencies, candidate, daemonUrl, options),
     standbyMs: options.standbyMs,
     rescanMs: options.rescanMs,
-    wait: dependencies.wait,
+    wait: (milliseconds, signal) => {
+      if (signal === undefined) return dependencies.wait(milliseconds);
+      if (signal.aborted) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        let settled = false;
+        const deadline: { timer?: NodeJS.Timeout } = {};
+        const finish = (): void => {
+          if (settled) return;
+          settled = true;
+          if (deadline.timer !== undefined) dependencies.clearTimeout(deadline.timer);
+          signal.removeEventListener('abort', finish);
+          resolve();
+        };
+        signal.addEventListener('abort', finish, { once: true });
+        deadline.timer = dependencies.setTimeout(finish, milliseconds);
+        if (signal.aborted) finish();
+      });
+    },
     setInterval: dependencies.setInterval,
     clearInterval: dependencies.clearInterval,
     report: (line) => printJson(dependencies, { wake: 'supervisor', ...line }),
@@ -2057,23 +2286,30 @@ async function runWakeServe(
   const stopRequested = new Promise<void>((resolve) => {
     resolveStopped = resolve;
   });
-  const stop = (): void => resolveStopped();
+  const stop = (): void => {
+    shutdownRequested = true;
+    resolveStopped();
+  };
   dependencies.signals.once('SIGINT', stop);
   dependencies.signals.once('SIGTERM', stop);
   try {
     const supervisorStarted = supervisor.start().then(() => ({ kind: 'started' }) as const);
-    const startupOutcome =
-      managedStop === undefined
-        ? await supervisorStarted
-        : await Promise.race([supervisorStarted, managedStop]);
+    const signalStop = stopRequested.then(() => ({ kind: 'signal' }) as const);
+    const startupOutcome = await Promise.race([
+      supervisorStarted,
+      signalStop,
+      ...(managedStop === undefined ? [] : [managedStop]),
+    ]);
     if (startupOutcome.kind !== 'started') {
-      // Join the bounded initial discovery before stopping the supervisor so its
-      // completion cannot arm a fresh rescan timer after shutdown.
-      await supervisorStarted;
+      await Promise.all([supervisorStarted, supervisor.stop()]);
       if (startupOutcome.kind === 'managed-error') throw startupOutcome.error;
       return;
     }
-    await dependencies.wakeDispatcher.start({ daemonUrl });
+    if (shutdownRequested) return;
+    await dependencies.wakeDispatcher.start({
+      daemonUrl,
+      requestTimeoutMs: options.connectTimeoutMs,
+    });
     printJson(dependencies, { wake: 'supervisor', event: 'serving', bindings: supervisor.active });
     const outcome =
       managedStop === undefined
@@ -2177,23 +2413,48 @@ function registerWakeCli(program: Command, dependencies: CliDependencies): void 
     .command('status')
     .description('Report wake process health and bridge slot ownership')
     .option('--json', 'Print machine-readable process and slot status')
+    .option('--connect-timeout-ms <milliseconds>', 'Daemon slot-read timeout', '2000')
     .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
-    .action(async (options: { json?: boolean; url: string }) => {
-      const [processStatus, slotStatus] = await Promise.all([
+    .action(async (options: { json?: boolean; connectTimeoutMs: string; url: string }) => {
+      const connectTimeoutMs = positiveIntegerOption(
+        options.connectTimeoutMs,
+        '--connect-timeout-ms',
+        100,
+        30_000,
+      );
+      const [processStatus, slotResult] = await Promise.all([
         dependencies.wakeLifecycle.status(),
-        request(
+        boundedRequest(
           dependencies,
           loopbackDaemonUrl(options.url),
           '/api/v1/bridge-slots?limit=100',
           bridgeSlotCollectionSchema,
+          connectTimeoutMs,
+        ).then(
+          (status) => ({ available: true as const, status }),
+          (error: unknown) => ({ available: false as const, errorCode: safeErrorCode(error) }),
         ),
       ]);
       if (options.json === true) {
-        printJson(dependencies, { process: processStatus, ...slotStatus });
+        printJson(
+          dependencies,
+          slotResult.available
+            ? { process: processStatus, ...slotResult.status, slotsAvailable: true }
+            : {
+                process: processStatus,
+                slots: [],
+                slotsAvailable: false,
+                slotsErrorCode: slotResult.errorCode,
+              },
+        );
         return;
       }
       printWakeLifecycleStatus(dependencies, processStatus, false);
-      dependencies.stdout.write(`slots: ${String(slotStatus.slots.length)}\n`);
+      dependencies.stdout.write(
+        slotResult.available
+          ? `slots: ${String(slotResult.status.slots.length)}\n`
+          : `slots: unavailable (${slotResult.errorCode})\n`,
+      );
     });
 }
 
@@ -2824,6 +3085,15 @@ export function createCli(dependencies: CliDependencies): Command {
           printJson(dependencies, request_);
           return;
         }
+        const trustedWakeExecutable = wakeCapableCodexIdentity
+          ? await trustedCodexQueueResolver(
+              dependencies,
+              daemonUrl,
+              connectTimeoutMs,
+              workingDirectory,
+              request_.agentId,
+            )().catch(() => undefined)
+          : undefined;
 
         const bootstrap = createSessionBootstrap({
           client: createBootstrapSessionClient(dependencies, daemonUrl, connectTimeoutMs),
@@ -2831,7 +3101,9 @@ export function createCli(dependencies: CliDependencies): Command {
           ...(resolvedIdentity === undefined
             ? {}
             : { nativeIdentityProvenance: resolvedIdentity.provenance }),
-          ...(wakeCapableCodexIdentity ? { hostWakeAdapter: 'codex-queue-v1' as const } : {}),
+          ...(trustedWakeExecutable === undefined
+            ? {}
+            : { hostWakeAdapter: 'codex-queue-v1' as const }),
           heartbeatIntervalMs: Number.parseInt(options.heartbeatMs, 10),
           leaseRenewIntervalMs: Number.parseInt(options.leaseRenewMs, 10),
           leaseClient: {

@@ -1,4 +1,5 @@
 import type {
+  AgentDefinition,
   WakeIntentClaimItem,
   WakeIntentClaimResponse,
   WakeIntentCompleteRequest,
@@ -9,11 +10,27 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createCoordinatorWakeDispatcher,
+  resolveTrustedCodexQueueExecutable,
   wakePointerPrompt,
   type CoordinatorWakeClient,
   type WakeQueueChild,
 } from './coordinator-wake.js';
 import { WAKE_CONTROL_TOKEN_ENV, WAKE_INSTANCE_ID_ENV } from './wake-lifecycle.js';
+
+const definition = (overrides: Partial<AgentDefinition> = {}): AgentDefinition => ({
+  id: 'codex-main',
+  kind: 'codex' as const,
+  displayName: 'Codex',
+  executable: 'C:/measured/codex.exe',
+  detectedVersion: 'codex-cli 1.2.3',
+  enabled: true,
+  adapterId: 'codex',
+  nativeConfigRoots: [],
+  createdAt: '2026-09-09T12:00:00.000Z',
+  updatedAt: '2026-09-09T12:00:00.000Z',
+  metadata: {},
+  ...overrides,
+});
 
 const claimedIntent: WakeIntentView & { state: 'claimed' } = {
   id: 'message-1',
@@ -63,6 +80,138 @@ function childThat(events: (child: EventEmitter) => void): TestWakeQueueChild {
 }
 
 describe('coordinator wake dispatcher', () => {
+  it('returns only a stable canonical Codex definition whose measured queue probe passes', async () => {
+    const listAgentDefinitions = vi.fn(async () => [
+      definition(),
+      definition({
+        id: 'codex-secondary',
+        executable: 'C:/measured/secondary-codex.exe',
+        detectedVersion: 'codex-cli 9.9.9',
+      }),
+    ]);
+    const probe = vi.fn(async () => true);
+
+    await expect(
+      resolveTrustedCodexQueueExecutable({
+        listAgentDefinitions,
+        expectedAgentId: 'codex-main',
+        canonicalize: async () => '/canonical/codex',
+        probe,
+      }),
+    ).resolves.toBe('/canonical/codex');
+
+    expect(listAgentDefinitions).toHaveBeenCalledTimes(2);
+    expect(probe).toHaveBeenCalledExactlyOnceWith('/canonical/codex', 'codex-cli 1.2.3', undefined);
+  });
+
+  it('refuses an ambiguous or incomplete enabled Codex definition set before probing', async () => {
+    const probe = vi.fn(async () => true);
+    for (const definitions of [
+      [definition(), definition({ id: 'codex-second' })],
+      [definition({ executable: undefined })],
+      [definition({ detectedVersion: undefined })],
+      [definition({ enabled: false })],
+    ]) {
+      await expect(
+        resolveTrustedCodexQueueExecutable({
+          listAgentDefinitions: async () => definitions,
+          canonicalize: async () => '/canonical/codex',
+          probe,
+        }),
+      ).resolves.toBeUndefined();
+    }
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('refuses a definition or resolved path that changes while its capability is probed', async () => {
+    const snapshots = [
+      [definition()],
+      [definition({ executable: 'C:/replaced/codex.exe', updatedAt: '2026-09-09T12:01:00.000Z' })],
+    ];
+
+    await expect(
+      resolveTrustedCodexQueueExecutable({
+        listAgentDefinitions: async () => snapshots.shift() ?? [],
+        canonicalize: async (path) =>
+          path.includes('replaced') ? '/canonical/replaced-codex' : '/canonical/codex',
+        probe: async () => true,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('refuses an exact definition whose live version and queue support probe fails', async () => {
+    const listAgentDefinitions = async () => [definition()];
+    await expect(
+      resolveTrustedCodexQueueExecutable({
+        listAgentDefinitions,
+        canonicalize: async () => '/canonical/codex',
+        probe: async () => false,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('treats canonicalization and capability-probe failures as an unavailable local executable', async () => {
+    const localFailure = new Error('measured executable disappeared');
+    const probe = vi.fn(async () => true);
+
+    await expect(
+      resolveTrustedCodexQueueExecutable({
+        listAgentDefinitions: async () => [definition()],
+        canonicalize: async () => await Promise.reject(localFailure),
+        probe,
+      }),
+    ).resolves.toBeUndefined();
+    expect(probe).not.toHaveBeenCalled();
+
+    await expect(
+      resolveTrustedCodexQueueExecutable({
+        listAgentDefinitions: async () => [definition()],
+        canonicalize: async () => '/canonical/codex',
+        probe: async () => await Promise.reject(localFailure),
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('treats second canonicalization failure as a changed local capability', async () => {
+    const canonicalize = vi
+      .fn<(path: string) => Promise<string>>()
+      .mockResolvedValueOnce('/canonical/codex')
+      .mockRejectedValueOnce(new Error('measured executable was replaced'));
+
+    await expect(
+      resolveTrustedCodexQueueExecutable({
+        listAgentDefinitions: async () => [definition()],
+        canonicalize,
+        probe: async () => true,
+      }),
+    ).resolves.toBeUndefined();
+    expect(canonicalize).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates control-plane definition read failures for durable retry', async () => {
+    const daemonFailure = new Error('temporary daemon timeout');
+
+    await expect(
+      resolveTrustedCodexQueueExecutable({
+        listAgentDefinitions: async () => await Promise.reject(daemonFailure),
+        canonicalize: async () => '/canonical/codex',
+        probe: async () => true,
+      }),
+    ).rejects.toBe(daemonFailure);
+  });
+
+  it('refuses a Windows command shim that cannot be spawned through the no-shell dispatch path', async () => {
+    const probe = vi.fn(async () => true);
+    await expect(
+      resolveTrustedCodexQueueExecutable({
+        listAgentDefinitions: async () => [definition({ executable: 'C:/tools/codex.cmd' })],
+        canonicalize: async () => 'C:/tools/codex.cmd',
+        probe,
+      }),
+    ).resolves.toBeUndefined();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
   it('sets the durable dispatching fence before the exact no-shell Codex queue command', async () => {
     const order: string[] = [];
     const { client, complete } = wakeClient(
@@ -87,12 +236,17 @@ describe('coordinator wake dispatcher', () => {
       });
     });
     const expectedPrompt = wakePointerPrompt(claimedIntent);
+    const resolveQueueExecutable = vi.fn(async () => '/trusted/codex');
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable,
       spawn,
       environment: {
         PATH: 'C:/tools',
+        REDIS_URL: 'redis://private',
+        LUWI_TEST_REDIS_URL: 'redis://test-private',
+        LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS: 'true',
         [WAKE_CONTROL_TOKEN_ENV]: 'private-control-token',
         [WAKE_INSTANCE_ID_ENV]: 'private-instance-id',
       },
@@ -105,8 +259,15 @@ describe('coordinator wake dispatcher', () => {
     });
 
     expect(order).toEqual(['dispatching', 'spawn']);
+    expect(resolveQueueExecutable).toHaveBeenCalledTimes(2);
+    expect(resolveQueueExecutable).toHaveBeenNthCalledWith(1, 'session-1', {
+      signal: undefined,
+    });
+    expect(resolveQueueExecutable).toHaveBeenNthCalledWith(2, 'session-1', {
+      signal: undefined,
+    });
     expect(spawn).toHaveBeenCalledWith(
-      'codex',
+      '/trusted/codex',
       ['queue', '--thread', 'native-session', '--message', expectedPrompt],
       expect.objectContaining({
         shell: false,
@@ -130,6 +291,99 @@ describe('coordinator wake dispatcher', () => {
     expect(expectedPrompt).not.toContain('private-control-token');
   });
 
+  it('falls back before spawn when the trusted executable changes after the dispatch fence', async () => {
+    const { client, complete } = wakeClient(
+      claimed({
+        intent: claimedIntent,
+        claimId: 'claim-1',
+        target: { adapter: 'codex-queue-v1', nativeSessionId: 'native-session' },
+      }),
+    );
+    const resolveQueueExecutable = vi
+      .fn<(sourceSessionId: string) => Promise<string | undefined>>()
+      .mockResolvedValueOnce('/trusted/codex-a')
+      .mockResolvedValueOnce('/trusted/codex-b');
+    const spawn = vi.fn();
+    const dispatcher = createCoordinatorWakeDispatcher({
+      client,
+      dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable,
+      spawn,
+      environment: {},
+      randomUUID: () => 'attempt-1',
+    });
+
+    await expect(dispatcher.runOnce()).resolves.toMatchObject({
+      state: 'fallback_only',
+      reasonCode: 'queue_capability_changed',
+    });
+    expect(client.markDispatching).toHaveBeenCalledTimes(1);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith(
+      'message-1',
+      expect.objectContaining({
+        state: 'fallback_only',
+        reasonCode: 'queue_capability_changed',
+      }),
+    );
+  });
+
+  it('uses inbox-only fallback when no trusted Codex queue executable is available', async () => {
+    const { client, complete } = wakeClient(
+      claimed({
+        intent: claimedIntent,
+        claimId: 'claim-1',
+        target: { adapter: 'codex-queue-v1', nativeSessionId: 'native-session' },
+      }),
+    );
+    const spawn = vi.fn();
+    const dispatcher = createCoordinatorWakeDispatcher({
+      client,
+      dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => undefined,
+      spawn,
+      environment: {},
+      randomUUID: () => 'attempt-1',
+    });
+
+    await expect(dispatcher.runOnce()).resolves.toMatchObject({
+      state: 'fallback_only',
+      reasonCode: 'queue_capability_unavailable',
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    expect(client.markDispatching).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith(
+      'message-1',
+      expect.objectContaining({
+        state: 'fallback_only',
+        reasonCode: 'queue_capability_unavailable',
+      }),
+    );
+  });
+
+  it('leaves a safely claimed wake recoverable after a transient pre-fence resolver failure', async () => {
+    const { client, complete } = wakeClient(
+      claimed({
+        intent: claimedIntent,
+        claimId: 'claim-1',
+        target: { adapter: 'codex-queue-v1', nativeSessionId: 'native-session' },
+      }),
+    );
+    const failure = new Error('temporary daemon timeout');
+    const dispatcher = createCoordinatorWakeDispatcher({
+      client,
+      dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => await Promise.reject(failure),
+      spawn: vi.fn(),
+      environment: {},
+      randomUUID: () => 'attempt-1',
+    });
+
+    await expect(dispatcher.runOnce()).rejects.toBe(failure);
+    expect(client.markDispatching).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+  });
+
   it('falls back safely when process creation is proven to fail before spawn', async () => {
     const { client, complete } = wakeClient(
       claimed({
@@ -142,6 +396,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn,
       environment: {},
       randomUUID: () => 'attempt-1',
@@ -168,6 +423,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn: vi.fn(() => {
         throw new Error('ENOENT');
       }),
@@ -217,6 +473,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn: vi.fn(() => childThat(events)),
       environment: {},
       randomUUID: () => 'attempt-1',
@@ -244,6 +501,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn,
       environment: {},
       randomUUID: () => 'attempt-1',
@@ -277,6 +535,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn,
       environment: {},
       randomUUID: () => 'attempt-recovered',
@@ -329,6 +588,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       environment: {},
     });
 
@@ -399,6 +659,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn,
       environment: {},
       randomUUID: () => `attempt-${String(++attempts)}`,
@@ -455,6 +716,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn,
       environment: {},
       randomUUID: () => 'attempt-1',
@@ -484,6 +746,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn: vi.fn(() => {
         child = childThat((spawned) => {
           spawned.emit('spawn');
@@ -543,6 +806,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn,
       environment: {},
       randomUUID: () => 'attempt-1',
@@ -571,6 +835,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn,
       environment: {},
     });
@@ -600,6 +865,7 @@ describe('coordinator wake dispatcher', () => {
     const dispatcher = createCoordinatorWakeDispatcher({
       client,
       dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
       spawn,
       environment: {},
       randomUUID: () => 'attempt-stopped',
@@ -619,6 +885,81 @@ describe('coordinator wake dispatcher', () => {
 
     expect(spawn).not.toHaveBeenCalled();
     expect(client.markDispatching).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledWith(
+      'message-1',
+      expect.objectContaining({
+        state: 'fallback_only',
+        reasonCode: 'dispatcher_stopped_before_spawn',
+      }),
+    );
+  });
+
+  it('aborts an active blocking claim before shutdown joins the loop', async () => {
+    let finishClaim!: (response: WakeIntentClaimResponse) => void;
+    let claimSignal: AbortSignal | undefined;
+    const pendingClaim = new Promise<WakeIntentClaimResponse>((resolve) => {
+      finishClaim = resolve;
+    });
+    const empty = { items: [], recoveredDispatching: [], terminalAcknowledged: 0 };
+    const { client } = wakeClient(empty);
+    vi.mocked(client.claim).mockImplementation(async (_input, options) => {
+      claimSignal = options?.signal;
+      return pendingClaim;
+    });
+    const dispatcher = createCoordinatorWakeDispatcher({
+      client,
+      dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async () => '/trusted/codex',
+      environment: {},
+    });
+
+    await dispatcher.start();
+    await vi.waitFor(() => expect(client.claim).toHaveBeenCalledTimes(1));
+    const stopping = dispatcher.stop();
+    finishClaim(empty);
+    await stopping;
+
+    expect(claimSignal?.aborted).toBe(true);
+  });
+
+  it('aborts source-session executable resolution during dispatcher shutdown', async () => {
+    const item = {
+      intent: claimedIntent,
+      claimId: 'claim-1',
+      target: { adapter: 'codex-queue-v1' as const, nativeSessionId: 'native-session' },
+    };
+    const empty = { items: [], recoveredDispatching: [], terminalAcknowledged: 0 };
+    const { client, complete } = wakeClient(empty);
+    vi.mocked(client.recover).mockResolvedValue(empty);
+    vi.mocked(client.claim).mockResolvedValue(claimed(item));
+    let resolverSignal: AbortSignal | undefined;
+    let resolutionStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolutionStarted = resolve;
+    });
+    const dispatcher = createCoordinatorWakeDispatcher({
+      client,
+      dispatcherInstanceId: 'dispatcher-1',
+      resolveQueueExecutable: async (_sourceSessionId, options) => {
+        resolverSignal = options?.signal;
+        resolutionStarted();
+        return await new Promise<string>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            'abort',
+            () => reject(new DOMException('cancelled', 'AbortError')),
+            { once: true },
+          );
+        });
+      },
+      environment: {},
+      wait: async () => undefined,
+    });
+
+    await dispatcher.start();
+    await started;
+    await dispatcher.stop();
+
+    expect(resolverSignal?.aborted).toBe(true);
     expect(complete).toHaveBeenCalledWith(
       'message-1',
       expect.objectContaining({

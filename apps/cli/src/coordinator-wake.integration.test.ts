@@ -337,6 +337,7 @@ function dispatcher(harness: Harness, instanceId: string, calls: QueueCall[], at
   return createCoordinatorWakeDispatcher({
     client: wakeClient(harness.runtime, true),
     dispatcherInstanceId: instanceId,
+    resolveQueueExecutable: async () => '/trusted/codex',
     environment: {},
     spawn: successfulQueue(calls),
     randomUUID: () => attemptId,
@@ -374,7 +375,7 @@ describe.skipIf(redisUrl === undefined || !sharedFunctionsAllowed)(
 
         expect(calls).toHaveLength(1);
         expect(calls[0]).toMatchObject({
-          command: 'codex',
+          command: '/trusted/codex',
           arguments: [
             'queue',
             '--thread',

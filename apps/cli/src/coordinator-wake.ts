@@ -11,19 +11,31 @@ import {
   type WakeIntentRecoverRequest,
   type WakeIntentRecoverResponse,
   type WakeIntentView,
+  type AgentDefinition,
 } from '@luwi/protocol';
 import { spawn as nodeSpawn } from 'node:child_process';
 import { randomUUID as nodeRandomUUID } from 'node:crypto';
+import { extname, isAbsolute } from 'node:path';
 
-import { WAKE_CONTROL_TOKEN_ENV, WAKE_INSTANCE_ID_ENV } from './wake-lifecycle.js';
+import { sanitizeWakeChildEnvironment } from './wake-environment.js';
 
 const POINTER_MAX_BYTES = 1024;
 const DEFAULT_QUEUE_TIMEOUT_MS = 30_000;
 const DEFAULT_FAILURE_BACKOFF_MS = 1_000;
 
+function isAborted(signal?: AbortSignal): boolean {
+  return signal?.aborted === true;
+}
+
 export interface CoordinatorWakeClient {
-  claim(input: WakeIntentClaimRequest): Promise<WakeIntentClaimResponse>;
-  recover(input: WakeIntentRecoverRequest): Promise<WakeIntentRecoverResponse>;
+  claim(
+    input: WakeIntentClaimRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<WakeIntentClaimResponse>;
+  recover(
+    input: WakeIntentRecoverRequest,
+    options?: { signal?: AbortSignal },
+  ): Promise<WakeIntentRecoverResponse>;
   markDispatching(
     intentId: string,
     input: WakeIntentDispatchingRequest,
@@ -71,6 +83,11 @@ export interface CoordinatorWakeDispatcher {
 export type CoordinatorWakeDispatcherOptions = {
   client: CoordinatorWakeClient;
   dispatcherInstanceId: string;
+  /** Revalidates the source session and returns its measured absolute Codex executable. */
+  resolveQueueExecutable: (
+    sourceSessionId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<string | undefined>;
   environment: Readonly<Record<string, string | undefined>>;
   spawn?: WakeQueueSpawn;
   randomUUID?: () => string;
@@ -80,6 +97,100 @@ export type CoordinatorWakeDispatcherOptions = {
   queueTimeoutMs?: number;
   report?: (entry: object) => void;
 };
+
+export type TrustedCodexQueueResolverOptions = {
+  listAgentDefinitions: (signal?: AbortSignal) => Promise<readonly AgentDefinition[]>;
+  expectedAgentId?: string;
+  canonicalize: (path: string) => Promise<string>;
+  probe: (
+    canonicalExecutable: string,
+    detectedVersion: string,
+    signal?: AbortSignal,
+  ) => Promise<boolean>;
+  signal?: AbortSignal;
+};
+
+function selectMeasuredCodexDefinition(
+  definitions: readonly AgentDefinition[],
+  expectedAgentId?: string,
+): AgentDefinition | undefined {
+  const candidates = definitions.filter(
+    (definition) =>
+      definition.enabled &&
+      definition.kind === 'codex' &&
+      (expectedAgentId === undefined || definition.id === expectedAgentId),
+  );
+  if (candidates.length !== 1) return undefined;
+  const selected = candidates[0];
+  if (
+    selected === undefined ||
+    selected.executable === undefined ||
+    selected.detectedVersion === undefined
+  ) {
+    return undefined;
+  }
+  return selected;
+}
+
+function sameMeasuredDefinition(left: AgentDefinition, right: AgentDefinition): boolean {
+  return (
+    left.id === right.id &&
+    left.adapterId === right.adapterId &&
+    left.executable === right.executable &&
+    left.detectedVersion === right.detectedVersion &&
+    left.updatedAt === right.updatedAt
+  );
+}
+
+/**
+ * Resolves the single expected Codex definition twice around a live capability
+ * probe. The executable never enters session metadata; the control-plane
+ * definition remains the private source of truth for every dispatch.
+ */
+export async function resolveTrustedCodexQueueExecutable(
+  options: TrustedCodexQueueResolverOptions,
+): Promise<string | undefined> {
+  const before = selectMeasuredCodexDefinition(
+    await options.listAgentDefinitions(options.signal),
+    options.expectedAgentId,
+  );
+  if (before === undefined) return undefined;
+  if (isAborted(options.signal)) return undefined;
+
+  let canonicalBefore: string;
+  try {
+    canonicalBefore = await options.canonicalize(before.executable!);
+  } catch {
+    return undefined;
+  }
+  if (!isAbsolute(canonicalBefore)) return undefined;
+  const extension = extname(canonicalBefore).toLowerCase();
+  if (extension === '.cmd' || extension === '.bat') return undefined;
+
+  let probePassed: boolean;
+  try {
+    probePassed = await options.probe(canonicalBefore, before.detectedVersion!, options.signal);
+  } catch {
+    return undefined;
+  }
+  if (!probePassed) {
+    return undefined;
+  }
+  if (isAborted(options.signal)) return undefined;
+
+  const after = selectMeasuredCodexDefinition(
+    await options.listAgentDefinitions(options.signal),
+    options.expectedAgentId,
+  );
+  if (after === undefined || !sameMeasuredDefinition(before, after)) return undefined;
+  try {
+    return (await options.canonicalize(after.executable!)) === canonicalBefore
+      ? canonicalBefore
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function byteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');
@@ -100,18 +211,6 @@ export function wakePointerPrompt(intent: WakeIntentView): string {
     throw new TypeError('The wake pointer prompt exceeds 1 KiB.');
   }
   return prompt;
-}
-
-function processEnvironment(
-  source: Readonly<Record<string, string | undefined>>,
-): NodeJS.ProcessEnv {
-  const result: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && key !== WAKE_CONTROL_TOKEN_ENV && key !== WAKE_INSTANCE_ID_ENV) {
-      result[key] = value;
-    }
-  }
-  return result;
 }
 
 function defaultSpawn(
@@ -148,6 +247,7 @@ export function createCoordinatorWakeDispatcher(
   let running = false;
   let loop: Promise<void> | undefined;
   let stopActiveDispatch: (() => void) | undefined;
+  let activeRequestController: AbortController | undefined;
 
   const result = (
     state: CoordinatorWakeRunResult['state'],
@@ -196,6 +296,7 @@ export function createCoordinatorWakeDispatcher(
     item: WakeIntentClaimItem,
     batch: WakeIntentClaimResponse,
     mayStartProcess: () => boolean,
+    signal?: AbortSignal,
   ): Promise<CoordinatorWakeRunResult> => {
     const attemptId = createId();
     if (!mayStartProcess()) {
@@ -203,6 +304,33 @@ export function createCoordinatorWakeDispatcher(
     }
     if ('refusalReasonCode' in item) {
       return complete(item, attemptId, 'fallback_only', item.refusalReasonCode, batch);
+    }
+
+    let queueExecutable: string | undefined;
+    try {
+      queueExecutable = await options.resolveQueueExecutable(
+        item.intent.sourceSessionId,
+        signal === undefined ? {} : { signal },
+      );
+    } catch (error) {
+      report({
+        event: 'wake_queue_capability_unavailable',
+        intentId: item.intent.id,
+        cause: String(error),
+      });
+      if (!mayStartProcess() || isAborted(signal)) {
+        return complete(item, attemptId, 'fallback_only', 'dispatcher_stopped_before_spawn', batch);
+      }
+      throw error;
+    }
+    if (!mayStartProcess() || isAborted(signal)) {
+      return complete(item, attemptId, 'fallback_only', 'dispatcher_stopped_before_spawn', batch);
+    }
+    if (queueExecutable === undefined || !isAbsolute(queueExecutable)) {
+      return complete(item, attemptId, 'fallback_only', 'queue_capability_unavailable', batch);
+    }
+    if (!mayStartProcess()) {
+      return complete(item, attemptId, 'fallback_only', 'dispatcher_stopped_before_spawn', batch);
     }
 
     try {
@@ -223,10 +351,30 @@ export function createCoordinatorWakeDispatcher(
       return complete(item, attemptId, 'fallback_only', 'dispatcher_stopped_before_spawn', batch);
     }
 
+    let confirmedExecutable: string | undefined;
+    try {
+      confirmedExecutable = await options.resolveQueueExecutable(
+        item.intent.sourceSessionId,
+        signal === undefined ? {} : { signal },
+      );
+    } catch (error) {
+      report({
+        event: 'wake_queue_capability_changed',
+        intentId: item.intent.id,
+        cause: String(error),
+      });
+    }
+    if (!mayStartProcess() || isAborted(signal)) {
+      return complete(item, attemptId, 'fallback_only', 'dispatcher_stopped_before_spawn', batch);
+    }
+    if (confirmedExecutable !== queueExecutable) {
+      return complete(item, attemptId, 'fallback_only', 'queue_capability_changed', batch);
+    }
+
     let child: WakeQueueChild;
     try {
       child = spawn(
-        'codex',
+        queueExecutable,
         [
           'queue',
           '--thread',
@@ -238,7 +386,7 @@ export function createCoordinatorWakeDispatcher(
           shell: false,
           windowsHide: true,
           stdio: 'ignore',
-          env: processEnvironment(options.environment),
+          env: sanitizeWakeChildEnvironment(options.environment),
         },
       );
     } catch (error) {
@@ -326,9 +474,10 @@ export function createCoordinatorWakeDispatcher(
   const processBatch = async (
     batch: WakeIntentClaimResponse,
     mayStartProcess: () => boolean = () => true,
+    signal?: AbortSignal,
   ): Promise<CoordinatorWakeRunResult> => {
     const item = batch.items[0];
-    if (item !== undefined) return dispatch(item, batch, mayStartProcess);
+    if (item !== undefined) return dispatch(item, batch, mayStartProcess, signal);
     const recovered = batch.recoveredDispatching[0];
     if (recovered !== undefined) {
       return result('indeterminate', batch, {
@@ -367,34 +516,55 @@ export function createCoordinatorWakeDispatcher(
       loop = (async () => {
         while (running) {
           let recovered: WakeIntentRecoverResponse;
+          const recoveryController = new AbortController();
+          activeRequestController = recoveryController;
           try {
-            recovered = await options.client.recover({
-              dispatcherInstanceId: options.dispatcherInstanceId,
-              limit: 1,
-              minIdleMs: WAKE_DEFAULT_MIN_IDLE_MS,
-            });
-            await processBatch(recovered, () => running);
+            recovered = await options.client.recover(
+              {
+                dispatcherInstanceId: options.dispatcherInstanceId,
+                limit: 1,
+                minIdleMs: WAKE_DEFAULT_MIN_IDLE_MS,
+              },
+              { signal: recoveryController.signal },
+            );
+            await processBatch(recovered, () => running, recoveryController.signal);
           } catch (error) {
+            if (!running) break;
             report({ event: 'wake_recovery_failed', cause: String(error) });
             if (running) await wait(DEFAULT_FAILURE_BACKOFF_MS);
             continue;
+          } finally {
+            if (activeRequestController === recoveryController) {
+              activeRequestController = undefined;
+            }
           }
           if (!running) break;
           if (batchHasRecoveryWork(recovered)) continue;
 
+          const claimController = new AbortController();
+          activeRequestController = claimController;
           try {
             await processBatch(
-              await options.client.claim({
-                dispatcherInstanceId: options.dispatcherInstanceId,
-                limit: 1,
-                blockMs: WAKE_DEFAULT_BLOCK_MS,
-                minIdleMs: WAKE_DEFAULT_MIN_IDLE_MS,
-              }),
+              await options.client.claim(
+                {
+                  dispatcherInstanceId: options.dispatcherInstanceId,
+                  limit: 1,
+                  blockMs: WAKE_DEFAULT_BLOCK_MS,
+                  minIdleMs: WAKE_DEFAULT_MIN_IDLE_MS,
+                },
+                { signal: claimController.signal },
+              ),
               () => running,
+              claimController.signal,
             );
           } catch (error) {
+            if (!running) break;
             report({ event: 'wake_claim_failed', cause: String(error) });
             if (running) await wait(DEFAULT_FAILURE_BACKOFF_MS);
+          } finally {
+            if (activeRequestController === claimController) {
+              activeRequestController = undefined;
+            }
           }
         }
       })();
@@ -402,6 +572,7 @@ export function createCoordinatorWakeDispatcher(
     async stop() {
       if (!running && loop === undefined) return;
       running = false;
+      activeRequestController?.abort();
       stopActiveDispatch?.();
       const pending = loop;
       loop = undefined;

@@ -1805,8 +1805,26 @@ describe('session attach', () => {
 
   it('publishes exact Codex launcher proof only after the daemon assigns the LUWI session', async () => {
     const requests: Array<{ url: string; body?: unknown }> = [];
+    const probes: Array<{
+      executable: string;
+      args: readonly string[];
+      environment: Readonly<Record<string, string | undefined>>;
+    }> = [];
     let signalListener: (() => void) | undefined;
     const nativeSessionId = 'exact-codex-session';
+    const measuredCodex = {
+      id: 'codex-agent',
+      kind: 'codex',
+      displayName: 'Codex',
+      executable: '/detected/codex',
+      detectedVersion: 'codex-cli 1.2.3',
+      enabled: true,
+      adapterId: 'codex',
+      nativeConfigRoots: [],
+      createdAt: '2026-08-17T12:00:00.000Z',
+      updatedAt: '2026-08-17T12:00:00.000Z',
+      metadata: {},
+    };
     const nativeResponse = {
       outcome: 'created',
       binding: {
@@ -1845,11 +1863,26 @@ describe('session attach', () => {
         environment: {
           CODEX_SESSION_ID: nativeSessionId,
           CODEX_THREAD_ID: nativeSessionId,
+          REDIS_URL: 'redis://private',
+          LUWI_TEST_REDIS_URL: 'redis://test-private',
+          LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS: 'true',
           USERPROFILE: 'C:\\Users\\umuts',
         },
         platform: 'win32',
         now: () => new Date(CODEX_NOW),
-        canonicalizePath: async (path) => path,
+        canonicalizePath: async (path) =>
+          path === measuredCodex.executable ? '/canonical/codex' : path,
+        agentProcessRunner: {
+          run: vi.fn(async (input) => {
+            probes.push(input);
+            input.captureOutput?.(
+              input.args[0] === '--version'
+                ? `${measuredCodex.detectedVersion}\n`
+                : 'Usage: codex queue --thread <THREAD> --message <TEXT>\n',
+            );
+            return { exitCode: 0 };
+          }),
+        },
         transcriptFileSystem: rolloutFileSystem({
           'C:/Users/umuts/.codex/sessions/2026/09/01/rollout-exact.jsonl': {
             content: codexRollout(nativeSessionId, 'C:\\work'),
@@ -1861,6 +1894,19 @@ describe('session attach', () => {
             url,
             ...(init?.body === undefined ? {} : { body: JSON.parse(String(init.body)) }),
           });
+          if (url.endsWith('/api/v1/agents')) {
+            return response({
+              agents: [
+                measuredCodex,
+                {
+                  ...measuredCodex,
+                  id: 'other-codex-agent',
+                  executable: '/detected/other-codex',
+                  detectedVersion: 'codex-cli 9.9.9',
+                },
+              ],
+            });
+          }
           if (url.endsWith(`/api/v1/sessions/${registered.id}/native`)) {
             return response(nativeResponse);
           }
@@ -1880,16 +1926,19 @@ describe('session attach', () => {
       },
     );
 
-    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    await vi.waitFor(() =>
+      expect(requests.some(({ url }) => url.endsWith(`/${registered.id}/native`))).toBe(true),
+    );
 
-    expect(requests[0]).toMatchObject({
+    const registration = requests.find(({ url }) => url.endsWith('/api/v1/sessions'));
+    expect(registration).toMatchObject({
       url: expect.stringMatching(/\/api\/v1\/sessions$/u),
       body: { projectId: 'project-1', agentId: 'codex-agent', workingDirectory: 'C:/work' },
     });
-    expect(requests[0]?.body).not.toHaveProperty('native');
-    expect(requests[0]?.body).not.toHaveProperty('nativeIdentityProvenance');
-    expect(requests[0]?.body).not.toHaveProperty('hostWake');
-    expect(requests[1]).toEqual({
+    expect(registration?.body).not.toHaveProperty('native');
+    expect(registration?.body).not.toHaveProperty('nativeIdentityProvenance');
+    expect(registration?.body).not.toHaveProperty('hostWake');
+    expect(requests.find(({ url }) => url.endsWith(`/${registered.id}/native`))).toEqual({
       url: `http://127.0.0.1:4782/api/v1/sessions/${registered.id}/native`,
       body: {
         native: { adapterId: 'codex-native-v1', nativeSessionId },
@@ -1897,6 +1946,16 @@ describe('session attach', () => {
         hostWake: { adapter: 'codex-queue-v1', mcpSessionId: registered.id },
       },
     });
+    expect(requests.filter(({ url }) => url.endsWith('/api/v1/agents'))).toHaveLength(2);
+    expect(probes.map(({ executable, args }) => ({ executable, args }))).toEqual([
+      { executable: '/canonical/codex', args: ['--version'] },
+      { executable: '/canonical/codex', args: ['queue', '--help'] },
+    ]);
+    for (const probe of probes) {
+      expect(probe.environment).not.toHaveProperty('REDIS_URL');
+      expect(probe.environment).not.toHaveProperty('LUWI_TEST_REDIS_URL');
+      expect(probe.environment).not.toHaveProperty('LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS');
+    }
 
     signalListener?.();
     await run;
@@ -3071,6 +3130,168 @@ describe('session bridge native', () => {
     ).toBe(false);
   });
 
+  it('bounds a stalled non-claim daemon read during bridge shutdown', async () => {
+    const signalSource = new EventEmitter();
+    let getMessageStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      getMessageStarted = resolve;
+    });
+    let claims = 0;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: {
+        run: vi.fn(async () => ({ exitCode: 0 })),
+      } as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+          signalSource.once(signal, listener);
+        },
+        off: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+          signalSource.off(signal, listener);
+        },
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: async (url, init) => {
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [agent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [binding] });
+        }
+        const slotResponse = slotRoutes(url, init);
+        if (slotResponse !== undefined) return slotResponse;
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(session, { status: 201 });
+        }
+        if (url.includes('/inbox/claim')) {
+          claims += 1;
+          return response({ items: claims === 1 ? [requestItem] : [] });
+        }
+        if (url.includes('/status')) return response(session);
+        if (url.includes('/heartbeat')) return response({ acknowledgedAt: timestamp });
+        if (url.includes('/close')) {
+          return response({ ...session, status: 'completed', presence: 'offline' });
+        }
+        if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        if (url.endsWith('/api/v1/messages/correlation-1')) {
+          getMessageStarted();
+          return await new Promise(() => undefined);
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    const operation = runCli(
+      [
+        'session',
+        'bridge',
+        'native',
+        'claude',
+        '--working-directory',
+        'C:/work/app',
+        '--connect-timeout-ms',
+        '100',
+      ],
+      dependencies,
+    );
+    await started;
+    signalSource.emit('SIGINT');
+
+    const outcome = await Promise.race([
+      operation.then(
+        () => 'resolved',
+        (error: unknown) => (error as { code?: string }).code ?? 'rejected',
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve('test_timeout'), 750)),
+    ]);
+    expect(outcome).toBe('DAEMON_REQUEST_TIMEOUT');
+  });
+
+  it('keeps a blocking claim bounded while preserving cooperative shutdown', async () => {
+    const signalSource = new EventEmitter();
+    const timeoutBudgets: number[] = [];
+    let claimSignal: AbortSignal | undefined;
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: {
+        run: vi.fn(async () => ({ exitCode: 0 })),
+      } as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+          signalSource.once(signal, listener);
+        },
+        off: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+          signalSource.off(signal, listener);
+        },
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn((_callback: () => void, milliseconds: number) => {
+        timeoutBudgets.push(milliseconds);
+        return timeoutBudgets.length as unknown as NodeJS.Timeout;
+      }) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      wait: async () => undefined,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch: async (url, init) => {
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [agent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [binding] });
+        }
+        const slotResponse = slotRoutes(url, init);
+        if (slotResponse !== undefined) return slotResponse;
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(session, { status: 201 });
+        }
+        if (url.includes('/inbox/claim')) {
+          claimSignal = init?.signal;
+          queueMicrotask(() => signalSource.emit('SIGINT'));
+          return await new Promise<HttpResponseLike>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              'abort',
+              () => reject(new DOMException('Aborted', 'AbortError')),
+              { once: true },
+            );
+          });
+        }
+        if (url.includes('/status')) return response(session);
+        if (url.includes('/heartbeat')) return response({ acknowledgedAt: timestamp });
+        if (url.includes('/close')) {
+          return response({ ...session, status: 'completed', presence: 'offline' });
+        }
+        if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(
+      [
+        'session',
+        'bridge',
+        'native',
+        'claude',
+        '--working-directory',
+        'C:/work/app',
+        '--block-ms',
+        '1000',
+        '--connect-timeout-ms',
+        '100',
+      ],
+      dependencies,
+    );
+
+    expect(claimSignal?.aborted).toBe(true);
+    expect(timeoutBudgets).toContain(1_100);
+  });
+
   it('injects the LUWI MCP session binding and auto-approval into a codex child', async () => {
     const codexAgent = { ...agent, id: 'codex', kind: 'codex', adapterId: 'codex' };
     const codexBinding = { ...binding, id: 'binding-codex', agentId: 'codex' };
@@ -3474,6 +3695,379 @@ describe('wake lifecycle commands', () => {
     expect(claimCount).toBe(1);
   });
 
+  it('resolves each queued Codex wake through its exact source session agent', async () => {
+    const signalSource = new EventEmitter();
+    const timestamp = '2026-09-10T08:00:00.000Z';
+    const sourceSession = {
+      id: 'source-session-1',
+      agentId: 'codex-source',
+      projectId: 'project-1',
+      status: 'idle',
+      workingDirectory: 'C:/work',
+      startedAt: timestamp,
+      lastHeartbeatAt: timestamp,
+      metadata: {},
+      presence: 'online',
+      wakeCapable: true,
+    };
+    const intent = {
+      id: 'wake-1',
+      messageId: 'message-1',
+      workflowId: 'workflow-1',
+      sourceSessionId: sourceSession.id,
+      correlationId: 'correlation-1',
+      terminalState: 'responded',
+      adapter: 'codex-queue-v1',
+      state: 'claimed',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    const agent = (id: string, executable: string) => ({
+      id,
+      kind: 'codex',
+      displayName: id,
+      executable,
+      detectedVersion: 'codex-cli 1.2.3',
+      enabled: true,
+      adapterId: 'codex-native-v1',
+      nativeConfigRoots: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      metadata: {},
+    });
+    const probes: string[] = [];
+    const requests: Array<{ url: string; body?: unknown }> = [];
+    let claimCount = 0;
+
+    await runCli(['wake', 'serve'], {
+      environment: {},
+      cwd: () => 'C:/runtime',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: {
+        run: vi.fn(async ({ executable }: { executable: string }) => {
+          probes.push(executable);
+          return { exitCode: 1 };
+        }),
+      } as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (signal, listener) => signalSource.once(signal, listener),
+        off: (signal, listener) => signalSource.off(signal, listener),
+      },
+      fetch: async (url, init) => {
+        requests.push({
+          url,
+          ...(init?.body === undefined ? {} : { body: JSON.parse(init.body) }),
+        });
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [] });
+        if (url.endsWith('/api/v1/agents')) {
+          return response({
+            agents: [
+              agent('codex-other', 'C:/tools/other-codex.exe'),
+              agent(sourceSession.agentId, 'C:/tools/source-codex.exe'),
+            ],
+          });
+        }
+        if (url.endsWith(`/api/v1/sessions/${sourceSession.id}`)) {
+          return response(sourceSession);
+        }
+        if (url.endsWith('/api/v1/wake-intents/recover')) {
+          return response({ items: [], recoveredDispatching: [], terminalAcknowledged: 0 });
+        }
+        if (url.endsWith('/api/v1/wake-intents/claim')) {
+          claimCount += 1;
+          return response({
+            items:
+              claimCount === 1
+                ? [
+                    {
+                      intent,
+                      claimId: 'claim-1',
+                      target: {
+                        adapter: 'codex-queue-v1',
+                        nativeSessionId: 'native-session-1',
+                      },
+                    },
+                  ]
+                : [],
+            recoveredDispatching: [],
+            terminalAcknowledged: 0,
+          });
+        }
+        if (url.endsWith('/api/v1/wake-intents/wake-1/complete')) {
+          queueMicrotask(() => signalSource.emit('SIGINT'));
+          return response({
+            status: 'updated',
+            intent: {
+              ...intent,
+              state: 'fallback_only',
+              reasonCode: 'queue_capability_unavailable',
+            },
+          });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    });
+
+    expect(probes).toEqual(['C:/tools/source-codex.exe']);
+    expect(
+      requests.find(({ url }) => url.endsWith('/api/v1/wake-intents/wake-1/complete'))?.body,
+    ).toMatchObject({
+      state: 'fallback_only',
+      reasonCode: 'queue_capability_unavailable',
+    });
+  });
+
+  it('cancels a pending executable canonicalization when wake serve stops', async () => {
+    const signalSource = new EventEmitter();
+    const timestamp = '2026-09-10T08:00:00.000Z';
+    const sourceSession = {
+      id: 'source-session-canonicalize',
+      agentId: 'codex-source',
+      projectId: 'project-1',
+      status: 'idle',
+      workingDirectory: 'C:/work',
+      startedAt: timestamp,
+      lastHeartbeatAt: timestamp,
+      metadata: {},
+      presence: 'online',
+      wakeCapable: true,
+    };
+    const intent = {
+      id: 'wake-canonicalize',
+      messageId: 'message-canonicalize',
+      workflowId: 'workflow-canonicalize',
+      sourceSessionId: sourceSession.id,
+      correlationId: 'correlation-canonicalize',
+      terminalState: 'responded',
+      adapter: 'codex-queue-v1',
+      state: 'claimed',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    let claimCount = 0;
+    let canonicalizationStarted = false;
+
+    const serving = runCli(['wake', 'serve'], {
+      environment: {},
+      cwd: () => 'C:/runtime',
+      canonicalizePath: async () => {
+        canonicalizationStarted = true;
+        queueMicrotask(() => signalSource.emit('SIGINT'));
+        return await new Promise<string>(() => undefined);
+      },
+      signals: {
+        once: (signal, listener) => signalSource.once(signal, listener),
+        off: (signal, listener) => signalSource.off(signal, listener),
+      },
+      fetch: async (url) => {
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [] });
+        if (url.endsWith('/api/v1/agents')) {
+          return response({
+            agents: [
+              {
+                id: sourceSession.agentId,
+                kind: 'codex',
+                displayName: 'Codex source',
+                executable: 'C:/tools/codex.exe',
+                detectedVersion: 'codex-cli 1.2.3',
+                enabled: true,
+                adapterId: 'codex-native-v1',
+                nativeConfigRoots: [],
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                metadata: {},
+              },
+            ],
+          });
+        }
+        if (url.endsWith(`/api/v1/sessions/${sourceSession.id}`)) return response(sourceSession);
+        if (url.endsWith('/api/v1/wake-intents/recover')) {
+          return response({ items: [], recoveredDispatching: [], terminalAcknowledged: 0 });
+        }
+        if (url.endsWith('/api/v1/wake-intents/claim')) {
+          claimCount += 1;
+          return response({
+            items:
+              claimCount === 1
+                ? [
+                    {
+                      intent,
+                      claimId: 'claim-canonicalize',
+                      target: {
+                        adapter: 'codex-queue-v1',
+                        nativeSessionId: 'native-session-canonicalize',
+                      },
+                    },
+                  ]
+                : [],
+            recoveredDispatching: [],
+            terminalAcknowledged: 0,
+          });
+        }
+        if (url.endsWith('/api/v1/wake-intents/wake-canonicalize/complete')) {
+          return response({
+            status: 'updated',
+            intent: {
+              ...intent,
+              state: 'fallback_only',
+              reasonCode: 'dispatcher_stopped_before_spawn',
+            },
+          });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    });
+
+    await expect(
+      Promise.race([
+        serving,
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error('wake serve did not stop')), 500),
+        ),
+      ]),
+    ).resolves.toBeUndefined();
+    expect(canonicalizationStarted).toBe(true);
+  });
+
+  it('refuses a source session that goes offline after the dispatch fence', async () => {
+    const signalSource = new EventEmitter();
+    const timestamp = '2026-09-10T08:00:00.000Z';
+    const sourceSession = {
+      id: 'source-session-liveness',
+      agentId: 'codex-source',
+      projectId: 'project-1',
+      status: 'idle',
+      workingDirectory: 'C:/work',
+      startedAt: timestamp,
+      lastHeartbeatAt: timestamp,
+      metadata: {},
+      presence: 'online',
+      wakeCapable: true,
+    };
+    const intent = {
+      id: 'wake-liveness',
+      messageId: 'message-liveness',
+      workflowId: 'workflow-liveness',
+      sourceSessionId: sourceSession.id,
+      correlationId: 'correlation-liveness',
+      terminalState: 'responded',
+      adapter: 'codex-queue-v1',
+      state: 'claimed',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    let claimCount = 0;
+    let sourceReads = 0;
+    const requests: Array<{ url: string; body?: unknown }> = [];
+
+    await runCli(['wake', 'serve'], {
+      environment: {},
+      cwd: () => 'C:/runtime',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: {
+        run: vi.fn(async ({ args, captureOutput }) => {
+          captureOutput?.(
+            args[0] === '--version'
+              ? 'codex-cli 1.2.3\n'
+              : 'Usage: codex queue --thread <THREAD> --message <TEXT>\n',
+          );
+          return { exitCode: 0 };
+        }),
+      } as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (signal, listener) => signalSource.once(signal, listener),
+        off: (signal, listener) => signalSource.off(signal, listener),
+      },
+      fetch: async (url, init) => {
+        requests.push({
+          url,
+          ...(init?.body === undefined ? {} : { body: JSON.parse(init.body) }),
+        });
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [] });
+        if (url.endsWith('/api/v1/agents')) {
+          return response({
+            agents: [
+              {
+                id: sourceSession.agentId,
+                kind: 'codex',
+                displayName: 'Codex source',
+                executable: 'C:/tools/codex.exe',
+                detectedVersion: 'codex-cli 1.2.3',
+                enabled: true,
+                adapterId: 'codex-native-v1',
+                nativeConfigRoots: [],
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                metadata: {},
+              },
+            ],
+          });
+        }
+        if (url.endsWith(`/api/v1/sessions/${sourceSession.id}`)) {
+          sourceReads += 1;
+          return response(
+            sourceReads === 1 ? sourceSession : { ...sourceSession, presence: 'offline' },
+          );
+        }
+        if (url.endsWith('/api/v1/wake-intents/recover')) {
+          return response({ items: [], recoveredDispatching: [], terminalAcknowledged: 0 });
+        }
+        if (url.endsWith('/api/v1/wake-intents/claim')) {
+          claimCount += 1;
+          return response({
+            items:
+              claimCount === 1
+                ? [
+                    {
+                      intent,
+                      claimId: 'claim-liveness',
+                      target: {
+                        adapter: 'codex-queue-v1',
+                        nativeSessionId: 'native-session-liveness',
+                      },
+                    },
+                  ]
+                : [],
+            recoveredDispatching: [],
+            terminalAcknowledged: 0,
+          });
+        }
+        if (url.endsWith('/api/v1/wake-intents/wake-liveness/dispatching')) {
+          return response({ status: 'updated', intent: { ...intent, state: 'dispatching' } });
+        }
+        if (url.endsWith('/api/v1/wake-intents/wake-liveness/complete')) {
+          queueMicrotask(() => signalSource.emit('SIGINT'));
+          return response({
+            status: 'updated',
+            intent: {
+              ...intent,
+              state: 'fallback_only',
+              reasonCode: 'queue_capability_changed',
+            },
+          });
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+    });
+
+    expect(sourceReads).toBe(2);
+    expect(
+      requests.find(({ url }) => url.endsWith('/api/v1/wake-intents/wake-liveness/complete'))?.body,
+    ).toMatchObject({ state: 'fallback_only', reasonCode: 'queue_capability_changed' });
+  });
+
   it('starts, stops, and reports process plus daemon slot state without exposing control data', async () => {
     const wakeLifecycle: WakeLifecycleService = {
       start: vi.fn(async () => running),
@@ -3500,7 +4094,7 @@ describe('wake lifecycle commands', () => {
     expect(JSON.parse(output)).toEqual(stopped);
     output = '';
     await runCli(['wake', 'status', '--json'], dependencies);
-    expect(JSON.parse(output)).toEqual({ process: running, slots: [] });
+    expect(JSON.parse(output)).toEqual({ process: running, slots: [], slotsAvailable: true });
     expect(output).not.toContain('token');
   });
 
@@ -3559,7 +4153,10 @@ describe('wake lifecycle commands', () => {
     await run;
 
     expect(wakeLifecycle.beginManagedServe).toHaveBeenCalledTimes(1);
-    expect(wakeDispatcher.start).toHaveBeenCalledWith({ daemonUrl: 'http://127.0.0.1:4782' });
+    expect(wakeDispatcher.start).toHaveBeenCalledWith({
+      daemonUrl: 'http://127.0.0.1:4782',
+      requestTimeoutMs: 2_000,
+    });
     expect(order).toEqual(['dispatcher', 'supervisor', 'lifecycle']);
     expect(output).not.toContain('6ccfd2c0');
   });
@@ -3619,7 +4216,43 @@ describe('wake lifecycle commands', () => {
 
     await run;
     expect(wakeDispatcher.start).not.toHaveBeenCalled();
-    expect(order).toEqual(['dispatcher', 'supervisor', 'lifecycle']);
+    expect(order).toEqual(['dispatcher', 'lifecycle']);
+  });
+
+  it('aborts initial discovery when an operator signal arrives before startup completes', async () => {
+    const signalSource = new EventEmitter();
+    const wakeDispatcher = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+    };
+    let discoverySignal: AbortSignal | undefined;
+    const fetch = vi.fn(async (url: string, init?: FetchInitLike) => {
+      if (url.endsWith('/api/v1/agents')) return response({ agents: [] });
+      if (url.endsWith('/api/v1/projects')) {
+        discoverySignal = init?.signal;
+        queueMicrotask(() => signalSource.emit('SIGTERM'));
+        return await new Promise<HttpResponseLike>(() => undefined);
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+
+    await runCli(['wake', 'serve'], {
+      wakeDispatcher,
+      environment: {},
+      signals: {
+        once: (signal, listener) => signalSource.once(signal, listener),
+        off: (signal, listener) => signalSource.off(signal, listener),
+      },
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      fetch,
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+    });
+
+    expect(discoverySignal?.aborted).toBe(true);
+    expect(wakeDispatcher.start).not.toHaveBeenCalled();
+    expect(wakeDispatcher.stop).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -3739,7 +4372,12 @@ describe('wake serve', () => {
     let claims = 0;
     let getMessageCalls = 0;
     const dependencies: Partial<CliDependencies> = {
-      environment: { PATH: 'C:/tools' },
+      environment: {
+        PATH: 'C:/tools',
+        REDIS_URL: 'redis://private',
+        LUWI_TEST_REDIS_URL: 'redis://test-private',
+        LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS: 'true',
+      },
       platform: 'win32',
       canonicalizePath: async (path) => path,
       agentProcessRunner: {
@@ -3824,6 +4462,9 @@ describe('wake serve', () => {
     expect(recorded?.environment.LUWI_SESSION_ID).toBe('codex-session-1');
     expect(recorded?.environment).not.toHaveProperty('LUWI_WAKE_CONTROL_TOKEN');
     expect(recorded?.environment).not.toHaveProperty('LUWI_WAKE_INSTANCE_ID');
+    expect(recorded?.environment).not.toHaveProperty('REDIS_URL');
+    expect(recorded?.environment).not.toHaveProperty('LUWI_TEST_REDIS_URL');
+    expect(recorded?.environment).not.toHaveProperty('LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS');
     const acquires = requests.filter((entry) => entry.url.endsWith('/api/v1/bridge-slots/acquire'));
     expect(acquires).toHaveLength(1);
     expect(acquires[0]?.body).toMatchObject({
@@ -3877,6 +4518,68 @@ describe('wake serve', () => {
 
     await runCli(['wake', 'status', '--json'], dependencies);
 
-    expect(JSON.parse(lines.join(''))).toEqual({ process: processStatus, slots: [slot] });
+    expect(JSON.parse(lines.join(''))).toEqual({
+      process: processStatus,
+      slots: [slot],
+      slotsAvailable: true,
+    });
+  });
+
+  it('preserves local wake status when the bounded daemon slot read times out', async () => {
+    const lines: string[] = [];
+    const deadlines = controlledDeadlineTimers();
+    const timeoutBudgets: number[] = [];
+    const processStatus = {
+      state: 'running' as const,
+      managed: true,
+      ownership: 'owned' as const,
+      pid: 4242,
+      instanceId: 'f2e95fa4-f12d-4a42-92bb-fba0bb5f938b',
+      startedAt: timestamp,
+      heartbeatAt: timestamp,
+    };
+    let slotSignal: AbortSignal | undefined;
+    const operation = runCli(['wake', 'status', '--json'], {
+      wakeLifecycle: {
+        start: vi.fn(async () => processStatus),
+        stop: vi.fn(async () => ({
+          state: 'stopped' as const,
+          managed: false,
+          ownership: 'none' as const,
+        })),
+        status: vi.fn(async () => processStatus),
+        beginManagedServe: vi.fn(async () => {
+          throw new Error('not used');
+        }),
+      },
+      stdout: { write: (text: string) => lines.push(text) },
+      stderr: { write: () => undefined },
+      setTimeout: ((callback: () => void, milliseconds: number) => {
+        timeoutBudgets.push(milliseconds);
+        return deadlines.setTimeout(callback, milliseconds);
+      }) as CliDependencies['setTimeout'],
+      clearTimeout: deadlines.clearTimeout,
+      fetch: (_url, init) => {
+        slotSignal = init?.signal;
+        return new Promise<HttpResponseLike>(() => undefined);
+      },
+    });
+
+    await vi.waitFor(() => expect(slotSignal).toBeInstanceOf(AbortSignal));
+    deadlines.fireNext();
+    const outcome = await Promise.race([
+      operation.then(() => 'resolved'),
+      new Promise<string>((resolve) => setTimeout(() => resolve('test_timeout'), 750)),
+    ]);
+
+    expect(outcome).toBe('resolved');
+    expect(slotSignal?.aborted).toBe(true);
+    expect(timeoutBudgets).toEqual([2_000]);
+    expect(JSON.parse(lines.join(''))).toEqual({
+      process: processStatus,
+      slots: [],
+      slotsAvailable: false,
+      slotsErrorCode: 'DAEMON_REQUEST_TIMEOUT',
+    });
   });
 });
