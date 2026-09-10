@@ -13,7 +13,7 @@ import { ApplicationError } from '@luwi/runtime';
 import { createAutostart, createWakeAutostart, type AutostartState } from './autostart.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
+import { access, link, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,7 +66,9 @@ export interface LifecycleFileSystem {
   readText(path: string, maxBytes: number): Promise<string | undefined>;
   writeAtomic(path: string, content: string): Promise<void>;
   removeFile(path: string): Promise<void>;
+  modifiedAt(path: string): Promise<number | undefined>;
   tryAcquireLock(path: string): Promise<(() => Promise<void>) | undefined>;
+  tryReclaimLock(path: string, expectedContent: string): Promise<boolean>;
 }
 
 export type SpawnedDaemon = {
@@ -485,32 +487,84 @@ export class NodeLifecycleFileSystem implements LifecycleFileSystem {
     await rm(path, { force: true });
   }
 
+  async modifiedAt(path: string): Promise<number | undefined> {
+    try {
+      const metadata = await stat(path);
+      if (!metadata.isFile()) {
+        throw new ApplicationError(
+          'LIFECYCLE_FILE_INVALID',
+          'A LUWI lifecycle path is invalid.',
+          500,
+        );
+      }
+      return metadata.mtimeMs;
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
+      throw error;
+    }
+  }
+
   async tryAcquireLock(path: string): Promise<(() => Promise<void>) | undefined> {
-    let lock;
+    const candidatePath = `${path}.candidate-${randomUUID()}`;
+    const content = `${JSON.stringify({
+      schemaVersion: 1,
+      token: randomUUID(),
+      pid: process.pid,
+      acquiredAt: new Date().toISOString(),
+    })}\n`;
+    let lock: Awaited<ReturnType<typeof open>> | undefined;
+    let acquired = false;
     try {
-      lock = await open(path, 'wx', 0o600);
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return undefined;
-      throw error;
-    }
-    try {
-      await lock.writeFile(
-        `${JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() })}\n`,
-        'utf8',
-      );
+      lock = await open(candidatePath, 'wx', 0o600);
+      await lock.writeFile(content, 'utf8');
       await lock.sync();
+      try {
+        await link(candidatePath, path);
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'EEXIST') return undefined;
+        throw error;
+      }
+      acquired = true;
+      // The canonical hard link is the acquisition point. The uniquely named
+      // candidate is no longer authoritative and a cleanup failure must not
+      // turn a successfully published receipt into an unowned permanent lock.
+      await rm(candidatePath, { force: true }).catch(() => undefined);
+      const acquiredLock = lock;
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        await acquiredLock.close();
+        await this.tryReclaimLock(path, content);
+      };
+    } finally {
+      if (!acquired) {
+        await lock?.close().catch(() => undefined);
+        await rm(candidatePath, { force: true }).catch(() => undefined);
+      }
+    }
+  }
+
+  async tryReclaimLock(path: string, expectedContent: string): Promise<boolean> {
+    // Wake lifecycle callers hold the crash-safe process mutex across this
+    // exact comparison, removal, and any immediate replacement acquisition.
+    // Keeping the canonical entry in place until the validated remove avoids
+    // the rename gap that can displace a newly published receipt on Windows.
+    const current = await this.readText(path, OWNER_MAX_BYTES);
+    if (current === undefined || current !== expectedContent) return false;
+    try {
+      await rm(path);
+      return true;
     } catch (error) {
-      await lock.close().catch(() => undefined);
-      await rm(path, { force: true }).catch(() => undefined);
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        (error.code === 'ENOENT' || error.code === 'EPERM' || error.code === 'EBUSY')
+      ) {
+        return false;
+      }
       throw error;
     }
-    let released = false;
-    return async () => {
-      if (released) return;
-      released = true;
-      await lock.close();
-      await rm(path, { force: true });
-    };
   }
 }
 

@@ -1,7 +1,8 @@
 import { ApplicationError } from '@luwi/runtime';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { open } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 
@@ -12,15 +13,19 @@ import {
   type LifecycleService,
   type LifecycleStatus,
 } from './lifecycle.js';
+import { sanitizeWakeChildEnvironment } from './wake-environment.js';
 
 const RECORD_MAX_BYTES = 16 * 1024;
 const DEFAULT_READINESS_TIMEOUT_MS = 120_000;
 const DEFAULT_START_TIMEOUT_MS = 15_000;
-const DEFAULT_STOP_TIMEOUT_MS = 15_000;
+// The dispatcher may spend one 5-second blocking claim plus bounded child and
+// bridge cleanup before the managed serve lease can remove its receipt.
+const DEFAULT_STOP_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 1_000;
 const DEFAULT_HEARTBEAT_STALE_MS = 5_000;
 const LOCK_TIMEOUT_MS = 5_000;
+const LOCK_RECLAIM_STALE_MS = 30_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export const WAKE_CONTROL_TOKEN_ENV = 'LUWI_WAKE_CONTROL_TOKEN';
@@ -54,6 +59,32 @@ type WakeStopRequest = {
   pid: number;
   requestedAt: string;
 };
+
+type WakeLifecycleLock = {
+  pid: number;
+  acquiredAt: string;
+  token?: string;
+};
+
+type WakeStartIntent = {
+  schemaVersion: 1;
+  token: string;
+  instanceId: string;
+  pid: number;
+  installationRoot: string;
+  requestedAt: string;
+};
+
+type WakeStopFence = {
+  schemaVersion: 1;
+  token: string;
+  pid: number;
+  requestedAt: string;
+  completedAt: string | null;
+  cancelledStartToken: string | null;
+};
+
+export type WakeLockProcessState = 'alive' | 'dead' | 'unknown';
 
 export type WakeLifecycleStatus = {
   state: 'running' | 'stopped' | 'stale' | 'invalid';
@@ -92,6 +123,8 @@ export type WakeLifecycleDependencies = {
   clock: () => number;
   now: () => Date;
   randomUUID: () => string;
+  processState: (pid: number) => Promise<WakeLockProcessState>;
+  tryAcquireMutex: (identity: string) => Promise<(() => Promise<void>) | undefined>;
   daemonStatus: () => Promise<LifecycleStatus>;
   spawnWake: (launch: WakeProcessLaunch) => Promise<SpawnedWake>;
   wait: (milliseconds: number) => Promise<void>;
@@ -217,6 +250,79 @@ function parseStopRequest(value: unknown): WakeStopRequest {
   return value as WakeStopRequest;
 }
 
+function parseLifecycleLock(value: unknown): WakeLifecycleLock {
+  const keysAreValid =
+    isRecord(value) &&
+    (exactKeys(value, ['pid', 'acquiredAt']) ||
+      (exactKeys(value, ['schemaVersion', 'token', 'pid', 'acquiredAt']) &&
+        value['schemaVersion'] === 1 &&
+        validIdentity(value['token'])));
+  if (!keysAreValid || !validPid(value['pid']) || !validTimestamp(value['acquiredAt'])) {
+    throw new ApplicationError(
+      'WAKE_LIFECYCLE_LOCK_INVALID',
+      'The wake supervisor lifecycle lock is invalid; refusing to replace it.',
+      409,
+    );
+  }
+  return value as WakeLifecycleLock;
+}
+
+function parseStartIntent(value: unknown): WakeStartIntent {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, [
+      'schemaVersion',
+      'token',
+      'instanceId',
+      'pid',
+      'installationRoot',
+      'requestedAt',
+    ]) ||
+    value['schemaVersion'] !== 1 ||
+    !validIdentity(value['token']) ||
+    !validIdentity(value['instanceId']) ||
+    !validPid(value['pid']) ||
+    !boundedString(value['installationRoot'], 32_767) ||
+    !validTimestamp(value['requestedAt'])
+  ) {
+    throw new ApplicationError(
+      'WAKE_START_INTENT_INVALID',
+      'The wake supervisor start intent is invalid; refusing to replace it.',
+      409,
+    );
+  }
+  return value as WakeStartIntent;
+}
+
+function parseStopFence(value: unknown): WakeStopFence {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, [
+      'schemaVersion',
+      'token',
+      'pid',
+      'requestedAt',
+      'completedAt',
+      'cancelledStartToken',
+    ]) ||
+    value['schemaVersion'] !== 1 ||
+    !validIdentity(value['token']) ||
+    !validPid(value['pid']) ||
+    !validTimestamp(value['requestedAt']) ||
+    !(value['completedAt'] === null || validTimestamp(value['completedAt'])) ||
+    !(value['cancelledStartToken'] === null || validIdentity(value['cancelledStartToken'])) ||
+    (typeof value['completedAt'] === 'string' &&
+      Date.parse(value['completedAt']) < Date.parse(value['requestedAt'] as string))
+  ) {
+    throw new ApplicationError(
+      'WAKE_STOP_FENCE_INVALID',
+      'The wake supervisor stop fence is invalid; refusing to replace it.',
+      409,
+    );
+  }
+  return value as WakeStopFence;
+}
+
 function samePath(
   left: string,
   right: string,
@@ -253,6 +359,60 @@ function publicStatus(
         }),
     ...(heartbeat === undefined ? {} : { heartbeatAt: heartbeat.heartbeatAt }),
   };
+}
+
+/**
+ * Acquires the process-crash-safe Windows mutex used to serialize lifecycle
+ * receipt inspection and replacement. A named pipe is owned by the kernel and
+ * disappears when its server process exits, unlike a filesystem sidecar.
+ */
+export async function tryAcquireNodeWakeLifecycleMutex(
+  identity: string,
+  platform: NodeJS.Platform = process.platform,
+): Promise<(() => Promise<void>) | undefined> {
+  if (platform !== 'win32') return async () => undefined;
+
+  const normalizedIdentity = identity.replaceAll('/', '\\').toLowerCase();
+  const digest = createHash('sha256').update(normalizedIdentity).digest('hex');
+  const pipeName = `\\\\.\\pipe\\luwi-wake-lifecycle-${digest}`;
+  const server = createServer((socket) => socket.destroy());
+
+  return await new Promise<(() => Promise<void>) | undefined>((resolve, reject) => {
+    let settled = false;
+    const onError = (error: NodeJS.ErrnoException): void => {
+      if (settled) return;
+      settled = true;
+      if (error.code === 'EADDRINUSE' || error.code === 'EACCES') {
+        resolve(undefined);
+        return;
+      }
+      reject(error);
+    };
+    server.once('error', onError);
+    server.listen(pipeName, () => {
+      if (settled) {
+        server.close();
+        return;
+      }
+      settled = true;
+      server.off('error', onError);
+      // An already-acquired mutex must remain fail-closed if the server emits a
+      // late transport error; lifecycle receipt validation remains authoritative.
+      server.on('error', () => undefined);
+      server.unref();
+      let released = false;
+      resolve(async () => {
+        if (released) return;
+        released = true;
+        await new Promise<void>((resolveClose, rejectClose) => {
+          server.close((error) => {
+            if (error !== undefined) rejectClose(error);
+            else resolveClose();
+          });
+        });
+      });
+    });
+  });
 }
 
 async function spawnDetachedWake(launch: WakeProcessLaunch): Promise<SpawnedWake> {
@@ -312,7 +472,10 @@ export function createWakeLifecycleService(
   const ownerPath = pathApi.join(runtimeDirectory, 'wake-owner.json');
   const heartbeatPath = pathApi.join(runtimeDirectory, 'wake-heartbeat.json');
   const stopRequestPath = pathApi.join(runtimeDirectory, 'wake-stop-request.json');
+  const startIntentPath = pathApi.join(runtimeDirectory, 'wake-start-intent.json');
+  const stopFencePath = pathApi.join(runtimeDirectory, 'wake-stop-fence.json');
   const lockPath = pathApi.join(runtimeDirectory, 'wake-lifecycle.lock');
+  let mutexIdentity = lockPath;
   const logPath = pathApi.join(runtimeDirectory, 'wake.log');
   const cliEntry = pathApi.join(installationRoot, 'apps', 'cli', 'dist', 'main.js');
   const readinessTimeoutMs = options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
@@ -327,6 +490,7 @@ export function createWakeLifecycleService(
     await dependencies.fileSystem.ensureDirectory(runtimeDirectory);
     const canonicalHome = await dependencies.fileSystem.canonicalize(homeDirectory);
     const canonicalRuntime = await dependencies.fileSystem.canonicalize(runtimeDirectory);
+    mutexIdentity = pathApi.join(canonicalRuntime, 'wake-lifecycle.lock');
     const relative = pathApi.relative(canonicalHome, canonicalRuntime);
     if (
       relative === '..' ||
@@ -380,6 +544,88 @@ export function createWakeLifecycleService(
     return value === undefined ? undefined : parseStopRequest(value);
   };
 
+  const assertBoundedFutureTimestamp = (
+    value: string,
+    code: 'WAKE_START_INTENT_INVALID' | 'WAKE_STOP_FENCE_INVALID',
+    recordName: string,
+  ): void => {
+    if (Date.parse(value) <= dependencies.now().getTime() + LOCK_RECLAIM_STALE_MS) return;
+    throw new ApplicationError(
+      code,
+      `The wake supervisor ${recordName} timestamp is too far in the future; refusing to replace it.`,
+      409,
+    );
+  };
+
+  const readStartIntent = async (): Promise<
+    { content: string; intent: WakeStartIntent } | undefined
+  > => {
+    const content = await dependencies.fileSystem.readText(startIntentPath, RECORD_MAX_BYTES);
+    if (content === undefined) return undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content) as unknown;
+    } catch {
+      throw new ApplicationError(
+        'WAKE_START_INTENT_INVALID',
+        'The wake supervisor start intent is invalid; refusing to replace it.',
+        409,
+      );
+    }
+    const intent = parseStartIntent(parsed);
+    assertBoundedFutureTimestamp(intent.requestedAt, 'WAKE_START_INTENT_INVALID', 'start intent');
+    if (!samePath(intent.installationRoot, installationRoot, dependencies.platform, pathApi)) {
+      throw new ApplicationError(
+        'WAKE_START_INTENT_INVALID',
+        'The wake supervisor start intent belongs to another installation.',
+        409,
+      );
+    }
+    return { content, intent };
+  };
+
+  const readStopFence = async (): Promise<
+    { content: string; fence: WakeStopFence } | undefined
+  > => {
+    const content = await dependencies.fileSystem.readText(stopFencePath, RECORD_MAX_BYTES);
+    if (content === undefined) return undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content) as unknown;
+    } catch {
+      throw new ApplicationError(
+        'WAKE_STOP_FENCE_INVALID',
+        'The wake supervisor stop fence is invalid; refusing to replace it.',
+        409,
+      );
+    }
+    const fence = parseStopFence(parsed);
+    assertBoundedFutureTimestamp(fence.requestedAt, 'WAKE_STOP_FENCE_INVALID', 'stop fence');
+    if (fence.completedAt !== null) {
+      assertBoundedFutureTimestamp(fence.completedAt, 'WAKE_STOP_FENCE_INVALID', 'stop fence');
+    }
+    return { content, fence };
+  };
+
+  const readLifecycleLock = async (): Promise<
+    { content: string; owner: WakeLifecycleLock; observedAtMs: number } | undefined
+  > => {
+    const content = await dependencies.fileSystem.readText(lockPath, RECORD_MAX_BYTES);
+    if (content === undefined) return undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(content) as unknown;
+    } catch {
+      throw new ApplicationError(
+        'WAKE_LIFECYCLE_LOCK_INVALID',
+        'The wake supervisor lifecycle lock is invalid; refusing to replace it.',
+        409,
+      );
+    }
+    const owner = parseLifecycleLock(parsed);
+    return { content, owner, observedAtMs: Date.parse(owner.acquiredAt) };
+  };
+
   const inspect = async (): Promise<Inspection> => {
     let owner: WakeOwner | undefined;
     let heartbeat: WakeHeartbeat | undefined;
@@ -420,15 +666,51 @@ export function createWakeLifecycleService(
     return { status: publicStatus('running', 'owned', owner, heartbeat), owner, heartbeat };
   };
 
-  const withLock = async <Result>(operation: () => Promise<Result>): Promise<Result> => {
-    const deadline = dependencies.clock() + LOCK_TIMEOUT_MS;
+  const withLock = async <Result>(
+    operation: () => Promise<Result>,
+    timeoutMs = LOCK_TIMEOUT_MS,
+  ): Promise<Result> => {
+    const deadline = dependencies.clock() + timeoutMs;
     do {
-      const release = await dependencies.fileSystem.tryAcquireLock(lockPath);
-      if (release !== undefined) {
+      const releaseMutex = await dependencies.tryAcquireMutex(mutexIdentity);
+      if (releaseMutex !== undefined) {
         try {
-          return await operation();
+          let release = await dependencies.fileSystem.tryAcquireLock(lockPath);
+          if (release === undefined) {
+            const existing = await readLifecycleLock();
+            if (existing !== undefined) {
+              const ageMs = dependencies.now().getTime() - existing.observedAtMs;
+              if (ageMs < -LOCK_RECLAIM_STALE_MS) {
+                throw new ApplicationError(
+                  'WAKE_LIFECYCLE_LOCK_INVALID',
+                  'The wake supervisor lifecycle lock timestamp is invalid; refusing to replace it.',
+                  409,
+                );
+              }
+              if (ageMs >= LOCK_RECLAIM_STALE_MS) {
+                const reclaimable =
+                  dependencies.platform === 'win32' &&
+                  (await dependencies.processState(existing.owner.pid)) === 'dead';
+                if (
+                  reclaimable &&
+                  (await dependencies.fileSystem.tryReclaimLock(lockPath, existing.content))
+                ) {
+                  // The kernel mutex stays held across exact removal and receipt
+                  // acquisition, so no canonical-path gap is visible to a peer.
+                  release = await dependencies.fileSystem.tryAcquireLock(lockPath);
+                }
+              }
+            }
+          }
+          if (release !== undefined) {
+            try {
+              return await operation();
+            } finally {
+              await release();
+            }
+          }
         } finally {
-          await release();
+          await releaseMutex();
         }
       }
       const waitMs = Math.min(pollIntervalMs, Math.max(0, deadline - dependencies.clock()));
@@ -471,6 +753,80 @@ export function createWakeLifecycleService(
     left.pid === right.pid &&
     samePath(left.installationRoot, right.installationRoot, dependencies.platform, pathApi);
 
+  const sameStartIntent = (left: WakeStartIntent, right: WakeStartIntent): boolean =>
+    left.token === right.token &&
+    left.instanceId === right.instanceId &&
+    left.pid === right.pid &&
+    left.requestedAt === right.requestedAt &&
+    samePath(left.installationRoot, right.installationRoot, dependencies.platform, pathApi);
+
+  const removeExactRecord = async (path: string, content: string): Promise<boolean> =>
+    await dependencies.fileSystem.tryReclaimLock(path, content);
+
+  const startCancelled = (): ApplicationError =>
+    new ApplicationError(
+      'WAKE_START_CANCELLED',
+      'The wake supervisor start was cancelled by a concurrent stop request.',
+      409,
+    );
+
+  const clearStopFenceForStart = async (startToken: string): Promise<void> => {
+    const record = await readStopFence();
+    if (record === undefined) return;
+    if (record.fence.completedAt === null) {
+      const ageMs = dependencies.now().getTime() - Date.parse(record.fence.requestedAt);
+      if (
+        ageMs >= LOCK_RECLAIM_STALE_MS &&
+        (await dependencies.processState(record.fence.pid)) === 'dead' &&
+        (await removeExactRecord(stopFencePath, record.content))
+      ) {
+        return;
+      }
+      throw startCancelled();
+    }
+    if (record.fence.cancelledStartToken === startToken) throw startCancelled();
+    if (!(await removeExactRecord(stopFencePath, record.content))) {
+      throw new ApplicationError(
+        'WAKE_LIFECYCLE_BUSY',
+        'The wake supervisor stop fence changed while a start was being prepared.',
+        409,
+      );
+    }
+  };
+
+  const clearStaleStartIntent = async (): Promise<void> => {
+    const record = await readStartIntent();
+    if (record === undefined) return;
+    const ageMs = dependencies.now().getTime() - Date.parse(record.intent.requestedAt);
+    if (ageMs < -LOCK_RECLAIM_STALE_MS) {
+      throw new ApplicationError(
+        'WAKE_START_INTENT_INVALID',
+        'The wake supervisor start intent timestamp is invalid; refusing to replace it.',
+        409,
+      );
+    }
+    if (
+      ageMs >= LOCK_RECLAIM_STALE_MS &&
+      (await dependencies.processState(record.intent.pid)) === 'dead' &&
+      (await removeExactRecord(startIntentPath, record.content))
+    ) {
+      return;
+    }
+    throw new ApplicationError(
+      'WAKE_START_BUSY',
+      'Another wake supervisor start is already in progress.',
+      409,
+    );
+  };
+
+  const cleanupStartIntent = async (intent: WakeStartIntent, content: string): Promise<void> => {
+    await withLock(async () => {
+      const current = await readStartIntent();
+      if (current === undefined || !sameStartIntent(current.intent, intent)) return;
+      await removeExactRecord(startIntentPath, content);
+    }, stopTimeoutMs);
+  };
+
   return {
     async status() {
       await prepareHome();
@@ -479,17 +835,18 @@ export function createWakeLifecycleService(
 
     async start() {
       await prepareHome();
-      const beforeReadiness = await inspect();
-      if (beforeReadiness.status.state === 'running') return beforeReadiness.status;
-      if (beforeReadiness.status.state === 'invalid') {
+      const requestedAt = dependencies.now().toISOString();
+      const controlToken = dependencies.randomUUID();
+      const instanceId = dependencies.randomUUID();
+      if (!validIdentity(controlToken) || !validIdentity(instanceId)) {
         throw new ApplicationError(
-          'WAKE_OWNERSHIP_INVALID',
-          'Wake supervisor ownership evidence is invalid; refusing to replace it.',
-          409,
+          'WAKE_START_FAILED',
+          'The wake supervisor could not create a valid process identity.',
+          500,
         );
       }
-      await waitForDaemon();
-      return await withLock(async () => {
+      const prepared = await withLock(async (): Promise<WakeLifecycleStatus | WakeStartIntent> => {
+        await clearStopFenceForStart(controlToken);
         const existing = await inspect();
         if (existing.status.state === 'running') return existing.status;
         if (existing.status.state === 'invalid') {
@@ -499,136 +856,271 @@ export function createWakeLifecycleService(
             409,
           );
         }
-        await removeArtifacts();
+        await clearStaleStartIntent();
+        const intent: WakeStartIntent = {
+          schemaVersion: 1,
+          token: controlToken,
+          instanceId,
+          pid: dependencies.processId,
+          installationRoot,
+          requestedAt,
+        };
+        await dependencies.fileSystem.writeAtomic(startIntentPath, serialize(intent));
+        return intent;
+      });
+      if ('state' in prepared) return prepared;
 
-        const controlToken = dependencies.randomUUID();
-        const instanceId = dependencies.randomUUID();
-        if (!validIdentity(controlToken) || !validIdentity(instanceId)) {
-          throw new ApplicationError(
-            'WAKE_START_FAILED',
-            'The wake supervisor could not create a valid process identity.',
-            500,
-          );
-        }
-        const environment: Record<string, string | undefined> = { ...dependencies.environment };
-        delete environment[WAKE_CONTROL_TOKEN_ENV];
-        delete environment[WAKE_INSTANCE_ID_ENV];
-        environment[WAKE_CONTROL_TOKEN_ENV] = controlToken;
-        environment[WAKE_INSTANCE_ID_ENV] = instanceId;
-        const launched = await dependencies.spawnWake({
-          executable: dependencies.nodeExecutable,
-          args: [cliEntry, 'wake', 'serve'],
-          workingDirectory: installationRoot,
-          logFile: logPath,
-          environment,
-          detached: true,
-          shell: false,
-          windowsHide: true,
-        });
-        if (!validPid(launched.pid)) {
-          throw new ApplicationError(
-            'WAKE_START_FAILED',
-            'The wake supervisor process did not report an identity.',
-            503,
-          );
-        }
-
-        const deadline = dependencies.clock() + startTimeoutMs;
-        do {
-          const observed = await inspect();
-          if (
-            observed.owner !== undefined &&
-            (observed.owner.token !== controlToken ||
-              observed.owner.instanceId !== instanceId ||
-              observed.owner.pid !== launched.pid)
-          ) {
+      const intent = prepared;
+      const intentContent = serialize(intent);
+      try {
+        await waitForDaemon();
+        const launch = await withLock(async (): Promise<WakeLifecycleStatus | SpawnedWake> => {
+          const currentIntent = await readStartIntent();
+          if (currentIntent === undefined || !sameStartIntent(currentIntent.intent, intent)) {
+            throw startCancelled();
+          }
+          await clearStopFenceForStart(intent.token);
+          const existing = await inspect();
+          if (existing.status.state === 'running') {
+            await removeExactRecord(startIntentPath, intentContent);
+            return existing.status;
+          }
+          if (existing.status.state === 'invalid') {
             throw new ApplicationError(
-              'WAKE_START_CONFLICT',
-              'Another wake supervisor identity appeared during startup.',
+              'WAKE_OWNERSHIP_INVALID',
+              'Wake supervisor ownership evidence is invalid; refusing to replace it.',
               409,
             );
           }
-          if (
-            observed.owner !== undefined &&
-            observed.heartbeat !== undefined &&
-            observed.status.state === 'running'
-          ) {
-            return observed.status;
+          await removeArtifacts();
+
+          const environment: Record<string, string | undefined> = sanitizeWakeChildEnvironment(
+            dependencies.environment,
+          );
+          environment[WAKE_CONTROL_TOKEN_ENV] = intent.token;
+          environment[WAKE_INSTANCE_ID_ENV] = intent.instanceId;
+          const launched = await dependencies.spawnWake({
+            executable: dependencies.nodeExecutable,
+            args: [cliEntry, 'wake', 'serve'],
+            workingDirectory: installationRoot,
+            logFile: logPath,
+            environment,
+            detached: true,
+            shell: false,
+            windowsHide: true,
+          });
+          if (!validPid(launched.pid)) {
+            throw new ApplicationError(
+              'WAKE_START_FAILED',
+              'The wake supervisor process did not report an identity.',
+              503,
+            );
           }
+          return launched;
+        });
+        if ('state' in launch) return launch;
+
+        const deadline = dependencies.clock() + startTimeoutMs;
+        while (true) {
+          const observed = await withLock(async (): Promise<WakeLifecycleStatus | undefined> => {
+            const current = await inspect();
+            if (
+              current.owner !== undefined &&
+              (current.owner.token !== intent.token ||
+                current.owner.instanceId !== intent.instanceId ||
+                current.owner.pid !== launch.pid)
+            ) {
+              throw new ApplicationError(
+                'WAKE_START_CONFLICT',
+                'Another wake supervisor identity appeared during startup.',
+                409,
+              );
+            }
+            if (
+              current.owner !== undefined &&
+              current.heartbeat !== undefined &&
+              current.status.state === 'running'
+            ) {
+              const currentIntent = await readStartIntent();
+              if (currentIntent !== undefined && sameStartIntent(currentIntent.intent, intent)) {
+                await removeExactRecord(startIntentPath, currentIntent.content);
+              }
+              return current.status;
+            }
+            const currentIntent = await readStartIntent();
+            if (currentIntent === undefined || !sameStartIntent(currentIntent.intent, intent)) {
+              throw startCancelled();
+            }
+            const fence = await readStopFence();
+            if (
+              fence !== undefined &&
+              (fence.fence.completedAt === null || fence.fence.cancelledStartToken === intent.token)
+            ) {
+              throw startCancelled();
+            }
+            return undefined;
+          });
+          if (observed !== undefined) return observed;
+          if (dependencies.clock() >= deadline) break;
           const waitMs = Math.min(pollIntervalMs, Math.max(0, deadline - dependencies.clock()));
           if (waitMs > 0) await dependencies.wait(waitMs);
-        } while (dependencies.clock() < deadline);
+        }
 
-        await dependencies.fileSystem.writeAtomic(
-          stopRequestPath,
-          serialize({
-            schemaVersion: 1,
-            token: controlToken,
-            instanceId,
-            pid: launched.pid,
-            requestedAt: dependencies.now().toISOString(),
-          } satisfies WakeStopRequest),
-        );
+        await withLock(async () => {
+          const currentIntent = await readStartIntent();
+          if (currentIntent === undefined || !sameStartIntent(currentIntent.intent, intent)) {
+            throw startCancelled();
+          }
+          const fence = await readStopFence();
+          if (
+            fence !== undefined &&
+            (fence.fence.completedAt === null || fence.fence.cancelledStartToken === intent.token)
+          ) {
+            throw startCancelled();
+          }
+          await dependencies.fileSystem.writeAtomic(
+            stopRequestPath,
+            serialize({
+              schemaVersion: 1,
+              token: intent.token,
+              instanceId: intent.instanceId,
+              pid: launch.pid,
+              requestedAt: dependencies.now().toISOString(),
+            } satisfies WakeStopRequest),
+          );
+        });
         throw new ApplicationError(
           'WAKE_START_TIMEOUT',
           'The wake supervisor did not publish a healthy heartbeat before the startup deadline.',
           503,
         );
-      });
+      } finally {
+        await cleanupStartIntent(intent, intentContent);
+      }
     },
 
     async stop() {
       await prepareHome();
-      const target = await withLock(async (): Promise<WakeOwner | undefined> => {
-        const observed = await inspect();
-        if (observed.status.state === 'invalid') {
-          throw new ApplicationError(
-            'WAKE_OWNERSHIP_INVALID',
-            'Wake supervisor ownership evidence is invalid; refusing to request a stop.',
-            409,
-          );
-        }
-        if (observed.owner === undefined) {
-          await removeArtifacts();
-          return undefined;
-        }
-        if (observed.status.state === 'stale') {
-          await removeArtifacts();
-          return undefined;
-        }
-        await dependencies.fileSystem.writeAtomic(
-          stopRequestPath,
-          serialize({
-            schemaVersion: 1,
-            token: observed.owner.token,
-            instanceId: observed.owner.instanceId,
-            pid: observed.owner.pid,
-            requestedAt: dependencies.now().toISOString(),
-          } satisfies WakeStopRequest),
+      const requestedAt = dependencies.now().toISOString();
+      const fenceToken = dependencies.randomUUID();
+      if (!validIdentity(fenceToken)) {
+        throw new ApplicationError(
+          'WAKE_STOP_FAILED',
+          'The wake supervisor could not create a valid stop identity.',
+          500,
         );
-        return observed.owner;
-      });
-      if (target === undefined) return (await inspect()).status;
-
-      const deadline = dependencies.clock() + stopTimeoutMs;
-      do {
-        const current = await readOwner();
-        if (current === undefined) return (await inspect()).status;
-        if (!sameOwner(current, target)) {
-          throw new ApplicationError(
-            'WAKE_OWNERSHIP_CHANGED',
-            'Wake supervisor ownership changed while the stop request was pending.',
-            409,
+      }
+      let writtenFence: WakeStopFence | undefined;
+      const finishFence = async (): Promise<void> => {
+        if (writtenFence === undefined) return;
+        await withLock(async () => {
+          const current = await readStopFence();
+          if (current === undefined || current.fence.token !== writtenFence?.token) return;
+          await dependencies.fileSystem.writeAtomic(
+            stopFencePath,
+            serialize({ ...writtenFence, completedAt: dependencies.now().toISOString() }),
           );
-        }
-        const waitMs = Math.min(pollIntervalMs, Math.max(0, deadline - dependencies.clock()));
-        if (waitMs > 0) await dependencies.wait(waitMs);
-      } while (dependencies.clock() < deadline);
-      throw new ApplicationError(
-        'WAKE_STOP_TIMEOUT',
-        'The managed wake supervisor did not honor the cooperative stop request in time.',
-        503,
-      );
+        }, stopTimeoutMs);
+      };
+
+      try {
+        const target = await withLock(async (): Promise<WakeOwner | undefined> => {
+          const previousFence = await readStopFence();
+          if (previousFence !== undefined) {
+            if (previousFence.fence.completedAt === null) {
+              const ageMs =
+                dependencies.now().getTime() - Date.parse(previousFence.fence.requestedAt);
+              const staleDead =
+                ageMs >= LOCK_RECLAIM_STALE_MS &&
+                (await dependencies.processState(previousFence.fence.pid)) === 'dead';
+              if (!staleDead || !(await removeExactRecord(stopFencePath, previousFence.content))) {
+                throw new ApplicationError(
+                  'WAKE_LIFECYCLE_BUSY',
+                  'Another wake supervisor stop is already in progress.',
+                  409,
+                );
+              }
+            } else if (!(await removeExactRecord(stopFencePath, previousFence.content))) {
+              throw new ApplicationError(
+                'WAKE_LIFECYCLE_BUSY',
+                'The wake supervisor stop fence changed while stop was being prepared.',
+                409,
+              );
+            }
+          }
+          const pendingStart = await readStartIntent();
+          const fence: WakeStopFence = {
+            schemaVersion: 1,
+            token: fenceToken,
+            pid: dependencies.processId,
+            requestedAt,
+            completedAt: null,
+            cancelledStartToken: pendingStart?.intent.token ?? null,
+          };
+          await dependencies.fileSystem.writeAtomic(stopFencePath, serialize(fence));
+          writtenFence = fence;
+          if (
+            pendingStart !== undefined &&
+            !(await removeExactRecord(startIntentPath, pendingStart.content))
+          ) {
+            throw new ApplicationError(
+              'WAKE_LIFECYCLE_BUSY',
+              'The wake supervisor start intent changed while stop was cancelling it.',
+              409,
+            );
+          }
+          const observed = await inspect();
+          if (observed.status.state === 'invalid') {
+            throw new ApplicationError(
+              'WAKE_OWNERSHIP_INVALID',
+              'Wake supervisor ownership evidence is invalid; refusing to request a stop.',
+              409,
+            );
+          }
+          if (observed.owner === undefined) {
+            await removeArtifacts();
+            return undefined;
+          }
+          if (observed.status.state === 'stale') {
+            await removeArtifacts();
+            return undefined;
+          }
+          await dependencies.fileSystem.writeAtomic(
+            stopRequestPath,
+            serialize({
+              schemaVersion: 1,
+              token: observed.owner.token,
+              instanceId: observed.owner.instanceId,
+              pid: observed.owner.pid,
+              requestedAt: dependencies.now().toISOString(),
+            } satisfies WakeStopRequest),
+          );
+          return observed.owner;
+        }, stopTimeoutMs);
+        if (target === undefined) return (await inspect()).status;
+
+        const deadline = dependencies.clock() + stopTimeoutMs;
+        do {
+          const current = await readOwner();
+          if (current === undefined) return (await inspect()).status;
+          if (!sameOwner(current, target)) {
+            throw new ApplicationError(
+              'WAKE_OWNERSHIP_CHANGED',
+              'Wake supervisor ownership changed while the stop request was pending.',
+              409,
+            );
+          }
+          const waitMs = Math.min(pollIntervalMs, Math.max(0, deadline - dependencies.clock()));
+          if (waitMs > 0) await dependencies.wait(waitMs);
+        } while (dependencies.clock() < deadline);
+        throw new ApplicationError(
+          'WAKE_STOP_TIMEOUT',
+          'The managed wake supervisor did not honor the cooperative stop request in time.',
+          503,
+        );
+      } finally {
+        await finishFence();
+      }
     },
 
     async beginManagedServe() {
@@ -651,22 +1143,6 @@ export function createWakeLifecycleService(
         installationRoot,
         startedAt: dependencies.now().toISOString(),
       };
-      const current = await inspect();
-      if (current.status.state === 'invalid') {
-        throw new ApplicationError(
-          'WAKE_OWNERSHIP_INVALID',
-          'Wake supervisor ownership evidence is invalid; refusing to serve.',
-          409,
-        );
-      }
-      if (current.owner !== undefined && !sameOwner(current.owner, owner)) {
-        throw new ApplicationError(
-          'WAKE_ALREADY_RUNNING',
-          'Another managed wake supervisor owns the lifecycle receipt.',
-          409,
-        );
-      }
-
       const writeHeartbeat = async (): Promise<void> => {
         await dependencies.fileSystem.writeAtomic(
           heartbeatPath,
@@ -678,8 +1154,53 @@ export function createWakeLifecycleService(
           } satisfies WakeHeartbeat),
         );
       };
-      await dependencies.fileSystem.writeAtomic(ownerPath, serialize(owner));
-      await writeHeartbeat();
+      await withLock(async () => {
+        const intent = await readStartIntent();
+        const fence = await readStopFence();
+        if (
+          intent === undefined ||
+          intent.intent.token !== tokenValue ||
+          intent.intent.instanceId !== instanceValue ||
+          !samePath(
+            intent.intent.installationRoot,
+            installationRoot,
+            dependencies.platform,
+            pathApi,
+          ) ||
+          (fence !== undefined &&
+            (fence.fence.completedAt === null || fence.fence.cancelledStartToken === tokenValue))
+        ) {
+          throw startCancelled();
+        }
+
+        const current = await inspect();
+        if (current.status.state === 'invalid') {
+          throw new ApplicationError(
+            'WAKE_OWNERSHIP_INVALID',
+            'Wake supervisor ownership evidence is invalid; refusing to serve.',
+            409,
+          );
+        }
+        if (current.owner !== undefined && !sameOwner(current.owner, owner)) {
+          throw new ApplicationError(
+            'WAKE_ALREADY_RUNNING',
+            'Another managed wake supervisor owns the lifecycle receipt.',
+            409,
+          );
+        }
+
+        await dependencies.fileSystem.writeAtomic(ownerPath, serialize(owner));
+        await writeHeartbeat();
+        if (!(await removeExactRecord(startIntentPath, intent.content))) {
+          await dependencies.fileSystem.removeFile(heartbeatPath);
+          await dependencies.fileSystem.removeFile(ownerPath);
+          throw new ApplicationError(
+            'WAKE_LIFECYCLE_BUSY',
+            'The wake supervisor start intent changed during child admission.',
+            409,
+          );
+        }
+      });
 
       let closed = false;
       let settled = false;
@@ -779,6 +1300,16 @@ export function createNodeWakeLifecycleService(options: {
     clock: Date.now,
     now: () => new Date(),
     randomUUID,
+    processState: async (pid) => {
+      try {
+        process.kill(pid, 0);
+        return 'alive';
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ESRCH') return 'dead';
+        return 'unknown';
+      }
+    },
+    tryAcquireMutex: (identity) => tryAcquireNodeWakeLifecycleMutex(identity),
     daemonStatus: () => options.lifecycle.status(),
     spawnWake: spawnDetachedWake,
     wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),

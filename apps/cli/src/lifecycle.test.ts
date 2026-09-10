@@ -1,7 +1,10 @@
+import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { posix } from 'node:path';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -13,6 +16,78 @@ import {
   type LifecycleFileSystem,
   type LifecycleHttpResponse,
 } from './lifecycle.js';
+import { tryAcquireNodeWakeLifecycleMutex } from './wake-lifecycle.js';
+
+type WakeLockChildReady = {
+  state: 'ready';
+  pid: number;
+  content: string;
+};
+
+const wakeLockChildFixture = fileURLToPath(
+  new URL('./fixtures/wake-lifecycle-lock-child.mjs', import.meta.url),
+);
+
+async function readChildReady(
+  child: ChildProcess,
+  timeoutMs = 10_000,
+): Promise<WakeLockChildReady> {
+  const output = child.stdout;
+  if (output === null) throw new Error('The lifecycle lock fixture has no stdout pipe.');
+
+  return await new Promise<WakeLockChildReady>((resolve, reject) => {
+    let buffer = '';
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('Timed out waiting for the lifecycle lock fixture.'));
+    }, timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      output.off('data', onData);
+      child.off('error', onError);
+      child.off('exit', onExit);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      cleanup();
+      reject(
+        new Error(
+          `Lifecycle lock fixture exited before readiness (code=${String(code)}, signal=${String(signal)}).`,
+        ),
+      );
+    };
+    const onData = (chunk: Buffer | string): void => {
+      buffer += chunk.toString();
+      const newline = buffer.indexOf('\n');
+      if (newline < 0) return;
+      cleanup();
+      const parsed = JSON.parse(buffer.slice(0, newline)) as unknown;
+      if (
+        typeof parsed !== 'object' ||
+        parsed === null ||
+        (parsed as Record<string, unknown>)['state'] !== 'ready' ||
+        !Number.isSafeInteger((parsed as Record<string, unknown>)['pid']) ||
+        typeof (parsed as Record<string, unknown>)['content'] !== 'string'
+      ) {
+        reject(new Error('Lifecycle lock fixture returned an invalid readiness record.'));
+        return;
+      }
+      resolve(parsed as WakeLockChildReady);
+    };
+
+    output.on('data', onData);
+    child.once('error', onError);
+    child.once('exit', onExit);
+  });
+}
+
+async function waitForChildExit(child: ChildProcess, timeoutMs = 10_000): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await once(child, 'exit', { signal: AbortSignal.timeout(timeoutMs) });
+}
 
 const installationRoot = 'C:/workspace/luwiruntime';
 const home = 'C:/workspace/luwiruntime/temp/luwi-home';
@@ -70,6 +145,7 @@ function memoryFileSystem(initial: Record<string, string> = {}): {
       removeFile: vi.fn(async (path) => {
         files.delete(path.replaceAll('\\', '/'));
       }),
+      modifiedAt: vi.fn(async (path) => (files.has(path.replaceAll('\\', '/')) ? 0 : undefined)),
       tryAcquireLock: vi.fn(async (path) => {
         const normalizedPath = path.replaceAll('\\', '/');
         if (locks.has(normalizedPath)) return undefined;
@@ -77,6 +153,12 @@ function memoryFileSystem(initial: Record<string, string> = {}): {
         return async () => {
           locks.delete(normalizedPath);
         };
+      }),
+      tryReclaimLock: vi.fn(async (path, expectedContent) => {
+        const normalizedPath = path.replaceAll('\\', '/');
+        if (files.get(normalizedPath) !== expectedContent) return false;
+        files.delete(normalizedPath);
+        return true;
       }),
     },
   };
@@ -201,16 +283,143 @@ describe('CLI lifecycle', () => {
       const release = await fileSystem.tryAcquireLock(join(directory, 'lifecycle.lock'));
       expect(release).toBeTypeOf('function');
       expect(await fileSystem.tryAcquireLock(join(directory, 'lifecycle.lock'))).toBeUndefined();
+      const lockContent = await fileSystem.readText(join(directory, 'lifecycle.lock'), 16 * 1024);
+      expect(lockContent).toBeTypeOf('string');
+      expect(JSON.parse(lockContent!)).toMatchObject({
+        schemaVersion: 1,
+        token: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        pid: process.pid,
+        acquiredAt: expect.any(String),
+      });
+      expect(
+        await fileSystem.tryReclaimLock(join(directory, 'lifecycle.lock'), '{"wrong":true}\n'),
+      ).toBe(false);
+      expect(await fileSystem.exists(join(directory, 'lifecycle.lock'))).toBe(true);
       await release?.();
       const reacquired = await fileSystem.tryAcquireLock(join(directory, 'lifecycle.lock'));
       expect(reacquired).toBeTypeOf('function');
+      const reacquiredContent = await fileSystem.readText(
+        join(directory, 'lifecycle.lock'),
+        16 * 1024,
+      );
+      expect(reacquiredContent).toBeTypeOf('string');
+      expect(
+        await fileSystem.tryReclaimLock(join(directory, 'lifecycle.lock'), reacquiredContent!),
+      ).toBe(true);
+      expect(await fileSystem.exists(join(directory, 'lifecycle.lock'))).toBe(false);
       await reacquired?.();
+
+      const stalePath = join(directory, 'stale.lock');
+      const oldSidecar = `${stalePath}.reclaim`;
+      const orphanedCandidate = `${stalePath}.candidate-orphaned`;
+      await writeFile(stalePath, '{"pid":9999,"acquiredAt":"2026-09-10T07:00:00.000Z"}\n');
+      await writeFile(oldSidecar, 'orphaned previous reclaim artifact\n');
+      await writeFile(orphanedCandidate, 'orphaned acquisition candidate\n');
+      const staleContent = await readFile(stalePath, 'utf8');
+      expect(await fileSystem.tryReclaimLock(stalePath, staleContent)).toBe(true);
+      expect(await fileSystem.exists(stalePath)).toBe(false);
+      expect(await fileSystem.readText(oldSidecar, 16 * 1024)).toBe(
+        'orphaned previous reclaim artifact\n',
+      );
+      const acquiredBesideOrphan = await fileSystem.tryAcquireLock(stalePath);
+      expect(acquiredBesideOrphan).toBeTypeOf('function');
+      expect(await fileSystem.readText(orphanedCandidate, 16 * 1024)).toBe(
+        'orphaned acquisition candidate\n',
+      );
+      await acquiredBesideOrphan?.();
 
       expect(await readFile(path, 'utf8')).toBe('{"version":2}\n');
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+  it('serializes real Windows lifecycle contenders without moving the canonical lock path', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-wake-mutex-'));
+    try {
+      const identity = join(directory, 'wake-lifecycle.lock');
+      const fileSystem = new NodeLifecycleFileSystem();
+      const first = await tryAcquireNodeWakeLifecycleMutex(identity, 'win32');
+      expect(first).toBeTypeOf('function');
+      const releaseReceipt = await fileSystem.tryAcquireLock(identity);
+      expect(releaseReceipt).toBeTypeOf('function');
+      const canonicalBeforeContention = await readFile(identity, 'utf8');
+
+      await expect(tryAcquireNodeWakeLifecycleMutex(identity, 'win32')).resolves.toBeUndefined();
+      await expect(readFile(identity, 'utf8')).resolves.toBe(canonicalBeforeContention);
+
+      await releaseReceipt?.();
+      await first?.();
+      const afterRelease = await tryAcquireNodeWakeLifecycleMutex(identity, 'win32');
+      expect(afterRelease).toBeTypeOf('function');
+      const replacementReceipt = await fileSystem.tryAcquireLock(identity);
+      expect(replacementReceipt).toBeTypeOf('function');
+      await replacementReceipt?.();
+      await afterRelease?.();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'serializes a separate Windows process and recovers its exact receipt after abrupt exit',
+    async () => {
+      const directory = await mkdtemp(join(tmpdir(), 'luwi-wake-cross-process-'));
+      const identity = join(directory, 'wake-lifecycle.lock');
+      const fileSystem = new NodeLifecycleFileSystem();
+      let child: ChildProcess | undefined;
+      let releaseRecoveredMutex: (() => Promise<void>) | undefined;
+      let releaseReplacementReceipt: (() => Promise<void>) | undefined;
+      try {
+        child = spawn(process.execPath, ['--import', 'tsx', wakeLockChildFixture, identity], {
+          cwd: process.cwd(),
+          env: { ...process.env, NODE_OPTIONS: undefined },
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        });
+        const ready = await readChildReady(child);
+        expect(ready).toMatchObject({ state: 'ready', pid: child.pid });
+        expect(JSON.parse(ready.content)).toMatchObject({
+          schemaVersion: 1,
+          pid: child.pid,
+          token: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        });
+
+        await expect(tryAcquireNodeWakeLifecycleMutex(identity, 'win32')).resolves.toBeUndefined();
+        await expect(readFile(identity, 'utf8')).resolves.toBe(ready.content);
+
+        expect(child.kill('SIGKILL')).toBe(true);
+        await waitForChildExit(child);
+
+        const mutexDeadline = Date.now() + 5_000;
+        do {
+          releaseRecoveredMutex = await tryAcquireNodeWakeLifecycleMutex(identity, 'win32');
+          if (releaseRecoveredMutex !== undefined) break;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        } while (Date.now() < mutexDeadline);
+        expect(releaseRecoveredMutex).toBeTypeOf('function');
+
+        const staleContent = await readFile(identity, 'utf8');
+        expect(staleContent).toBe(ready.content);
+        expect(await fileSystem.tryReclaimLock(identity, '{"wrong":true}\n')).toBe(false);
+        await expect(readFile(identity, 'utf8')).resolves.toBe(ready.content);
+        expect(await fileSystem.tryReclaimLock(identity, ready.content)).toBe(true);
+        await expect(readFile(identity, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+        releaseReplacementReceipt = await fileSystem.tryAcquireLock(identity);
+        expect(releaseReplacementReceipt).toBeTypeOf('function');
+      } finally {
+        if (child !== undefined && child.exitCode === null && child.signalCode === null) {
+          child.kill('SIGKILL');
+          await waitForChildExit(child).catch(() => undefined);
+        }
+        await releaseReplacementReceipt?.();
+        await releaseRecoveredMutex?.();
+        await rm(directory, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
 
   it('writes only the approved LUWI-owned configuration and is idempotent', async () => {
     const { service, dependencies, files } = fixture();
