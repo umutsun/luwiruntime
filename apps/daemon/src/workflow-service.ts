@@ -11,6 +11,7 @@ import {
 } from '@luwi/protocol';
 import {
   RedisRepositoryError,
+  type ContinueWorkflowInput,
   type ContinueWorkflowResult,
   type CreateMessageInput,
   type CreateWorkflowResult,
@@ -145,6 +146,21 @@ export function createWorkflowService(options: {
     return session;
   };
 
+  const requireWorkflowActor = async (
+    sessionId: string,
+    projectId: string,
+  ): Promise<SessionView> => {
+    const actor = await requireActor(sessionId, 'WORKFLOW_ACTOR_INVALID', 403);
+    if (actor.projectId !== projectId) {
+      throw new ApplicationError(
+        'WORKFLOW_ACTOR_INVALID',
+        'The workflow actor is unavailable or unauthorized.',
+        403,
+      );
+    }
+    return actor;
+  };
+
   const selectTarget = async (sourceSession: SessionView, targetAgentId: string) => {
     const selection = selectMessageTarget({
       sourceSession,
@@ -173,7 +189,7 @@ export function createWorkflowService(options: {
     correlationId: string,
     messageId: string,
     message: WorkflowCreateRequest['firstMessage'],
-  ): Promise<CreateMessageInput['message']> => {
+  ): Promise<NonNullable<ContinueWorkflowInput['nextMessage']>> => {
     assertMessageSize(message);
     const selection = await selectTarget(sourceSession, message.targetAgentId);
     const requestFingerprint = createMessageRequestFingerprint({
@@ -210,7 +226,7 @@ export function createWorkflowService(options: {
     correlationId: string,
     messageId: string,
     message: WorkflowCreateRequest['firstMessage'],
-  ): CreateMessageInput['message'] => {
+  ): NonNullable<ContinueWorkflowInput['nextMessage']> => {
     assertMessageSize(message);
     const requestFingerprint = createMessageRequestFingerprint({
       sourceSessionId: actorSessionId,
@@ -345,7 +361,7 @@ export function createWorkflowService(options: {
         throw new ApplicationError('WORKFLOW_NOT_FOUND', 'The workflow was not found.', 404);
       }
       const replayCandidate = currentWorkflow.revision > request.expectedRevision;
-      let nextMessage: CreateMessageInput['message'] | undefined;
+      let nextMessage: ContinueWorkflowInput['nextMessage'];
       if (request.decision.kind === 'next_message') {
         const message = {
           targetAgentId: request.decision.targetAgentId,
@@ -361,11 +377,11 @@ export function createWorkflowService(options: {
             message,
           );
         } else {
-          const actor = await requireActor(actorSessionId, 'WORKFLOW_ACTOR_INVALID', 403);
+          const actor = await requireWorkflowActor(actorSessionId, currentWorkflow.projectId);
           nextMessage = await buildMessage(actor, createId(), createId(), message);
         }
       } else if (!replayCandidate) {
-        await requireActor(actorSessionId, 'WORKFLOW_ACTOR_INVALID', 403);
+        await requireWorkflowActor(actorSessionId, currentWorkflow.projectId);
       }
       try {
         return await repository.continue({

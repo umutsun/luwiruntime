@@ -1535,8 +1535,59 @@ end`,
     '  end',
     '  return result',
     'end',
+    `local function wake_reason(value)
+  return type(value) == 'string' and #value > 0 and #value <= 128
+    and string.match(value, '^[a-z][a-z0-9_]*$') ~= nil
+end
+local function wake_load(key, intent_id)
+  if key_type(key) ~= 'hash' then return nil, 'REDIS_STATE_INVALID' end
+  local fields = redis.call('HGETALL', key)
+  local raw = {}
+  for index = 1, #fields, 2 do raw[fields[index]] = fields[index + 1] end
+  local required = {
+    'id', 'messageId', 'workflowId', 'sourceSessionId', 'correlationId',
+    'terminalState', 'adapter', 'state', 'createdAt', 'updatedAt',
+    'workspaceId', 'projectId', 'sourceAgentId', 'workflowRevision',
+    'streamId', 'deadlineMs', 'fallbackContinuationId', 'requestedEventId', 'lastEventId'
+  }
+  for _, field in ipairs(required) do
+    if type(raw[field]) ~= 'string' or raw[field] == '' then return nil, 'REDIS_STATE_INVALID' end
+  end
+  if raw.id ~= intent_id or raw.messageId ~= intent_id or raw.adapter ~= 'codex-queue-v1'
+    or not bridge_id(raw.id) or not bridge_id(raw.workflowId)
+    or not bridge_id(raw.sourceSessionId) or not bridge_id(raw.correlationId)
+    or not bridge_id(raw.workspaceId) or not bridge_id(raw.projectId)
+    or not bridge_id(raw.sourceAgentId) or not bridge_id(raw.fallbackContinuationId)
+    or not bridge_id(raw.requestedEventId) or not bridge_id(raw.lastEventId)
+    or string.match(raw.streamId, '^%d+%-%d+$') == nil then
+    return nil, 'REDIS_STATE_INVALID'
+  end
+  local revision = tonumber(raw.workflowRevision)
+  local deadline = tonumber(raw.deadlineMs)
+  if not bridge_integer(revision, 1) or not bridge_integer(deadline, 1) then
+    return nil, 'REDIS_STATE_INVALID'
+  end
+  if raw.state == 'claimed' then
+    if not bridge_id(raw.dispatcherInstanceId) or not bridge_id(raw.claimId) then
+      return nil, 'REDIS_STATE_INVALID'
+    end
+  elseif raw.state == 'dispatching' then
+    if not bridge_id(raw.dispatcherInstanceId) or not bridge_id(raw.claimId)
+      or not bridge_id(raw.attemptId) then
+      return nil, 'REDIS_STATE_INVALID'
+    end
+  elseif raw.state ~= 'pending' and raw.state ~= 'dispatched'
+    and raw.state ~= 'fallback_only' and raw.state ~= 'indeterminate' then
+    return nil, 'REDIS_STATE_INVALID'
+  end
+  if (raw.state == 'dispatched' or raw.state == 'fallback_only' or raw.state == 'indeterminate')
+    and not wake_reason(raw.reasonCode) then
+    return nil, 'REDIS_STATE_INVALID'
+  end
+  return raw, nil
+end`,
     `local function workflow_continue(keys, args)
-  if (#keys ~= 8 and #keys ~= 22) or #args ~= 4 then
+  if (#keys ~= 8 and #keys ~= 22) or #args ~= 5 then
     return bridge_error('REDIS_ARGUMENT_INVALID')
   end
   local request_ok, request = pcall(cjson.decode, args[1])
@@ -1552,7 +1603,8 @@ end`,
     or not bridge_id(request.actorSessionId) or not bridge_digest(request.decisionFingerprint)
     or not bridge_id(request.expectedCoordinatorSessionId)
     or not bridge_id(request.expectedProjectId)
-    or not bridge_id(args[3]) or not bridge_id(args[4]) then
+    or not bridge_id(args[3]) or not bridge_id(args[4])
+    or not bridge_integer(tonumber(args[5]), 1) then
     return bridge_error('REDIS_ARGUMENT_INVALID')
   end
   if type(request.proof) ~= 'table' or type(request.decision) ~= 'table' then
@@ -1560,6 +1612,7 @@ end`,
   end
 
   local proof_id = nil
+  local continuation_causation_id = nil
   if request.proof.kind == 'wake' then
     if not exact_fields(request.proof, {kind=true, wakeIntentId=true})
       or not bridge_id(request.proof.wakeIntentId) then
@@ -1715,21 +1768,19 @@ end`,
       return bridge_error('WORKFLOW_PROOF_MISMATCH')
     end
     if key_type(keys[8]) ~= 'hash' then return bridge_error('WORKFLOW_PROOF_MISMATCH') end
-    local wake = redis.call(
-      'HMGET', keys[8],
-      'id', 'messageId', 'workflowId', 'sourceSessionId', 'projectId',
-      'sourceAgentId', 'workflowRevision', 'state'
-    )
-    local wake_revision = tonumber(wake[7])
-    if wake[1] ~= proof_id or wake[2] ~= workflow[6] or wake[3] ~= request.workflowId
-      or wake[4] ~= request.expectedCoordinatorSessionId
-      or wake[5] ~= request.expectedProjectId or wake[6] ~= coordinator[2]
-      or wake_revision ~= request.expectedRevision then
+    local wake, wake_error = wake_load(keys[8], proof_id)
+    if wake_error then return bridge_error(wake_error) end
+    if wake.messageId ~= workflow[6] or wake.workflowId ~= request.workflowId
+      or wake.sourceSessionId ~= request.expectedCoordinatorSessionId
+      or wake.projectId ~= request.expectedProjectId or wake.sourceAgentId ~= coordinator[2]
+      or tonumber(wake.workflowRevision) ~= request.expectedRevision then
       return bridge_error('WORKFLOW_PROOF_MISMATCH')
     end
-    if wake[8] ~= 'dispatching' and wake[8] ~= 'dispatched' and wake[8] ~= 'indeterminate' then
+    if wake.state ~= 'dispatching' and wake.state ~= 'dispatched'
+      and wake.state ~= 'indeterminate' then
       return bridge_error('WORKFLOW_PROOF_MISMATCH')
     end
+    continuation_causation_id = wake.lastEventId
   else
     if workflow[5] ~= 'waiting_for_human' then return bridge_error('WORKFLOW_NOT_ACTIVE') end
     if workflow[7] ~= false or workflow[8] ~= proof_id
@@ -1741,6 +1792,7 @@ end`,
       and request.actorSessionId == request.expectedCoordinatorSessionId then
       return bridge_error('WORKFLOW_REPLACEMENT_REQUIRED')
     end
+    continuation_causation_id = proof_id
   end
 
   local next_message = nil
@@ -1754,8 +1806,7 @@ end`,
         id=true, correlationId=true, projectId=true, sourceSessionId=true,
         sourceAgentId=true, targetSessionId=true, targetAgentId=true,
         selectionReason=true, kind=true, subject=true, content=true,
-        evidenceRequirements=true, timeoutMs=true, requestFingerprint=true,
-        causationId=true
+        evidenceRequirements=true, timeoutMs=true, requestFingerprint=true
       })
       or not bridge_id(next_message.id) or not bridge_id(next_message.correlationId)
       or next_message.projectId ~= request.expectedProjectId
@@ -1772,8 +1823,7 @@ end`,
       or type(next_message.evidenceRequirements) ~= 'table'
       or not bridge_integer(next_message.timeoutMs, 1)
       or next_message.timeoutMs > 86400000
-      or not bridge_digest(next_message.requestFingerprint)
-      or (next_message.causationId ~= nil and not bridge_id(next_message.causationId)) then
+      or not bridge_digest(next_message.requestFingerprint) then
       return bridge_error('REDIS_ARGUMENT_INVALID')
     end
     local evidence_count = 0
@@ -1886,7 +1936,7 @@ end`,
         selectionReason=next_message.selectionReason
       }
     }
-    if next_message.causationId then event.causationId = next_message.causationId end
+    event.causationId = continuation_causation_id
     local inbox_stream_id = redis.call('XADD', keys[20], '*', 'item', cjson.encode(inbox_item))
     redis.call(
       'HSET', keys[10],
@@ -1903,10 +1953,10 @@ end`,
       'deadlineAt', stored_message.deadlineAt, 'deadlineMs', deadline_ms,
       'requestFingerprint', next_message.requestFingerprint,
       'targetInboxStreamId', inbox_stream_id,
-      'workflowId', request.workflowId, 'workflowRevision', next_revision
+      'workflowId', request.workflowId, 'workflowRevision', next_revision,
+      'causationId', continuation_causation_id
     )
     if next_message.subject then redis.call('HSET', keys[10], 'subject', next_message.subject) end
-    if next_message.causationId then redis.call('HSET', keys[10], 'causationId', next_message.causationId) end
     redis.call('SET', keys[11], next_message.id)
     redis.call('ZADD', keys[13], clock.milliseconds, next_message.id)
     redis.call('ZADD', keys[14], clock.milliseconds, next_message.id)
@@ -1954,7 +2004,7 @@ end`,
     redis.call('HDEL', keys[1], 'currentWakeIntentId')
   end
 
-  redis.call('SET', keys[2], cjson.encode({
+  redis.call('PSETEX', keys[2], tonumber(args[5]), cjson.encode({
     workflowId=request.workflowId, revision=request.expectedRevision,
     fingerprint=request.decisionFingerprint, decisionKind=decision_kind,
     result=committed
@@ -2375,10 +2425,6 @@ end`,
     "local function message_fail(keys, args) return workflow_terminal_transition(keys, args, 'failed') end",
     "local function message_timeout(keys, args) return workflow_terminal_transition(keys, args, 'timed_out') end",
     `local WAKE_TERMINAL = {dispatched=true, fallback_only=true, indeterminate=true}
-local function wake_reason(value)
-  return type(value) == 'string' and #value > 0 and #value <= 128
-    and string.match(value, '^[a-z][a-z0-9_]*$') ~= nil
-end
 local function wake_projection(key)
   local fields = redis.call('HGETALL', key)
   if #fields == 0 then return nil end
@@ -2399,51 +2445,6 @@ local function wake_projection(key)
   }
   if raw.reasonCode then result.reasonCode = raw.reasonCode end
   return result
-end
-local function wake_load(key, intent_id)
-  if key_type(key) ~= 'hash' then return nil, 'REDIS_STATE_INVALID' end
-  local fields = redis.call('HGETALL', key)
-  local raw = {}
-  for index = 1, #fields, 2 do raw[fields[index]] = fields[index + 1] end
-  local required = {
-    'id', 'messageId', 'workflowId', 'sourceSessionId', 'correlationId',
-    'terminalState', 'adapter', 'state', 'createdAt', 'updatedAt',
-    'workspaceId', 'projectId', 'sourceAgentId', 'workflowRevision',
-    'streamId', 'deadlineMs', 'fallbackContinuationId', 'requestedEventId', 'lastEventId'
-  }
-  for _, field in ipairs(required) do
-    if type(raw[field]) ~= 'string' or raw[field] == '' then return nil, 'REDIS_STATE_INVALID' end
-  end
-  if raw.id ~= intent_id or raw.messageId ~= intent_id or raw.adapter ~= 'codex-queue-v1'
-    or not bridge_id(raw.id) or not bridge_id(raw.workflowId)
-    or not bridge_id(raw.sourceSessionId) or not bridge_id(raw.correlationId)
-    or not bridge_id(raw.workspaceId) or not bridge_id(raw.projectId)
-    or not bridge_id(raw.sourceAgentId) or not bridge_id(raw.fallbackContinuationId)
-    or not bridge_id(raw.requestedEventId) or not bridge_id(raw.lastEventId)
-    or string.match(raw.streamId, '^%d+%-%d+$') == nil then
-    return nil, 'REDIS_STATE_INVALID'
-  end
-  local revision = tonumber(raw.workflowRevision)
-  local deadline = tonumber(raw.deadlineMs)
-  if not bridge_integer(revision, 1) or not bridge_integer(deadline, 1) then
-    return nil, 'REDIS_STATE_INVALID'
-  end
-  if raw.state == 'claimed' then
-    if not bridge_id(raw.dispatcherInstanceId) or not bridge_id(raw.claimId) then
-      return nil, 'REDIS_STATE_INVALID'
-    end
-  elseif raw.state == 'dispatching' then
-    if not bridge_id(raw.dispatcherInstanceId) or not bridge_id(raw.claimId)
-      or not bridge_id(raw.attemptId) then
-      return nil, 'REDIS_STATE_INVALID'
-    end
-  elseif raw.state ~= 'pending' and not WAKE_TERMINAL[raw.state] then
-    return nil, 'REDIS_STATE_INVALID'
-  end
-  if WAKE_TERMINAL[raw.state] and not wake_reason(raw.reasonCode) then
-    return nil, 'REDIS_STATE_INVALID'
-  end
-  return raw, nil
 end
 local function wake_types(keys, terminal)
   local expected = terminal and {'hash', 'stream', 'stream', 'stream', 'zset', 'hash'}

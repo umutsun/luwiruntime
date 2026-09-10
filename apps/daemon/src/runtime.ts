@@ -494,6 +494,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     client: connections.command,
     keys,
     functions: registry,
+    decisionReceiptRetentionMs: setting(config, 'terminalMessageRetentionMs'),
   });
   const wakeIntentRepository = createWakeIntentRepository({
     client: connections.command,

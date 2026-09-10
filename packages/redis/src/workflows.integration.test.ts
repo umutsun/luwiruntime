@@ -223,7 +223,6 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
           evidenceRequirements: ['test_result'],
           timeoutMs: 120_000,
           requestFingerprint: fingerprint(`message:${suffix}:next`),
-          causationId: `last-${value.firstMessage.id}`,
         },
         workspaceId: 'local',
         eventId: `event-${suffix}-next`,
@@ -674,6 +673,14 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         message: { id: 'next-message-continue-replay', state: 'queued' },
       });
       await expect(workflows.continue(decision)).resolves.toEqual(first);
+      const receiptTtl = Number(
+        await commandClient.sendCommand([
+          'PTTL',
+          keys.workflowDecision(value.workflow.id, decision.expectedRevision),
+        ]),
+      );
+      expect(receiptTtl).toBeGreaterThan(0);
+      expect(receiptTtl).toBeLessThanOrEqual(604_800_000);
       await expect(messages.listByWorkflow(value.workflow.id)).resolves.toEqual([
         expect.objectContaining({ id: value.firstMessage.id }),
         expect.objectContaining({ id: 'next-message-continue-replay' }),
@@ -717,6 +724,106 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
 
       await expect(workflows.continue(decision)).resolves.toEqual(first);
       await expect(messages.listByWorkflow(value.workflow.id)).resolves.toHaveLength(2);
+    });
+
+    it('derives wake causation from the canonical wake record and rejects caller forgery', async () => {
+      const value = input('continue-causation-forgery');
+      await workflows.create(value);
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: value.firstMessage.id,
+        correlationId: value.firstMessage.correlationId,
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 1,
+        state: 'dispatching',
+      });
+      const forged = nextContinuation('continue-causation-forgery', value);
+      forged.nextMessage = {
+        ...forged.nextMessage!,
+        causationId: 'caller-forged-event',
+      } as unknown as NonNullable<ContinueWorkflowInput['nextMessage']>;
+
+      await expect(workflows.continue(forged)).rejects.toMatchObject({
+        code: 'REDIS_ARGUMENT_INVALID',
+      });
+      await expect(workflows.get(value.workflow.id)).resolves.toMatchObject({ revision: 1 });
+      await expect(
+        commandClient.sendCommand([
+          'EXISTS',
+          keys.workflowDecision(value.workflow.id, forged.expectedRevision),
+        ]),
+      ).resolves.toBe(0);
+      await expect(
+        commandClient.sendCommand(['EXISTS', keys.message(forged.nextMessage.id)]),
+      ).resolves.toBe(0);
+    });
+
+    it('expires a decision receipt at the configured message-retention boundary', async () => {
+      const value = input('continue-receipt-expiry');
+      await workflows.create(value);
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: value.firstMessage.id,
+        correlationId: value.firstMessage.correlationId,
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 1,
+        state: 'dispatching',
+      });
+      const expiringWorkflows = createWorkflowRepository({
+        client: commandClient,
+        keys,
+        functions: registry,
+        decisionReceiptRetentionMs: 50,
+      });
+      const decision = nextContinuation('continue-receipt-expiry', value);
+
+      const committed = await expiringWorkflows.continue(decision);
+      await expect(expiringWorkflows.continue(decision)).resolves.toEqual(committed);
+      await expect
+        .poll(
+          async () =>
+            Number(
+              await commandClient.sendCommand([
+                'EXISTS',
+                keys.workflowDecision(value.workflow.id, 1),
+              ]),
+            ),
+          { interval: 10, timeout: 1_000 },
+        )
+        .toBe(0);
+      await expect(expiringWorkflows.continue(decision)).rejects.toMatchObject({
+        code: 'WORKFLOW_REVISION_MISMATCH',
+      });
+    });
+
+    it('rejects a wake proof whose canonical stored record is incomplete', async () => {
+      const value = input('continue-corrupt-wake-schema');
+      await workflows.create(value);
+      await seedWake({
+        workflowId: value.workflow.id,
+        messageId: value.firstMessage.id,
+        correlationId: value.firstMessage.correlationId,
+        coordinatorSessionId: value.workflow.coordinatorSessionId,
+        revision: 1,
+        state: 'dispatching',
+      });
+      await commandClient.sendCommand([
+        'HDEL',
+        keys.wakeIntent(value.firstMessage.id),
+        'lastEventId',
+      ]);
+
+      await expect(
+        workflows.continue({
+          ...nextContinuation('continue-corrupt-wake-schema', value),
+          decision: { kind: 'complete' },
+          nextMessage: undefined,
+        }),
+      ).rejects.toMatchObject({ code: 'REDIS_STATE_INVALID' });
+      await expect(workflows.get(value.workflow.id)).resolves.toMatchObject({ revision: 1 });
+      await expect(
+        commandClient.sendCommand(['EXISTS', keys.workflowDecision(value.workflow.id, 1)]),
+      ).resolves.toBe(0);
     });
 
     it('rejects a conflicting decision fingerprint at the committed revision', async () => {
@@ -810,6 +917,13 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         },
         message: { sourceSessionId: 'session-source-replacement' },
       });
+      await expect(
+        commandClient.sendCommand([
+          'HGET',
+          keys.message('next-message-continue-human'),
+          'causationId',
+        ]),
+      ).resolves.toBe('human-proof-1');
       await expect(
         commandClient.sendCommand([
           'ZSCORE',

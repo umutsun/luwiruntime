@@ -1,12 +1,12 @@
 import type { AgentMessage, Project, WorkflowView } from '@luwi/protocol';
-import type { RedisGateway, RedisHealth } from '@luwi/redis';
+import type { RedisGateway, RedisHealth, WorkflowRepository } from '@luwi/redis';
 import { createRuntimeReadiness } from '@luwi/runtime';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildDaemon, type DaemonApp } from './app.js';
 import type { ProjectService } from './project-service.js';
 import type { SessionService } from './session-service.js';
-import type { WorkflowService } from './workflow-service.js';
+import { createWorkflowService, type WorkflowService } from './workflow-service.js';
 
 const timestamp = '2026-09-09T12:00:00.000Z';
 const project: Project = {
@@ -163,5 +163,51 @@ describe('workflow routes', () => {
     expect(response.statusCode).toBe(200);
     expect(continueWorkflow).toHaveBeenCalledWith('session-coordinator', 'workflow-1', body);
     expect(smuggled.statusCode).toBe(400);
+  });
+
+  it('returns HTTP 403 for a live continuation actor from another project', async () => {
+    const crossProjectActor = {
+      id: 'session-coordinator',
+      agentId: 'codex',
+      projectId: 'project-other',
+      status: 'idle' as const,
+      workingDirectory: 'C:/other',
+      startedAt: timestamp,
+      lastHeartbeatAt: timestamp,
+      metadata: {},
+      presence: 'online' as const,
+    };
+    const continueWorkflow = vi.fn();
+    const service = createWorkflowService({
+      repository: {
+        get: vi.fn().mockResolvedValue(workflow),
+        continue: continueWorkflow,
+      } as unknown as WorkflowRepository,
+      sessions: {
+        get: vi.fn().mockResolvedValue(crossProjectActor),
+        list: vi.fn().mockResolvedValue([crossProjectActor]),
+      } as unknown as SessionService,
+      workspaceId: 'local',
+    });
+    app = daemon(service);
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/session-coordinator/workflows/workflow-1/continue',
+      payload: {
+        workflowId: 'workflow-1',
+        expectedRevision: 1,
+        proof: { kind: 'wake', wakeIntentId: 'message-1' },
+        decision: {
+          kind: 'next_message',
+          targetAgentId: 'claude-code',
+          message: { kind: 'instruction', content: 'Continue the implementation.' },
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { code: 'WORKFLOW_ACTOR_INVALID' } });
+    expect(continueWorkflow).not.toHaveBeenCalled();
   });
 });

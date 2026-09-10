@@ -36,8 +36,11 @@ export type CreateWorkflowResult = {
 export type ContinueWorkflowInput = ContinueWorkflowRequest & {
   /** Trusted route identity. This is injected from the actor session path, never the request body. */
   actorSessionId: string;
-  /** Fully resolved durable message. Required only for `next_message`. */
-  nextMessage?: CreateMessageInput['message'];
+  /**
+   * Fully resolved durable message. Required only for `next_message`. The
+   * Redis Function derives causation from the stored proof atomically.
+   */
+  nextMessage?: Omit<CreateMessageInput['message'], 'causationId'> & { causationId?: never };
   /** Fresh fence required only when the decision becomes `waiting_for_human`. */
   nextHumanContinuationId?: string;
   workspaceId: string;
@@ -310,7 +313,13 @@ export function createWorkflowRepository(options: {
   client: RedisCommandClient;
   keys: RedisKeys;
   functions: RedisFunctionRegistry;
+  /** Exact replay window for immutable continuation receipts. */
+  decisionReceiptRetentionMs?: number;
 }): WorkflowRepository {
+  const decisionReceiptRetentionMs = options.decisionReceiptRetentionMs ?? 604_800_000;
+  if (!Number.isSafeInteger(decisionReceiptRetentionMs) || decisionReceiptRetentionMs < 1) {
+    throw new Error('decisionReceiptRetentionMs must be a positive safe integer.');
+  }
   const messagesForRead = createMessageRepository(options);
   const get = async (workflowId: string): Promise<WorkflowView | null> =>
     parseStoredWorkflow(
@@ -534,6 +543,7 @@ export function createWorkflowRepository(options: {
           nextMessage === undefined ? '' : JSON.stringify(nextMessage),
           input.workspaceId,
           input.eventId,
+          String(decisionReceiptRetentionMs),
         ]),
       );
       return parseContinueResult(reply, input);

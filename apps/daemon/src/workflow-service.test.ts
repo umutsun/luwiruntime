@@ -263,6 +263,37 @@ describe('workflow continuation service', () => {
       eventId: 'human-next',
     });
     expect(continueWorkflow.mock.calls[0]?.[0]).not.toHaveProperty('nextHumanContinuationId');
+    expect(continueWorkflow.mock.calls[0]?.[0].nextMessage).not.toHaveProperty('causationId');
+  });
+
+  it('rejects a live cross-project actor as unauthorized before target selection', async () => {
+    const crossProjectActor: SessionView = {
+      ...coordinator,
+      projectId: 'project-other',
+    };
+    const continueWorkflow = vi.fn();
+    const service = createWorkflowService({
+      repository: {
+        get: vi.fn().mockResolvedValue(workflow),
+        continue: continueWorkflow,
+      } as unknown as WorkflowRepository,
+      sessions: sessions([crossProjectActor, target]),
+      workspaceId: 'local',
+    });
+
+    await expect(
+      service.continue('session-coordinator', 'workflow-1', {
+        workflowId: 'workflow-1',
+        expectedRevision: 1,
+        proof: { kind: 'wake', wakeIntentId: 'message-1' },
+        decision: {
+          kind: 'next_message',
+          targetAgentId: 'claude-code',
+          message: { kind: 'instruction', content: 'Continue the implementation.' },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'WORKFLOW_ACTOR_INVALID', statusCode: 403 });
+    expect(continueWorkflow).not.toHaveBeenCalled();
   });
 
   it('mints only a human fence for waiting and no private continuation fields for complete', async () => {

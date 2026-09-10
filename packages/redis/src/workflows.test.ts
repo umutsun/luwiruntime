@@ -131,7 +131,6 @@ const continuation: ContinueWorkflowInput = {
     evidenceRequirements: ['session_state'],
     timeoutMs: 120_000,
     requestFingerprint: 'c'.repeat(64),
-    causationId: 'event-terminal-1',
   },
   workspaceId: 'local',
   eventId: 'event-message-2',
@@ -284,7 +283,12 @@ describe('workflow repository boundary', () => {
     ];
     const keys = createRedisKeys();
     const functions = createFunctionRegistry();
-    const repository = createWorkflowRepository({ client, keys, functions });
+    const repository = createWorkflowRepository({
+      client,
+      keys,
+      functions,
+      decisionReceiptRetentionMs: 60_000,
+    });
 
     await expect(repository.continue(continuation)).resolves.toEqual({
       status: 'updated',
@@ -319,6 +323,19 @@ describe('workflow repository boundary', () => {
       keys.globalEvents,
       keys.projectEvents('project-1'),
     ]);
+    expect(client.commands[1]?.at(-1)).toBe('60000');
+    expect(JSON.parse(client.commands[1]?.at(-4) ?? '{}')).not.toHaveProperty('causationId');
+  });
+
+  it('rejects an invalid decision receipt retention window at construction', () => {
+    expect(() =>
+      createWorkflowRepository({
+        client: new FakeCommandClient(),
+        keys: createRedisKeys(),
+        functions: createFunctionRegistry(),
+        decisionReceiptRetentionMs: 0,
+      }),
+    ).toThrow('decisionReceiptRetentionMs must be a positive safe integer.');
   });
 
   it('uses the oldest-first bounded workflow index', async () => {
