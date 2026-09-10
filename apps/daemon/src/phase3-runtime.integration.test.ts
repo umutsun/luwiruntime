@@ -3,16 +3,11 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  createFunctionRegistry,
-  createManagedRedisConnection,
-  createRedisKeys,
-  type ManagedRedisConnection,
-} from '@luwi/redis';
+import { createFunctionRegistry, createManagedRedisConnection, createRedisKeys } from '@luwi/redis';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import type { DaemonConfig } from './config.js';
-import { startDaemon, type RunningDaemon } from './runtime.js';
+import { startDaemon, type RunningDaemon, type StartDaemonConnections } from './runtime.js';
 
 const testRedisUrl = process.env.LUWI_TEST_REDIS_URL;
 const sharedFunctionsAllowed = process.env.LUWI_TEST_ALLOW_SHARED_REDIS_FUNCTIONS === 'true';
@@ -27,15 +22,12 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
     let runtime: RunningDaemon | undefined;
     let sandboxRoot: string | undefined;
 
-    function connections(): {
-      command: ManagedRedisConnection;
-      admin: ManagedRedisConnection;
-      relay: ManagedRedisConnection;
-    } {
+    function connections(): StartDaemonConnections {
       return {
         command: createManagedRedisConnection({ url: testRedisUrl ?? '' }),
         admin: createManagedRedisConnection({ url: testRedisUrl ?? '' }),
         relay: createManagedRedisConnection({ url: testRedisUrl ?? '' }),
+        wake: createManagedRedisConnection({ url: testRedisUrl ?? '' }),
       };
     }
 

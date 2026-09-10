@@ -239,6 +239,16 @@ export type StartDaemonConnections = {
   wake: ManagedRedisConnection;
 };
 
+function assertStartDaemonConnections(
+  connections: StartDaemonConnections,
+): asserts connections is StartDaemonConnections {
+  for (const name of ['command', 'admin', 'relay', 'wake'] as const) {
+    if (connections[name] === undefined || connections[name] === null) {
+      throw new TypeError(`The daemon ${name} Redis connection is missing.`);
+    }
+  }
+}
+
 export type StartDaemonOptions = {
   config: DaemonConfig;
   lifecycleToken?: string;
@@ -445,6 +455,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       relay: createConnection(),
       wake: createConnection(),
     } satisfies StartDaemonConnections);
+  // `StartDaemonConnections` protects TypeScript callers, while JavaScript and
+  // transpile-only test runners can still inject an incomplete object. Reject
+  // that boundary before any connection or ownership resource is acquired.
+  assertStartDaemonConnections(connections);
   const readiness = createRuntimeReadiness('starting');
   const ownership = createDaemonOwnershipLease({
     client: connections.admin,
@@ -1284,7 +1298,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     await relay.stop().catch(() => undefined);
     await app?.close().catch(() => undefined);
     await ownership.release().catch(() => false);
-    await Promise.all([
+    // Startup cleanup is best effort. A close failure must not replace the
+    // Redis, ownership, function-library, or listener failure that triggered
+    // this path, and every connection still deserves a close attempt.
+    await Promise.allSettled([
       closeConnection(connections.wake),
       closeConnection(connections.relay),
       closeConnection(connections.command),

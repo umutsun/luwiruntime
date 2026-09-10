@@ -15,6 +15,7 @@ import {
   createNativeLinkRetentionRepository,
   createPresenceSweeperRepository,
   startDaemon,
+  type StartDaemonConnections,
 } from './runtime.js';
 import type { ShutdownSignal, ShutdownSignalListener, SignalSource } from './shutdown.js';
 
@@ -41,6 +42,22 @@ class FailingConnection implements ManagedRedisConnection {
   disconnect(): void {
     this.isOpen = false;
     this.isReady = false;
+  }
+}
+
+class CleanupFailingConnection extends FailingConnection {
+  override async connect(): Promise<void> {
+    this.connectCalls += 1;
+    this.isOpen = true;
+    throw new Error('Redis bootstrap failed');
+  }
+
+  override async quit(): Promise<string> {
+    throw new Error('Redis graceful close failed');
+  }
+
+  override disconnect(): void {
+    throw new Error('Redis forced close failed');
   }
 }
 
@@ -153,6 +170,24 @@ describe('daemon runtime', () => {
     expect(wake.connectCalls).toBe(0);
   });
 
+  it('rejects an incomplete injected connection set before opening Redis', async () => {
+    const command = new FailingConnection();
+    const admin = new FailingConnection();
+    const relay = new FailingConnection();
+
+    await expect(
+      startDaemon({
+        config: ephemeralConfig,
+        logger: false,
+        connections: { command, admin, relay } as unknown as StartDaemonConnections,
+      }),
+    ).rejects.toThrow('wake Redis connection is missing');
+
+    expect(command.connectCalls).toBe(0);
+    expect(admin.connectCalls).toBe(0);
+    expect(relay.connectCalls).toBe(0);
+  });
+
   it('does not open the listener or signal handlers when Redis bootstrap fails', async () => {
     const command = new FailingConnection();
     const admin = new FailingConnection();
@@ -174,6 +209,26 @@ describe('daemon runtime', () => {
     expect(relay.connectCalls).toBe(0);
     expect(wake.connectCalls).toBe(0);
     expect(signals.listeners.size).toBe(0);
+  });
+
+  it('preserves the startup failure when closing a partially opened connection also fails', async () => {
+    const command = new CleanupFailingConnection();
+    const admin = new FailingConnection();
+    const relay = new FailingConnection();
+    const wake = new FailingConnection();
+
+    await expect(
+      startDaemon({
+        config: ephemeralConfig,
+        logger: false,
+        connections: { command, admin, relay, wake },
+      }),
+    ).rejects.toThrow('Redis bootstrap failed');
+
+    expect(command.connectCalls).toBe(1);
+    expect(admin.connectCalls).toBe(0);
+    expect(relay.connectCalls).toBe(0);
+    expect(wake.connectCalls).toBe(0);
   });
 
   it('defers the operational-graph rebuild to background work instead of blocking startup on it', () => {
