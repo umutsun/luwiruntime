@@ -1214,7 +1214,6 @@ async function main() {
           kind: 'codex',
           displayName,
           executable: codexExecutable,
-          detectedVersion: codexDetectedVersion,
           enabled: true,
           adapterId: 'codex-native-v1',
           nativeConfigRoots: [join(nativeHome, '.codex')],
@@ -1245,17 +1244,12 @@ async function main() {
       [201],
       runController.signal,
     );
+    const registeredAgents = (
+      await http(baseUrl, 'GET', '/api/v1/agents', undefined, [200], runController.signal)
+    ).body.agents;
     for (const agentId of [workerAgentId, coordinatorAgentId]) {
-      const registered = (
-        await http(
-          baseUrl,
-          'GET',
-          `/api/v1/agents/${agentId}`,
-          undefined,
-          [200],
-          runController.signal,
-        )
-      ).body;
+      const registered = registeredAgents?.find((agent) => agent.id === agentId);
+      assert(registered !== undefined, 'REGISTERED_AGENT_MISSING');
       assert(registered.executable === codexExecutable, 'REGISTERED_EXECUTABLE_CHANGED');
       assert(registered.detectedVersion === codexDetectedVersion, 'REGISTERED_VERSION_CHANGED');
       const canonicalRegisteredExecutable = await canonicalCodexExecutable(registered.executable);
