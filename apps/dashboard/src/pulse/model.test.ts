@@ -97,7 +97,7 @@ describe('Pulse snapshot mapping', () => {
 
     expect(snapshot.wakeDelivery).toMatchObject({
       supervisorReachability: 'unknown',
-      supervisorOwnership: 'observed',
+      bridgeOwnership: 'observed',
       slotCounts: {
         active: { state: 'exact', value: 1 },
         standby: { state: 'exact', value: 0 },
@@ -177,7 +177,7 @@ describe('Pulse snapshot mapping', () => {
     });
 
     expect(snapshot.wakeDelivery).toMatchObject({
-      supervisorOwnership: 'unknown',
+      bridgeOwnership: 'unknown',
       slotCounts: {
         active: { state: 'unknown' },
         stale: { state: 'lower-bound', value: 1 },

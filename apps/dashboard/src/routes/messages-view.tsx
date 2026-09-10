@@ -306,7 +306,7 @@ export function MessagesView({
                       <span className="unavailable">No bridge observed</span>
                     ) : (
                       <span>
-                        {`${targetSession.bridge.provider} · ${targetSession.bridge.executionProfile}`}{' '}
+                        {`${targetSession.bridge.provider} · Declared profile: ${targetSession.bridge.executionProfile}`}{' '}
                         <StatusChip
                           tone={targetSession.bridge.health === 'active' ? 'success' : 'warning'}
                         >

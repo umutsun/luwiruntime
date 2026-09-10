@@ -177,7 +177,9 @@ describe('MessagesView', () => {
     expect(within(detail).getByText('Fallback only')).toBeTruthy();
     expect(within(detail).getByText('2026-08-10T00:00:01.000Z')).toBeTruthy();
     expect(within(detail).getByText('2026-08-10T00:00:06.000Z')).toBeTruthy();
-    expect(within(detail).getByText('antigravity · workspace-write')).toBeTruthy();
+    expect(
+      within(detail).getByText('antigravity · Declared profile: workspace-write'),
+    ).toBeTruthy();
     expect(within(detail).getByText('Active')).toBeTruthy();
     expect(
       within(detail).getByText(

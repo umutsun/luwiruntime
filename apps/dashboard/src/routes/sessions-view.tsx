@@ -70,7 +70,7 @@ function SessionBridge({ evidence }: { evidence: SessionBridgeEvidence }) {
         : 'warning';
   return (
     <div>
-      <span>{`${evidence.provider} · ${evidence.executionProfile}`}</span>
+      <span>{`${evidence.provider} · Declared profile: ${evidence.executionProfile}`}</span>
       <StatusChip tone={tone}>
         {evidence.health.charAt(0).toUpperCase() + evidence.health.slice(1)}
       </StatusChip>

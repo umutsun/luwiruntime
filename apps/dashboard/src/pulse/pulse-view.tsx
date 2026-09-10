@@ -208,13 +208,13 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
     return count === 0 ? '?' : `${String(count)}+`;
   };
   const ownershipLabel =
-    delivery.supervisorOwnership === 'observed'
-      ? 'Supervisor ownership observed'
-      : delivery.supervisorOwnership === 'unavailable'
-        ? 'Supervisor ownership unavailable'
-        : delivery.supervisorOwnership === 'unknown'
-          ? 'Supervisor ownership unknown'
-          : 'Supervisor ownership not observed';
+    delivery.bridgeOwnership === 'observed'
+      ? 'Bridge-slot ownership observed'
+      : delivery.bridgeOwnership === 'unavailable'
+        ? 'Bridge-slot ownership unavailable'
+        : delivery.bridgeOwnership === 'unknown'
+          ? 'Bridge-slot ownership unknown'
+          : 'Bridge-slot ownership not observed';
 
   return (
     <section className="panel panel--wake" aria-labelledby="wake-delivery-title">
@@ -231,7 +231,7 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
           <span className="wake-stage__step" aria-hidden="true">
             01
           </span>
-          <h3>Supervisor</h3>
+          <h3>Bridge ownership</h3>
           <p className="wake-stage__headline">{ownershipLabel}</p>
           <p className="wake-stage__measure">
             {countLabel(delivery.slotCounts.active, 'Active slot')}
@@ -254,7 +254,7 @@ function WakeDeliveryPanel({ delivery }: { delivery: NonNullable<PulseSnapshot['
                   <li key={slot.id}>
                     <strong>{slot.state}</strong>
                     <span>{slot.projectId}</span>
-                    <span>{`${slot.agentId} · ${slot.provider} · ${slot.executionProfile}`}</span>
+                    <span>{`${slot.agentId} · ${slot.provider} · Declared profile: ${slot.executionProfile}`}</span>
                   </li>
                 ))}
               </ul>

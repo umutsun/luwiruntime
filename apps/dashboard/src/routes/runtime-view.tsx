@@ -172,20 +172,20 @@ export function RuntimeView({
       </Panel>
 
       {snapshot.wakeDelivery === undefined ? null : (
-        <Panel title="Wake supervision">
+        <Panel title="Wake delivery evidence">
           <dl className="health-list">
             <div>
-              <dt>Reachability</dt>
+              <dt>Supervisor process</dt>
               <dd>Unknown — no public process heartbeat</dd>
             </div>
             <div>
-              <dt>Ownership</dt>
+              <dt>Bridge-slot ownership</dt>
               <dd>
-                {snapshot.wakeDelivery.supervisorOwnership === 'observed'
+                {snapshot.wakeDelivery.bridgeOwnership === 'observed'
                   ? 'Observed'
-                  : snapshot.wakeDelivery.supervisorOwnership === 'not-observed'
+                  : snapshot.wakeDelivery.bridgeOwnership === 'not-observed'
                     ? 'Not observed'
-                    : snapshot.wakeDelivery.supervisorOwnership === 'unknown'
+                    : snapshot.wakeDelivery.bridgeOwnership === 'unknown'
                       ? 'Unknown'
                       : 'Unavailable'}
               </dd>

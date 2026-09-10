@@ -538,7 +538,7 @@ export function buildPulseSnapshot(input: PulseInput) {
             ageMs: Math.max(0, snapshotAtMs - Date.parse(oldestObservedPending.createdAt)),
             createdAt: oldestObservedPending.createdAt,
           };
-  const supervisorOwnership =
+  const bridgeOwnership =
     bridgeSlots.state === 'unavailable' || activeSlots.state === 'unavailable'
       ? ('unavailable' as const)
       : activeSlots.state === 'unknown'
@@ -549,7 +549,7 @@ export function buildPulseSnapshot(input: PulseInput) {
   const wakeDelivery = hasWakeDelivery
     ? {
         supervisorReachability: 'unknown' as const,
-        supervisorOwnership,
+        bridgeOwnership,
         slotCounts: {
           active: activeSlots,
           standby: countSlotHealth('standby'),

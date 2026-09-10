@@ -199,7 +199,7 @@ describe('Wake delivery', () => {
     renderPulse(withWakeDelivery());
 
     const panel = screen.getByRole('region', { name: 'Wake delivery' });
-    expect(within(panel).getByText('Supervisor ownership observed')).toBeTruthy();
+    expect(within(panel).getByText('Bridge-slot ownership observed')).toBeTruthy();
     expect(
       within(panel).getByText('Wake outcome is indeterminate; read the durable inbox response.'),
     ).toBeTruthy();
@@ -222,7 +222,7 @@ describe('Wake delivery', () => {
 
     const panel = screen.getByRole('region', { name: 'Wake delivery' });
     expect(within(panel).queryByText(/duplicate/i)).toBeNull();
-    expect(within(panel).getByText('Supervisor ownership observed')).toBeTruthy();
+    expect(within(panel).getByText('Bridge-slot ownership observed')).toBeTruthy();
     expect(within(panel).getByText('Wake intents unavailable')).toBeTruthy();
     expect(within(panel).getByText('1 active workflow')).toBeTruthy();
   });
@@ -265,7 +265,7 @@ describe('Wake delivery', () => {
     renderPulse(value);
 
     const panel = screen.getByRole('region', { name: 'Wake delivery' });
-    expect(within(panel).getByText('Supervisor ownership unknown')).toBeTruthy();
+    expect(within(panel).getByText('Bridge-slot ownership unknown')).toBeTruthy();
     expect(within(panel).getByText('Indeterminate wake outcomes unknown')).toBeTruthy();
     expect(within(panel).getByText('Active workflow count unknown')).toBeTruthy();
     expect(within(panel).queryByText(/no indeterminate|0 active/i)).toBeNull();

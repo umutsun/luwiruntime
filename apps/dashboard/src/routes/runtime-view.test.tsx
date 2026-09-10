@@ -20,7 +20,7 @@ const wakeSnapshot = {
   ...snapshot,
   wakeDelivery: {
     supervisorReachability: 'unknown',
-    supervisorOwnership: 'observed',
+    bridgeOwnership: 'observed',
     slotCounts: {
       active: { state: 'exact', value: 1 },
       standby: { state: 'exact', value: 2 },
@@ -68,7 +68,7 @@ describe('RuntimeView resources', () => {
   it('shows only public ownership evidence and keeps supervisor process reachability unknown', () => {
     render(<RuntimeView snapshot={wakeSnapshot} websocketState="live" />);
 
-    const panel = screen.getByRole('region', { name: 'Wake supervision' });
+    const panel = screen.getByRole('region', { name: 'Wake delivery evidence' });
     expect(within(panel).getByText('Unknown — no public process heartbeat')).toBeTruthy();
     expect(within(panel).getByText('Observed')).toBeTruthy();
     const activeSlots = within(panel).getByText('Active slots').parentElement!;

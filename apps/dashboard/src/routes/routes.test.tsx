@@ -275,7 +275,9 @@ describe('SessionsView', () => {
     render(<SessionsView snapshot={snapshot} />);
 
     const bridged = screen.getByRole('row', { name: /s-bridged/ });
-    expect(within(bridged).getByText('antigravity · workspace-write')).toBeTruthy();
+    expect(
+      within(bridged).getByText('antigravity · Declared profile: workspace-write'),
+    ).toBeTruthy();
     expect(within(bridged).getByText('Active')).toBeTruthy();
     const inbox = screen.getByRole('row', { name: /s-inbox/ });
     expect(within(inbox).getByText('No bridge observed')).toBeTruthy();
