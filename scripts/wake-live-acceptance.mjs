@@ -1706,11 +1706,11 @@ async function main() {
     );
     assert(
       terminalEvents.body.events?.some(
-        (event) =>
-          event.type === 'message.responded' &&
-          event.correlationId === liveCorrelationId &&
-          event.agentId === workerAgentId &&
-          event.sessionId === workerSession.id,
+        (message) =>
+          message.event.type === 'message.responded' &&
+          message.event.correlationId === liveCorrelationId &&
+          message.event.agentId === workerAgentId &&
+          message.event.sessionId === workerSession.id,
       ),
       'SUPERVISED_MESSAGE_RESPONDER_MISMATCH',
     );
