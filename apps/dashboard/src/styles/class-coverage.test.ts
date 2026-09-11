@@ -21,13 +21,20 @@ const VIEWS = [
   '../routes/messages-view.tsx',
   '../projects/lease-panel.tsx',
   /*
-   * Added with the phase-3 Pulse redesign, which introduced a whole new set of
-   * class names in one change — exactly the situation this guard exists for.
-   * The blind spot above still applies: the row variants are composed from
-   * template literals and stay invisible here, so the base classes are the ones
-   * this covers.
+   * The 2026-09-11 overview redesign introduced a whole new set of class names
+   * in one change — exactly the situation this guard exists for. The blind spot
+   * above still applies: state variants are composed from template literals and
+   * stay invisible here, so the base classes are the ones this covers.
    */
-  '../pulse/pulse-view.tsx',
+  '../overview/overview.tsx',
+  '../overview/stats-row.tsx',
+  '../overview/ticker.tsx',
+  '../overview/drill-down.tsx',
+  '../overview/board-view.tsx',
+  '../overview/flow-view.tsx',
+  '../overview/radial-view.tsx',
+  '../overview/timeline-view.tsx',
+  '../app.tsx',
   '../routes/runtime-view.tsx',
   /*
    * Extended to every view and component that carries literal class names, so a
@@ -44,6 +51,7 @@ const VIEWS = [
   '../inspectors/inspector-panel.tsx',
   '../components/detail-drawer.tsx',
   '../routes/ask-session-dialog.tsx',
+  '../components/project-form.tsx',
 ] as const;
 
 const STYLESHEETS = [
@@ -52,6 +60,7 @@ const STYLESHEETS = [
   './pulse.css',
   './activity.css',
   './projects.css',
+  './overview.css',
 ] as const;
 
 function definedClasses(): Set<string> {

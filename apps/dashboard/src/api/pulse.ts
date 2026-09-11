@@ -254,7 +254,7 @@ export async function loadPulseResources(
         requests.push(
           entry(
             key,
-            client.get('/api/v1/events?limit=20', activityCollectionBrowserSchema, options),
+            client.get('/api/v1/events?limit=200', activityCollectionBrowserSchema, options),
             ({ events }) => events.map(toDashboardEvent),
           ),
         );

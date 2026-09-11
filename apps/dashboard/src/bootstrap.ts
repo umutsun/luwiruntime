@@ -22,13 +22,16 @@ export { buildPulseSnapshot };
 /** The project whose scoped evidence should be loaded, if any. */
 export function selectedProjectOf(hash: string): string | undefined {
   const route = parseRoute(hash);
-  return route.name === 'projects' ? route.projectId : undefined;
+  if (route.name === 'projects') return route.projectId;
+  // The overview's detail drawer reads the same scoped evidence; a focus alone does not.
+  return route.name === 'pulse' && route.detail !== undefined ? route.projectId : undefined;
 }
 
 /** The agent whose pair-scoped evidence should be loaded, if any. */
 export function selectedAgentOf(hash: string): string | undefined {
   const route = parseRoute(hash);
-  return route.name === 'projects' ? route.agentId : undefined;
+  if (route.name === 'projects') return route.agentId;
+  return route.name === 'pulse' ? route.detail?.agentId : undefined;
 }
 
 /**

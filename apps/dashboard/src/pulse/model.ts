@@ -493,30 +493,30 @@ export function buildPulseSnapshot(input: PulseInput) {
 export type PulseSnapshot = ReturnType<typeof buildPulseSnapshot>;
 
 /**
- * The mockup's scope switcher, applied client-side.
+ * The overview's project filter, applied client-side.
  *
- * Narrows the snapshot to one project: rows that carry a `projectId` are
- * filtered, and every count over them is recomputed so the strip and the
- * Active Work header describe the scope, not the runtime. Two rules keep it
- * honest: a failed read stays failed — a scope never turns `unavailable` into
- * an empty list — and an event without a `projectId` is not attributable to
- * the scoped project, so a scoped view may not claim it. Reads that have no
- * per-project shape (usage grades, the context counts, findings) pass through
- * globally; their panels state runtime-wide evidence either way.
+ * Narrows the snapshot to the projects the owner switched on: rows that carry
+ * a `projectId` are filtered, and every count over them is recomputed so the
+ * stats describe what is on screen, not the runtime. Two rules keep it honest:
+ * a failed read stays failed — a filter never turns `unavailable` into an
+ * empty list — and an event without a `projectId` belongs to the runtime, so
+ * it is kept. Reads that have no per-project shape (usage grades, the context
+ * counts, findings) pass through; their figures are runtime-wide either way.
+ * `undefined` means no filter, and costs nothing.
  */
-export function scopePulseSnapshot(
+export function scopePulseSnapshotToProjects(
   snapshot: PulseSnapshot,
-  projectId: string | undefined,
+  visible: ReadonlySet<string> | undefined,
 ): PulseSnapshot {
-  if (projectId === undefined) return snapshot;
+  if (visible === undefined) return snapshot;
+  const keep = (projectId: string | undefined): boolean =>
+    projectId === undefined || visible.has(projectId);
 
-  const sessions = snapshot.sessions.filter((session) => session.projectId === projectId);
-  const activeSessions = snapshot.activeSessions.filter(
-    (session) => session.projectId === projectId,
-  );
-  const projects = snapshot.projects.filter((project) => project.id === projectId);
-  const repositoryFacts = snapshot.repositoryFacts.filter((row) => row.projectId === projectId);
-  const activity = snapshot.activity.filter((event) => event.projectId === projectId);
+  const sessions = snapshot.sessions.filter((session) => keep(session.projectId));
+  const activeSessions = snapshot.activeSessions.filter((session) => keep(session.projectId));
+  const projects = snapshot.projects.filter((project) => keep(project.id));
+  const repositoryFacts = snapshot.repositoryFacts.filter((row) => keep(row.projectId));
+  const activity = snapshot.activity.filter((event) => keep(event.projectId));
 
   const recount = (source: CountValue, value: number): CountValue =>
     source.state === 'unavailable'

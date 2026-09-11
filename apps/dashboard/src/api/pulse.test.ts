@@ -74,7 +74,7 @@ describe('loadPulseInput', () => {
         }),
       ],
       [
-        '/api/v1/events?limit=20',
+        '/api/v1/events?limit=200',
         ready({
           events: [
             {

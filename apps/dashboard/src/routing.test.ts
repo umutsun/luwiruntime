@@ -4,7 +4,7 @@ import { SIMPLE_ROUTES, parseRoute, routeHref, type DashboardRoute } from './rou
 
 describe('parseRoute', () => {
   it('defaults to pulse for empty, bare, and unknown hashes', () => {
-    for (const hash of ['', '#', '#/', '#/unknown', '#/pulse/extra', 'garbage']) {
+    for (const hash of ['', '#', '#/', '#/unknown', 'garbage']) {
       expect(parseRoute(hash)).toEqual({ name: 'pulse' });
     }
   });
@@ -71,6 +71,7 @@ describe('parseRoute', () => {
 describe('routeHref', () => {
   const cases: ReadonlyArray<readonly [DashboardRoute, string]> = [
     [{ name: 'pulse' }, '#/pulse'],
+    [{ name: 'pulse', projectId: 'proj-1' }, '#/pulse/proj-1'],
     [{ name: 'activity' }, '#/activity'],
     [{ name: 'sessions' }, '#/sessions'],
     [{ name: 'agents' }, '#/agents'],
@@ -98,6 +99,26 @@ describe('routeHref', () => {
     for (const [route] of cases) {
       expect(parseRoute(routeHref(route))).toEqual(route);
     }
+  });
+});
+
+describe('overview focus route', () => {
+  it('resolves the project the overview is focused on', () => {
+    expect(parseRoute('#/pulse/proj-1')).toEqual({ name: 'pulse', projectId: 'proj-1' });
+    expect(parseRoute('#/pulse/a%2Fb')).toEqual({ name: 'pulse', projectId: 'a/b' });
+  });
+
+  it('ignores what follows the project id rather than falling back to the whole runtime', () => {
+    expect(parseRoute('#/pulse/proj-1/extra')).toEqual({ name: 'pulse', projectId: 'proj-1' });
+  });
+
+  it('drops an over-long or blank id and keeps the overview', () => {
+    expect(parseRoute(`#/pulse/${'x'.repeat(129)}`)).toEqual({ name: 'pulse' });
+    expect(parseRoute('#/pulse/%20')).toEqual({ name: 'pulse' });
+  });
+
+  it('encodes a project id containing a path separator', () => {
+    expect(routeHref({ name: 'pulse', projectId: 'a/b' })).toBe('#/pulse/a%2Fb');
   });
 });
 
@@ -130,5 +151,33 @@ describe('project-agent pair routes', () => {
   it('rejects an over-long agent id without losing the project', () => {
     const route = parseRoute(`#/projects/proj-1/agents/${'a'.repeat(200)}`);
     expect(route).toEqual({ name: 'projects', projectId: 'proj-1' });
+  });
+});
+
+describe('the overview detail drawer route', () => {
+  it('parses the detail drawer, with and without an agent, and degrades bad segments', () => {
+    expect(parseRoute('#/pulse/p1/detail')).toEqual({ name: 'pulse', projectId: 'p1', detail: {} });
+    expect(parseRoute('#/pulse/p1/detail/a1')).toEqual({
+      name: 'pulse',
+      projectId: 'p1',
+      detail: { agentId: 'a1' },
+    });
+    // An unknown third segment is the focus alone; an over-long agent id is the drawer alone.
+    expect(parseRoute('#/pulse/p1/other')).toEqual({ name: 'pulse', projectId: 'p1' });
+    expect(parseRoute(`#/pulse/p1/detail/${'a'.repeat(129)}`)).toEqual({
+      name: 'pulse',
+      projectId: 'p1',
+      detail: {},
+    });
+  });
+
+  it('round-trips through routeHref with encoded ids', () => {
+    for (const route of [
+      { name: 'pulse', projectId: 'p/1', detail: {} },
+      { name: 'pulse', projectId: 'p1', detail: { agentId: 'a/1' } },
+    ] satisfies DashboardRoute[]) {
+      expect(parseRoute(routeHref(route))).toEqual(route);
+    }
+    expect(routeHref({ name: 'pulse', projectId: 'p1', detail: {} })).toBe('#/pulse/p1/detail');
   });
 });

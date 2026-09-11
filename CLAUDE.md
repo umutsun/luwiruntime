@@ -112,7 +112,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (29 functions) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (30 functions since ADR 0033; a daemon started earlier still holds 29) is already loaded on the server.
 
 ## Tools and shells
 
@@ -271,9 +271,15 @@ Two consequences to know before touching the daemon or the dashboard:
   `403 REQUEST_ORIGIN_REJECTED`. `PUT`, `PATCH` and `DELETE` are unaffected — a cross-site one of
   those always preflights and the daemon answers no preflight. A test that injects a bodyless POST
   now fails; real callers pass `{}`, which is what makes Fastify's `inject` set the header.
-- **`apps/dashboard/src/api/config-mutations.ts` is the only dashboard module allowed to write.**
-  `product-independence.test.ts` is an allowlist of exactly one and fails if that module goes
+- **Three dashboard modules may write, and only those:** `api/config-mutations.ts` (ADR 0021),
+  `api/message-mutations.ts` (ADR 0018) and `api/project-mutations.ts` (ADR 0033: register a
+  project, edit its name/remote/default branch — never its path).
+  `product-independence.test.ts` is an allowlist of exactly those three and fails if one goes
   missing, so it cannot pass vacuously. A mutation anywhere else is a test failure by design.
+  ADR 0033 also added the first project _update_ transition — `luwi_project_update_v1`, one
+  atomic Function for the hash fields and the `project.updated` event, behind
+  `PATCH /api/v1/projects/:projectId`; the library version stays 12 (a new function reloads on its
+  own), so **a daemon started before it must be restarted once** before a PATCH can succeed.
 
 To look at any of it, start a fixture daemon — `REDIS_URL`, `LUWI_HOME`, `LUWI_NATIVE_HOME` and
 `WORKSPACE_ID=fixture-…` **together**, because Redis alone is not isolation: per ADR 0007 agent
@@ -341,6 +347,24 @@ never leave "Loading" — that is the screenshot lying, not the page. Capture ov
 protocol with a real wait instead. And the daemon serves the dashboard build, so screenshots need
 `pnpm build` first and a restart; the owner lease also needs ~15 s to expire before it will start
 again.
+
+**ADR 0032 (2026-09-11) rebuilt the dashboard as an overview with four switchable lenses.** The
+owner shared four Claude Design comps (`temp/Luwi Runtime Dashboard Mockup/Luwi Runtime -
+{Board,Flow,Radial,Timeline}.dc.html`); `#/pulse` now renders a 56 px header, the chosen lens, a
+docked 360 px drill-down and a stream ticker, all from one pure model in
+`apps/dashboard/src/overview/model.ts`. The rail, command bar, scope select, snapshot line and the
+old Pulse panels are gone; the twelve detail routes stay, reached from the drill-down's links and `Ctrl K` (a `Details` menu was tried and removed the same day on the owner's read), and
+inherit the new mono palette through `tokens.css`. Every comp claim the runtime cannot know has a
+stated replacement in the ADR — release readiness became a session-derived badge, the lifecycle stage
+the observed branch, Flow's release column the status vocabulary, and tokens are never summed across
+grades. The bootstrap activity read grew from `limit=20` to `limit=200` (the store's own cap) so a
+rate, a histogram and Timeline marks can be drawn. Three facts for anyone touching it: vitest's jsdom
+here exposes **no `localStorage`** (the view and theme hooks tolerate it; `app.test.tsx` stubs one for
+the persistence assertions); `overview.css` and every overview view are registered with
+`tokens.test.ts` and `class-coverage.test.ts`, so a raw pixel in a spacing or font property, an opaque
+colour literal, or a className no rule matches fails the guard; and the daemon reads `dist/` per
+request, so a dashboard-only `pnpm build` needs **no daemon restart** — only a cache-busting query
+string in the browser.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.

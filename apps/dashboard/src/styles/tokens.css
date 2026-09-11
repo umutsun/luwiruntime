@@ -1,45 +1,51 @@
 /*
- * Tokens follow the Luwi design system (`temp/Luwi Runtime Dashboard Mockup`):
- * dark-first, near-black navy base, indigo accent, Inter + a mono face.
+ * Tokens follow the four 2026-09-11 comps (`temp/Luwi Runtime Dashboard Mockup/Luwi Runtime -
+ * {Board,Flow,Radial,Timeline}.dc.html`): a neutral mono palette in both themes, one strong
+ * colour — `--ink` — for anything that must be seen first, and `--paper` for the ground it sits
+ * on. The earlier navy/indigo palette is retired; hue no longer carries meaning on the overview.
  *
- * The design system loads Inter and JetBrains Mono from Google Fonts. This
- * dashboard deliberately does not: it is a loopback-only surface, and a webfont
- * fetch would be its only outbound request. The families are named first in
- * each stack so a locally installed copy is used, and the stack falls back to
- * system faces otherwise.
+ * The design system loads Inter and JetBrains Mono from Google Fonts. This dashboard deliberately
+ * does not: it is a loopback-only surface, and a webfont fetch would be its only outbound request.
+ * The families are named first in each stack so a locally installed copy is used, and the stack
+ * falls back to system faces otherwise.
  *
- * Every token below that carries a colour MUST also be redefined in both light
- * blocks. A token defined only here keeps its dark value on a light surface —
- * that is how the inspector became unreadable in light mode. `tokens.test.ts`
- * asserts the two light blocks stay identical to each other and cover every
- * colour token, because the duplication cannot be removed in plain CSS.
+ * Every token below that carries a colour MUST also be redefined in both light blocks. A token
+ * defined only here keeps its dark value on a light surface — that is how the inspector once
+ * became unreadable in light mode. `tokens.test.ts` asserts the two light blocks stay identical
+ * to each other and cover every colour token, because the duplication cannot be removed in plain
+ * CSS.
  */
 :root {
   color-scheme: dark light;
-  --bg: #08080d;
-  --bg-raised: #0c0d14;
-  --surface-1: #11121a;
-  --surface-2: #171922;
-  --surface-3: #20232f;
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
-  --text: #f4f5f8;
-  --text-secondary: #c7cdd9;
-  --text-muted: #98a1b2;
-  --text-dim: #737c8f;
-  --selection: #6366f1;
-  --selection-soft: rgba(99, 102, 241, 0.15);
-  /* Carries white text (the skip link); #6366f1 would land at 4.47:1. */
-  --selection-strong: #4f46e5;
-  --sidebar-bg: #0a0a10;
-  --command-bar-bg: rgba(8, 8, 13, 0.94);
+  --bg: #08080a;
+  --bg-raised: #0f0f12;
+  --surface-1: #121215;
+  --surface-2: #1a1a1f;
+  --surface-3: #24242a;
+  --border: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.26);
+  --text: #f7f7f9;
+  --text-secondary: #d0d3da;
+  --text-muted: #a3a8b2;
+  --text-dim: #7b818c;
+  /* The one strong colour and its ground. */
+  --ink: #f7f7f9;
+  --paper: #08080a;
+  --line: rgba(255, 255, 255, 0.18);
+  --line-soft: rgba(255, 255, 255, 0.08);
+  --stripe: rgba(255, 255, 255, 0.03);
+  --selection: #f7f7f9;
+  --selection-soft: rgba(255, 255, 255, 0.1);
+  /* Carries paper-coloured text (the skip link, the pressed segment). */
+  --selection-strong: #f7f7f9;
   --magnitude-track: rgba(255, 255, 255, 0.07);
-  --magnitude-fill: #818cf8;
+  --magnitude-fill: #f7f7f9;
   /*
    * Graph node families (ADR 0016). Five, not one per kind: seven hues in one
    * lightness band measurably fail all-pairs colour-vision separation. These
    * steps were computed in OKLCH and validated against this surface — dark and
-   * light were each selected, never flipped. Shape is the second encoding.
+   * light were each selected, never flipped. Shape is the second encoding. The
+   * graph route is the one surface that still needs hue to tell kinds apart.
    */
   --graph-scope: #e52751;
   --graph-structure: #b38c15;
@@ -49,11 +55,9 @@
   --graph-structural: #b38c15;
   --graph-operational: #8792a8;
   --evidence-adapter: #a78bfa;
-  /* The identity tile is a brand mark, not a themed surface: it keeps the
-     same gradient and the same white glyph in both themes, which is why the
-     light blocks repeat these values rather than inverting them. */
-  --brand-mark-from: #0b66dc;
-  --brand-mark-to: #4f46e5;
+  /* The identity tile is ink on paper in both themes, as the comps draw it. */
+  --brand-mark-from: #111318;
+  --brand-mark-to: #111318;
   --brand-mark-text: #ffffff;
   --success: #35d07f;
   --warning: #f5b942;
@@ -69,7 +73,7 @@
    * genuinely sit between two rungs, and without them the stylesheets grew 39
    * distinct raw pixel values instead. A scale nothing references is not a
    * scale, so `tokens.test.ts` fails on a raw pixel length in any spacing
-   * property.
+   * property. 22px is the comps' gutter.
    */
   --space-0: 2px;
   --space-1: 4px;
@@ -80,6 +84,7 @@
   --space-3h: 14px;
   --space-4: 16px;
   --space-5: 20px;
+  --space-5h: 22px;
   --space-6: 24px;
   --space-7: 28px;
   --space-8: 32px;
@@ -87,29 +92,26 @@
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
+  --radius-xl: 14px;
   --radius-pill: 999px;
   /*
-   * Motion. Two durations and one easing curve, named rather than repeated at
-   * the drawer and the pulse trace. The elevation/shadow half of the mockup's
-   * depth layer is deliberately NOT adopted (gate G2, 2026-09-01): the console is
-   * flat by design, and an overlay is already lifted off the page by its backdrop
-   * scrim, raised background, and border, not a shadow. See
-   * docs/2026-08-14-dashboard-redesign-plan.md for the recorded decision.
+   * Motion. Two durations and one easing curve for the shell; the overview's
+   * entrance and live animations are declared beside the rules that use them
+   * and are all disabled under `prefers-reduced-motion`.
    */
   --dur-1: 120ms;
   --dur-2: 160ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   /*
    * A named type scale. The design system's density comes from deliberate small
-   * sizes, and without tokens each one gets hardcoded at its use site — which is
-   * how the old stylesheets ended up with `font: 12px var(--font-mono)` repeated
-   * a dozen times and no way to shift the scale.
+   * sizes, and without tokens each one gets hardcoded at its use site.
    *
    * Named `--font-size-*` rather than `--text-*` on purpose: `--text`,
    * `--text-secondary`, `--text-muted` and `--text-dim` are colours, and a
    * `--text-sm` sitting beside them would read as one.
    *
-   * 11px is the floor. The mockup goes to 9.5px; the 2026-08-05 audit raised
+   * 11px is the floor. The comps go to 9.5px; the 2026-08-05 audit raised
    * anything under 11px because metadata that small is not readable here.
    */
   --font-size-2xs: 11px;
@@ -119,36 +121,27 @@
   --font-size-lg: 16px;
   --font-size-xl: 18px;
   --font-size-2xl: 22px;
-  /* Shell metrics. The detail drawer overlays the two-track shell. */
-  --rail-width: 220px;
-  --rail-width-collapsed: 62px;
+  --font-size-3xl: 30px;
+  /* Shell metrics: the 56px header the comps draw, and the docked drill-down. */
+  --topbar-height: 56px;
+  --overview-aside-width: 360px;
   --detail-drawer-width: min(42rem, calc(100vw - var(--space-8)));
-  --topbar-height: 52px;
   /*
-   * Panel rhythm. Every panel header, row and empty state reads from these two
-   * so the horizontal edge is continuous down a column: they were a dozen
-   * separate `9px 12px` / `10px 12px` / `4px 12px` literals, and the 1-2px
-   * differences were visible as a ragged left edge wherever two panels stacked.
-   * 14px matches the design system; the vertical value is the row, and headers
-   * take a little more.
-   */
-  /*
-   * Panel and cell padding. `--panel-pad-y` was 9px, which is off the scale and
-   * too tight: a table of 97 rows read as a wall of text with the status and
-   * presence cells touching their own borders.
+   * Panel and cell padding, shared by every detail route so the horizontal
+   * edge is continuous down a column.
    */
   --panel-pad-x: var(--space-3h);
   --panel-pad-y: var(--space-3);
-  --focus: 0 0 0 3px rgba(129, 140, 248, 0.45);
+  --focus: 0 0 0 3px rgba(247, 247, 249, 0.45);
   --z-sidebar: 20;
   --z-skip: 100;
   --z-dialog: 200;
 }
 
 /*
- * The light theme the design system ships. It follows the operating system,
- * and `[data-theme]` on the root element overrides that in either direction —
- * the dark block is written so an explicit `light` choice wins over a dark OS.
+ * The light theme. It follows the operating system, and `[data-theme]` on the
+ * root element overrides that in either direction — the dark block is written
+ * so an explicit `light` choice wins over a dark OS.
  *
  * The two light blocks are byte-identical on purpose. Plain CSS cannot share
  * one declaration list between a media query and an attribute selector, so the
@@ -156,24 +149,28 @@
  */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme='dark']) {
-    --bg: #f7f8fb;
+    color-scheme: light;
+    --bg: #f4f5f7;
     --bg-raised: #ffffff;
     --surface-1: #ffffff;
-    --surface-2: #f1f3f8;
-    --surface-3: #e9ecf3;
-    --border: rgba(15, 23, 42, 0.1);
-    --border-strong: rgba(15, 23, 42, 0.18);
-    --text: #0d111c;
-    --text-secondary: #2c3444;
-    --text-muted: #586073;
-    --text-dim: #6b7488;
-    --selection: #4f46e5;
-    --selection-soft: rgba(99, 102, 241, 0.12);
-    --selection-strong: #4338ca;
-    --sidebar-bg: #ffffff;
-    --command-bar-bg: rgba(247, 248, 251, 0.94);
-    --magnitude-track: rgba(15, 23, 42, 0.08);
-    --magnitude-fill: #4f46e5;
+    --surface-2: #eef0f3;
+    --surface-3: #e3e6eb;
+    --border: rgba(17, 24, 39, 0.1);
+    --border-strong: rgba(17, 24, 39, 0.22);
+    --text: #111318;
+    --text-secondary: #3a3f4b;
+    --text-muted: #6b7280;
+    --text-dim: #7d8492;
+    --ink: #111318;
+    --paper: #f4f5f7;
+    --line: rgba(17, 24, 39, 0.14);
+    --line-soft: rgba(17, 24, 39, 0.07);
+    --stripe: rgba(17, 24, 39, 0.035);
+    --selection: #111318;
+    --selection-soft: rgba(17, 24, 39, 0.06);
+    --selection-strong: #111318;
+    --magnitude-track: rgba(17, 24, 39, 0.08);
+    --magnitude-fill: #111318;
     --graph-scope: #cc086c;
     --graph-structure: #c68206;
     --graph-actor: #017214;
@@ -182,37 +179,41 @@
     --graph-structural: #c68206;
     --graph-operational: #6b7488;
     --evidence-adapter: #6d28d9;
-    --brand-mark-from: #0b66dc;
-    --brand-mark-to: #4f46e5;
+    --brand-mark-from: #111318;
+    --brand-mark-to: #111318;
     --brand-mark-text: #ffffff;
     --success: #0f9d58;
     --warning: #b46b04;
     --danger: #c8384a;
     --unknown: #5c6479;
     --info: #1273b8;
-    --focus: 0 0 0 3px rgba(67, 56, 202, 0.85);
+    --focus: 0 0 0 3px rgba(17, 19, 24, 0.55);
   }
 }
 
 :root[data-theme='light'] {
-  --bg: #f7f8fb;
+  color-scheme: light;
+  --bg: #f4f5f7;
   --bg-raised: #ffffff;
   --surface-1: #ffffff;
-  --surface-2: #f1f3f8;
-  --surface-3: #e9ecf3;
-  --border: rgba(15, 23, 42, 0.1);
-  --border-strong: rgba(15, 23, 42, 0.18);
-  --text: #0d111c;
-  --text-secondary: #2c3444;
-  --text-muted: #586073;
-  --text-dim: #6b7488;
-  --selection: #4f46e5;
-  --selection-soft: rgba(99, 102, 241, 0.12);
-  --selection-strong: #4338ca;
-  --sidebar-bg: #ffffff;
-  --command-bar-bg: rgba(247, 248, 251, 0.94);
-  --magnitude-track: rgba(15, 23, 42, 0.08);
-  --magnitude-fill: #4f46e5;
+  --surface-2: #eef0f3;
+  --surface-3: #e3e6eb;
+  --border: rgba(17, 24, 39, 0.1);
+  --border-strong: rgba(17, 24, 39, 0.22);
+  --text: #111318;
+  --text-secondary: #3a3f4b;
+  --text-muted: #6b7280;
+  --text-dim: #7d8492;
+  --ink: #111318;
+  --paper: #f4f5f7;
+  --line: rgba(17, 24, 39, 0.14);
+  --line-soft: rgba(17, 24, 39, 0.07);
+  --stripe: rgba(17, 24, 39, 0.035);
+  --selection: #111318;
+  --selection-soft: rgba(17, 24, 39, 0.06);
+  --selection-strong: #111318;
+  --magnitude-track: rgba(17, 24, 39, 0.08);
+  --magnitude-fill: #111318;
   --graph-scope: #cc086c;
   --graph-structure: #c68206;
   --graph-actor: #017214;
@@ -221,13 +222,18 @@
   --graph-structural: #c68206;
   --graph-operational: #6b7488;
   --evidence-adapter: #6d28d9;
-  --brand-mark-from: #0b66dc;
-  --brand-mark-to: #4f46e5;
+  --brand-mark-from: #111318;
+  --brand-mark-to: #111318;
   --brand-mark-text: #ffffff;
   --success: #0f9d58;
   --warning: #b46b04;
   --danger: #c8384a;
   --unknown: #5c6479;
   --info: #1273b8;
-  --focus: 0 0 0 3px rgba(67, 56, 202, 0.85);
+  --focus: 0 0 0 3px rgba(17, 19, 24, 0.55);
+}
+
+/* An explicit dark choice keeps dark form controls even on a light OS. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
 }

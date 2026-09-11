@@ -90,7 +90,13 @@ describe('theme tokens', () => {
  * opaque must come from a token, including a brand colour, which is what
  * `--brand-mark-*` exists for.
  */
-const STYLESHEETS = ['shell.css', 'activity.css', 'pulse.css', 'projects.css'] as const;
+const STYLESHEETS = [
+  'shell.css',
+  'activity.css',
+  'pulse.css',
+  'projects.css',
+  'overview.css',
+] as const;
 
 const colourProperty = /^\s*(background|background-color|color|border-top-color)\s*:\s*([^;]+);/gmu;
 

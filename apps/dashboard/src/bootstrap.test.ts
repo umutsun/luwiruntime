@@ -8,6 +8,7 @@ import {
   needsMessagesOf,
   resourcesOf,
   seedActivity,
+  selectedAgentOf,
   selectedProjectOf,
 } from './bootstrap.js';
 import type { PulseInput } from './pulse/model.js';
@@ -156,5 +157,17 @@ describe('resourcesOf', () => {
       'sessions',
       'usage',
     ]);
+  });
+});
+
+describe('the overview detail drawer', () => {
+  it('loads the scoped evidence for the drawer, and the pair evidence for its agent', () => {
+    expect(selectedProjectOf('#/pulse/p1/detail')).toBe('p1');
+    expect(selectedProjectOf('#/pulse/p1/detail/a1')).toBe('p1');
+    expect(selectedAgentOf('#/pulse/p1/detail/a1')).toBe('a1');
+    expect(selectedAgentOf('#/pulse/p1/detail')).toBeUndefined();
+    // A focus alone reads nothing scoped; the drill-down shows what the snapshot holds.
+    expect(selectedProjectOf('#/pulse/p1')).toBeUndefined();
+    expect(selectedAgentOf('#/pulse/p1')).toBeUndefined();
   });
 });

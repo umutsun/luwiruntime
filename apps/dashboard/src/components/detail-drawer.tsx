@@ -34,7 +34,8 @@ export function DetailDrawer({
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    closeButton.current?.focus();
+    // A child that placed focus on mount (a form's first field) keeps it.
+    if (!surface.current?.contains(document.activeElement)) closeButton.current?.focus();
     return () => {
       document.body.style.overflow = previousOverflow;
       opener.current?.focus();

@@ -33,7 +33,22 @@ export const SIMPLE_ROUTES = [
 type SimpleRouteName = (typeof SIMPLE_ROUTES)[number];
 
 export type DashboardRoute =
-  | { name: 'pulse' }
+  /**
+   * The overview, optionally focused on one project. The focus rides in the
+   * hash so a reload, a link and the back link from a detail route return to
+   * the same project; session and agent focus stay transient.
+   */
+  | {
+      name: 'pulse';
+      projectId?: string;
+      /**
+       * `#/pulse/<id>/detail[/<agentId>]`: the project's detail drawer, open
+       * over the overview. It is in the hash for the same reason the focus is
+       * — the scoped reads load for it and a reload reopens it — and so that
+       * opening it never leaves the overview for the registry route.
+       */
+      detail?: { agentId?: string };
+    }
   | { name: SimpleRouteName }
   | { name: 'messages'; correlationId?: string }
   /**
@@ -94,10 +109,32 @@ export function parseRoute(hash: string): DashboardRoute {
     return { name: 'projects', projectId };
   }
 
+  if (head === 'pulse' && second !== undefined) {
+    const projectId = decodeSegment(second).trim();
+    if (projectId !== '' && projectId.length <= MAX_IDENTIFIER_LENGTH) {
+      const [, , third, fourth] = segments;
+      if (third !== 'detail') return { name: 'pulse', projectId };
+      const agentId = fourth === undefined ? '' : decodeSegment(fourth).trim();
+      return {
+        name: 'pulse',
+        projectId,
+        detail: agentId !== '' && agentId.length <= MAX_IDENTIFIER_LENGTH ? { agentId } : {},
+      };
+    }
+  }
+
   return { name: 'pulse' };
 }
 
 export function routeHref(route: DashboardRoute): string {
+  if (route.name === 'pulse') {
+    if (route.projectId === undefined) return '#/pulse';
+    const base = `#/pulse/${encodeURIComponent(route.projectId)}`;
+    if (route.detail === undefined) return base;
+    return route.detail.agentId === undefined
+      ? `${base}/detail`
+      : `${base}/detail/${encodeURIComponent(route.detail.agentId)}`;
+  }
   if (route.name === 'messages') {
     return route.correlationId === undefined
       ? '#/messages'

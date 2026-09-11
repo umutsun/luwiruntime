@@ -6,8 +6,10 @@ import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
 import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
 import { createMessageMutations, type MessageMutations } from './api/message-mutations.js';
+import { createProjectMutations, type ProjectMutations } from './api/project-mutations.js';
 import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
 import { loadRuntimeResources } from './api/runtime-resources.js';
+import { loadSessionUsage } from './api/session-usage.js';
 import {
   intelligenceResourceKeys,
   intelligenceResourcesForEvent,
@@ -94,6 +96,7 @@ import './styles/shell.css';
 import './styles/pulse.css';
 import './styles/activity.css';
 import './styles/projects.css';
+import './styles/overview.css';
 
 const client = createDaemonClient();
 /**
@@ -103,6 +106,7 @@ const client = createDaemonClient();
  */
 const configMutations: ConfigMutations = createConfigMutations();
 const messageMutations: MessageMutations = createMessageMutations();
+const projectMutations: ProjectMutations = createProjectMutations();
 
 /**
  * Bound once so the Graph explorer's load effect has a stable dependency; a new
@@ -116,6 +120,9 @@ const fetchSubgraph = (
 /** Same reason: the Runtime route's refresh timer keys on this identity. */
 const fetchResources = (options?: { signal?: AbortSignal }) =>
   loadRuntimeResources(client, options);
+/** Same reason: the overview's usage effect keys on this identity. */
+const fetchSessionUsage = (sessionId: string, options?: { signal?: AbortSignal }) =>
+  loadSessionUsage(client, sessionId, options);
 
 function DashboardRoute() {
   const [input, setInput] = useState<PulseInput>();
@@ -518,11 +525,14 @@ function DashboardRoute() {
       configMutations={configMutations}
       messageMutations={messageMutations}
       onConfigMutated={onConfigMutated}
+      projectMutations={projectMutations}
+      onProjectMutated={retry}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
       leaseResources={leaseResources}
       loadSubgraph={fetchSubgraph}
       loadResources={fetchResources}
+      loadSessionUsage={fetchSessionUsage}
       onRetry={retry}
       onActivityStateChange={(next) => {
         activityRef.current = next;

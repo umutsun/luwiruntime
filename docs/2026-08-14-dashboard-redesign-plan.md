@@ -341,3 +341,12 @@ executables, so it never runs per read, and a failed detection costs the version
 The table gained a "Models seen" column — the distinct `metadata.model` values the agent's sessions
 reported, a dash when none did — and a second panel lists agent ids that sessions carry but no
 definition covers, since a launcher hook names the vendor rather than a registered definition.
+
+## Superseded 2026-09-11
+
+The Pulse route this plan built — stat strip, Active Work, Project Pulse, Realtime Stream, Context
+Efficiency, Repository facts — was replaced by the overview of ADR 0032: four switchable lenses over
+one model, a docked drill-down and a stream ticker, drawn from the owner's four new comps. The
+honesty rules above survive unchanged and are restated in
+`docs/superpowers/specs/2026-09-11-dashboard-overview-redesign-design.md`; the rail, the command bar
+and the scope select are gone. The detail routes this plan's phase 5 kept are still kept.

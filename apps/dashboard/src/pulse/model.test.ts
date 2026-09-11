@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildPulseSnapshot,
   labelSessionStatus,
-  scopePulseSnapshot,
+  scopePulseSnapshotToProjects,
   type PulseInput,
   type PulseSession,
 } from './model.js';
@@ -587,7 +587,7 @@ describe('Pulse snapshot mapping', () => {
   });
 });
 
-describe('scoped snapshot', () => {
+describe('project-filtered snapshot', () => {
   const twoProjects = (): PulseInput => ({
     ...baseInput(),
     projects: {
@@ -629,7 +629,7 @@ describe('scoped snapshot', () => {
           type: 'session.registered',
           occurredAt: '2026-08-05T07:00:00.000Z',
           workspaceId: 'w',
-          projectId: 'p1',
+          projectId: 'p2',
           payload: {},
         },
         {
@@ -654,8 +654,8 @@ describe('scoped snapshot', () => {
     },
   });
 
-  it('narrows rows and recomputes counts for one project', () => {
-    const scoped = scopePulseSnapshot(buildPulseSnapshot(twoProjects()), 'p1');
+  it('narrows rows to the visible projects and recomputes every count', () => {
+    const scoped = scopePulseSnapshotToProjects(buildPulseSnapshot(twoProjects()), new Set(['p1']));
 
     expect(scoped.projects.map((project) => project.id)).toEqual(['p1']);
     expect(scoped.activeSessions.map((session) => session.id)).toEqual(['s1']);
@@ -664,22 +664,22 @@ describe('scoped snapshot', () => {
     expect(scoped.blockedCount).toEqual({ state: 'empty', value: 0 });
     expect(scoped.statusBreakdown).toEqual([{ status: 'thinking', label: 'thinking', count: 1 }]);
     expect(scoped.repositoryFacts.map((row) => row.projectId)).toEqual(['p1']);
-    // A runtime-level event carries no projectId and is not attributable to
-    // the scoped project, so a scoped view may not claim it.
-    expect(scoped.activity.map((event) => event.id)).toEqual(['e1']);
+    // A runtime-level event carries no projectId and belongs to every view of
+    // the runtime; a hidden project's event goes with the project.
+    expect(scoped.activity.map((event) => event.id)).toEqual(['e2']);
   });
 
-  it('keeps failed reads failed instead of turning them into empty scopes', () => {
+  it('keeps failed reads failed instead of turning them into empty filters', () => {
     const value = twoProjects();
     value.sessions = { state: 'unavailable' };
-    const scoped = scopePulseSnapshot(buildPulseSnapshot(value), 'p1');
+    const scoped = scopePulseSnapshotToProjects(buildPulseSnapshot(value), new Set(['p1']));
 
     expect(scoped.activeSessionCount).toEqual({ state: 'unavailable' });
     expect(scoped.waitingCount).toEqual({ state: 'unavailable' });
   });
 
-  it('returns the snapshot untouched without a scope', () => {
+  it('returns the snapshot untouched without a filter', () => {
     const snapshot = buildPulseSnapshot(twoProjects());
-    expect(scopePulseSnapshot(snapshot, undefined)).toBe(snapshot);
+    expect(scopePulseSnapshotToProjects(snapshot, undefined)).toBe(snapshot);
   });
 });

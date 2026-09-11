@@ -4,7 +4,7 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  height: 100%;
   margin: 0;
 }
 html {
@@ -34,12 +34,16 @@ body {
   color: var(--text);
   background: var(--bg);
   font-family: var(--font-ui);
-  font-size: var(--font-size-base);
+  font-size: var(--font-size-sm);
   line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
 }
 button,
 a {
   font: inherit;
+}
+button {
+  color: inherit;
 }
 a:focus-visible,
 button:focus-visible {
@@ -62,328 +66,421 @@ button:focus-visible {
   top: -48px;
   z-index: var(--z-skip);
   padding: var(--space-2) var(--space-3);
-  /* White on --selection-strong clears 4.5:1 in both themes; --text on
-     --selection did not, in either. */
-  color: var(--brand-mark-text);
-  background: var(--selection-strong);
+  color: var(--paper);
+  background: var(--ink);
   border-radius: var(--radius-sm);
 }
 .skip-link:focus {
   top: 12px;
 }
 /*
- * The rail is `position: fixed`, so its width has to be stated twice — once as
- * the grid track that reserves the gutter and once on the element itself. They
- * are the same token because they drifted apart once and the content sat under
- * the rail.
- */
-/*
- * The shell is the viewport, not a document: the page never scrolls. Each route
- * fills the workspace body and its panels scroll inside themselves, so what is
- * on screen is sized by the screen rather than by whichever list is longest.
+ * The shell is the viewport, not a document: a 56px header over one page
+ * region that fills the rest. The overview never scrolls the page; the detail
+ * routes scroll inside `.page--route`. There is no rail track any more — the
+ * comps' three regions are the header, the picture and the docked drill-down,
+ * and the last two are the overview's own grid.
  */
 .app-shell {
   display: grid;
-  grid-template-columns: var(--rail-width) minmax(0, 1fr);
   height: 100vh;
-}
-.app-shell--rail-collapsed {
-  grid-template-columns: var(--rail-width-collapsed) minmax(0, 1fr);
-}
-.sidebar {
-  position: fixed;
-  inset: 0 auto 0 0;
-  z-index: var(--z-sidebar);
-  display: flex;
-  width: var(--rail-width);
   min-width: 0;
-  flex-direction: column;
-  overflow: hidden;
-  border-right: 1px solid var(--border);
-  background: var(--sidebar-bg);
+  grid-template-rows: var(--topbar-height) minmax(0, 1fr);
 }
-.app-shell--rail-collapsed .sidebar {
-  width: var(--rail-width-collapsed);
-}
-/*
- * Collapsed, the rail keeps its icons and drops every label. The labels stay in
- * the accessibility tree — a rail that reads as eight unnamed buttons to a
- * screen reader is not collapsed, it is broken.
- */
-.app-shell--rail-collapsed .identity > div,
-.app-shell--rail-collapsed .nav-group,
-.app-shell--rail-collapsed .nav-item__label,
-.app-shell--rail-collapsed .nav-item__badge,
-.app-shell--rail-collapsed .runtime-footer small {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-}
-.app-shell--rail-collapsed .identity,
-.app-shell--rail-collapsed .nav-item {
-  justify-content: center;
-  padding-left: 0;
-  padding-right: 0;
-}
-.identity {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2h);
-  min-width: 0;
-  padding: var(--space-4) var(--space-4) var(--space-4);
-  border-bottom: 1px solid var(--border);
-}
-.identity__mark {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  flex: 0 0 auto;
-  border: 1px solid rgba(99, 102, 241, 0.6);
-  border-radius: var(--radius-sm);
-  background: linear-gradient(145deg, var(--brand-mark-from), var(--brand-mark-to));
-  color: var(--brand-mark-text);
-  font-weight: 700;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-sm);
-}
-.identity strong,
-.identity small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.identity small {
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-}
-.sidebar nav {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--space-3) var(--space-2h);
-}
-.nav-group {
-  margin: 14px 8px 6px;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-}
-.nav-item {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: var(--space-2);
-  margin: var(--space-0) 0;
-  padding: var(--space-2) var(--space-2h);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  text-decoration: none;
-}
-.nav-item__icon {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  color: var(--text-dim);
-}
-.nav-item__label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/*
- * A count, not a notification. It renders only when the read succeeded — an
- * unavailable count shows nothing rather than a zero, because "0 projects" and
- * "we could not ask" are different facts.
- */
-.nav-item__badge {
-  flex: 0 0 auto;
-  color: var(--text-dim);
-  font: var(--font-size-xs) var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-.nav-item--active {
-  color: var(--text);
-  font-weight: 600;
-  background: var(--selection-soft);
-  box-shadow: inset 2px 0 var(--selection);
-}
-.nav-item--active .nav-item__icon {
-  color: var(--selection);
-}
-.nav-item--disabled {
-  color: var(--text-dim);
-  cursor: default;
-}
-.nav-item small {
-  font: var(--font-size-xs) var(--font-mono);
-}
-.runtime-footer {
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3h) var(--space-4);
-  border-top: 1px solid var(--border);
-  background: var(--bg-raised);
-}
-.runtime-footer small {
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-}
-/* Collapsed, each health chip keeps its dot and hides its words; the words
-   stay in the accessibility tree like the nav labels above them. */
-.app-shell--rail-collapsed .runtime-footer {
-  justify-items: center;
-  padding-left: 0;
-  padding-right: 0;
-}
-.app-shell--rail-collapsed .rail-health__label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-}
-.workspace {
-  display: grid;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  grid-column: 2;
-  grid-template-rows: auto minmax(0, 1fr);
-}
-.command-bar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-5);
-  min-height: var(--topbar-height);
-  padding: 0 var(--space-4);
-  border-bottom: 1px solid var(--border);
-  background: var(--command-bar-bg);
-  backdrop-filter: blur(14px);
-}
-.command-bar__left {
+.topbar {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: var(--space-3);
+  height: var(--topbar-height);
+  padding: 0 var(--space-5h);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
 }
-.command-bar h1 {
-  margin: 0;
-  font-size: var(--font-size-lg);
-  letter-spacing: -0.02em;
+.topbar__identity {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2h);
+  color: var(--text);
+  text-decoration: none;
 }
-/* The eyebrow carries the scope name; it truncates rather than wrapping the
-   52px bar into two lines beside a 300px search field. */
-.command-bar__left > div {
+.identity__mark {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 7px;
+  background: var(--brand-mark-from);
+  color: var(--brand-mark-text);
+}
+.topbar__name {
+  font-size: var(--font-size-base);
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+.topbar__spacer {
+  flex: 1 1 auto;
+}
+/*
+ * The realtime switch. Pressed follows the feed; released holds what is on
+ * screen and counts what arrives. The word follows the socket, so a pressed
+ * switch never reads LIVE over a dead connection, and each state changes the
+ * dot's border as well as its colour.
+ */
+.live {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-3) 0 var(--space-3h);
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--text-muted);
+  background: none;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.live:hover {
+  color: var(--text);
+}
+.live__dot {
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--ink);
+  border-radius: 50%;
+  background: var(--ink);
+}
+.live--live .live__dot {
+  animation: ov-pulse 1.8s ease-in-out infinite;
+}
+.live--warning .live__dot {
+  background: none;
+  border-style: dashed;
+}
+.live--danger {
+  color: var(--danger);
+}
+.live--danger .live__dot {
+  background: none;
+  border-color: currentColor;
+}
+.live--paused .live__dot {
+  background: none;
+  border-style: dotted;
+}
+.snapshot-tag {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius-xs);
+  color: var(--warning);
+  background: none;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+/* Header menus: a trigger and a popover list beneath it. Not dialogs. */
+.menu {
+  position: relative;
+  flex: 0 0 auto;
+}
+.menu__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-2h) 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  background: var(--surface-1);
+  font-size: var(--font-size-xs);
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.menu__trigger:hover {
+  border-color: var(--border-strong);
+}
+.menu__trigger svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+.menu__eyebrow {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.12em;
+}
+.menu__value {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
 }
-.command-bar .eyebrow {
+.menu__list {
+  position: absolute;
+  right: 0;
+  top: 38px;
+  z-index: var(--z-sidebar);
+  width: 320px;
+  max-height: min(70vh, 520px);
+  overflow-y: auto;
+  padding: var(--space-1h);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+  animation: ov-rise 0.18s var(--ease-out) both;
+}
+.menu__item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-2h);
+  padding: var(--space-1h) var(--space-2);
+  border: 0;
+  border-radius: 7px;
+  color: var(--text);
+  background: none;
+  font-size: var(--font-size-xs);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+.menu__item:hover {
+  background: var(--selection-soft);
+}
+.menu__item[aria-pressed='true'] {
+  background: var(--selection-soft);
+  font-weight: 600;
+}
+.menu__glyph {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  font-weight: 650;
+}
+.menu__item[aria-pressed='true'] .menu__glyph {
+  color: var(--paper);
+  background: var(--ink);
+}
+.menu__label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.command-bar__right {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: var(--space-2);
+.menu__hint {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.1em;
 }
 /*
- * The square icon buttons in the top bar and the rail. They carry no visible
- * text, so each one needs an accessible name at its call site; the shared style
- * only makes the hit target square and large enough.
+ * Switch rows: one click on the row toggles, the switch at its end shows the
+ * state, and the row itself never takes the pressed highlight — in a list
+ * where most rows are on, a highlight on every one would say nothing.
  */
-.icon-button {
-  display: grid;
-  width: 30px;
-  height: 30px;
+.menu__item--switch[aria-pressed='true'] {
+  background: none;
+  font-weight: 500;
+}
+.menu__item--switch:hover {
+  background: var(--selection-soft);
+}
+.switch {
+  display: inline-block;
+  width: 28px;
+  height: 16px;
   flex: 0 0 auto;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+  transition: background var(--dur-2) var(--ease);
+}
+.switch__knob {
+  display: block;
+  width: 12px;
+  height: 12px;
+  margin: 1px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform var(--dur-2) var(--ease);
+}
+.menu__item--switch[aria-pressed='true'] .switch {
+  border-color: var(--ink);
+  background: var(--ink);
+}
+.menu__item--switch[aria-pressed='true'] .switch__knob {
+  background: var(--paper);
+  transform: translateX(12px);
+}
+.menu__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.menu__row .menu__item {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.menu__row--off .menu__item,
+.menu__row--quiet .menu__item {
+  opacity: 0.45;
+}
+.menu__row--quiet .menu__item .menu__hint {
+  text-decoration: line-through;
+}
+/* Solo one project. Revealed on hover and focus; always shown without hover. */
+.menu__only {
+  flex: 0 0 auto;
+  padding: var(--space-0) var(--space-1h);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-dim);
+  background: none;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  opacity: 0;
+}
+.menu__row:hover .menu__only,
+.menu__only:focus-visible {
+  opacity: 1;
+}
+.menu__only:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+@media (hover: none) {
+  .menu__only {
+    opacity: 1;
+  }
+}
+.menu__divider {
+  height: 1px;
+  margin: var(--space-1) var(--space-2);
+  background: var(--border);
+}
+/*
+ * Segmented control: every alternative visible, the chosen one raised. The
+ * pressed state is the ARIA attribute itself, so the style cannot disagree
+ * with what is announced. `--mono` is the comps' ink-on-paper pressed segment;
+ * `--icons` is the square, glyph-only variant the theme control uses.
+ */
+.segmented {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-0);
+  padding: var(--space-0);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.segmented__option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1h);
+  height: 26px;
+  padding: 0 var(--space-2h);
+  border: 0;
   border-radius: var(--radius-sm);
   color: var(--text-muted);
   background: none;
+  font-size: var(--font-size-2xs);
+  font-weight: 550;
+  white-space: nowrap;
   cursor: pointer;
 }
-.icon-button:hover {
+.segmented__option:hover {
   color: var(--text);
-  border-color: var(--border);
-  background: var(--surface-2);
 }
-.icon-button svg {
-  width: 16px;
-  height: 16px;
+.segmented__option[aria-pressed='true'] {
+  color: var(--text);
+  background: var(--surface-3);
 }
-.command-shell {
-  width: min(420px, 32vw);
-  overflow: hidden;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-dim);
-  background: var(--surface-1);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.segmented--mono .segmented__option {
+  font-family: var(--font-mono);
 }
-/* The one scroll container. A route that fits stays put; one that cannot fit
-   the viewport (stacked narrow layouts, long stacked routes) scrolls here. */
-.workspace__body {
-  display: flex;
-  width: 100%;
-  max-width: 1680px;
+.segmented--mono .segmented__option[aria-pressed='true'] {
+  color: var(--paper);
+  background: var(--ink);
+}
+.segmented--icons .segmented__option {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+.segmented__option svg {
+  width: 14px;
+  height: 14px;
+}
+/* The page region: the overview fills it; a detail route scrolls inside it. */
+.page {
+  min-width: 0;
   min-height: 0;
-  flex-direction: column;
-  margin: 0 auto;
-  padding: var(--space-4) var(--space-5) var(--space-7);
+}
+.page--route {
   overflow: auto;
 }
-.snapshot-line {
+.route {
+  width: 100%;
+  max-width: 1680px;
+  margin: 0 auto;
+  padding: var(--space-4) var(--space-5h) var(--space-7);
+}
+.route-head {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: var(--space-4);
-  margin-bottom: 10px;
+  margin-bottom: var(--space-4);
+}
+.route-head h1 {
+  margin: 0;
+  font-size: var(--font-size-2xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.route-head__back {
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
+  text-decoration: none;
+  white-space: nowrap;
 }
-.snapshot-line > div {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
+.route-head__back:hover {
+  color: var(--text);
 }
-.retry-button {
-  padding: var(--space-1h) var(--space-2h);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-xs);
-  color: var(--text-secondary);
-  background: var(--surface-2);
-  cursor: pointer;
+.route-body {
+  min-width: 0;
 }
 /*
  * 0.13em, not the design system's 0.22em: these eyebrows are small uppercase
  * mono labels in a dense console, where 0.22em spreads a six-letter word past
- * its value. The wider tracking is calibrated for larger display eyebrows the
- * console does not use. `.nav-group` above shares this reasoning.
+ * its value.
  */
 .eyebrow {
   margin: 0 0 2px;
@@ -396,8 +493,7 @@ button:focus-visible {
 /*
  * Dual encoding, taken from the design system: the tone carries colour AND the
  * dot carries a border style. Colour alone fails under grayscale, colour-vision
- * deficiency, and a monochrome print — and the grade is the one thing on this
- * surface a reader must not have to guess. The text label is still first; these
+ * deficiency, and a monochrome print. The text label is still first; these
  * two are the reinforcement, not the message.
  */
 .status-chip {
@@ -445,21 +541,6 @@ button:focus-visible {
 .status-chip--info {
   --tone: var(--info);
 }
-@media (max-width: 1399px) {
-  .command-shell {
-    width: 300px;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}
 .route-loading,
 .route-error {
   display: grid;
@@ -481,17 +562,27 @@ button:focus-visible {
   color: var(--text-muted);
 }
 /*
- * The ⌘K palette. The trigger reuses the command-shell slot the scope summary
- * always occupied — the mockup drew this exact control as its search field.
- * The overlay is transient and modal, matching the detail drawer interaction.
+ * The Ctrl K palette. Its trigger is a square icon button here — the comps
+ * have no search field, and the scope line it used to carry stays for
+ * assistive technology only. The overlay is transient and modal.
  */
 .command-shell--trigger {
-  display: flex;
+  display: inline-flex;
+  width: auto;
+  height: 32px;
+  flex: 0 0 auto;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1h);
+  padding: 0 var(--space-2);
   border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  background: var(--surface-1);
   cursor: pointer;
-  text-align: left;
+}
+.command-shell--trigger:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
 }
 .command-shell--trigger svg {
   width: 14px;
@@ -499,15 +590,16 @@ button:focus-visible {
   flex: 0 0 auto;
 }
 .command-shell__scope {
-  flex: 1;
+  position: absolute;
+  width: 1px;
+  height: 1px;
   overflow: hidden;
-  min-width: 0;
-  text-overflow: ellipsis;
+  clip: rect(0, 0, 0, 0);
   white-space: nowrap;
 }
 .command-shell__kbd {
   flex: 0 0 auto;
-  padding: var(--space-0) var(--space-1h);
+  padding: var(--space-0) var(--space-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text-dim);
@@ -597,146 +689,38 @@ button:focus-visible {
   color: var(--text-dim);
   font: var(--font-size-2xs) var(--font-mono);
 }
-/* The scope switcher beside the palette; native select, shell-styled. */
-.scope-select {
-  max-width: 180px;
-  height: 32px;
-  padding: 0 var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  background: var(--surface-1);
-  font: var(--font-size-xs) var(--font-ui);
-  cursor: pointer;
-}
-.scope-select:focus-visible {
-  outline: none;
-  box-shadow: var(--focus);
-}
-.scope-group {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-0);
-}
-/* The one-click way back from a narrowed scope; absent when nothing is narrowed. */
-.scope-clear {
-  display: grid;
-  width: 26px;
-  height: 32px;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  color: var(--text-muted);
-  background: none;
-  font-size: var(--font-size-base);
-  cursor: pointer;
-}
-.scope-clear:hover {
-  color: var(--text);
-}
-/*
- * Segmented control: every alternative visible, the chosen one raised. Used for
- * the theme and for the graph explorer's bounds. The pressed state is the ARIA
- * attribute itself, so the style cannot disagree with what is announced.
- */
-.segmented {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-0);
-  padding: var(--space-0);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-1);
-}
-.segmented__option {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1h);
-  height: 26px;
-  padding: 0 var(--space-2);
-  border: 0;
-  border-radius: var(--radius-xs);
-  color: var(--text-muted);
-  background: none;
-  font-size: var(--font-size-xs);
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.segmented__option:hover {
-  color: var(--text);
-}
-.segmented__option[aria-pressed='true'] {
-  color: var(--text);
-  background: var(--surface-3);
-}
-.segmented__option svg {
-  width: 14px;
-  height: 14px;
-}
-/*
- * The realtime switch. Pressed means the console follows the feed; released
- * holds what is on screen and counts what arrives. The connection state rides
- * on the same control rather than a chip beside it, and each state changes the
- * dot's border as well as its colour — the same dual encoding as the status
- * chips, because a "Live" that only differs by hue is not a state a reader can
- * check at a glance.
- */
-.live-switch {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  height: 30px;
-  padding: 0 var(--space-2h) 0 var(--space-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--tone);
-  background: var(--surface-1);
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.live-switch__dot {
-  width: 7px;
-  height: 7px;
-  border: 1.5px solid currentColor;
-  border-radius: 50%;
-  background: currentColor;
-}
-.live-switch--live {
-  --tone: var(--success);
-}
-.live-switch--live .live-switch__dot {
-  animation: live-pulse 1.6s var(--ease) infinite;
-}
-.live-switch--warning {
-  --tone: var(--warning);
-}
-.live-switch--warning .live-switch__dot {
-  background: none;
-  border-style: dashed;
-}
-.live-switch--danger {
-  --tone: var(--danger);
-}
-.live-switch--danger .live-switch__dot {
-  background: none;
-}
-.live-switch--paused {
-  --tone: var(--text-muted);
-  border-style: dashed;
-}
-.live-switch--paused .live-switch__dot {
-  background: none;
-  border-style: dashed;
-}
-@keyframes live-pulse {
+@keyframes ov-pulse {
   0%,
   100% {
     opacity: 1;
   }
   50% {
     opacity: 0.35;
+  }
+}
+@keyframes ov-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@media (max-width: 1399px) {
+  .topbar {
+    gap: var(--space-2);
+    padding: 0 var(--space-4);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

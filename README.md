@@ -67,9 +67,16 @@ realtime Pulse and the Phase 1–4 runtime foundation:
   ConfigPlan, approval, snapshot, apply, drift, rollback, and reconciliation;
 - non-causal post-change evaluation and project-scoped read-only Phase 4 MCP tools;
 - unit and opt-in Redis integration tests.
-- a loopback-served React/TypeScript Pulse shell with independently validated observational
-  health, project, session, agent, activity, usage, context, and optimization snapshots, plus
-  narrowly isolated configuration and inter-session question mutations;
+- a loopback-served React/TypeScript dashboard whose front door (ADR 0032, 2026-09-11) is an
+  overview with four switchable lenses — Board, Flow, Radial, Timeline — over one pure model, a
+  docked drill-down for the runtime, a project, an agent or a session, and a stream ticker; the
+  twelve detail routes stay, reached from the drill-down's links and `Ctrl K`; every comp claim the runtime
+  cannot know (release readiness, lifecycle stage, task leases, 7-day trends, tokens summed across
+  grades, a `running` status) is replaced by an observed fact or an honest `—`;
+- independently validated observational health, project, session, agent, activity, usage,
+  context, and optimization snapshots, plus narrowly isolated configuration, inter-session
+  question, and project registration/settings mutations (the last through a `PROJECTS` menu that
+  is also a persisted visibility filter with a hide-quiet rule, and projects are registered and edited in place inside the detail drawer);
 - explicit loading, empty, partial, degraded, Redis-unavailable, daemon-unavailable, and
   WebSocket connection states;
 - validated WebSocket events with first-live and reconnect refresh, bounded reconnect,
@@ -233,7 +240,8 @@ unified search, GitHub integration, prompt injection, task orchestration, a sema
 graph, memory federation, cloud accounts, and authentication are not implemented. Optimization
 accept/reject/evaluate, graph rebuild, lease release and `config/reconcile` (interrupted-apply
 recovery, run at daemon start) exist on the HTTP API and CLI but are deliberately not dashboard
-mutations. Dashboard writes remain the config plan chain and bounded question creation; it does not
+mutations. Dashboard writes are the config plan chain, bounded question creation, and project
+registration and settings (ADR 0033: name, remote and default branch; never the path); it does not
 acknowledge, process, answer, retry, cancel, or inject a message. Work leases exist but are
 not renewed automatically, do not notify when a held path frees, and are not correlated with the
 commits made under them.
@@ -357,7 +365,7 @@ local API. The daemon:
 - atomically acquires, and may atomically reacquire only a vacant, TTL-backed single-daemon owner
   lease before bootstrap mutation; neither operation replaces another owner's token.
 
-After `pnpm build`, the daemon serves Pulse at `http://127.0.0.1:4782/`. For frontend
+After `pnpm build`, the daemon serves the dashboard overview at `http://127.0.0.1:4782/`. For frontend
 development, start the daemon with
 `LUWI_ALLOWED_ORIGINS=http://127.0.0.1:4782,http://localhost:4782,http://127.0.0.1:4783`, then
 run `pnpm dev:dashboard` in a second terminal. Vite binds to `127.0.0.1:4783`; `/api` proxies
@@ -770,6 +778,7 @@ GET  /api/v1/runtime
 GET  /api/v1/projects
 POST /api/v1/projects
 GET  /api/v1/projects/:projectId
+PATCH /api/v1/projects/:projectId
 
 GET  /api/v1/sessions
 POST /api/v1/sessions
