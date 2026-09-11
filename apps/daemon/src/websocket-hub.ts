@@ -4,7 +4,8 @@ export interface WebSocketPeer {
   readonly readyState: number;
   readonly bufferedAmount: number;
   on(event: 'message' | 'close' | 'error', listener: (...arguments_: unknown[]) => void): unknown;
-  send(data: string, callback: (error?: Error) => void): void;
+  /** Settled the way `ws` settles it: `null` on success, an `Error` on failure. */
+  send(data: string, callback: (error?: Error | null) => void): void;
   close(code?: number, reason?: string): void;
   terminate(): void;
 }
@@ -73,14 +74,17 @@ class BoundedWebSocketHub implements WebSocketHub {
     }
     state.sending = true;
     let settled = false;
-    const finish = (error?: Error): void => {
+    const finish = (error?: Error | null): void => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
       state.sending = false;
-      if (error !== undefined) {
+      // `ws` passes Node's Writable convention through: a successful write calls
+      // back with `null`. Treating that as a failure terminated every client
+      // right after its first delivered event.
+      if (error !== undefined && error !== null) {
         state.socket.terminate();
         this.#remove(state);
         return;

@@ -14,11 +14,11 @@ class FakeSocket extends EventEmitter implements WebSocketPeer {
   readyState = 1;
   bufferedAmount = 0;
   readonly sent: string[] = [];
-  readonly callbacks: Array<(error?: Error) => void> = [];
+  readonly callbacks: Array<(error?: Error | null) => void> = [];
   readonly close = vi.fn();
   readonly terminate = vi.fn();
 
-  send(data: string, callback: (error?: Error) => void): void {
+  send(data: string, callback: (error?: Error | null) => void): void {
     this.sent.push(data);
     this.callbacks.push(callback);
   }
@@ -67,6 +67,28 @@ describe('WebSocket broadcast hub', () => {
     socket.callbacks[0]?.();
     expect(socket.sent).toHaveLength(2);
     expect(socket.sent[1]).toContain('"streamId":"2-0"');
+  });
+
+  it('keeps a client whose send settles with null, which is how ws settles every success', () => {
+    const hub = createWebSocketHub({
+      maxQueueSize: 3,
+      maxBufferedBytes: 1024,
+      sendTimeoutMs: 1000,
+    });
+    const socket = new FakeSocket();
+    hub.add(socket);
+
+    expect(hub.accept(message)).toBe(true);
+    expect(hub.accept({ ...message, streamId: '2-0' })).toBe(true);
+    // Node's Writable calls a successful write back with `null`, and ws passes
+    // that through. The live daemon terminated every dashboard right after its
+    // first delivered event because this was read as a failure.
+    socket.callbacks[0]?.(null);
+
+    expect(socket.terminate).not.toHaveBeenCalled();
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(socket.sent).toHaveLength(2);
+    expect(hub.clientCount).toBe(1);
   });
 
   it('disconnects a slow client on queue overflow without blocking relay ACK', () => {
