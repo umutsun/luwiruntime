@@ -41,7 +41,11 @@ import {
   resolveNativeIdentityFromDisk,
   type TranscriptFileSystem,
 } from '@luwi/adapters';
-import { ApplicationError, createSessionBootstrap } from '@luwi/runtime';
+import {
+  ApplicationError,
+  createSessionBootstrap,
+  type SessionBootstrapChange,
+} from '@luwi/runtime';
 import { Command } from 'commander';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
@@ -1362,6 +1366,16 @@ function createBootstrapSessionClient(
         jsonBody({}),
       );
     },
+    inspect: async (sessionId: string) => {
+      const session = await boundedRequest(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}`,
+        sessionResponseSchema,
+        connectTimeoutMs,
+      );
+      return { status: session.status };
+    },
     close: async (sessionId: string) => {
       await boundedRequest(
         dependencies,
@@ -1551,10 +1565,29 @@ async function runNativeBridge(
     agentId: context.agentId,
     projectId: context.projectId,
   });
+  let pollBackoffMs = 250;
   try {
     while (!stopped) {
-      const count = await bridge.pollOnce();
-      if (count === 0 && options.blockMs === 0 && !stopped) await dependencies.wait(100);
+      try {
+        const count = await bridge.pollOnce();
+        pollBackoffMs = 250;
+        if (count === 0 && options.blockMs === 0 && !stopped) await dependencies.wait(100);
+      } catch (error) {
+        // A transient daemon error (DAEMON_REQUEST_TIMEOUT / _UNAVAILABLE / RUNTIME_NOT_READY)
+        // must not kill the bridge: exiting here makes the manager retire and relaunch the
+        // worker (respawn storm). Back off and retry so the session rides out brief daemon
+        // unavailability. A genuine stop is never swallowed — we break as soon as it is set.
+        if (stopped) break;
+        const code = error instanceof ApplicationError ? error.code : 'BRIDGE_POLL_FAILED';
+        dependencies.stderr.write(
+          `${JSON.stringify({
+            error: { code, message: error instanceof Error ? error.message : String(error) },
+            retryInMs: pollBackoffMs,
+          })}\n`,
+        );
+        await dependencies.wait(pollBackoffMs);
+        pollBackoffMs = Math.min(pollBackoffMs * 2, 5_000);
+      }
     }
   } finally {
     dependencies.signals.off('SIGINT', stop);
@@ -1652,7 +1685,7 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
                   printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
                 onSessionChanged: (change) => {
                   if (
-                    change.reason !== 'stopped' &&
+                    (change.reason === 'registered' || change.reason === 'recovered') &&
                     childStarted &&
                     change.sessionId !== environmentSessionId
                   ) {
@@ -2193,7 +2226,11 @@ export function createCli(dependencies: CliDependencies): Command {
           if (options.sessionOut === undefined) return;
           const temporary = `${options.sessionOut}.${randomUUID()}.tmp`;
           try {
-            await writeFile(temporary, `${JSON.stringify({ attached: id })}\n`, {
+            // The native reference rides along so a reader that must register a
+            // successor after a drop can re-declare it (ADR 0034); the view a
+            // session answers with does not carry it.
+            const record = { attached: id, ...(native === undefined ? {} : { native }) };
+            await writeFile(temporary, `${JSON.stringify(record)}\n`, {
               encoding: 'utf8',
               flag: 'wx',
               mode: 0o600,
@@ -2205,17 +2242,24 @@ export function createCli(dependencies: CliDependencies): Command {
         };
         let sessionOutGeneration = 0;
         let sessionOutOperation = Promise.resolve();
-        const publishSessionChange = (change: {
-          reason: 'registered' | 'recovered' | 'stopped';
-          sessionId?: string;
-        }): void => {
+        const publishSessionChange = (change: SessionBootstrapChange): void => {
+          if (change.reason === 'dropped') {
+            // The runtime reaped a session no reader ever bound (starting past its
+            // grace). Nothing is re-registered — a replacement nobody binds is the
+            // same zombie again — and the file keeps naming the dropped id so an
+            // MCP server reports it as terminal rather than as missing.
+            dependencies.stderr.write(
+              `LUWI session ${change.previousSessionId} was dropped by the runtime before any reader bound it; not re-registering.\n`,
+            );
+            return;
+          }
           if (options.sessionOut === undefined) return;
           const generation = ++sessionOutGeneration;
           sessionOutOperation = sessionOutOperation
             .then(async () => {
               if (generation !== sessionOutGeneration && change.reason !== 'stopped') return;
               if (change.reason === 'registered' || change.reason === 'recovered') {
-                await writeSessionOut(change.sessionId!);
+                await writeSessionOut(change.sessionId);
               } else {
                 await rm(options.sessionOut!, { force: true });
               }
@@ -2236,6 +2280,13 @@ export function createCli(dependencies: CliDependencies): Command {
                 jsonBody({}),
               );
             },
+            inspect: async (sessionId) => {
+              const session = await callDaemon(
+                `/api/v1/sessions/${encodeURIComponent(sessionId)}`,
+                sessionResponseSchema,
+              );
+              return { status: session.status };
+            },
             close: async (sessionId) => {
               await callDaemon(
                 `/api/v1/sessions/${encodeURIComponent(sessionId)}/close`,
@@ -2245,6 +2296,10 @@ export function createCli(dependencies: CliDependencies): Command {
             },
           },
           ...request_,
+          // The reader of an attached session is the MCP server, not this process.
+          // A lost session that never left `starting` had no reader; re-registering
+          // it would recreate the zombie the runtime just reaped.
+          recoverUnready: false,
           heartbeatIntervalMs: Number.parseInt(options.heartbeatMs, 10),
           leaseRenewIntervalMs: Number.parseInt(options.leaseRenewMs, 10),
           leaseClient: {

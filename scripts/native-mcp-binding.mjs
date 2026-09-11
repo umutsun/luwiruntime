@@ -70,17 +70,39 @@ export function readBoundedJsonFile(path, maximumBytes = 16 * 1024) {
   return JSON.parse(readBoundedTextFile(path, maximumBytes));
 }
 
+const isPlainObject = (value) =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 export function readSessionBindingFile(path) {
   try {
     const record = readBoundedJsonFile(path, 4096);
+    // `{ attached }`, optionally with the `native` reference `session attach`
+    // writes beside it since ADR 0034 so an MCP server can re-declare it for a
+    // successor. The launchers only need the id.
+    const keys = Object.keys(record ?? {});
     if (
-      typeof record !== 'object' ||
-      record === null ||
-      Array.isArray(record) ||
-      Object.keys(record).length !== 1 ||
-      !Object.hasOwn(record, 'attached')
+      !isPlainObject(record) ||
+      !Object.hasOwn(record, 'attached') ||
+      keys.some((key) => key !== 'attached' && key !== 'native')
     ) {
       throw new Error('invalid record');
+    }
+    if (Object.hasOwn(record, 'native')) {
+      const native = record.native;
+      const nativeKeys = Object.keys(native ?? {});
+      if (
+        !isPlainObject(native) ||
+        nativeKeys.some(
+          (key) => key !== 'adapterId' && key !== 'nativeSessionId' && key !== 'nativeSubagentId',
+        )
+      ) {
+        throw new Error('invalid record');
+      }
+      requireString(native.adapterId, 128, 'native adapter id');
+      requireString(native.nativeSessionId, 256, 'native session id');
+      if (Object.hasOwn(native, 'nativeSubagentId')) {
+        requireString(native.nativeSubagentId, 256, 'native subagent id');
+      }
     }
     return requireString(record.attached, 128, 'LUWI session id');
   } catch {

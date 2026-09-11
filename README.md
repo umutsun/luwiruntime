@@ -767,7 +767,9 @@ start `session attach --session-out <absolute-private-path>` and configure that 
 binding before connecting the transport; later tool calls fail closed while the file is absent or
 invalid and resume against the replacement ID after the attach helper publishes it. Changing from
 static to file-backed binding requires rebuilding and restarting the MCP process once; rotations
-after that require no MCP restart.
+after that require no MCP restart. Since ADR 0034 the file also carries the native reference the
+attach declared, and a session the runtime dropped while still `starting` is not re-registered by
+the attach: `luwi_join` registers its successor and the MCP server keeps that one alive itself.
 
 ## HTTP and WebSocket API
 

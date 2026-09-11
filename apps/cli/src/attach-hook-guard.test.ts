@@ -416,3 +416,39 @@ describe('native MCP launcher binding environment', () => {
     }
   });
 });
+
+describe('session binding file with a native reference (ADR 0034)', () => {
+  it('accepts the native block beside the id and still rejects anything else', async () => {
+    const { readSessionBindingFile } =
+      (await import('../../../scripts/native-mcp-binding.mjs')) as {
+        readSessionBindingFile(path: string): string;
+      };
+    const { mkdtemp, rm, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const root = await mkdtemp(join(tmpdir(), 'luwi-binding-record-'));
+    const write = async (name: string, record: unknown) => {
+      const path = join(root, name);
+      await writeFile(path, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o600 });
+      return path;
+    };
+    try {
+      const native = { adapterId: 'claude-code', nativeSessionId: 'native-1' };
+      expect(readSessionBindingFile(await write('a.json', { attached: 's1' }))).toBe('s1');
+      expect(readSessionBindingFile(await write('b.json', { attached: 's1', native }))).toBe('s1');
+      for (const record of [
+        { attached: 's1', projectId: 'forged' },
+        { attached: 's1', native: { adapterId: 'claude-code' } },
+        { attached: 's1', native: { ...native, extra: true } },
+        { attached: 's1', native: 'native-1' },
+      ]) {
+        expect(() => readSessionBindingFile(root)).toThrow();
+        await expect(
+          write('c.json', record).then((path) => readSessionBindingFile(path)),
+        ).rejects.toThrow('invalid LUWI session binding file');
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

@@ -93,3 +93,20 @@ under `prefers-reduced-motion`.
   come back to the same project), written with `replaceState` so a click is not a history entry.
   Session and agent focus stay transient; the back link from a detail route carries the project.
 - Nothing about the daemon, the protocol, Redis or `luwi_v1` changed.
+
+## Follow-ups accepted on the owner's read (2026-09-11)
+
+- The `Details` menu was removed; the twelve routes are reached from the drill-down's links and
+  `Ctrl K`. `#/runtime` opens as a drawer over the overview rather than as a page.
+- The project drill-down offers `Inspect` and `Detail`; the detail drawer opens over the overview at
+  `#/pulse/<id>/detail` (ADR 0033 puts project editing inside it), and gained **Skills** — the
+  project-scoped capability packages with the path each file lives at — and **Optimization**, this
+  project's findings from the bounded set the snapshot carries, linking to `#/optimization` and
+  `#/config`.
+- The session drill-down keeps one copy icon for the session id beside the status badge, and its
+  three facts read the attributed usage records' own counters: Model is the newest record's model,
+  Tokens is one grade's total or else output and input (fresh plus cache written) summed each on its
+  own, and Context is the newest request's prompt size — input plus cache read plus cache written —
+  with the skills evidence in the detail. Nothing is summed across grades and no total is made up;
+  a session with no attributed record says `not observed`, which for a bridge or a Codex/Antigravity
+  session is the permanent, honest answer until a reader for that vendor's transcripts exists.

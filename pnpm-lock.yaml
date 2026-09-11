@@ -130,6 +130,9 @@ importers:
       '@luwi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@luwi/runtime':
+        specifier: workspace:*
+        version: link:../../packages/runtime
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.30.0(zod@4.4.3)

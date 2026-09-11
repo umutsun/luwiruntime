@@ -170,12 +170,17 @@ describe('Runtime health panel', () => {
     window.location.hash = '#/runtime';
     shell(input());
 
+    // Runtime is a drawer over the overview, not a page of its own.
+    const drawer = screen.getByRole('dialog', { name: 'Runtime' });
+    expect(drillDown()).toBeTruthy();
     // No "Function library" or "Projection health" rows may reappear, on any
     // route, without a daemon read behind them.
-    expect(screen.queryByText('Function library')).toBeNull();
-    expect(screen.queryByText('Projection health')).toBeNull();
-    expect(screen.getByText('Uptime')).toBeTruthy();
-    expect(screen.getByText('Realtime')).toBeTruthy();
+    expect(within(drawer).queryByText('Function library')).toBeNull();
+    expect(within(drawer).queryByText('Projection health')).toBeNull();
+    expect(within(drawer).getByText('Uptime')).toBeTruthy();
+    expect(within(drawer).getByText('Realtime')).toBeTruthy();
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Close drawer' }));
+    expect(window.location.hash).toBe('#/pulse');
   });
 });
 
@@ -523,7 +528,6 @@ describe('detail routes', () => {
   };
 
   const routes = [
-    ['#/runtime', 'Runtime'],
     ['#/sessions', 'Sessions'],
     ['#/agents', 'Agents'],
     ['#/messages', 'Messages'],

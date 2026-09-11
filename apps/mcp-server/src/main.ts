@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
+import type { SessionView } from '@luwi/protocol';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
 import { loadMcpServerConfig } from './config.js';
 import { createDaemonClient, McpDaemonError } from './daemon-client.js';
 import { createLuwiMcpServer } from './server.js';
-import { createSessionIdResolver } from './session-binding.js';
+import { createSessionBindingResolver } from './session-binding.js';
+import { createSessionRevival } from './session-revival.js';
 import { createMcpToolHandlers } from './tools.js';
 
 async function main(): Promise<void> {
@@ -14,11 +16,28 @@ async function main(): Promise<void> {
     daemonUrl: config.daemonUrl,
     requestTimeoutMs: config.requestTimeoutMs,
   });
-  const resolveSessionId = createSessionIdResolver(config.sessionBinding);
-  const resolveBoundSession = async () => client.verifyBoundSession(await resolveSessionId());
-  const boundSession = await resolveBoundSession();
+  const resolveBinding = createSessionBindingResolver(config.sessionBinding);
+  const resolveSessionId = async () => (await resolveBinding()).attached;
+  const revival = createSessionRevival({
+    client,
+    resolveBinding,
+    onError: (error) => {
+      if (process.env.LUWI_MCP_DEBUG === '1') process.stderr.write(`${String(error)}\n`);
+    },
+  });
+  const resolveBoundSession = () => revival.resolveBoundSession();
+  // Still fail-closed on a missing or unknown session. A dropped attach session
+  // is neither: its project is known, and the first `luwi_join` revives it
+  // (ADR 0034); every other tool answers BOUND_SESSION_TERMINAL until then.
+  let boundSession: SessionView;
+  try {
+    boundSession = await resolveBoundSession();
+  } catch (error) {
+    if (!(error instanceof McpDaemonError) || error.code !== 'BOUND_SESSION_TERMINAL') throw error;
+    boundSession = await client.getSession(await resolveSessionId());
+  }
   const server = createLuwiMcpServer(
-    createMcpToolHandlers(client, boundSession, resolveBoundSession),
+    createMcpToolHandlers(client, boundSession, resolveBoundSession, () => revival.revive()),
   );
   await server.connect(new StdioServerTransport());
 }

@@ -103,7 +103,7 @@ export function DrillDown({
             style={{ animationDelay: `${String(0.05 + index * 0.05)}s` }}
           >
             <span className="drill__fact-k">{fact.k}</span>
-            <span className="drill__fact-v" title={fact.v}>
+            <span className="drill__fact-v" title={fact.detail ?? fact.v}>
               {fact.v}
             </span>
           </div>

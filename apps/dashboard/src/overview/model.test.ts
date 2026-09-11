@@ -6,6 +6,7 @@ import {
   blockedEvidence,
   buildOverview,
   eventDetail,
+  formatClock,
   formatDuration,
   formatTokens,
   layoutFlow,
@@ -390,10 +391,11 @@ describe('panelFor', () => {
     expect(panel.title).toBe('Implement graph generation transition');
     expect(panel.eyebrow).toBe('Alpha Project · Runner One');
     expect(panel.badge).toEqual({ label: 'THINKING', tone: 'ink' });
+    // Context is the session's prompt size; the skills evidence sits in the detail.
     expect(panel.facts).toEqual([
       { k: 'Model', v: 'model-x' },
       { k: 'Tokens', v: '\u2014' },
-      { k: 'Context', v: '2 loaded \u00b7 1 invoked' },
+      { k: 'Context', v: '\u2014', detail: 'skills 2 loaded \u00b7 1 invoked' },
     ]);
     expect(panel.copyId).toEqual({ label: 'session', id: 's-think' });
     expect(panel.list.rows.map((row) => row.id)).toEqual(['s-blocked', 's-done']);
@@ -412,6 +414,7 @@ describe('panelFor', () => {
             { source: 'agent-reported', label: 'reported', records: 1 },
             { source: 'adapter-extracted', label: 'extracted', records: 3, totalTokens: 18_400 },
           ],
+          counters: {},
           recordCount: 4,
           truncated: true,
         },
@@ -420,6 +423,37 @@ describe('panelFor', () => {
     expect(panelFor(overview(), focus, 'live', { sessionUsage: ready }).facts.slice(0, 2)).toEqual([
       { k: 'Model', v: 'model-y, model-z' },
       { k: 'Tokens', v: '18.4k extracted+' },
+    ]);
+    // Extracted records report counters and no total: each counter is summed on
+    // its own, and the newest request's prompt is the context the session carries.
+    const counted = {
+      sessionId: 's-blocked',
+      state: {
+        state: 'ready' as const,
+        data: {
+          models: ['model-new', 'model-old'],
+          latestModel: 'model-new',
+          sources: [{ source: 'adapter-extracted', label: 'extracted', records: 2 }],
+          counters: { input: 102, output: 4740, cacheCreation: 4124, cacheRead: 508_374 },
+          latestContext: { tokens: 511_600, observedAt: minutesAgo(50) },
+          recordCount: 2,
+          truncated: false,
+        },
+      },
+    };
+    expect(panelFor(overview(), focus, 'live', { sessionUsage: counted }).facts).toEqual([
+      { k: 'Model', v: 'model-new' },
+      {
+        k: 'Tokens',
+        v: '4.7k out · 4.2k in',
+        detail:
+          'output 4,740 · input 102 · cache written 4,124 · cache read 508,374 · over 2 records',
+      },
+      {
+        k: 'Context',
+        v: '511.6k',
+        detail: `latest request sent 511,600 tokens · observed ${formatClock(NOW - 50 * 60_000)} · skills not observed`,
+      },
     ]);
     const loading = { sessionId: 's-blocked', state: { state: 'loading' as const } };
     expect(

@@ -540,3 +540,122 @@ describe('session bootstrap — automatic lease renewal', () => {
     expect(cleared.length).toBeGreaterThanOrEqual(2);
   });
 });
+
+describe('reader-gated recovery (recoverUnready: false)', () => {
+  const lost = () => {
+    throw new ApplicationError('SESSION_TERMINAL', 'session lost', 409);
+  };
+
+  it('drops a lost session that was never observed leaving starting, and registers nothing', async () => {
+    const changes: unknown[] = [];
+    let beats = 0;
+    const client = {
+      register: vi.fn(async () => ({ id: 'session-1' })),
+      heartbeat: vi.fn(async () => {
+        beats += 1;
+        if (beats >= 2) lost();
+      }),
+      inspect: vi.fn(async () => ({ status: 'starting' })),
+      close: vi.fn(async () => undefined),
+    };
+    const { bootstrap, timers, advanceTime } = harness({
+      client,
+      recoverUnready: false,
+      onSessionChanged: (change: unknown) => changes.push(change),
+    });
+
+    await bootstrap.start();
+    for (let tick = 0; tick < 4; tick += 1) {
+      advanceTime(5_000);
+      timers[0]?.callback();
+      await flushAsyncWork();
+    }
+
+    // The reaper removed it (or a restart lost it) before any reader bound: the
+    // replacement would be the same zombie, so there is none.
+    expect(client.register).toHaveBeenCalledTimes(1);
+    expect(client.inspect).toHaveBeenCalledWith('session-1');
+    expect(bootstrap.sessionId).toBeUndefined();
+    expect(changes).toEqual([
+      { reason: 'registered', sessionId: 'session-1' },
+      { reason: 'dropped', previousSessionId: 'session-1' },
+    ]);
+    // Quiet afterwards: further ticks neither beat nor register.
+    const beatsAfterDrop = client.heartbeat.mock.calls.length;
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+    expect(client.heartbeat.mock.calls.length).toBe(beatsAfterDrop);
+    expect(client.register).toHaveBeenCalledTimes(1);
+    await bootstrap.stop();
+    expect(client.close).not.toHaveBeenCalled();
+  });
+
+  it('recovers a lost session it had observed ready, and the replacement must earn that again', async () => {
+    const changes: unknown[] = [];
+    let registrations = 0;
+    let beats = 0;
+    const client = {
+      register: vi.fn(async () => {
+        registrations += 1;
+        return { id: `session-${registrations}` };
+      }),
+      heartbeat: vi.fn(async () => {
+        beats += 1;
+        // Beat 1 succeeds (session-1 is then seen idle), beat 2 loses it; beat 3
+        // succeeds for session-2 (still starting), beat 4 loses that one too.
+        if (beats === 2 || beats === 4) lost();
+      }),
+      inspect: vi.fn(async (sessionId: string) => ({
+        status: sessionId === 'session-1' ? 'idle' : 'starting',
+      })),
+      close: vi.fn(async () => undefined),
+    };
+    const { bootstrap, timers, advanceTime } = harness({
+      client,
+      recoverUnready: false,
+      onSessionChanged: (change: unknown) => changes.push(change),
+    });
+
+    await bootstrap.start();
+    for (let tick = 0; tick < 6; tick += 1) {
+      advanceTime(5_000);
+      timers[0]?.callback();
+      await flushAsyncWork();
+    }
+
+    expect(client.register).toHaveBeenCalledTimes(2);
+    expect(changes).toEqual([
+      { reason: 'registered', sessionId: 'session-1' },
+      { reason: 'recovered', previousSessionId: 'session-1', sessionId: 'session-2' },
+      { reason: 'dropped', previousSessionId: 'session-2' },
+    ]);
+  });
+
+  it('keeps the legacy recovery when the caller is its own reader (default)', async () => {
+    let registrations = 0;
+    const client = {
+      register: vi.fn(async () => {
+        registrations += 1;
+        return { id: `session-${registrations}` };
+      }),
+      heartbeat: vi.fn(async () => lost()),
+      inspect: vi.fn(async () => ({ status: 'starting' })),
+      close: vi.fn(async () => undefined),
+    };
+    const { bootstrap, timers, advanceTime } = harness({ client });
+
+    await bootstrap.start();
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+    advanceTime(5_000);
+    timers[0]?.callback();
+    await flushAsyncWork();
+
+    expect(client.register).toHaveBeenCalledTimes(2);
+    // Readiness is never even asked about on the legacy path.
+    expect(client.inspect).not.toHaveBeenCalled();
+    await bootstrap.stop();
+  });
+});

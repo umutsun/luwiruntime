@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createSessionIdResolver } from './session-binding.js';
+import { createSessionBindingResolver, createSessionIdResolver } from './session-binding.js';
 
 describe('MCP session binding resolver', () => {
   const scratch: string[] = [];
@@ -84,5 +84,29 @@ describe('MCP session binding resolver', () => {
     await expect(createSessionIdResolver({ kind: 'file', path })()).rejects.toThrow(
       'session binding file',
     );
+  });
+});
+
+describe('MCP session binding record (ADR 0034)', () => {
+  it('carries the native reference the attach wrote, and the id resolver still answers the id', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'luwi-mcp-binding-'));
+    try {
+      const path = join(root, 'session.json');
+      const native = { adapterId: 'claude-code', nativeSessionId: 'native-1' };
+      await writeFile(path, `${JSON.stringify({ attached: 'session-1', native })}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      await expect(createSessionBindingResolver({ kind: 'file', path })()).resolves.toEqual({
+        attached: 'session-1',
+        native,
+      });
+      await expect(createSessionIdResolver({ kind: 'file', path })()).resolves.toBe('session-1');
+      await expect(
+        createSessionBindingResolver({ kind: 'static', sessionId: 'session-2' })(),
+      ).resolves.toEqual({ attached: 'session-2' });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

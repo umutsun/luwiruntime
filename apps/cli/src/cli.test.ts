@@ -1574,6 +1574,10 @@ describe('session attach', () => {
         if (url.endsWith('/heartbeat')) {
           return response({ status: 'renewed', eventEmitted: false });
         }
+        // The readiness read that follows a heartbeat while the session is `starting`.
+        if (/\/api\/v1\/sessions\/[^/]+$/.test(url)) {
+          return response(registered);
+        }
         if (url.includes('/api/v1/leases?sessionId=')) {
           return response({ leases: [heldAttachLease], truncated: false });
         }
@@ -1615,7 +1619,8 @@ describe('session attach', () => {
     await run;
 
     expect(requests.some(({ url }) => url.endsWith('/close'))).toBe(true);
-    expect(requests).toHaveLength(6);
+    // Projects, register, heartbeat, the readiness read, lease list, renew, close.
+    expect(requests).toHaveLength(7);
     for (const request of requests) {
       expect(request.signal, request.url).toBeInstanceOf(AbortSignal);
     }
@@ -2154,7 +2159,17 @@ describe('session attach', () => {
       for (let i = 0; i < 200 && !existsSync(sessionOut); i += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
-      expect(JSON.parse(await readFile(sessionOut, 'utf8'))).toEqual({ attached: registered.id });
+      // The id, plus the native reference this attach declared, so a reader can
+      // re-declare it for a successor (ADR 0034).
+      const record = JSON.parse(await readFile(sessionOut, 'utf8')) as Record<string, unknown>;
+      expect(record.attached).toBe(registered.id);
+      expect(Object.keys(record).sort()).toEqual(['attached', 'native']);
+      expect(record.native).toEqual(
+        expect.objectContaining({
+          adapterId: expect.any(String),
+          nativeSessionId: expect.any(String),
+        }),
+      );
       expect(await readFile(sentinel, 'utf8')).toBe('do-not-touch');
 
       signalListener?.();
@@ -2966,6 +2981,90 @@ describe('session bridge native', () => {
     expect(
       requests.some((entry) => entry.url.endsWith('/respond') || entry.url.endsWith('/fail')),
     ).toBe(false);
+  });
+
+  it('survives a transient poll failure instead of exiting the bridge', async () => {
+    const signalSource = new EventEmitter();
+    const errors: string[] = [];
+    let getMessageCalls = 0;
+    let claims = 0;
+    let recorded: unknown;
+    const processRunner = {
+      run: vi.fn(async (input: unknown) => {
+        recorded = input;
+        signalSource.emit('SIGINT');
+        return { exitCode: 0 };
+      }),
+    };
+    const dependencies: Partial<CliDependencies> = {
+      environment: { PATH: 'C:/tools' },
+      platform: 'win32',
+      canonicalizePath: async (path) => path,
+      agentProcessRunner: processRunner as unknown as CliDependencies['agentProcessRunner'],
+      signals: {
+        once: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+          signalSource.once(signal, listener);
+        },
+        off: (signal: 'SIGINT' | 'SIGTERM', listener: () => void) => {
+          signalSource.off(signal, listener);
+        },
+      } as unknown as CliDependencies['signals'],
+      setInterval: vi.fn(() => 1 as unknown as NodeJS.Timeout),
+      clearInterval: vi.fn(),
+      setTimeout: vi.fn(() => 2 as unknown as NodeJS.Timeout) as CliDependencies['setTimeout'],
+      clearTimeout: vi.fn() as CliDependencies['clearTimeout'],
+      wait: async () => undefined,
+      stdout: { write: () => undefined },
+      stderr: {
+        write: (text: string) => {
+          errors.push(text);
+        },
+      },
+      fetch: async (url, init) => {
+        if (url.endsWith('/api/v1/projects')) return response({ projects: [project] });
+        if (url.endsWith('/api/v1/agents')) return response({ agents: [agent] });
+        if (url.endsWith(`/api/v1/projects/${project.id}/agents`)) {
+          return response({ bindings: [binding] });
+        }
+        if (url.endsWith('/api/v1/sessions') && init?.method === 'POST') {
+          return response(session, { status: 201 });
+        }
+        if (url.includes('/inbox/claim')) {
+          claims += 1;
+          // First claim throws (daemon briefly overloaded); the loop must retry.
+          if (claims === 1) throw new Error('DAEMON_REQUEST_TIMEOUT');
+          return response({ items: claims === 2 ? [requestItem] : [] });
+        }
+        if (url.includes('/status')) return response(session);
+        if (url.includes('/heartbeat')) return response({ acknowledgedAt: timestamp });
+        if (url.includes('/close')) {
+          return response({ ...session, status: 'completed', presence: 'offline' });
+        }
+        if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        if (url.endsWith('/api/v1/messages/correlation-1/acknowledge')) {
+          return response(message('acknowledged'));
+        }
+        if (url.endsWith('/api/v1/messages/correlation-1/processing')) {
+          return response(message('processing'));
+        }
+        if (url.endsWith('/api/v1/messages/correlation-1')) {
+          getMessageCalls += 1;
+          return response(message(getMessageCalls === 1 ? 'delivered' : 'responded'));
+        }
+        throw new Error(`Unexpected URL: ${url}`);
+      },
+    };
+
+    await runCli(
+      ['session', 'bridge', 'native', 'claude', '--working-directory', 'C:/work/app'],
+      dependencies,
+    );
+
+    // The child ran on the retry poll, proving the loop did not die on the first throw.
+    expect(recorded).toBeDefined();
+    expect(claims).toBeGreaterThanOrEqual(2);
+    const pollFailure = errors.find((line) => line.includes('BRIDGE_POLL_FAILED'));
+    expect(pollFailure).toContain('DAEMON_REQUEST_TIMEOUT');
   });
 
   it('injects the LUWI MCP session binding and auto-approval into a codex child', async () => {

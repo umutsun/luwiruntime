@@ -10,6 +10,7 @@ import type {
   Bounded,
   ProjectAttribution,
   ProjectBinding,
+  ProjectCapability,
   ProjectGit,
   ProjectPackage,
   ProjectScopeResources,
@@ -30,8 +31,15 @@ import {
   ResourcePanel,
   Unavailable,
 } from '../components/panel.js';
-import { StatusChip } from '../components/status-chip.js';
-import type { PulseProject, PulseSnapshot } from '../pulse/model.js';
+import { StatusChip, type StatusTone } from '../components/status-chip.js';
+import type { PulseFinding, PulseProject, PulseSnapshot } from '../pulse/model.js';
+
+const findingStateTones: Record<PulseFinding['state'], StatusTone> = {
+  open: 'warning',
+  proposed: 'info',
+  dismissed: 'unknown',
+  resolved: 'success',
+};
 
 /**
  * How many branch or tag names one panel shows.
@@ -756,6 +764,9 @@ export function ProjectDetail({
   onSelectAgent?: (agentId: string | undefined) => void;
 }) {
   const selected = snapshot.projects.find((project) => project.id === selectedProjectId);
+  const projectFindings = snapshot.findings.filter(
+    (finding) => finding.projectId === selectedProjectId,
+  );
   const projectSessions = snapshot.sessions.filter(
     (session) => session.projectId === selectedProjectId,
   );
@@ -897,6 +908,123 @@ export function ProjectDetail({
               </tbody>
             </table>
           </div>
+        )}
+      </ResourcePanel>
+
+      {/*
+        The project's own skills, instructions, hooks and MCP definitions, as
+        the capability scan registered them (ADR 0032 follow-up, 2026-09-11): the
+        owner reads what the agents are given here and edits the files where
+        `path` says they live. Nothing here executes or rewrites a file.
+      */}
+      <ResourcePanel<Bounded<ProjectCapability>>
+        title="Skills"
+        meta={
+          resources.capabilities?.state === 'ready'
+            ? `${String(resources.capabilities.data.items.filter((item) => item.scope === 'project').length)} project · ${String(resources.capabilities.data.items.filter((item) => item.scope === 'global').length)} global`
+            : undefined
+        }
+        resource={resources.capabilities}
+        emptyMessage="No capabilities recorded — a capability scan registers them"
+        isEmpty={(value) => value.items.length === 0}
+      >
+        {(value) => (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Capability</th>
+                    <th scope="col">Kind</th>
+                    <th scope="col">Scope</th>
+                    <th scope="col">Source</th>
+                    <th scope="col">State</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {value.items.map((record) => (
+                    <tr key={record.id}>
+                      <td>
+                        {record.name}
+                        {record.path === undefined ? null : (
+                          <small title={record.path}>{abbreviatePath(record.path)}</small>
+                        )}
+                      </td>
+                      <td>{record.kind}</td>
+                      <td>{record.scope}</td>
+                      <td>{record.observed ? `${record.source} · observed` : record.source}</td>
+                      <td>
+                        <StatusChip tone={record.enabled ? 'success' : 'unknown'}>
+                          {record.enabled ? 'Enabled' : 'Disabled'}
+                        </StatusChip>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <TruncationNote truncated={value.truncated} noun="capabilities" />
+          </>
+        )}
+      </ResourcePanel>
+
+      {/*
+        Findings the intelligence layer recorded against this project, from the
+        bounded set the Pulse snapshot already carries — no extra read. Acting on
+        one is the config plan chain, which stays behind its own confirmation.
+      */}
+      <ResourcePanel<PulseFinding[]>
+        title="Optimization"
+        meta={
+          snapshot.findingsState === 'ready'
+            ? `${String(projectFindings.length)} for this project`
+            : undefined
+        }
+        resource={
+          snapshot.findingsState === 'ready'
+            ? { state: 'ready', data: projectFindings }
+            : { state: 'unavailable' }
+        }
+        emptyMessage="No structural findings recorded for this project"
+        isEmpty={(rows) => rows.length === 0}
+      >
+        {(rows) => (
+          <>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th scope="col">Finding</th>
+                    <th scope="col">Kind</th>
+                    <th scope="col">State</th>
+                    <th scope="col">Confidence</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        {row.title}
+                        <small>{row.summary}</small>
+                      </td>
+                      <td>{row.kind}</td>
+                      <td>
+                        <StatusChip tone={findingStateTones[row.state]}>{row.state}</StatusChip>
+                      </td>
+                      <td>
+                        <ConfidenceChip confidence={row.confidence} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <p className="bounded-note">
+              <a href="#/optimization">All findings and proposals ›</a>
+              {' · '}
+              <a href="#/config">Configuration plans ›</a>
+            </p>
+          </>
         )}
       </ResourcePanel>
 

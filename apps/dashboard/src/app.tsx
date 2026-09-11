@@ -497,7 +497,10 @@ export function DashboardApp({
             detail: agentId === undefined ? {} : { agentId },
           });
 
-  const isOverview = route.name === 'pulse';
+  // Runtime opens as a drawer over the overview rather than as a page: the
+  // owner reads it beside the lens, the way project detail is read.
+  const runtimeDrawer = route.name === 'runtime';
+  const isOverview = route.name === 'pulse' || runtimeDrawer;
 
   return (
     <div className="app-shell">
@@ -524,7 +527,7 @@ export function DashboardApp({
           aria-label="Luwi Runtime overview"
         >
           <span className="identity__mark">
-            <BrandMark size={17} />
+            <BrandMark size={24} />
           </span>
           <span className="topbar__name">Luwi Runtime</span>
         </a>
@@ -767,12 +770,6 @@ export function DashboardApp({
                     openInspector({ kind: 'event', streamId: event.streamId })
                   }
                 />
-              ) : route.name === 'runtime' ? (
-                <RuntimeView
-                  snapshot={snapshot}
-                  websocketState={websocketState}
-                  {...(loadResources === undefined ? {} : { loadResources })}
-                />
               ) : route.name === 'sessions' ? (
                 <SessionsView
                   snapshot={snapshot}
@@ -952,6 +949,20 @@ export function DashboardApp({
             onSelectAgent={(agentId) => {
               window.location.hash = detailHref(agentId);
             }}
+          />
+        </DetailDrawer>
+      ) : runtimeDrawer ? (
+        <DetailDrawer
+          eyebrow={routeTitles.runtime.eyebrow}
+          title={routeTitles.runtime.heading}
+          onClose={() => {
+            window.location.hash = hrefOfFocus(focus);
+          }}
+        >
+          <RuntimeView
+            snapshot={snapshot}
+            websocketState={websocketState}
+            {...(loadResources === undefined ? {} : { loadResources })}
           />
         </DetailDrawer>
       ) : null}

@@ -22,6 +22,12 @@ import {
  * - **A crash is allowed to lapse.** Presence expiry is the backstop and the
  *   session goes `disconnected`, which is the honest outcome. This does not try
  *   to outlive its own process.
+ * - **A reader that never bound is not recovered.** With `recoverUnready: false`
+ *   a lost session that was never observed leaving `starting` is dropped, not
+ *   re-registered: its reader lives elsewhere (an attached session's reader is
+ *   the MCP server), so a replacement nobody binds is exactly the zombie the
+ *   runtime's starting-grace reaper just removed — and it would be reaped and
+ *   re-registered forever.
  */
 
 export type SessionBootstrapClient = {
@@ -33,6 +39,11 @@ export type SessionBootstrapClient = {
     metadata?: Record<string, unknown>;
   }): Promise<{ id: string }>;
   heartbeat(sessionId: string): Promise<void>;
+  /**
+   * The session's current status, read after a heartbeat while readiness is
+   * still unobserved. Only consulted when `recoverUnready` is false.
+   */
+  inspect?(sessionId: string): Promise<{ status: string }>;
   close(sessionId: string): Promise<void>;
 };
 
@@ -82,6 +93,15 @@ export type SessionBootstrapOptions = {
   leaseClient?: SessionBootstrapLeaseClient;
   /** How often held leases are renewed. Defaults to half the default lease TTL. */
   leaseRenewIntervalMs?: number;
+  /**
+   * Whether a lost session that never left `starting` is re-registered.
+   *
+   * True (the default) suits a caller that is itself the reader and will bind
+   * whatever it registers — the bridges. False suits an attached session whose
+   * reader is the MCP server: the replacement would have no reader either, so
+   * the loss is reported as `dropped` and the bootstrap goes quiet.
+   */
+  recoverUnready?: boolean;
   onError?: (error: unknown) => void;
   onSessionChanged?: (change: SessionBootstrapChange) => void;
   now?: () => number;
@@ -92,7 +112,9 @@ export type SessionBootstrapOptions = {
 export type SessionBootstrapChange =
   | { reason: 'registered'; sessionId: string }
   | { reason: 'recovered'; previousSessionId: string; sessionId: string }
-  | { reason: 'stopped'; previousSessionId: string };
+  | { reason: 'stopped'; previousSessionId: string }
+  /** The runtime lost the session before any reader bound it; nothing replaces it. */
+  | { reason: 'dropped'; previousSessionId: string };
 
 export interface SessionBootstrap {
   start(): Promise<void>;
@@ -128,6 +150,7 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
   const maxRetryBackoffMs = options.maxRetryBackoffMs ?? DEFAULT_MAX_RETRY_BACKOFF_MS;
   const now = options.now ?? Date.now;
   const leaseRenewIntervalMs = options.leaseRenewIntervalMs ?? DEFAULT_LEASE_RENEW_INTERVAL_MS;
+  const recoverUnready = options.recoverUnready ?? true;
   requirePositiveInteger(intervalMs, 'heartbeatIntervalMs');
   requirePositiveInteger(maxRetryBackoffMs, 'maxRetryBackoffMs');
   if (maxRetryBackoffMs < intervalMs) {
@@ -166,10 +189,47 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
   let recoverySessionId: string | undefined;
   let renewalTimer: NodeJS.Timeout | undefined;
   let renewalOperation: Promise<void> | undefined;
+  /** Whether the current session was ever seen outside `starting`; reset per registration. */
+  let readyObserved = false;
 
   const resetBackoff = (): void => {
     consecutiveFailures = 0;
     nextAttemptAt = 0;
+  };
+
+  const disarmTimers = (): void => {
+    if (timer !== undefined) disarm(timer);
+    timer = undefined;
+    if (renewalTimer !== undefined) disarm(renewalTimer);
+    renewalTimer = undefined;
+  };
+
+  /** The lost session had no reader; nothing replaces it and the timers fall silent. */
+  const drop = (previous: string): void => {
+    sessionId = undefined;
+    active = false;
+    lifecycle += 1;
+    disarmTimers();
+    reportSessionChange({ reason: 'dropped', previousSessionId: previous });
+  };
+
+  const observeReadiness = async (current: string, generation: number): Promise<void> => {
+    const inspect = options.client.inspect;
+    if (recoverUnready || readyObserved || inspect === undefined) return;
+    try {
+      const view = await inspect(current);
+      if (
+        active &&
+        generation === lifecycle &&
+        sessionId === current &&
+        view.status !== 'starting'
+      ) {
+        readyObserved = true;
+      }
+    } catch (error) {
+      // Best effort: an unreadable status leaves readiness unobserved for now.
+      report(error);
+    }
   };
 
   const recordTransientFailure = (error: unknown): void => {
@@ -203,6 +263,7 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
             return;
           }
           sessionId = registered.id;
+          readyObserved = false;
           if (recoverySessionId === undefined) {
             reportSessionChange({ reason: 'registered', sessionId: registered.id });
           } else {
@@ -227,13 +288,19 @@ export function createSessionBootstrap(options: SessionBootstrapOptions): Sessio
         if (!active || generation !== lifecycle || sessionId !== current) return;
         if (isLostSessionError(error)) {
           report(error);
-          recoverySessionId = current;
-          sessionId = undefined;
-          resetBackoff();
+          if (recoverUnready || readyObserved) {
+            recoverySessionId = current;
+            sessionId = undefined;
+            resetBackoff();
+          } else {
+            drop(current);
+          }
           return;
         }
         recordTransientFailure(error);
+        return;
       }
+      await observeReadiness(current, generation);
     })();
 
     operation = pending;

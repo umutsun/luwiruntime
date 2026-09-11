@@ -496,7 +496,7 @@ function DashboardRoute() {
     return (
       <main className="route-loading" aria-busy="true">
         <span className="identity__mark">
-          <BrandMark size={20} />
+          <BrandMark size={24} />
         </span>
         <p className="eyebrow">LUWI Runtime</p>
         <h1>Loading validated Pulse snapshot</h1>

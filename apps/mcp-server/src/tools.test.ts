@@ -1,7 +1,7 @@
 import type { SessionView } from '@luwi/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createMcpToolHandlers, type McpDaemonClient } from './index.js';
+import { createMcpToolHandlers, McpDaemonError, type McpDaemonClient } from './index.js';
 
 const timestamp = '2026-07-29T12:00:00.000Z';
 const boundSession: SessionView = {
@@ -22,6 +22,15 @@ function client(): McpDaemonClient {
     listProjects: vi.fn(async () => ({ projects: [] })),
     listProjectSessions: vi.fn(async () => ({ sessions: [boundSession] })),
     getSession: vi.fn(async () => boundSession),
+    registerSession: vi.fn(async (request) => ({
+      ...boundSession,
+      id: 'revived',
+      status: 'starting' as const,
+      projectId: request.projectId,
+      agentId: request.agentId,
+    })),
+    heartbeat: vi.fn(async () => undefined),
+    closeSession: vi.fn(async () => boundSession),
     setSessionStatus: vi.fn(async (sessionId, status) => ({
       ...boundSession,
       id: sessionId,
@@ -435,5 +444,69 @@ describe('work lease tools', () => {
 
     await tools.listLeases({ mine: true });
     expect(daemon.listLeases).toHaveBeenCalledWith({ sessionId: 'source' }, 100);
+  });
+});
+
+describe('join revival (ADR 0034)', () => {
+  const terminal = () => new McpDaemonError('BOUND_SESSION_TERMINAL', 'terminal', 409);
+
+  it('fails closed on a dropped attach session when no reviver is given', async () => {
+    const daemon = client();
+    const error = terminal();
+    const tools = createMcpToolHandlers(daemon, boundSession, async () => {
+      throw error;
+    });
+    await expect(tools.join({})).rejects.toBe(error);
+    expect(daemon.setSessionStatus).not.toHaveBeenCalled();
+  });
+
+  it('revives a dropped attach session on join, then joins the successor as usual', async () => {
+    const daemon = client();
+    const revived: SessionView = { ...boundSession, id: 'revived', status: 'starting' };
+    const revive = vi.fn(async () => revived);
+    const tools = createMcpToolHandlers(
+      daemon,
+      boundSession,
+      async () => {
+        throw terminal();
+      },
+      revive,
+    );
+
+    const result = (await tools.join({})) as { session: SessionView; ready: boolean };
+
+    expect(revive).toHaveBeenCalledTimes(1);
+    expect(daemon.setSessionStatus).toHaveBeenCalledWith('revived', 'idle');
+    expect(daemon.claimInbox).toHaveBeenCalledWith(
+      'revived',
+      expect.objectContaining({ bridgeInstanceId: 'gui-join' }),
+    );
+    expect(result.ready).toBe(true);
+  });
+
+  it('refuses a successor outside the bound project and leaves other errors alone', async () => {
+    const daemon = client();
+    const elsewhere = createMcpToolHandlers(
+      daemon,
+      boundSession,
+      async () => {
+        throw terminal();
+      },
+      async () => ({ ...boundSession, id: 'revived', projectId: 'project-2' }),
+    );
+    await expect(elsewhere.join({})).rejects.toMatchObject({ code: 'BOUND_PROJECT_MISMATCH' });
+
+    const offline = new McpDaemonError('BOUND_SESSION_OFFLINE', 'offline', 409);
+    const revive = vi.fn();
+    const tools = createMcpToolHandlers(
+      daemon,
+      boundSession,
+      async () => {
+        throw offline;
+      },
+      revive,
+    );
+    await expect(tools.join({})).rejects.toBe(offline);
+    expect(revive).not.toHaveBeenCalled();
   });
 });

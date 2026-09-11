@@ -103,6 +103,11 @@ export function createMcpToolHandlers(
   client: McpDaemonClient,
   boundSession: SessionView,
   resolveBoundSession: BoundSessionResolver = () => client.verifyBoundSession(boundSession.id),
+  /**
+   * Registers a successor for a dropped attach session and keeps it alive
+   * (ADR 0034). Absent, a terminal bound session stays a terminal error.
+   */
+  reviveBoundSession?: BoundSessionResolver,
 ): McpToolHandlers {
   const requireCurrentBound = async (): Promise<SessionView> => {
     const current = await resolveBoundSession();
@@ -175,7 +180,29 @@ export function createMcpToolHandlers(
     },
     async join(input) {
       mcpJoinInputSchema.parse(input);
-      const current = await requireCurrentBound();
+      let current: SessionView;
+      try {
+        current = await requireCurrentBound();
+      } catch (error) {
+        if (
+          reviveBoundSession === undefined ||
+          !(error instanceof McpDaemonError) ||
+          error.code !== 'BOUND_SESSION_TERMINAL'
+        ) {
+          throw error;
+        }
+        // The attach session was dropped — still `starting` past its grace, or
+        // lost to a restart before any join. Joining is the reader binding, so
+        // the reader registers the successor it will keep alive (ADR 0034).
+        current = await reviveBoundSession();
+        if (current.projectId !== boundSession.projectId) {
+          throw new McpDaemonError(
+            'BOUND_PROJECT_MISMATCH',
+            'The revived LUWI session is outside the bound project.',
+            409,
+          );
+        }
+      }
       // Declare this session a ready worker for its own project (never from input),
       // then block briefly on its own inbox: one call = "join and listen for my next
       // task". A caller loops this to stay a continuous listener — an MCP tool cannot

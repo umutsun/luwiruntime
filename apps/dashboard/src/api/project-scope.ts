@@ -1,5 +1,6 @@
 import {
   attributionCollectionSchema,
+  capabilityCollectionSchema,
   gitObservationSchema,
   packageCollectionSchema,
   projectAgentBindingCollectionSchema,
@@ -16,7 +17,7 @@ import type { DaemonClient, ResourceResult } from './client.js';
  * join" that `docs/phase5-dashboard-capability-matrix.md` marks DERIVABLE.
  *
  * These loads are on demand rather than part of the Pulse snapshot, so
- * selecting a project costs four requests and selecting none costs zero.
+ * selecting a project costs seven requests and selecting none costs zero.
  */
 
 /** `INTELLIGENCE_MAX_LIMIT` allows more; the dashboard asks for a display-sized page. */
@@ -122,6 +123,27 @@ export type ProjectBinding = {
   updatedAt: string;
 };
 
+/**
+ * A capability package the runtime registered for this project: its skills,
+ * instructions, hooks and MCP definitions as scanned from the project tree.
+ * `path` is where the file lives, so the owner can go and edit it; nothing
+ * here executes or rewrites it (AGENTS.md §12, §18).
+ */
+export type ProjectCapability = {
+  id: string;
+  kind: string;
+  name: string;
+  version?: string;
+  /** The project's own package, or a global one every project's agents may load. */
+  scope: 'global' | 'project';
+  source: string;
+  path?: string;
+  enabled: boolean;
+  /** Registered by observation of the project tree rather than declared by hand. */
+  observed: boolean;
+  updatedAt: string;
+};
+
 export type Bounded<T> = { items: T[]; truncated: boolean };
 
 export type ProjectScopeResources = {
@@ -130,6 +152,7 @@ export type ProjectScopeResources = {
   packages: ProjectResourceState<Bounded<ProjectPackage>>;
   technologies: ProjectResourceState<Bounded<ProjectTechnology>>;
   bindings: ProjectResourceState<ProjectBinding[]>;
+  capabilities: ProjectResourceState<Bounded<ProjectCapability>>;
 };
 
 export type ProjectScopeResourceKey = keyof ProjectScopeResources;
@@ -140,6 +163,7 @@ export const projectScopeResourceKeys: readonly ProjectScopeResourceKey[] = [
   'packages',
   'technologies',
   'bindings',
+  'capabilities',
 ];
 
 type ScopeEntry = readonly [
@@ -172,6 +196,9 @@ export function projectResourcesForEvent(eventType: string): ProjectScopeResourc
   if (eventType.startsWith('package.')) return ['packages'];
   if (eventType.startsWith('technology.')) return ['technologies'];
   if (eventType.startsWith('project.agent.')) return ['bindings'];
+  // Exact prefix on purpose: `context.capability.*` records an agent loading a
+  // skill, which changes no row of the project's own inventory.
+  if (eventType.startsWith('capability.')) return ['capabilities'];
   return [];
 }
 
@@ -218,6 +245,50 @@ export async function loadProjectScope(
     if (!requested.has(key)) continue;
 
     switch (key) {
+      case 'capabilities': {
+        // Two bounded reads, filtered server-side: the project's own packages and
+        // the global ones its agents may load. Each carries its own truncation
+        // flag; either cut is disclosed rather than hidden behind the other.
+        const scoped = (query: string) =>
+          client.get(
+            `/api/v1/capabilities?${query}&limit=${COLLECTION_LIMIT}`,
+            capabilityCollectionSchema,
+            get,
+          );
+        requests.push(
+          Promise.all([
+            scoped(`scope=project&projectId=${encodeURIComponent(projectId)}`),
+            scoped('scope=global'),
+          ]).then(([own, global]): ScopeEntry => {
+            if (own.state !== 'ready' || global.state !== 'ready') {
+              return [key, { state: 'unavailable' }];
+            }
+            const items = [...own.data.capabilities, ...global.data.capabilities].map((record) => ({
+              id: record.id,
+              kind: record.kind,
+              name: record.name,
+              ...(record.version === undefined ? {} : { version: record.version }),
+              scope: record.scope,
+              source: record.source,
+              ...(record.path === undefined ? {} : { path: record.path }),
+              enabled: record.enabled,
+              observed:
+                record.manifest['managementMode'] === 'observed' &&
+                typeof record.manifest['observation'] === 'object' &&
+                record.manifest['observation'] !== null,
+              updatedAt: record.updatedAt,
+            }));
+            return [
+              key,
+              {
+                state: 'ready',
+                data: { items, truncated: own.data.truncated || global.data.truncated },
+              },
+            ];
+          }),
+        );
+        break;
+      }
       case 'git':
         requests.push(
           entry(key, client.get(`${base}/git`, gitObservationSchema, get), (result) =>

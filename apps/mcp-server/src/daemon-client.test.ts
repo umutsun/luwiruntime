@@ -74,3 +74,49 @@ describe('MCP daemon client', () => {
     );
   });
 });
+
+describe('reader-owned session presence (ADR 0034)', () => {
+  it('registers, heartbeats and closes a session through the session endpoints', async () => {
+    const calls: Array<{ url: string; method: string | undefined; body: unknown }> = [];
+    const fetch: McpFetch = async (url, init) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      expect(headers['content-type']).toBe('application/json');
+      calls.push({
+        url,
+        method: init?.method,
+        body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+      });
+      if (url.endsWith('/heartbeat')) return response({ status: 'renewed', eventEmitted: false });
+      return response(session, url.endsWith('/api/v1/sessions') ? 201 : 200);
+    };
+    const client = createDaemonClient({
+      daemonUrl: 'http://127.0.0.1:4782',
+      requestTimeoutMs: 30_000,
+      fetch,
+    });
+
+    await expect(
+      client.registerSession({
+        projectId: 'project-1',
+        agentId: 'claude-sim',
+        workingDirectory: 'C:/workspace',
+        metadata: { revivedFrom: 'session-0' },
+      }),
+    ).resolves.toEqual(session);
+    await client.heartbeat('session-1');
+    await expect(client.closeSession('session-1')).resolves.toEqual(session);
+
+    expect(calls.map(({ method, url }) => [method, url])).toEqual([
+      ['POST', 'http://127.0.0.1:4782/api/v1/sessions'],
+      ['POST', 'http://127.0.0.1:4782/api/v1/sessions/session-1/heartbeat'],
+      ['POST', 'http://127.0.0.1:4782/api/v1/sessions/session-1/close'],
+    ]);
+    expect(calls[0]?.body).toEqual({
+      projectId: 'project-1',
+      agentId: 'claude-sim',
+      workingDirectory: 'C:/workspace',
+      metadata: { revivedFrom: 'session-0' },
+    });
+    expect(calls[1]?.body).toEqual({});
+  });
+});

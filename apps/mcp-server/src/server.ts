@@ -81,6 +81,7 @@ type ToolResult = {
 };
 
 const MAX_TOOL_SUMMARY_CHARACTERS = 384;
+const MAX_MESSAGE_SUMMARY_CHARACTERS = 65_536;
 const MAX_ERROR_MESSAGE_CHARACTERS = 256;
 
 function boundedText(value: string, maximum: number): string {
@@ -91,6 +92,7 @@ async function toolResult<T extends object>(
   outputSchema: ZodType<T>,
   summarize: (value: T) => string,
   operation: () => Promise<unknown>,
+  maximumSummaryCharacters = MAX_TOOL_SUMMARY_CHARACTERS,
 ): Promise<ToolResult> {
   try {
     const result = outputSchema.safeParse(await operation());
@@ -115,7 +117,7 @@ async function toolResult<T extends object>(
       content: [
         {
           type: 'text',
-          text: boundedText(summarize(result.data), MAX_TOOL_SUMMARY_CHARACTERS),
+          text: boundedText(summarize(result.data), maximumSummaryCharacters),
         },
       ],
     };
@@ -565,11 +567,14 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
     (input) =>
       toolResult(
         mcpAskAgentOutputSchema,
-        ({ correlationId, selectedTargetSessionId, state, idempotent }) =>
-          `Message ${correlationId} is ${state}; selected target ${selectedTargetSessionId}${
+        ({ correlationId, selectedTargetSessionId, state, idempotent, response }) => {
+          const base = `Message ${correlationId} is ${state}; selected target ${selectedTargetSessionId}${
             idempotent ? ' (idempotent retry)' : ''
-          }.`,
+          }.`;
+          return response ? `${base}\nResponse (${response.status}): ${response.answer}` : base;
+        },
         () => handlers.askAgent(input),
+        MAX_MESSAGE_SUMMARY_CHARACTERS,
       ),
   );
   server.registerTool(
@@ -582,8 +587,14 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
     (input) =>
       toolResult(
         mcpMessageOutputSchema,
-        ({ correlationId, state }) => `Message ${correlationId} is ${state}.`,
+        (message) => {
+          const base = `Message ${message.correlationId} is ${message.state}.`;
+          return message.response
+            ? `${base}\nResponse (${message.response.status}): ${message.response.answer}`
+            : base;
+        },
         () => handlers.awaitResponse(input),
+        MAX_MESSAGE_SUMMARY_CHARACTERS,
       ),
   );
   server.registerTool(
@@ -596,8 +607,16 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
     (input) =>
       toolResult(
         mcpMessageOutputSchema,
-        ({ correlationId, state }) => `Message ${correlationId} is ${state}.`,
+        (message) => {
+          const base = `Message ${message.correlationId} is ${message.state}. Kind: ${message.kind}, Source: ${message.sourceSessionId}, Target: ${message.targetSessionId ?? 'unassigned'}.`;
+          const content = `\nSubject: ${message.subject ?? '(no subject)'}\nContent: ${message.content}`;
+          const response = message.response
+            ? `\nResponse (${message.response.status}): ${message.response.answer}`
+            : '';
+          return `${base}${content}${response}`;
+        },
         () => handlers.getMessage(input),
+        MAX_MESSAGE_SUMMARY_CHARACTERS,
       ),
   );
   server.registerTool(
@@ -611,11 +630,21 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
     (input) =>
       toolResult(
         mcpJoinOutputSchema,
-        ({ session, inbox }) =>
-          inbox.items.length > 0
-            ? `Joined project ${session.projectId}; claimed ${String(inbox.items.length)} inbox item(s) to handle.`
-            : `Joined project ${session.projectId} as a ready worker; no task yet — call luwi_join again to keep listening.`,
+        ({ session, inbox }) => {
+          if (inbox.items.length === 0) {
+            return `Joined project ${session.projectId} as a ready worker; no task yet — call luwi_join again to keep listening.`;
+          }
+          const itemsText = inbox.items
+            .map((item) =>
+              item.itemKind === 'request'
+                ? `Task [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nSubject: ${item.payload.subject ?? '(no subject)'}\nContent: ${item.payload.content}`
+                : `Response [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nState: ${item.payload.state}${item.payload.response ? `\nAnswer: ${item.payload.response.answer}` : ''}`,
+            )
+            .join('\n\n');
+          return `Joined project ${session.projectId}; claimed ${String(inbox.items.length)} inbox item(s) to handle:\n\n${itemsText}`;
+        },
         () => handlers.join(input),
+        MAX_MESSAGE_SUMMARY_CHARACTERS,
       ),
   );
   server.registerTool(
@@ -628,8 +657,21 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
     (input) =>
       toolResult(
         mcpInboxOutputSchema,
-        ({ items }) => `${items.length} inbox items claimed.`,
+        ({ items }) => {
+          if (items.length === 0) {
+            return '0 inbox items claimed.';
+          }
+          const itemsText = items
+            .map((item) =>
+              item.itemKind === 'request'
+                ? `Task [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nSubject: ${item.payload.subject ?? '(no subject)'}\nContent: ${item.payload.content}`
+                : `Response [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nState: ${item.payload.state}${item.payload.response ? `\nAnswer: ${item.payload.response.answer}` : ''}`,
+            )
+            .join('\n\n');
+          return `${String(items.length)} inbox item(s) claimed:\n\n${itemsText}`;
+        },
         () => handlers.inboxNext(input),
+        MAX_MESSAGE_SUMMARY_CHARACTERS,
       ),
   );
   server.registerTool(

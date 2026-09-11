@@ -335,4 +335,36 @@ describe('createNativeBridge', () => {
     expect(log).toContain('status:session-1:idle');
     expect(log).toContain('status:session-2:idle');
   });
+
+  it('retries the first idle-set on the next poll when it fails transiently', async () => {
+    const log: string[] = [];
+    const d = daemon(log, ['responded'], { items: [] });
+    let idleAttempts = 0;
+    d.client.setSessionStatus = vi.fn(async (sessionId, status) => {
+      if (status === 'idle') {
+        idleAttempts += 1;
+        if (idleAttempts === 1) throw new Error('DAEMON_UNAVAILABLE');
+      }
+      log.push(`status:${sessionId}:${status}`);
+    });
+    const bridge = createNativeBridge(options({ daemon: d.client }));
+
+    await expect(bridge.pollOnce()).rejects.toThrow('DAEMON_UNAVAILABLE');
+    // A failed idle-set must NOT mark the session seen, or it strands at 'starting'.
+    await bridge.pollOnce();
+
+    expect(idleAttempts).toBe(2);
+    expect(log).toContain('status:session-1:idle');
+  });
+
+  it('sets idle only once across polls once it has succeeded', async () => {
+    const log: string[] = [];
+    const d = daemon(log, ['responded'], { items: [] });
+    const bridge = createNativeBridge(options({ daemon: d.client }));
+
+    await bridge.pollOnce();
+    await bridge.pollOnce();
+
+    expect(log.filter((line) => line === 'status:session-1:idle')).toHaveLength(1);
+  });
 });

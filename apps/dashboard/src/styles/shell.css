@@ -104,13 +104,14 @@ button:focus-visible {
   color: var(--text);
   text-decoration: none;
 }
+/* The mark reads larger than the name beside it: 36px tile, 24px glyph, in a 56px bar. */
 .identity__mark {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
   flex: 0 0 auto;
   place-items: center;
-  border-radius: 7px;
+  border-radius: 9px;
   background: var(--brand-mark-from);
   color: var(--brand-mark-text);
 }

@@ -364,7 +364,35 @@ the persistence assertions); `overview.css` and every overview view are register
 `tokens.test.ts` and `class-coverage.test.ts`, so a raw pixel in a spacing or font property, an opaque
 colour literal, or a className no rule matches fails the guard; and the daemon reads `dist/` per
 request, so a dashboard-only `pnpm build` needs **no daemon restart** — only a cache-busting query
-string in the browser.
+string in the browser. Three owner-driven follow-ups the same afternoon: the session drill-down's
+three facts now read the usage records' own counters — Model is the newest record's model, Tokens
+is one grade's total or else output and input (fresh plus cache written) summed each on its own,
+and Context is the newest request's prompt size (input plus cache), which is how large the
+session's context has grown; nothing is summed across grades and no total is fabricated. `#/runtime`
+opens as a drawer over the overview rather than a page. And the project detail drawer gained
+**Skills** (the project-scoped capability packages, with the path each file lives at, read through
+`GET /api/v1/capabilities?scope=project&projectId=…` as a sixth project-scope resource) and
+**Optimization** (this project's findings from the snapshot's bounded set, linking to
+`#/optimization` and `#/config`; acting on one stays behind the config plan chain).
+
+**Two sides of one rule, 2026-09-11: a session that never becomes ready is dropped, and not
+re-created.** A session registers as `starting` and leaves it only when a reader binds — the
+native-headless bridge's poll loop, or the MCP server's `luwi_join`; the message router skips
+`starting`. The daemon's starting-session reaper (`81a6f30`, `LUWI_SESSION_STARTING_GRACE_MS`,
+default 180 000) makes a session still `starting` past the grace `disconnected`, because its
+heartbeat alone would keep it alive forever. That exposed the other half: `createSessionBootstrap`
+treated every `SESSION_TERMINAL` as "rotate", so an attached GUI session was reaped and
+re-registered as a fresh `starting` zombie every grace period (measured live: six sessions per
+cycle across two projects). The bootstrap now has `recoverUnready` — `session attach` passes
+`false` and reads the session status after each heartbeat while it is still `starting`; a lost
+session that was never observed leaving `starting` is reported as `dropped` and nothing replaces
+it (the bridges keep the default `true`: they are their own reader). **ADR 0034 then closes the
+loop from the reader's side:** `luwi_join` on a dropped session registers a successor copied from
+the dropped record and the MCP server keeps it alive with its own bootstrap (`session-revival.ts`,
+`@luwi/mcp-server` now depends on `@luwi/runtime`); every other tool answers
+`BOUND_SESSION_TERMINAL` until that join, startup tolerates a dropped binding, and a new attach in
+the session file supersedes the successor. A running `session attach` and a running MCP server
+both keep the code they started with, so a GUI gets the fix only after both restart.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.

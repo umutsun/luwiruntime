@@ -1,3 +1,4 @@
+import { nativeSessionRefSchema, type NativeSessionRef } from '@luwi/protocol';
 import { z } from 'zod';
 import { constants } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
@@ -7,7 +8,12 @@ import type { McpSessionBindingConfig } from './config.js';
 const MAX_SESSION_FILE_BYTES = 4096;
 const sessionBindingRecordSchema = z.strictObject({
   attached: z.string().trim().min(1).max(128),
+  /** Written by `session attach` so a successor can re-declare it (ADR 0034). */
+  native: nativeSessionRefSchema.optional(),
 });
+
+/** What the binding names: the attached session, and its native reference when declared. */
+export type SessionBindingRecord = { attached: string; native?: NativeSessionRef };
 
 export class McpSessionBindingError extends Error {
   readonly code = 'MCP_SESSION_BINDING_INVALID';
@@ -22,7 +28,7 @@ const invalidBinding = (): never => {
   throw new McpSessionBindingError();
 };
 
-async function readSessionFile(path: string): Promise<string> {
+async function readSessionFile(path: string): Promise<SessionBindingRecord> {
   let handle;
   try {
     const entry = await lstat(path);
@@ -58,7 +64,10 @@ async function readSessionFile(path: string): Promise<string> {
     } catch {
       invalidBinding();
     }
-    return sessionBindingRecordSchema.parse(parsed).attached;
+    const record = sessionBindingRecordSchema.parse(parsed);
+    return record.native === undefined
+      ? { attached: record.attached }
+      : { attached: record.attached, native: record.native };
   } catch (error) {
     if (error instanceof McpSessionBindingError) throw error;
     throw new McpSessionBindingError();
@@ -67,7 +76,14 @@ async function readSessionFile(path: string): Promise<string> {
   }
 }
 
-export function createSessionIdResolver(binding: McpSessionBindingConfig): () => Promise<string> {
-  if (binding.kind === 'static') return async () => binding.sessionId;
+export function createSessionBindingResolver(
+  binding: McpSessionBindingConfig,
+): () => Promise<SessionBindingRecord> {
+  if (binding.kind === 'static') return async () => ({ attached: binding.sessionId });
   return () => readSessionFile(binding.path);
+}
+
+export function createSessionIdResolver(binding: McpSessionBindingConfig): () => Promise<string> {
+  const resolveBinding = createSessionBindingResolver(binding);
+  return async () => (await resolveBinding()).attached;
 }

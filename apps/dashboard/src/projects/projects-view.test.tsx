@@ -656,3 +656,88 @@ describe('ProjectsView agent pair', () => {
     expect(within(panel).queryByText('Unavailable')).toBeNull();
   });
 });
+
+describe('ProjectDetail skills and optimization', () => {
+  const finding = (id: string, projectId: string, title: string) => ({
+    id,
+    projectId,
+    kind: 'context-bloat',
+    title,
+    summary: `${title} — summary`,
+    state: 'open' as const,
+    confidence: 'high' as const,
+    sessionCount: 3,
+    observationCount: 12,
+    updatedAt: '2026-09-11T00:00:00.000Z',
+  });
+
+  it('lists the project-scoped capabilities with where each file lives, and only this project’s findings', () => {
+    renderView({
+      selectedProjectId: 'proj-1',
+      snapshot: snapshotOf({
+        findings: {
+          state: 'ready',
+          data: [
+            finding('f-1', 'proj-1', 'Unused skill loaded'),
+            finding('f-2', 'proj-2', 'Elsewhere'),
+          ],
+        },
+      }),
+      resources: {
+        ...readyScope,
+        capabilities: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            items: [
+              {
+                id: 'cap-1',
+                kind: 'skill',
+                name: 'release-notes',
+                scope: 'project' as const,
+                source: 'luwi-project',
+                path: 'C:/work/demo/.claude/skills/release-notes/SKILL.md',
+                enabled: true,
+                observed: true,
+                updatedAt: '2026-09-11T00:00:00.000Z',
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const skills = screen.getByRole('region', { name: /^skills/i });
+    expect(within(skills).getByText('release-notes')).toBeTruthy();
+    expect(
+      within(skills).getByTitle('C:/work/demo/.claude/skills/release-notes/SKILL.md'),
+    ).toBeTruthy();
+    expect(within(skills).getByText('luwi-project · observed')).toBeTruthy();
+
+    const optimization = screen.getByRole('region', { name: /^optimization/i });
+    expect(within(optimization).getByText('Unused skill loaded')).toBeTruthy();
+    expect(within(optimization).queryByText('Elsewhere')).toBeNull();
+    expect(
+      within(optimization)
+        .getByRole('link', { name: 'All findings and proposals ›' })
+        .getAttribute('href'),
+    ).toBe('#/optimization');
+    expect(
+      within(optimization)
+        .getByRole('link', { name: 'Configuration plans ›' })
+        .getAttribute('href'),
+    ).toBe('#/config');
+  });
+
+  it('says when no capability was registered for the project rather than showing nothing', () => {
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: {
+        ...readyScope,
+        capabilities: { state: 'ready', data: { truncated: false, items: [] } },
+      },
+    });
+    const skills = screen.getByRole('region', { name: /^skills/i });
+    expect(within(skills).getByText(/no capabilities recorded/i)).toBeTruthy();
+  });
+});

@@ -231,8 +231,10 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
       const session = options.currentSessionId();
       if (session === undefined) return 0;
       if (!seenSessions.has(session)) {
-        seenSessions.add(session);
+        // Mark seen only AFTER the idle-set lands. A transient daemon error here
+        // must be retried on the next poll, not stranded 'starting' forever.
         await options.daemon.setSessionStatus(session, 'idle');
+        seenSessions.add(session);
       }
       const claimed = await options.daemon.claimInbox(session, {
         bridgeInstanceId: options.bridgeInstanceId,

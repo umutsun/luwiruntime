@@ -17,6 +17,7 @@ import {
   gitObservationSchema,
   graphNeighborsResponseSchema,
   graphPathResponseSchema,
+  heartbeatResponseSchema,
   inboxClaimResponseSchema,
   messageCreateResponseSchema,
   messageResponseSchema,
@@ -56,6 +57,7 @@ import {
   type MessageCreateRequest,
   type MessageCreateResponse,
   type Project,
+  type NativeSessionRef,
   type SessionStatus,
   type ProjectAgentBinding,
   type ProjectCollectionResponse,
@@ -175,6 +177,22 @@ export type McpDaemonClient = {
     response?: AgentMessageResponse,
   ): Promise<AgentMessage>;
   setSessionStatus(sessionId: string, status: SessionStatus): Promise<SessionView>;
+  /**
+   * The presence surface a reader needs to own a session itself (ADR 0034):
+   * register a successor for a dropped attach session, keep it alive, close it.
+   */
+  registerSession(request: SessionRevivalRegistration): Promise<SessionView>;
+  heartbeat(sessionId: string): Promise<void>;
+  closeSession(sessionId: string): Promise<SessionView>;
+};
+
+/** What a revived registration carries: copied from the dropped session's own record. */
+export type SessionRevivalRegistration = {
+  projectId: string;
+  agentId: string;
+  workingDirectory: string;
+  native?: NativeSessionRef;
+  metadata?: Record<string, unknown>;
 };
 
 function endpoint(base: string, path: string): string {
@@ -277,6 +295,16 @@ export function createDaemonClient(options: {
       post(`/api/v1/sessions/${encodeURIComponent(sessionId)}/status`, sessionResponseSchema, {
         status,
       }),
+    registerSession: (request) => post('/api/v1/sessions', sessionResponseSchema, request),
+    heartbeat: async (sessionId) => {
+      await post(
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+        heartbeatResponseSchema,
+        {},
+      );
+    },
+    closeSession: (sessionId) =>
+      post(`/api/v1/sessions/${encodeURIComponent(sessionId)}/close`, sessionResponseSchema, {}),
     getProject: (projectId) =>
       request(`/api/v1/projects/${encodeURIComponent(projectId)}`, projectResponseSchema),
     listAgents: async () =>

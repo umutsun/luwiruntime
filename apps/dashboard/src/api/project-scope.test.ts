@@ -166,7 +166,71 @@ function stubClient(replies: Record<string, Reply>) {
 
 /** Ordered longest-prefix first: the stub matches on `startsWith`, and
  * `/git/attributions` would otherwise be swallowed by `/git`. */
+const capabilitiesFixture = {
+  capabilities: [
+    {
+      id: 'cap-1',
+      kind: 'skill',
+      name: 'release-notes',
+      version: '1.2.0',
+      scope: 'project',
+      projectId: 'proj-1',
+      source: 'luwi-project',
+      path: 'C:/work/demo/.claude/skills/release-notes/SKILL.md',
+      checksum: SHA256,
+      compatibleAgentKinds: ['claude-code'],
+      requiredCapabilityIds: [],
+      requiredMcpIds: [],
+      enabled: true,
+      manifest: { managementMode: 'observed', observation: { scannedAt: '2026-09-11' } },
+      createdAt: '2026-09-11T00:00:00.000Z',
+      updatedAt: '2026-09-11T00:00:00.000Z',
+    },
+    {
+      id: 'cap-2',
+      kind: 'instruction',
+      name: 'AGENTS.md',
+      scope: 'project',
+      projectId: 'proj-1',
+      source: 'agent-native',
+      checksum: SHA256,
+      compatibleAgentKinds: ['codex'],
+      requiredCapabilityIds: [],
+      requiredMcpIds: [],
+      enabled: false,
+      manifest: {},
+      createdAt: '2026-09-11T00:00:00.000Z',
+      updatedAt: '2026-09-11T00:00:00.000Z',
+    },
+  ],
+  truncated: false,
+};
+
+const globalCapabilitiesFixture = {
+  capabilities: [
+    {
+      id: 'cap-global',
+      kind: 'skill',
+      name: 'brainstorming',
+      scope: 'global',
+      source: 'agent-native',
+      path: 'C:/Users/dev/.claude/skills/brainstorming',
+      checksum: SHA256,
+      compatibleAgentKinds: ['claude-code'],
+      requiredCapabilityIds: [],
+      requiredMcpIds: [],
+      enabled: true,
+      manifest: { managementMode: 'observed', observation: {} },
+      createdAt: '2026-09-11T00:00:00.000Z',
+      updatedAt: '2026-09-11T00:00:00.000Z',
+    },
+  ],
+  truncated: true,
+};
+
 const allReady: Record<string, Reply> = {
+  '/api/v1/capabilities?scope=project': { body: capabilitiesFixture },
+  '/api/v1/capabilities?scope=global': { body: globalCapabilitiesFixture },
   '/api/v1/projects/proj-1/git/attributions': { body: attributionsFixture },
   '/api/v1/projects/proj-1/git': { body: gitFixture },
   '/api/v1/projects/proj-1/packages': { body: packagesFixture },
@@ -382,7 +446,8 @@ describe('loadProjectScope', () => {
       signal: controller.signal,
     });
 
-    expect(get).toHaveBeenCalledTimes(projectScopeResourceKeys.length);
+    // One request per resource, plus one: capabilities reads its project and global pages.
+    expect(get).toHaveBeenCalledTimes(projectScopeResourceKeys.length + 1);
     for (const call of get.mock.calls) {
       expect(call[2]).toMatchObject({ signal: controller.signal });
     }
@@ -413,6 +478,12 @@ describe('projectResourcesForEvent', () => {
   it('maps inventory and detection events to their own panels', () => {
     expect(projectResourcesForEvent('package.inventory.updated')).toEqual(['packages']);
     expect(projectResourcesForEvent('technology.detected')).toEqual(['technologies']);
+  });
+
+  it('maps the capability inventory events, and not an agent loading a skill', () => {
+    expect(projectResourcesForEvent('capability.registered')).toEqual(['capabilities']);
+    expect(projectResourcesForEvent('capability.disabled')).toEqual(['capabilities']);
+    expect(projectResourcesForEvent('context.capability.loaded')).toEqual([]);
   });
 
   it('maps attribution events to the attribution panel alone', () => {
@@ -453,5 +524,69 @@ describe('projectResourcesForEvent', () => {
     ]) {
       expect(projectResourcesForEvent(type)).toEqual([]);
     }
+  });
+});
+
+describe('project capabilities', () => {
+  it('reads the project’s own and the global capabilities, keeping where each file lives', async () => {
+    const { client, paths } = stubClient(allReady);
+
+    const result = await loadProjectScope(client, 'proj/1', ['capabilities']);
+
+    expect(paths).toEqual([
+      '/api/v1/capabilities?scope=project&projectId=proj%2F1&limit=100',
+      '/api/v1/capabilities?scope=global&limit=100',
+    ]);
+    expect(result.capabilities).toEqual({
+      state: 'ready',
+      data: {
+        // Either read's cut is disclosed: the global page was truncated.
+        truncated: true,
+        items: [
+          {
+            id: 'cap-1',
+            kind: 'skill',
+            name: 'release-notes',
+            version: '1.2.0',
+            scope: 'project',
+            source: 'luwi-project',
+            path: 'C:/work/demo/.claude/skills/release-notes/SKILL.md',
+            enabled: true,
+            observed: true,
+            updatedAt: '2026-09-11T00:00:00.000Z',
+          },
+          {
+            id: 'cap-2',
+            kind: 'instruction',
+            name: 'AGENTS.md',
+            scope: 'project',
+            source: 'agent-native',
+            enabled: false,
+            observed: false,
+            updatedAt: '2026-09-11T00:00:00.000Z',
+          },
+          {
+            id: 'cap-global',
+            kind: 'skill',
+            name: 'brainstorming',
+            scope: 'global',
+            source: 'agent-native',
+            path: 'C:/Users/dev/.claude/skills/brainstorming',
+            enabled: true,
+            observed: true,
+            updatedAt: '2026-09-11T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+  });
+
+  it('reports the capabilities unavailable when either read fails', async () => {
+    const { client } = stubClient({
+      ...allReady,
+      '/api/v1/capabilities?scope=global': { fail: 'transport' },
+    });
+    const result = await loadProjectScope(client, 'proj-1', ['capabilities']);
+    expect(result.capabilities).toEqual({ state: 'unavailable' });
   });
 });

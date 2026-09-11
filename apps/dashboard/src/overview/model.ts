@@ -678,7 +678,8 @@ export type PanelModel = {
    */
   copyId?: { label: string; id: string };
   block?: PanelBlock;
-  facts: Array<{ k: string; v: string }>;
+  /** `detail` is the fuller sentence behind a fact, shown on hover. */
+  facts: Array<{ k: string; v: string; detail?: string }>;
   trend: { label: string; buckets: number[]; from: string; to: string };
   list: { label: string; rows: OverviewSession[]; empty: string; selectedId?: string };
   links: PanelLink[];
@@ -755,16 +756,24 @@ function gitFacts(project: OverviewProject): Array<{ k: string; v: string }> {
   ];
 }
 
+const formatCount = (value: number): string => new Intl.NumberFormat('en-US').format(value);
+
 /**
  * A session's three facts. The model is what the session declared at
- * registration, else what its attributed usage records name; the token figure
- * is one grade, never a sum across grades, with `+` when the read was cut.
+ * registration, else what its newest attributed usage record names. Tokens is
+ * one grade's total when a grade reports one \u2014 never a sum across grades \u2014
+ * and otherwise the vendor counters summed each on its own: output, and input
+ * (fresh plus cache written), with cache reads in the detail. Context is the
+ * newest request's prompt size \u2014 fresh input plus cache written plus cache
+ * read \u2014 which is how large the session's context is right now; the skills
+ * evidence the runtime observed for the session moves into the detail. `+`
+ * marks a read that was cut at its bound.
  */
 function sessionFacts(
   session: OverviewSession,
   context: { loaded: string; invoked: string },
   extras: PanelExtras,
-): Array<{ k: string; v: string }> {
+): Array<{ k: string; v: string; detail?: string }> {
   const usage =
     extras.sessionUsage?.sessionId === session.id ? extras.sessionUsage.state : undefined;
   const word = (ready: string): string =>
@@ -777,26 +786,51 @@ function sessionFacts(
           : usage.state === 'not-observed'
             ? 'not observed'
             : ready;
-  const models = usage?.state === 'ready' ? usage.data.models : [];
-  const model = session.model ?? (models.length > 0 ? models.join(', ') : word('not observed'));
-  const best =
-    usage?.state === 'ready'
-      ? usage.data.sources.find((row) => row.totalTokens !== undefined)
-      : undefined;
+  const ready = usage?.state === 'ready' ? usage.data : undefined;
+  const cut = ready?.truncated === true ? '+' : '';
+  const models = ready?.models ?? [];
+  const model =
+    session.model ??
+    ready?.latestModel ??
+    (models.length > 0 ? models.join(', ') : word('not observed'));
+
+  const best = ready?.sources.find((row) => row.totalTokens !== undefined);
+  const counters = ready?.counters ?? {};
+  const sent = (counters.input ?? 0) + (counters.cacheCreation ?? 0);
+  const counted = counters.output !== undefined || counters.input !== undefined;
   const tokens =
-    best === undefined
-      ? word(usage?.state === 'ready' && usage.data.recordCount > 0 ? 'no totals' : 'not observed')
-      : `${formatTokens(best.totalTokens ?? 0)} ${best.label}${usage?.state === 'ready' && usage.data.truncated ? '+' : ''}`;
+    best !== undefined
+      ? { v: `${formatTokens(best.totalTokens ?? 0)} ${best.label}${cut}` }
+      : counted
+        ? {
+            v: `${formatTokens(counters.output ?? 0)} out \u00b7 ${formatTokens(sent)} in${cut}`,
+            detail: [
+              `output ${formatCount(counters.output ?? 0)}`,
+              `input ${formatCount(counters.input ?? 0)}`,
+              `cache written ${formatCount(counters.cacheCreation ?? 0)}`,
+              `cache read ${formatCount(counters.cacheRead ?? 0)}`,
+              `over ${String(ready?.recordCount ?? 0)} records${cut}`,
+            ].join(' \u00b7 '),
+          }
+        : { v: word(ready !== undefined && ready.recordCount > 0 ? 'no totals' : 'not observed') };
+
+  // `loaded` already reads "N loaded"; both read "not observed" when nothing was.
+  const skills =
+    context.loaded === context.invoked
+      ? `skills ${context.loaded}`
+      : `skills ${context.loaded} \u00b7 ${context.invoked} invoked`;
+  const latest = ready?.latestContext;
+  const contextFact =
+    latest === undefined
+      ? { v: word('not observed'), detail: skills }
+      : {
+          v: formatTokens(latest.tokens),
+          detail: `latest request sent ${formatCount(latest.tokens)} tokens \u00b7 observed ${formatClock(Date.parse(latest.observedAt))} \u00b7 ${skills}`,
+        };
   return [
     { k: 'Model', v: model },
-    { k: 'Tokens', v: tokens },
-    {
-      k: 'Context',
-      v:
-        context.loaded === context.invoked
-          ? context.loaded
-          : `${context.loaded} \u00b7 ${context.invoked} invoked`,
-    },
+    { k: 'Tokens', ...tokens },
+    { k: 'Context', ...contextFact },
   ];
 }
 
@@ -916,10 +950,7 @@ export function panelFor(
         empty: 'No other sessions in this project',
         selectedId: session.id,
       },
-      links: [
-        { kind: 'inspect-session', label: 'Inspect', id: session.id },
-        { kind: 'route', label: 'Sessions', href: '#/sessions' },
-      ],
+      links: [{ kind: 'inspect-session', label: 'Inspect', id: session.id }],
     };
   }
 
