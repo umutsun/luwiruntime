@@ -10,6 +10,7 @@ const productionFunctionNames = [
   'luwi_session_status_v1',
   'luwi_session_close_v1',
   'luwi_session_disconnect_v1',
+  'luwi_session_reap_starting_v1',
   'luwi_native_link_trim_v1',
   'luwi_native_declare_v1',
   'luwi_message_request_v1',

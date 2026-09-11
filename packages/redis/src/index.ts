@@ -61,7 +61,10 @@ export type {
   NativeUnlinkInput,
   NativeTransitionResult,
   AppendedEvent,
+  ReapStartingSessionInput,
+  ReapStartingSessionResult,
   RuntimeRepository,
+  StartingSessionCandidate,
   UpdateSessionStatusInput,
   UpdateSessionStatusResult,
 } from './runtime-repository.js';

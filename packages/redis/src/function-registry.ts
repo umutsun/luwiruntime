@@ -17,6 +17,7 @@ export type RedisFunctionRegistry = {
     sessionStatus: string;
     sessionClose: string;
     sessionDisconnect: string;
+    sessionReapStarting: string;
     nativeLinkTrim: string;
     nativeDeclare: string;
     messageRequest: string;
@@ -51,6 +52,7 @@ const productionFunctions = {
   sessionStatus: 'luwi_session_status_v1',
   sessionClose: 'luwi_session_close_v1',
   sessionDisconnect: 'luwi_session_disconnect_v1',
+  sessionReapStarting: 'luwi_session_reap_starting_v1',
   nativeLinkTrim: 'luwi_native_link_trim_v1',
   nativeDeclare: 'luwi_native_declare_v1',
   messageRequest: 'luwi_message_request_v1',

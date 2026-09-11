@@ -49,6 +49,15 @@ export type {
   PresenceSweeperOptions,
   PresenceSweeperRepository,
 } from './presence-sweeper.js';
+export { createStartingSessionReaper } from './starting-session-reaper.js';
+export type {
+  ReapStartingOutcome,
+  StartingSessionCandidate,
+  StartingSessionReaper,
+  StartingSessionReaperOptions,
+  StartingSessionReaperRepository,
+  StartingSessionReapResult,
+} from './starting-session-reaper.js';
 export { evaluateMessageTransition } from './message-state.js';
 export type { MessageTransitionResult } from './message-state.js';
 export { selectMessageTarget } from './message-routing.js';

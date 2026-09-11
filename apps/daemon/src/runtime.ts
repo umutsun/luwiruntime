@@ -36,9 +36,11 @@ import {
   createNativeLinkRetentionSweeper,
   createPresenceSweeper,
   createRuntimeReadiness,
+  createStartingSessionReaper,
   NATIVE_DECLARATION_MAX_ATTEMPTS,
   type NativeLinkRetentionRepository,
   type PresenceSweeperRepository,
+  type StartingSessionReaperRepository,
 } from '@luwi/runtime';
 import { createTranscriptReader, NodeTranscriptFileSystem } from '@luwi/adapters';
 
@@ -183,6 +185,56 @@ export function createPresenceSweeperRepository(options: {
 }
 
 /**
+ * The reaper's view of the runtime.
+ *
+ * It mirrors the presence sweeper adapter exactly where the two overlap — a
+ * reaped session must not leave an open native link behind, the unlink is
+ * fail-closed and re-resolved on every attempt, and both event ids are minted
+ * once so a retry cannot append a second disconnect for one reap. It differs
+ * only in the transition it drives: `reapStartingSession`, guarded on the
+ * status still being `starting`, which is what lets it override the live
+ * presence key a `starting` zombie still holds.
+ */
+export function createStartingSessionReaperRepository(options: {
+  repository: RuntimeRepository;
+  workspaceId: string;
+  createId: () => string;
+}): StartingSessionReaperRepository {
+  const { repository, workspaceId, createId } = options;
+  return {
+    findStartingSessionsPastGrace: (nowMs, graceMs, limit) =>
+      repository.findStartingSessionsPastGrace(nowMs, graceMs, limit),
+    async reapStartingSession(candidate) {
+      const eventId = createId();
+      const unlinkedEventId = createId();
+
+      for (let attempt = 1; attempt <= NATIVE_DECLARATION_MAX_ATTEMPTS; attempt += 1) {
+        const native = await resolveExpiringNativeUnlink(repository, candidate.sessionId);
+        try {
+          const result = await repository.reapStartingSession({
+            sessionId: candidate.sessionId,
+            projectId: candidate.projectId,
+            workspaceId,
+            eventId,
+            ...(native === undefined ? {} : { native: { ...native, unlinkedEventId } }),
+          });
+          return result.status === 'disconnected' ? 'reaped' : 'skipped';
+        } catch (error) {
+          if (!isVersionConflict(error)) throw error;
+        }
+      }
+
+      /**
+       * A conflict writes nothing, so the session is still `starting` and the
+       * next sweep sees it again. Reporting `skipped` rather than throwing keeps
+       * one contended session from aborting the rest of the batch.
+       */
+      return 'skipped';
+    },
+  };
+}
+
+/**
  * The seam between link retention and Redis.
  *
  * A refused trim is an outcome, not a failure: the compare-and-set lost to a
@@ -255,6 +307,7 @@ const defaults = {
   ownerRenewIntervalMs: 5_000,
   sessionPresenceTtlMs: 15_000,
   presenceSweepIntervalMs: 1_000,
+  sessionStartingGraceMs: 180_000,
   heartbeatEventIntervalMs: 30_000,
   consumerClaimIdleMs: 30_000,
   relayBlockMs: 1_000,
@@ -446,6 +499,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   });
   let app: DaemonApp | undefined;
   let sweepTimer: NodeJS.Timeout | undefined;
+  let reapTimer: NodeJS.Timeout | undefined;
   let messageTimeoutTimer: NodeJS.Timeout | undefined;
   let leaseExpiryTimer: NodeJS.Timeout | undefined;
   let retentionTimer: NodeJS.Timeout | undefined;
@@ -453,6 +507,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let transcriptScanTimer: NodeJS.Timeout | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let sweeping = false;
+  let reaping = false;
   let sweepingMessageTimeouts = false;
   let sweepingLeaseExpiry = false;
   let retaining = false;
@@ -708,6 +763,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       createId: randomUUID,
     }),
   });
+  const reaper = createStartingSessionReaper({
+    now: Date.now,
+    graceMs: setting(config, 'sessionStartingGraceMs'),
+    batchSize: setting(config, 'relayBatchSize'),
+    repository: createStartingSessionReaperRepository({
+      repository,
+      workspaceId: config.workspaceId,
+      createId: randomUUID,
+    }),
+  });
   const leaseService = createLeaseService({
     repository: leaseRepository,
     sessions: sessionService,
@@ -858,11 +923,15 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       const deadline = Date.now() + drainTimeoutMs;
       backgroundWork.stop();
       sweeper.stop();
+      reaper.stop();
       messageTimeoutSweeper.stop();
       leaseExpirySweeper.stop();
       nativeLinkRetentionSweeper.stop();
       if (sweepTimer !== undefined) {
         clearInterval(sweepTimer);
+      }
+      if (reapTimer !== undefined) {
+        clearInterval(reapTimer);
       }
       if (messageTimeoutTimer !== undefined) {
         clearInterval(messageTimeoutTimer);
@@ -1017,6 +1086,36 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     );
     sweepTimer.unref?.();
 
+    // The reaper rides the retention cadence rather than the 1s presence cadence:
+    // its finder scans the whole session list (there is no status index), and the
+    // grace window is minutes, so a per-second scan would be pure waste. Worst
+    // case a ghost is reaped one retention tick after it crosses the grace line.
+    // ponytail: reuses retentionIntervalMs; add LUWI_SESSION_REAP_INTERVAL_MS only
+    // if the reap cadence ever needs to diverge from retention.
+    reapTimer = setInterval(
+      () => {
+        if (reaping || readiness.state !== 'ready') {
+          return;
+        }
+        reaping = true;
+        const scheduled = backgroundWork.run(
+          async () => {
+            try {
+              await reaper.sweepOnce();
+            } finally {
+              reaping = false;
+            }
+          },
+          (error) => app?.log.error({ err: error }, 'Starting-session reap failed'),
+        );
+        if (!scheduled) {
+          reaping = false;
+        }
+      },
+      setting(config, 'retentionIntervalMs'),
+    );
+    reapTimer.unref?.();
+
     messageTimeoutTimer = setInterval(
       () => {
         if (sweepingMessageTimeouts || readiness.state !== 'ready') {
@@ -1150,10 +1249,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   } catch (error) {
     backgroundWork.stop();
     sweeper.stop();
+    reaper.stop();
     messageTimeoutSweeper.stop();
     leaseExpirySweeper.stop();
     if (sweepTimer !== undefined) {
       clearInterval(sweepTimer);
+    }
+    if (reapTimer !== undefined) {
+      clearInterval(reapTimer);
     }
     if (messageTimeoutTimer !== undefined) {
       clearInterval(messageTimeoutTimer);

@@ -291,6 +291,67 @@ describe('runtime repository session boundary', () => {
       functions.functions.sessionDisconnect,
     ]);
   });
+
+  it('reaps starting sessions through the dedicated Function, with no deadline argument', async () => {
+    const client = new FakeCommandClient();
+    const keys = createRedisKeys();
+    const functions = createFunctionRegistry();
+    const repository = createRuntimeRepository({ client, keys, functions });
+
+    client.reply = JSON.stringify({ status: 'unchanged' });
+    await expect(
+      repository.reapStartingSession({
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        workspaceId: 'local',
+        eventId: 'event-reap-1',
+      }),
+    ).resolves.toEqual({ status: 'unchanged' });
+
+    const plain = client.commands[0] ?? [];
+    expect(plain[1]).toBe(functions.functions.sessionReapStarting);
+    expect(plain[2]).toBe('5');
+    expect(plain.slice(3, 8)).toEqual([
+      keys.session('session-1'),
+      keys.sessionPresence('session-1'),
+      keys.heartbeatDeadlines,
+      keys.globalEvents,
+      keys.projectEvents('project-1'),
+    ]);
+    // The status guard is the compare-and-set; there is no deadline argument.
+    expect(plain.slice(8)).toEqual(['project-1', 'local', 'event-reap-1']);
+  });
+
+  it('carries the native binding and link keys into the reap when one is open', async () => {
+    const client = new FakeCommandClient();
+    const keys = createRedisKeys();
+    const functions = createFunctionRegistry();
+    const repository = createRuntimeRepository({ client, keys, functions });
+
+    client.reply = JSON.stringify({ status: 'unchanged' });
+    await repository.reapStartingSession({
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      workspaceId: 'local',
+      eventId: 'event-reap-2',
+      native: {
+        bindingId: 'binding-1',
+        linkId: 'link-1',
+        expectedVersion: 3,
+        expectedOpenLinkId: 'link-1',
+        unlinkedEventId: 'event-unlink-1',
+      },
+    });
+
+    const withNative = client.commands[0] ?? [];
+    expect(withNative[1]).toBe(functions.functions.sessionReapStarting);
+    expect(withNative[2]).toBe('7');
+    expect(withNative.slice(8, 10)).toEqual([
+      keys.nativeSessionBinding('binding-1'),
+      keys.nativeSessionLink('link-1'),
+    ]);
+    expect(withNative.at(-1)).toBe('event-unlink-1');
+  });
 });
 
 describe('runtime repository native declaration boundary', () => {

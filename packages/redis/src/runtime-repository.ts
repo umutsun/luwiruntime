@@ -297,6 +297,27 @@ export type DisconnectExpiredSessionResult =
   | { status: 'unchanged' }
   | { status: 'not_found'; entity: 'session' };
 
+/** A session still `starting` and older than the grace window, ready to reap. */
+export type StartingSessionCandidate = { sessionId: string; projectId: string };
+
+export type ReapStartingSessionInput = {
+  sessionId: string;
+  projectId: string;
+  workspaceId: string;
+  eventId: string;
+  /** Present only when the reaped session still holds an open native link. */
+  native?: NativeUnlinkInput;
+};
+
+/**
+ * Reap never reconciles — it exists precisely to override a live presence key —
+ * so its result reuses the disconnect shape minus `reconciled`.
+ */
+export type ReapStartingSessionResult = Exclude<
+  DisconnectExpiredSessionResult,
+  { status: 'reconciled' }
+>;
+
 export interface RuntimeRepository {
   registerProject(input: RegisterProjectInput): Promise<RegisterProjectResult>;
   /** One atomic Function: the projection fields and the `project.updated` event, or nothing. */
@@ -328,6 +349,18 @@ export interface RuntimeRepository {
   disconnectExpiredSession(
     input: DisconnectExpiredSessionInput,
   ): Promise<DisconnectExpiredSessionResult>;
+  /**
+   * Sessions still `starting` whose `startedAt` is older than `graceMs`. There
+   * is no status index, so this scans the session list — the same enumeration
+   * route retention already rides; the grace default keeps that to a coarse
+   * cadence.
+   */
+  findStartingSessionsPastGrace(
+    nowMs: number,
+    graceMs: number,
+    limit: number,
+  ): Promise<StartingSessionCandidate[]>;
+  reapStartingSession(input: ReapStartingSessionInput): Promise<ReapStartingSessionResult>;
 }
 
 export class RedisRepositoryError extends Error {
@@ -1462,6 +1495,62 @@ export function createRuntimeRepository(options: {
             ]),
       ]);
       return parseDisconnectResult(decodeJsonReply(reply));
+    },
+
+    async findStartingSessionsPastGrace(nowMs, graceMs, limit) {
+      if (limit < 1) {
+        return [];
+      }
+      const cutoff = nowMs - graceMs;
+      const candidates: StartingSessionCandidate[] = [];
+      // listSessions already returns oldest-first, so the coarsest offenders are
+      // reaped first and the limit is a stable prefix.
+      for (const session of await this.listSessions()) {
+        if (session.status !== 'starting' || Date.parse(session.startedAt) > cutoff) {
+          continue;
+        }
+        candidates.push({ sessionId: session.id, projectId: session.projectId });
+        if (candidates.length >= limit) {
+          break;
+        }
+      }
+      return candidates;
+    },
+
+    async reapStartingSession(input) {
+      const reply = await client.sendCommand([
+        'FCALL',
+        functions.functions.sessionReapStarting,
+        String(5 + (input.native === undefined ? 0 : 2)),
+        keys.session(input.sessionId),
+        keys.sessionPresence(input.sessionId),
+        keys.heartbeatDeadlines,
+        keys.globalEvents,
+        keys.projectEvents(input.projectId),
+        ...(input.native === undefined
+          ? []
+          : [
+              keys.nativeSessionBinding(input.native.bindingId),
+              keys.nativeSessionLink(input.native.linkId),
+            ]),
+        input.projectId,
+        input.workspaceId,
+        input.eventId,
+        ...(input.native === undefined
+          ? []
+          : [
+              JSON.stringify({
+                bindingId: input.native.bindingId,
+                linkId: input.native.linkId,
+                expectedVersion: input.native.expectedVersion,
+                expectedOpenLinkId: input.native.expectedOpenLinkId,
+              }),
+              input.native.unlinkedEventId,
+            ]),
+      ]);
+      // Reap never returns `reconciled`; parseDisconnectResult is reused for the
+      // shared disconnected/unchanged/not_found/error shapes.
+      return parseDisconnectResult(decodeJsonReply(reply)) as ReapStartingSessionResult;
     },
   };
 }

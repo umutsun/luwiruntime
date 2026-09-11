@@ -27,6 +27,12 @@ const environmentSchema = z.object({
   LUWI_DAEMON_OWNER_RENEW_INTERVAL_MS: z.coerce.number().int().min(250).default(5_000),
   LUWI_SESSION_PRESENCE_TTL_MS: z.coerce.number().int().min(100).default(15_000),
   LUWI_PRESENCE_SWEEP_INTERVAL_MS: z.coerce.number().int().min(50).default(1_000),
+  // A session that never has a reader bind stays `starting` forever while it
+  // keeps heartbeating, so it escapes the presence sweeper. The reaper makes any
+  // session still `starting` past this window `disconnected`. The floor is a
+  // hard 1s, but the default stays at 3 min because a legitimate startup can
+  // take a couple of minutes; do not tune the deployment default below ~2 min.
+  LUWI_SESSION_STARTING_GRACE_MS: z.coerce.number().int().min(1_000).default(180_000),
   LUWI_HEARTBEAT_EVENT_INTERVAL_MS: z.coerce.number().int().min(0).default(30_000),
   LUWI_CONSUMER_CLAIM_IDLE_MS: z.coerce.number().int().min(0).default(30_000),
   LUWI_RELAY_BLOCK_MS: z.coerce.number().int().min(1).max(5_000).default(1_000),
@@ -151,6 +157,7 @@ export type DaemonConfig = {
   ownerRenewIntervalMs?: number;
   sessionPresenceTtlMs?: number;
   presenceSweepIntervalMs?: number;
+  sessionStartingGraceMs?: number;
   heartbeatEventIntervalMs?: number;
   consumerClaimIdleMs?: number;
   relayBlockMs?: number;
@@ -287,6 +294,7 @@ export function loadDaemonConfig(
     ownerRenewIntervalMs: parsed.LUWI_DAEMON_OWNER_RENEW_INTERVAL_MS,
     sessionPresenceTtlMs: parsed.LUWI_SESSION_PRESENCE_TTL_MS,
     presenceSweepIntervalMs: parsed.LUWI_PRESENCE_SWEEP_INTERVAL_MS,
+    sessionStartingGraceMs: parsed.LUWI_SESSION_STARTING_GRACE_MS,
     heartbeatEventIntervalMs: parsed.LUWI_HEARTBEAT_EVENT_INTERVAL_MS,
     consumerClaimIdleMs: parsed.LUWI_CONSUMER_CLAIM_IDLE_MS,
     relayBlockMs: parsed.LUWI_RELAY_BLOCK_MS,

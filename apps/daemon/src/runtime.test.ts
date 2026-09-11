@@ -3,6 +3,7 @@ import {
   RedisRepositoryError,
   type DisconnectExpiredSessionInput,
   type ManagedRedisConnection,
+  type ReapStartingSessionInput,
   type RuntimeRepository,
 } from '@luwi/redis';
 import { NATIVE_DECLARATION_MAX_ATTEMPTS } from '@luwi/runtime';
@@ -14,6 +15,7 @@ import type { DaemonConfig } from './config.js';
 import {
   createNativeLinkRetentionRepository,
   createPresenceSweeperRepository,
+  createStartingSessionReaperRepository,
   startDaemon,
 } from './runtime.js';
 import type { ShutdownSignal, ShutdownSignalListener, SignalSource } from './shutdown.js';
@@ -364,6 +366,135 @@ describe('presence sweeper native release', () => {
 });
 
 /**
+ * The reaper adapter shares the presence adapter's native-release contract, so
+ * these prove the same three things for the reap path: it hands Redis the open
+ * link to close, it mints the event ids once across retries, and a persistent
+ * conflict becomes a quiet `skipped` rather than an exception that would abort
+ * the batch. Whether `session_reap_starting` then clears `openLinkId` is proven
+ * by `session-reap.integration.test.ts`, not here.
+ */
+function reapHarness(config: {
+  binding?: NativeSessionBinding;
+  link?: NativeSessionLink;
+  reverseBindingId?: string;
+  conflicts?: number;
+  result?: 'disconnected' | 'unchanged';
+}): {
+  reap: (candidate: { sessionId: string; projectId: string }) => Promise<string>;
+  calls: ReapStartingSessionInput[];
+  bindingReads: string[];
+} {
+  const calls: ReapStartingSessionInput[] = [];
+  const bindingReads: string[] = [];
+  const ids = ['reap-event', 'unlinked-event'];
+  let conflicts = config.conflicts ?? 0;
+  const repository = {
+    getNativeBinding: async (id: string) => {
+      bindingReads.push(id);
+      return config.binding ?? null;
+    },
+    getNativeLink: async () => config.link ?? null,
+    getSessionNativeBindingId: async () => config.reverseBindingId ?? null,
+    findStartingSessionsPastGrace: async () => [],
+    reapStartingSession: async (input: ReapStartingSessionInput) => {
+      calls.push(input);
+      if (conflicts > 0) {
+        conflicts -= 1;
+        throw new RedisRepositoryError('VERSION_CONFLICT', 'The native binding changed.');
+      }
+      if ((config.result ?? 'disconnected') === 'unchanged') {
+        return { status: 'unchanged' as const };
+      }
+      return {
+        status: 'disconnected' as const,
+        event: null as never,
+        globalStreamId: '1-0',
+        projectStreamId: '1-1',
+      };
+    },
+  } as unknown as RuntimeRepository;
+
+  const adapter = createStartingSessionReaperRepository({
+    repository,
+    workspaceId: 'workspace-1',
+    createId: () => ids.shift() ?? 'unexpected',
+  });
+
+  return {
+    reap: (candidate) => adapter.reapStartingSession(candidate),
+    calls,
+    bindingReads,
+  };
+}
+
+describe('starting session reaper native release', () => {
+  it('closes the open native link of a reaped zombie', async () => {
+    const harness = reapHarness({
+      binding: sweptBinding,
+      link: sweptLink,
+      reverseBindingId: 'binding-1',
+    });
+
+    await expect(harness.reap({ sessionId: 'session-1', projectId: 'project-1' })).resolves.toBe(
+      'reaped',
+    );
+    expect(harness.calls).toHaveLength(1);
+    expect(harness.calls[0]).toMatchObject({
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      workspaceId: 'workspace-1',
+      eventId: 'reap-event',
+      native: {
+        bindingId: 'binding-1',
+        linkId: 'link-1',
+        expectedVersion: 7,
+        expectedOpenLinkId: 'link-1',
+        unlinkedEventId: 'unlinked-event',
+      },
+    });
+  });
+
+  it('reaps a zombie that holds no native link', async () => {
+    const harness = reapHarness({});
+
+    await expect(harness.reap({ sessionId: 'session-1', projectId: 'project-1' })).resolves.toBe(
+      'reaped',
+    );
+    expect(harness.calls[0]?.native).toBeUndefined();
+  });
+
+  it('reports skipped when the session already left starting', async () => {
+    const harness = reapHarness({ result: 'unchanged' });
+
+    await expect(harness.reap({ sessionId: 'session-1', projectId: 'project-1' })).resolves.toBe(
+      'skipped',
+    );
+    expect(harness.calls).toHaveLength(1);
+  });
+
+  it('gives up quietly on a contended reap, with the event ids unchanged', async () => {
+    const harness = reapHarness({
+      binding: sweptBinding,
+      link: sweptLink,
+      reverseBindingId: 'binding-1',
+      conflicts: NATIVE_DECLARATION_MAX_ATTEMPTS,
+    });
+
+    await expect(harness.reap({ sessionId: 'session-1', projectId: 'project-1' })).resolves.toBe(
+      'skipped',
+    );
+    expect(harness.calls).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+    // A conflict wrote nothing, so the next attempt re-reads the observation it
+    // decides on rather than reusing a stale one.
+    expect(harness.bindingReads).toHaveLength(NATIVE_DECLARATION_MAX_ATTEMPTS);
+    for (const call of harness.calls) {
+      expect(call.eventId).toBe('reap-event');
+      expect(call.native?.unlinkedEventId).toBe('unlinked-event');
+    }
+  });
+});
+
+/**
  * Retention reaches Redis only through this adapter, so it is the seam where a
  * repository refusal has to become a sweep outcome rather than an exception the
  * retention pass would abort on.
@@ -503,6 +634,7 @@ describe('native link retention repository', () => {
     // filesystem on its own cadence, the way the git scan does.
     expect(timerNames).toEqual([
       'sweepTimer',
+      'reapTimer',
       'messageTimeoutTimer',
       'leaseExpiryTimer',
       'retentionTimer',
