@@ -29,6 +29,21 @@ export const projectRegistrationRequestSchema = z.strictObject({
   defaultBranch: z.string().trim().min(1).max(512).optional(),
 });
 
+/**
+ * The fields a registered project may change. The local path is the project's
+ * identity (canonical, duplicate-checked at registration) and is not one of
+ * them. `null` clears an optional field; an absent key leaves it alone.
+ */
+export const projectUpdateRequestSchema = z
+  .strictObject({
+    name: z.string().trim().min(1).max(200).optional(),
+    repositoryUrl: repositoryRemoteSchema.nullable().optional(),
+    defaultBranch: z.string().trim().min(1).max(512).nullable().optional(),
+  })
+  .refine((value) => Object.values(value).some((field) => field !== undefined), {
+    message: 'At least one field must be provided.',
+  });
+
 export const projectSchema = z.strictObject({
   id: identifierSchema,
   name: z.string().trim().min(1).max(200),
@@ -46,5 +61,6 @@ export const projectCollectionResponseSchema = z.strictObject({
 });
 
 export type ProjectRegistrationRequest = z.infer<typeof projectRegistrationRequestSchema>;
+export type ProjectUpdateRequest = z.infer<typeof projectUpdateRequestSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type ProjectCollectionResponse = z.infer<typeof projectCollectionResponseSchema>;

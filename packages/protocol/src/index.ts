@@ -17,9 +17,15 @@ export {
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectSchema,
+  projectUpdateRequestSchema,
   repositoryRemoteSchema,
 } from './project.js';
-export type { Project, ProjectCollectionResponse, ProjectRegistrationRequest } from './project.js';
+export type {
+  Project,
+  ProjectCollectionResponse,
+  ProjectRegistrationRequest,
+  ProjectUpdateRequest,
+} from './project.js';
 export { realtimeEventMessageSchema, redisStreamIdSchema } from './realtime.js';
 export type { RealtimeEventMessage } from './realtime.js';
 export {

@@ -11,6 +11,7 @@ export type RedisFunctionRegistry = {
   version: 12;
   functions: {
     projectRegister: string;
+    projectUpdate: string;
     sessionRegister: string;
     sessionHeartbeat: string;
     sessionStatus: string;
@@ -44,6 +45,7 @@ export type RedisFunctionRegistry = {
 
 const productionFunctions = {
   projectRegister: 'luwi_project_register_v1',
+  projectUpdate: 'luwi_project_update_v1',
   sessionRegister: 'luwi_session_register_v1',
   sessionHeartbeat: 'luwi_session_heartbeat_v1',
   sessionStatus: 'luwi_session_status_v1',

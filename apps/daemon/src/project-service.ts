@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { repositoryRemoteSchema } from '@luwi/protocol';
-import type { Project, ProjectRegistrationRequest } from '@luwi/protocol';
+import type { Project, ProjectRegistrationRequest, ProjectUpdateRequest } from '@luwi/protocol';
 import type { RuntimeRepository } from '@luwi/redis';
 import { ApplicationError, canonicalizeProjectPath, type CanonicalPath } from '@luwi/runtime';
 
@@ -16,6 +16,8 @@ export type GitMetadata = {
 
 export type ProjectService = {
   register(request: ProjectRegistrationRequest): Promise<Project>;
+  /** Name, remote and default branch only; the path is identity and never changes. */
+  update(projectId: string, request: ProjectUpdateRequest): Promise<Project>;
   reconcileCanonical(projects: readonly Project[]): Promise<{ rebuilt: number; unchanged: number }>;
   get(projectId: string): Promise<Project | null>;
   list(): Promise<Project[]>;
@@ -186,6 +188,23 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
         'The project path identity conflicts with an existing project.',
         409,
       );
+    },
+
+    async update(projectId, request) {
+      const result = await options.repository.updateProject({
+        projectId,
+        patch: {
+          ...(request.name === undefined ? {} : { name: request.name }),
+          ...(request.repositoryUrl === undefined ? {} : { repositoryUrl: request.repositoryUrl }),
+          ...(request.defaultBranch === undefined ? {} : { defaultBranch: request.defaultBranch }),
+        },
+        workspaceId: options.workspaceId,
+        eventId: createId(),
+      });
+      if (result.status === 'not_found') {
+        throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
+      }
+      return result.project;
     },
 
     get: (projectId) => options.repository.getProject(projectId),

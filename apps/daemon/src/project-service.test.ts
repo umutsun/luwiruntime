@@ -1,4 +1,5 @@
 import type { ProjectRegistrationRequest } from '@luwi/protocol';
+import { ApplicationError } from '@luwi/runtime';
 import type { RegisterProjectResult, RuntimeRepository } from '@luwi/redis';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +15,7 @@ function repositoryReturning(result: RegisterProjectResult): RuntimeRepository {
     registerProject: async () => result,
     getProject: async () => null,
     listProjects: async () => [],
+    updateProject: async () => ({ status: 'not_found' }),
   };
 }
 
@@ -50,6 +52,7 @@ describe('project service', () => {
       },
       getProject: async () => null,
       listProjects: async () => [],
+      updateProject: async () => ({ status: 'not_found' }),
     };
     const service = createProjectService({
       repository,
@@ -361,5 +364,107 @@ describe('detected repository url hardening', () => {
 
     await service.register({ name: 'Press', localPath: 'C:/press' });
     expect(registered[0]?.repositoryUrl).toBeUndefined();
+  });
+});
+
+describe('project service update', () => {
+  const stored = {
+    id: 'project-1',
+    name: 'Renamed',
+    localPath: 'C:/workspace/luwi',
+    canonicalPath: 'C:/workspace/real/luwi',
+    defaultBranch: 'main',
+    createdAt: '2026-07-28T12:00:00.000Z',
+    updatedAt: '2026-09-11T12:00:00.000Z',
+  };
+
+  it('passes only the fields given, with null meaning clear, and returns the stored record', async () => {
+    let updateInput: unknown;
+    const repository: RuntimeRepository = {
+      registerProject: async () => {
+        throw new Error('unexpected');
+      },
+      updateProject: async (input) => {
+        updateInput = input;
+        return {
+          status: 'updated',
+          project: stored,
+          event: {
+            id: 'event-9',
+            version: 1,
+            type: 'project.updated',
+            occurredAt: stored.updatedAt,
+            workspaceId: 'local',
+            projectId: 'project-1',
+            payload: {},
+          },
+          globalStreamId: '3-0',
+          projectStreamId: '4-0',
+        };
+      },
+      getProject: async () => null,
+      listProjects: async () => [],
+    };
+    const service = createProjectService({
+      repository,
+      workspaceId: 'local',
+      createId: () => 'event-9',
+    });
+
+    const project = await service.update('project-1', { name: 'Renamed', repositoryUrl: null });
+
+    expect(project).toEqual(stored);
+    expect(updateInput).toEqual({
+      projectId: 'project-1',
+      patch: { name: 'Renamed', repositoryUrl: null },
+      workspaceId: 'local',
+      eventId: 'event-9',
+    });
+  });
+
+  it('maps a project the runtime does not hold to a 404', async () => {
+    const service = createProjectService({
+      repository: {
+        registerProject: async () => {
+          throw new Error('unexpected');
+        },
+        updateProject: async () => ({ status: 'not_found' }),
+        getProject: async () => null,
+        listProjects: async () => [],
+      },
+      workspaceId: 'local',
+    });
+
+    await expect(service.update('missing', { name: 'x' })).rejects.toMatchObject({
+      code: 'PROJECT_NOT_FOUND',
+      statusCode: 404,
+    });
+    await expect(service.update('missing', { name: 'x' })).rejects.toBeInstanceOf(ApplicationError);
+  });
+});
+
+describe('project service unchanged update', () => {
+  it('returns the stored record when the patch matches what is stored', async () => {
+    const stored = {
+      id: 'project-1',
+      name: 'Same',
+      localPath: 'C:/workspace/luwi',
+      canonicalPath: 'C:/workspace/real/luwi',
+      createdAt: '2026-07-28T12:00:00.000Z',
+      updatedAt: '2026-07-28T12:00:00.000Z',
+    };
+    const service = createProjectService({
+      repository: {
+        registerProject: async () => {
+          throw new Error('unexpected');
+        },
+        updateProject: async () => ({ status: 'unchanged', project: stored }),
+        getProject: async () => null,
+        listProjects: async () => [],
+      },
+      workspaceId: 'local',
+    });
+
+    await expect(service.update('project-1', { name: 'Same' })).resolves.toEqual(stored);
   });
 });

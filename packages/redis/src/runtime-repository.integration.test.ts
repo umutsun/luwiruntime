@@ -114,6 +114,197 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       expect(created.event.id).toBe('event-1');
     });
 
+    it('updates a project in one Function with one event, clears with null, and reports a stranger', async () => {
+      const registered = await repository.registerProject({
+        project: {
+          id: 'project-u1',
+          name: 'Before',
+          localPath: 'C:/workspace/update',
+          canonicalPath: 'C:/workspace/update',
+          identityPath: 'c:/workspace/update',
+          // Its own hash: the tests below own 'a' to 'd'.
+          pathIdentityHash: 'e'.repeat(64),
+          repositoryUrl: 'https://example.test/before.git',
+          defaultBranch: 'main',
+        },
+        workspaceId: 'local',
+        eventId: 'event-u1',
+      });
+      expect(registered.status).toBe('created');
+      const globalBefore = (await commandClient.sendCommand(['XLEN', keys.globalEvents])) as number;
+
+      const updated = await repository.updateProject({
+        projectId: 'project-u1',
+        patch: { name: 'After', repositoryUrl: null },
+        workspaceId: 'local',
+        eventId: 'event-u2',
+      });
+
+      expect(updated).toMatchObject({
+        status: 'updated',
+        project: { id: 'project-u1', name: 'After', defaultBranch: 'main' },
+        event: { id: 'event-u2', type: 'project.updated', projectId: 'project-u1' },
+      });
+      if (updated.status !== 'updated') throw new Error('Expected an update');
+      expect(updated.project.repositoryUrl).toBeUndefined();
+      expect(updated.event.payload).toMatchObject({ changed: ['name', 'repositoryUrl'] });
+      await expect(
+        commandClient.sendCommand(['HGET', keys.project('project-u1'), 'repositoryUrl']),
+      ).resolves.toBeNull();
+      await expect(
+        commandClient.sendCommand(['HGET', keys.project('project-u1'), 'name']),
+      ).resolves.toBe('After');
+      await expect(commandClient.sendCommand(['XLEN', keys.globalEvents])).resolves.toBe(
+        globalBefore + 1,
+      );
+      await expect(
+        commandClient.sendCommand(['XLEN', keys.projectEvents('project-u1')]),
+      ).resolves.toBe(2);
+
+      await expect(
+        repository.updateProject({
+          projectId: 'project-none',
+          patch: { name: 'x' },
+          workspaceId: 'local',
+          eventId: 'event-u3',
+        }),
+      ).resolves.toEqual({ status: 'not_found' });
+      // An empty patch is refused before any write, so no event and no timestamp move.
+      const updatedAt = await commandClient.sendCommand([
+        'HGET',
+        keys.project('project-u1'),
+        'updatedAt',
+      ]);
+      await expect(
+        repository.updateProject({
+          projectId: 'project-u1',
+          patch: {},
+          workspaceId: 'local',
+          eventId: 'event-u4',
+        }),
+      ).rejects.toMatchObject({ code: 'REDIS_ARGUMENT_INVALID' });
+      await expect(
+        commandClient.sendCommand(['XLEN', keys.projectEvents('project-u1')]),
+      ).resolves.toBe(2);
+      await expect(
+        commandClient.sendCommand(['HGET', keys.project('project-u1'), 'updatedAt']),
+      ).resolves.toBe(updatedAt);
+
+      // A patch that matches what is stored writes nothing and emits nothing.
+      await expect(
+        repository.updateProject({
+          projectId: 'project-u1',
+          patch: { name: 'After', repositoryUrl: null },
+          workspaceId: 'local',
+          eventId: 'event-u5',
+        }),
+      ).resolves.toMatchObject({ status: 'unchanged', project: { name: 'After' } });
+      await expect(
+        commandClient.sendCommand(['XLEN', keys.projectEvents('project-u1')]),
+      ).resolves.toBe(2);
+    });
+
+    it('refuses an update whose stream cannot take the event, or whose record is not a project, before any write', async () => {
+      const registered = await repository.registerProject({
+        project: {
+          id: 'project-u2',
+          name: 'Guarded',
+          localPath: 'C:/workspace/guarded',
+          canonicalPath: 'C:/workspace/guarded',
+          identityPath: 'c:/workspace/guarded',
+          pathIdentityHash: 'f'.repeat(64),
+        },
+        workspaceId: 'local',
+        eventId: 'event-g1',
+      });
+      expect(registered.status).toBe('created');
+      const globalBefore = await commandClient.sendCommand(['XLEN', keys.globalEvents]);
+      const updatedAt = await commandClient.sendCommand([
+        'HGET',
+        keys.project('project-u2'),
+        'updatedAt',
+      ]);
+
+      // The project Stream sits at its maximum id: no event can follow, so nothing may change.
+      await commandClient.sendCommand([
+        'XADD',
+        keys.projectEvents('project-u2'),
+        '18446744073709551615-18446744073709551615',
+        'event',
+        'seed',
+      ]);
+      await expect(
+        repository.updateProject({
+          projectId: 'project-u2',
+          patch: { name: 'Blocked' },
+          workspaceId: 'local',
+          eventId: 'event-g2',
+        }),
+      ).rejects.toMatchObject({ code: 'REDIS_STATE_INVALID' });
+      await expect(
+        commandClient.sendCommand(['HGET', keys.project('project-u2'), 'name']),
+      ).resolves.toBe('Guarded');
+      await expect(
+        commandClient.sendCommand(['HGET', keys.project('project-u2'), 'updatedAt']),
+      ).resolves.toBe(updatedAt);
+      await expect(commandClient.sendCommand(['XLEN', keys.globalEvents])).resolves.toBe(
+        globalBefore,
+      );
+
+      // A key of the wrong type, and a hash that is not a whole project, are refused the same way.
+      await commandClient.sendCommand(['SET', keys.project('project-string'), 'not-a-hash']);
+      await expect(
+        repository.updateProject({
+          projectId: 'project-string',
+          patch: { name: 'x' },
+          workspaceId: 'local',
+          eventId: 'event-g3',
+        }),
+      ).rejects.toMatchObject({ code: 'REDIS_STATE_INVALID' });
+      await commandClient.sendCommand([
+        'HSET',
+        keys.project('project-partial'),
+        'name',
+        'only-a-name',
+      ]);
+      await expect(
+        repository.updateProject({
+          projectId: 'project-partial',
+          patch: { name: 'x' },
+          workspaceId: 'local',
+          eventId: 'event-g4',
+        }),
+      ).rejects.toMatchObject({ code: 'REDIS_STATE_INVALID' });
+      // A hash whose stored id is another project's is refused too: the event must name the key's project.
+      await commandClient.sendCommand([
+        'HSET',
+        keys.project('project-alias'),
+        'id',
+        'project-u2',
+        'name',
+        'Alias',
+        'localPath',
+        'C:/a',
+        'canonicalPath',
+        'C:/a',
+        'createdAt',
+        '2026-09-11T10:00:00.000Z',
+        'updatedAt',
+        '2026-09-11T10:00:00.000Z',
+      ]);
+      await expect(
+        repository.updateProject({
+          projectId: 'project-alias',
+          patch: { name: 'x' },
+          workspaceId: 'local',
+          eventId: 'event-g5',
+        }),
+      ).rejects.toMatchObject({ code: 'REDIS_STATE_INVALID' });
+      await expect(commandClient.sendCommand(['XLEN', keys.globalEvents])).resolves.toBe(
+        globalBefore,
+      );
+    });
+
     it('distinguishes a path-hash collision from a duplicate', async () => {
       const result = await repository.registerProject({
         project: {

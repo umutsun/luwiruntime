@@ -74,6 +74,7 @@ import {
   type HealthResponse,
   projectCollectionResponseSchema,
   projectRegistrationRequestSchema,
+  projectUpdateRequestSchema,
   projectResponseSchema,
   projectAgentBindingCollectionSchema,
   projectAgentBindingCreateRequestSchema,
@@ -526,6 +527,12 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       return sessionResponseSchema.parse(
         await withMutation(() => services.sessions.close(sessionId)),
       );
+    });
+    app.patch('/api/v1/projects/:projectId', async (request) => {
+      const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+      const body = parseRequestInput(projectUpdateRequestSchema, request.body);
+      const project = await withMutation(() => services.projects.update(projectId, body));
+      return projectResponseSchema.parse(project);
     });
     app.get('/api/v1/projects/:projectId/sessions', async (request) => {
       const { projectId } = parseRequestInput(projectParamsSchema, request.params);

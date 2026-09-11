@@ -5,6 +5,7 @@ import {
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectSchema,
+  projectUpdateRequestSchema,
 } from './index.js';
 
 const project = {
@@ -82,5 +83,25 @@ describe('repository URL shapes', () => {
       projectSchema.safeParse({ ...base, repositoryUrl: 'https://github.com/o/r.git' }).success,
     ).toBe(true);
     expect(projectSchema.safeParse({ ...base, repositoryUrl: 'not a remote' }).success).toBe(false);
+  });
+});
+
+describe('project update request', () => {
+  it('accepts a partial patch and null as the word for clearing a field', () => {
+    expect(projectUpdateRequestSchema.parse({ name: ' Renamed ', repositoryUrl: null })).toEqual({
+      name: 'Renamed',
+      repositoryUrl: null,
+    });
+    expect(projectUpdateRequestSchema.parse({ defaultBranch: 'main' })).toEqual({
+      defaultBranch: 'main',
+    });
+  });
+
+  it('refuses an empty patch, a null name, and any attempt to name the path', () => {
+    expect(projectUpdateRequestSchema.safeParse({}).success).toBe(false);
+    expect(projectUpdateRequestSchema.safeParse({ name: null }).success).toBe(false);
+    expect(projectUpdateRequestSchema.safeParse({ name: '' }).success).toBe(false);
+    expect(projectUpdateRequestSchema.safeParse({ localPath: 'C:/x' }).success).toBe(false);
+    expect(projectUpdateRequestSchema.safeParse({ canonicalPath: 'C:/x' }).success).toBe(false);
   });
 });

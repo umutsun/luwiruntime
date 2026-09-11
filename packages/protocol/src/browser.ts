@@ -25,6 +25,7 @@ export {
   optimizationProposalCollectionSchema,
   packageCollectionSchema,
   technologyCollectionSchema,
+  usageCollectionSchema,
   usageSummarySchema,
 } from './intelligence.js';
 export { leaseCollectionSchema } from './lease.js';
@@ -37,7 +38,12 @@ export {
   messageCreateRequestSchema,
   messageCreateResponseSchema,
 } from './message.js';
-export { projectCollectionResponseSchema } from './project.js';
+export {
+  projectCollectionResponseSchema,
+  projectRegistrationRequestSchema,
+  projectResponseSchema,
+  projectUpdateRequestSchema,
+} from './project.js';
 /**
  * From the leaf module, never from `runtime-api.js`: that file reaches
  * `runtime-event.js` and its `node:crypto` import, which has no place in a

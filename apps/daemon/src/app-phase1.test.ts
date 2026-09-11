@@ -68,6 +68,7 @@ const declaredLink = {
 
 function services(overrides?: {
   projectRegister?: ProjectService['register'];
+  projectUpdate?: ProjectService['update'];
   projectList?: ProjectService['list'];
   sessionRegister?: SessionService['register'];
   sessionDeclareNative?: SessionService['declareNative'];
@@ -75,6 +76,7 @@ function services(overrides?: {
   return {
     projects: {
       register: overrides?.projectRegister ?? (async () => project),
+      update: overrides?.projectUpdate ?? (async () => project),
       get: async (projectId) => (projectId === project.id ? project : null),
       list: overrides?.projectList ?? (async () => [project]),
     },
@@ -141,6 +143,52 @@ describe('Phase 1 HTTP routes', () => {
     expect(
       (await app.inject({ method: 'GET', url: '/api/v1/projects/project-1/sessions' })).json(),
     ).toEqual({ sessions: [session] });
+  });
+
+  it('edits a project through PATCH and refuses a body that names the path or nothing at all', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const seen: unknown[] = [];
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services({
+          projectUpdate: async (projectId, body) => {
+            seen.push([projectId, body]);
+            return { ...project, name: 'Renamed' };
+          },
+        }),
+        listEvents: async (): Promise<RealtimeEventMessage[]> => [],
+      },
+    });
+
+    const renamed = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/projects/project-1',
+      payload: { name: 'Renamed', repositoryUrl: null },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(renamed.json()).toEqual({ ...project, name: 'Renamed' });
+    expect(seen).toEqual([['project-1', { name: 'Renamed', repositoryUrl: null }]]);
+
+    // The path is identity: a body that names it is refused, not silently ignored.
+    const pathChange = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/projects/project-1',
+      payload: { localPath: 'C:/elsewhere' },
+    });
+    expect(pathChange.statusCode).toBe(400);
+    const empty = await app.inject({
+      method: 'PATCH',
+      url: '/api/v1/projects/project-1',
+      payload: {},
+    });
+    expect(empty.statusCode).toBe(400);
+    expect(seen).toHaveLength(1);
   });
 
   it('returns approved duplicate-path conflict details and Location header', async () => {

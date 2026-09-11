@@ -266,6 +266,26 @@ export type DisconnectExpiredSessionInput = HeartbeatDeadline & {
   native?: NativeUnlinkInput;
 };
 
+export type UpdateProjectInput = {
+  projectId: string;
+  /** `null` clears an optional field; an absent key leaves it alone. */
+  patch: { name?: string; repositoryUrl?: string | null; defaultBranch?: string | null };
+  workspaceId: string;
+  eventId: string;
+};
+
+export type UpdateProjectResult =
+  | {
+      status: 'updated';
+      project: Project;
+      event: RuntimeEvent;
+      globalStreamId: string;
+      projectStreamId: string;
+    }
+  /** The patch matched what is stored: nothing written, no event. */
+  | { status: 'unchanged'; project: Project }
+  | { status: 'not_found' };
+
 export type DisconnectExpiredSessionResult =
   | {
       status: 'disconnected';
@@ -279,6 +299,8 @@ export type DisconnectExpiredSessionResult =
 
 export interface RuntimeRepository {
   registerProject(input: RegisterProjectInput): Promise<RegisterProjectResult>;
+  /** One atomic Function: the projection fields and the `project.updated` event, or nothing. */
+  updateProject(input: UpdateProjectInput): Promise<UpdateProjectResult>;
   getProject(projectId: string): Promise<Project | null>;
   listProjects(): Promise<Project[]>;
   registerSession(input: RegisterSessionInput): Promise<RegisterSessionResult>;
@@ -341,6 +363,42 @@ function decodeJsonReply(reply: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseProjectUpdateResult(value: unknown): UpdateProjectResult {
+  if (!isRecord(value) || typeof value.status !== 'string') {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis returned an incompatible project update result.',
+    );
+  }
+  if (value.status === 'error' && typeof value.code === 'string' && value.code !== '') {
+    throw new RedisRepositoryError(value.code, 'Redis rejected the project update.');
+  }
+  if (value.status === 'not_found') return { status: 'not_found' };
+  if (value.status === 'unchanged') {
+    const project = projectSchema.safeParse(value.project);
+    if (project.success) return { status: 'unchanged', project: project.data };
+  }
+  if (value.status === 'updated') {
+    const project = projectSchema.safeParse(value.project);
+    const event = runtimeEventSchema.safeParse(value.event);
+    const globalStreamId = redisStreamIdSchema.safeParse(value.globalStreamId);
+    const projectStreamId = redisStreamIdSchema.safeParse(value.projectStreamId);
+    if (project.success && event.success && globalStreamId.success && projectStreamId.success) {
+      return {
+        status: 'updated',
+        project: project.data,
+        event: event.data,
+        globalStreamId: globalStreamId.data,
+        projectStreamId: projectStreamId.data,
+      };
+    }
+  }
+  throw new RedisRepositoryError(
+    'REDIS_DATA_INVALID',
+    'Redis returned an incompatible project update result.',
+  );
 }
 
 function parseProjectFunctionResult(value: unknown): RegisterProjectResult {
@@ -886,6 +944,24 @@ export function createRuntimeRepository(options: {
       ]);
 
       return parseProjectFunctionResult(decodeJsonReply(reply));
+    },
+
+    async updateProject(input) {
+      const reply = await client.sendCommand([
+        'FCALL',
+        functions.functions.projectUpdate,
+        '3',
+        keys.project(input.projectId),
+        keys.globalEvents,
+        keys.projectEvents(input.projectId),
+        JSON.stringify(input.patch),
+        input.workspaceId,
+        input.eventId,
+        // The Function refuses a hash whose stored id is not this one.
+        input.projectId,
+      ]);
+
+      return parseProjectUpdateResult(decodeJsonReply(reply));
     },
 
     async getProject(projectId) {

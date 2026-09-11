@@ -48,6 +48,8 @@ export type {
   HeartbeatSessionResult,
   RegisterProjectInput,
   RegisterProjectResult,
+  UpdateProjectInput,
+  UpdateProjectResult,
   RegisterSessionInput,
   RegisterSessionResult,
   DeclareNativeSessionInput,

@@ -57,6 +57,7 @@ function repository(options?: {
           }
         : null,
     listProjects: async () => [],
+    updateProject: async () => ({ status: 'not_found' }),
     registerSession: async () =>
       options?.register ?? {
         status: 'created',
