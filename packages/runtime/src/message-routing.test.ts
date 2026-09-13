@@ -98,6 +98,43 @@ describe('message target routing', () => {
     });
   });
 
+  it('prefers a native-bridge worker over an interactive session sharing the agentId', () => {
+    // The interactive/PM session is idle with a FRESHER heartbeat, so it would win the rank+heartbeat
+    // sort — but an agentId-routed dispatch must reach the managed worker, never the PM session.
+    const interactive = session('pm', 'claude-code', 'idle', '2026-07-29T12:09:00.000Z');
+    const worker = session('worker', 'claude-code', 'idle', '2026-07-29T12:01:00.000Z', {
+      metadata: { bridge: 'native-headless', provider: 'claude' },
+    });
+
+    expect(
+      selectMessageTarget({
+        sourceSession: source,
+        sessions: [interactive, worker],
+        targetAgentId: 'claude-code',
+      }),
+    ).toEqual({
+      status: 'selected',
+      session: worker,
+      reason: 'selected agent claude-code session worker by status, heartbeat, and session ID',
+    });
+  });
+
+  it('falls back to an interactive session when no bridge worker is present', () => {
+    const interactive = session('pm', 'claude-code', 'idle', '2026-07-29T12:09:00.000Z');
+
+    expect(
+      selectMessageTarget({
+        sourceSession: source,
+        sessions: [interactive],
+        targetAgentId: 'claude-code',
+      }),
+    ).toEqual({
+      status: 'selected',
+      session: interactive,
+      reason: 'selected agent claude-code session pm by status, heartbeat, and session ID',
+    });
+  });
+
   it('reports no valid online agent target deterministically', () => {
     expect(
       selectMessageTarget({

@@ -32,6 +32,17 @@ function isAvailable(session: SessionView): boolean {
   );
 }
 
+// A managed worker launched via the native bridge carries metadata.bridge === 'native-headless'
+// (set at `session bridge native` startup); interactive / PM sessions that auto-register under the
+// same agentId (via `session attach`) do not. An agentId-routed dispatch is meant for a worker, so we
+// PREFER bridge workers over interactive sessions that merely share the agentId — otherwise an idle
+// PM session (rank 0, fresh heartbeat) wins selection and the task never reaches the worker. This is a
+// preference, not a hard filter: with no bridge worker present, an interactive session is still a valid
+// fallback, so single-session setups keep working. A direct targetSessionId is unaffected.
+function isDispatchWorker(session: SessionView): boolean {
+  return session.metadata['bridge'] === 'native-headless';
+}
+
 export function selectMessageTarget(input: SelectMessageTargetInput): MessageTargetSelection {
   if (input.targetSessionId !== undefined) {
     const target = input.sessions.find((candidate) => candidate.id === input.targetSessionId);
@@ -66,6 +77,12 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
         candidate.status !== 'starting',
     )
     .toSorted((left, right) => {
+      // Managed bridge workers first, so a dispatch never lands on an interactive/PM session that
+      // shares the agentId while a real worker is available.
+      const workerDifference = Number(isDispatchWorker(right)) - Number(isDispatchWorker(left));
+      if (workerDifference !== 0) {
+        return workerDifference;
+      }
       const rankDifference = statusRank[left.status] - statusRank[right.status];
       if (rankDifference !== 0) {
         return rankDifference;
