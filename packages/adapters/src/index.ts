@@ -12,6 +12,18 @@ export type { DiskNativeIdentityContext } from './native-identity-disk.js';
 export { findAntigravityTitle } from './antigravity-native.js';
 export type { AntigravityFileSystem, AntigravitySummary } from './antigravity-native.js';
 export {
+  createAntigravityUsageReader,
+  parseGenMetadataUsage,
+  parseStepTimestampMs,
+} from './antigravity-usage-reader.js';
+export type {
+  AntigravityConversation,
+  AntigravityConversationData,
+  AntigravityGenUsage,
+  AntigravityUsageStore,
+} from './antigravity-usage-reader.js';
+export { NodeAntigravityUsageStore } from './node-antigravity-store.js';
+export {
   createCapabilityObserver,
   NodeCapabilityObserverFileSystem,
 } from './capability-observer.js';

@@ -44,12 +44,14 @@ import {
 } from '@luwi/runtime';
 import {
   ccdSessionsDir,
+  createAntigravityUsageReader,
   createCodexUsageReader,
   createTranscriptReader,
   findAntigravityTitle,
   findCodexThreadName,
   findNativeSessionTitle,
   NodeAntigravityFileSystem,
+  NodeAntigravityUsageStore,
   NodeTranscriptFileSystem,
 } from '@luwi/adapters';
 
@@ -522,6 +524,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let gitScanTimer: NodeJS.Timeout | undefined;
   let transcriptScanTimer: NodeJS.Timeout | undefined;
   let codexScanTimer: NodeJS.Timeout | undefined;
+  let antigravityScanTimer: NodeJS.Timeout | undefined;
   let nativeTitleTimer: NodeJS.Timeout | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let sweeping = false;
@@ -898,6 +901,50 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     onComplete: (summary) => app?.log.debug(summary, 'Codex ingestion completed'),
     onError: (error) => app?.log.error({ err: error }, 'Codex ingestion failed'),
   });
+  // The same pipeline for Antigravity conversations. Each is a SQLite `.db` whose
+  // per-generation usage the reader parses; the join key is the conversation id,
+  // which the IDE attach hook already declared as the `adapterId: 'antigravity'`
+  // native ref, so the binding resolves the same vendor-generic way. Root follows
+  // nativeHome for fixture isolation.
+  const antigravityIngestService = createTranscriptIngestService({
+    reader: createAntigravityUsageReader({
+      store: new NodeAntigravityUsageStore(),
+      maxFilesPerScan: setting(config, 'transcriptMaxFilesPerScan'),
+    }),
+    repository: {
+      getNativeBinding: (bindingId) => repository.getNativeBinding(bindingId),
+      findNativeLinkAt: (bindingId, atMs) => repository.findNativeLinkAt(bindingId, atMs),
+    },
+    sessions: {
+      get: async (sessionId) => {
+        const session = await repository.getSession(sessionId);
+        return session === null
+          ? null
+          : { id: session.id, projectId: session.projectId, agentId: session.agentId };
+      },
+    },
+    projects: {
+      list: async () =>
+        (await projectService.list()).map((project) => ({
+          id: project.id,
+          canonicalPath: project.canonicalPath,
+        })),
+    },
+    intelligence: {
+      ingestUsage: async (input) => intelligenceService.ingestUsage(input),
+      projectSessionFileChanges: (changes) =>
+        intelligenceService.projectSessionFileChanges(changes),
+    },
+    transcriptRoot: join(config.nativeHome ?? homedir(), '.gemini', 'antigravity', 'conversations'),
+    adapterId: 'antigravity',
+  });
+  const antigravityIngestTick = createTranscriptIngestTick({
+    runtimeState: () => readiness.state,
+    schedule: (work, onError) => backgroundWork.run(work, onError),
+    ingestOnce: () => antigravityIngestService.ingestOnce(),
+    onComplete: (summary) => app?.log.debug(summary, 'Antigravity ingestion completed'),
+    onError: (error) => app?.log.error({ err: error }, 'Antigravity ingestion failed'),
+  });
   // Mirror each vendor's own chat title onto its LUWI session, server-side, for any
   // live session carrying a declared `main` binding: the Claude Code desktop store
   // (the same one the attach poller reads) and Codex's session index (which never
@@ -1054,6 +1101,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       }
       if (codexScanTimer !== undefined) {
         clearInterval(codexScanTimer);
+      }
+      if (antigravityScanTimer !== undefined) {
+        clearInterval(antigravityScanTimer);
       }
       if (nativeTitleTimer !== undefined) {
         clearInterval(nativeTitleTimer);
@@ -1356,6 +1406,12 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
 
     codexScanTimer = setInterval(codexIngestTick, setting(config, 'transcriptScanIntervalMs'));
     codexScanTimer.unref?.();
+
+    antigravityScanTimer = setInterval(
+      antigravityIngestTick,
+      setting(config, 'transcriptScanIntervalMs'),
+    );
+    antigravityScanTimer.unref?.();
     // The title scan is light (online, untitled sessions only; at most one write per
     // session ever), so it runs faster than the ingest scans: a title should land within
     // about a minute of the desktop app generating it, not five. Env-overridable.
@@ -1397,6 +1453,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     }
     if (codexScanTimer !== undefined) {
       clearInterval(codexScanTimer);
+    }
+    if (antigravityScanTimer !== undefined) {
+      clearInterval(antigravityScanTimer);
     }
     if (nativeTitleTimer !== undefined) {
       clearInterval(nativeTitleTimer);

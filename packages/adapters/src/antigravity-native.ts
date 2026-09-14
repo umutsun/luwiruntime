@@ -17,6 +17,8 @@
  * title rather than a wrong one.
  */
 
+import { firstMessage, firstString, walkMessage } from './protobuf-wire.js';
+
 /** The subset of filesystem access this reader needs; injected for tests. */
 export interface AntigravityFileSystem {
   readFileBytes(path: string, maxBytes: number): Promise<Uint8Array | undefined>;
@@ -30,74 +32,6 @@ export type AntigravitySummary = {
 
 /** The summaries protobuf is small; cap the read so a corrupt file cannot stall. */
 const MAX_PB_BYTES = 16 * 1024 * 1024;
-
-type WireValue = { wire: number; bytes?: Uint8Array; value?: bigint };
-
-/** Reads a base-128 varint at `pos`, returning the value and the next position. */
-function readVarint(buf: Uint8Array, pos: number): [bigint, number] {
-  let result = 0n;
-  let shift = 0n;
-  let p = pos;
-  while (p < buf.length) {
-    const b = buf[p++]!;
-    result |= BigInt(b & 0x7f) << shift;
-    if ((b & 0x80) === 0) break;
-    shift += 7n;
-  }
-  return [result, p];
-}
-
-/**
- * Walks one protobuf message into a field-number → occurrences map. Unknown wire
- * types abort the walk (returning what was parsed), so a non-protobuf buffer is a
- * partial read rather than a throw.
- */
-function fields(buf: Uint8Array): Map<number, WireValue[]> {
-  const out = new Map<number, WireValue[]>();
-  let pos = 0;
-  while (pos < buf.length) {
-    const [tag, afterTag] = readVarint(buf, pos);
-    pos = afterTag;
-    const field = Number(tag >> 3n);
-    const wire = Number(tag & 7n);
-    if (field === 0) break;
-    let entry: WireValue;
-    if (wire === 0) {
-      const [value, next] = readVarint(buf, pos);
-      pos = next;
-      entry = { wire, value };
-    } else if (wire === 2) {
-      const [len, afterLen] = readVarint(buf, pos);
-      const end = afterLen + Number(len);
-      if (end > buf.length) break;
-      entry = { wire, bytes: buf.subarray(afterLen, end) };
-      pos = end;
-    } else if (wire === 1) {
-      pos += 8;
-      entry = { wire };
-    } else if (wire === 5) {
-      pos += 4;
-      entry = { wire };
-    } else {
-      break;
-    }
-    const list = out.get(field);
-    if (list === undefined) out.set(field, [entry]);
-    else list.push(entry);
-  }
-  return out;
-}
-
-function firstBytes(map: Map<number, WireValue[]>, field: number): Uint8Array | undefined {
-  return map.get(field)?.[0]?.bytes;
-}
-
-function firstString(map: Map<number, WireValue[]>, field: number): string | undefined {
-  const bytes = firstBytes(map, field);
-  if (bytes === undefined) return undefined;
-  const text = Buffer.from(bytes).toString('utf8');
-  return text.length === 0 ? undefined : text;
-}
 
 function pbPath(agHome: string): string {
   return `${agHome.replace(/\/+$/u, '')}/agyhub_summaries_proto.pb`;
@@ -116,20 +50,18 @@ async function readSummaries(
   const bytes = await fileSystem.readFileBytes(pbPath(agHome), MAX_PB_BYTES);
   const summaries = new Map<string, AntigravitySummary>();
   if (bytes === undefined) return summaries;
-  const top = fields(bytes);
+  const top = walkMessage(bytes);
   for (const envelope of top.get(1) ?? []) {
     if (envelope.bytes === undefined) continue;
-    const env = fields(envelope.bytes);
+    const env = walkMessage(envelope.bytes);
     const conversationId = firstString(env, 1);
     if (conversationId === undefined) continue;
-    const summaryBytes = firstBytes(env, 2);
-    const summary = summaryBytes === undefined ? undefined : fields(summaryBytes);
-    const workspaceBytes = summary === undefined ? undefined : firstBytes(summary, 9);
+    const summary = firstMessage(env, 2);
+    const workspace = summary === undefined ? undefined : firstMessage(summary, 9);
     summaries.set(conversationId, {
       conversationId,
       title: summary === undefined ? undefined : firstString(summary, 1),
-      workspaceUri:
-        workspaceBytes === undefined ? undefined : firstString(fields(workspaceBytes), 1),
+      workspaceUri: workspace === undefined ? undefined : firstString(workspace, 1),
     });
   }
   return summaries;
