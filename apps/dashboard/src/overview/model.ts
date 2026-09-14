@@ -1288,18 +1288,16 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
           focus: { kind: 'project', id: candidate.id },
         }))
       : project.sessions.map((session) => {
-          // Prefer the native GUI chat title (what the user recognises the session
-          // by), when the attach reported one; when it did not, fall back to the
-          // session id so two same-agent nodes are still told apart — never the
-          // task subject, which is a different thing.
+          // The node already shows agent + status, so the hint carries only what it
+          // cannot: the native GUI chat title (what the user recognises the session
+          // by), when the attach reported one, else the session id so two same-agent
+          // nodes are still told apart — never the task subject, a different thing.
           return {
             key: session.id,
             kind: 'session',
             label: session.agentName,
             sub: (session.branch ?? session.statusLabel).toUpperCase(),
-            hint: `${session.agentName} · ${session.statusLabel} · ${
-              session.title ?? `Session ${abbreviateId(session.id)}`
-            }`,
+            hint: session.title ?? `Session ${abbreviateId(session.id)}`,
             initials: session.initials,
             events: session.eventCount,
             sessions: [session],

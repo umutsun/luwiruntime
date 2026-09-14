@@ -551,17 +551,17 @@ describe('radial layout', () => {
   });
 
   it('hints a session node with its GUI title, falling back to the session id', () => {
-    // The orbit carries only initials, so the hover hint is the only place the
-    // native GUI chat title names which session a node is.
+    // The node already shows agent + status, so the hint carries only the GUI title
+    // that names which session a node is — not a repeat of what is already visible.
     const projects = layoutRadial(overview(), RUNTIME_FOCUS);
     expect(projects.nodes[0]?.hint).toBe('Alpha Project · 2 sessions');
 
     // No session in the fixture reported a GUI title, so the hint falls back to the
     // session id — never the task subject, which is a different thing.
     const untitled = layoutRadial(overview(), { kind: 'project', id: 'p1' });
-    expect(untitled.nodes[1]?.hint).toBe('Runner One · thinking · Session s-think');
+    expect(untitled.nodes[1]?.hint).toBe('Session s-think');
     expect(untitled.nodes[1]?.hint).not.toContain('Implement graph generation transition');
-    expect(untitled.nodes[0]?.hint).toBe('a2 · blocked · Session s-blocked');
+    expect(untitled.nodes[0]?.hint).toBe('Session s-blocked');
 
     // When the attach did report a GUI title, that title names the node.
     const base = overview();
@@ -583,7 +583,7 @@ describe('radial layout', () => {
       },
       { kind: 'project', id: 'p1' },
     );
-    expect(titled.nodes[1]?.hint).toBe('Runner One · thinking · Investigate R3-3 hardening');
+    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening');
   });
 });
 
