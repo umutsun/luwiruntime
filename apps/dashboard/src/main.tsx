@@ -99,6 +99,9 @@ import './styles/projects.css';
 import './styles/overview.css';
 
 const client = createDaemonClient();
+
+/** How often the realtime feed may re-render the overview under an event burst. */
+const ACTIVITY_RENDER_THROTTLE_MS = 1_000;
 /**
  * Deliberately a second object rather than a method on `client`: the read
  * client is passed to every scope loader, and none of them may be able to
@@ -441,6 +444,27 @@ function DashboardRoute() {
       };
     }
 
+    // Coalesce renders under an event burst (e.g. a usage-ingest backlog can
+    // push hundreds of events in seconds). Every event still updates the ref, so
+    // the rate, histogram and stream stay accurate; the overview re-renders at
+    // most once per window (leading + trailing) so the screen stays readable and
+    // the render loop stays cheap instead of running per event.
+    let lastActivityFlushMs = 0;
+    let activityFlushTimer: ReturnType<typeof setTimeout> | undefined;
+    const flushActivity = (): void => {
+      lastActivityFlushMs = Date.now();
+      activityFlushTimer = undefined;
+      setActivity(activityRef.current);
+    };
+    const scheduleActivityFlush = (): void => {
+      const elapsed = Date.now() - lastActivityFlushMs;
+      if (elapsed >= ACTIVITY_RENDER_THROTTLE_MS) {
+        flushActivity();
+      } else if (activityFlushTimer === undefined) {
+        activityFlushTimer = setTimeout(flushActivity, ACTIVITY_RENDER_THROTTLE_MS - elapsed);
+      }
+    };
+
     const realtime = createRealtimeController({
       url: toRealtimeUrl(window.location),
       Socket: WebSocket,
@@ -452,7 +476,7 @@ function DashboardRoute() {
         const accepted = routeRealtimeEvent(activityRef.current, event);
         if (!accepted.accepted) return;
         activityRef.current = accepted.state;
-        setActivity(accepted.state);
+        scheduleActivityFlush();
         invalidation.invalidate(accepted.invalidations);
         // Project panels refresh only for the project on screen. An event for
         // another project changes nothing that is rendered, so it costs no
@@ -475,6 +499,7 @@ function DashboardRoute() {
       realtime.stop();
       invalidation.stop();
       refreshController.stop();
+      if (activityFlushTimer !== undefined) clearTimeout(activityFlushTimer);
     };
   }, [
     bootstrap,
