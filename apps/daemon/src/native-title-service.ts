@@ -1,15 +1,16 @@
-import { findNativeSessionTitle, type TranscriptFileSystem } from '@luwi/adapters';
 import type { NativeSessionBinding, RuntimeStateName, SessionView } from '@luwi/protocol';
 
 /**
- * Mirrors the Claude Code desktop chat title onto its LUWI session, server-side.
+ * Mirrors a vendor's own chat title onto its LUWI session, server-side.
  *
- * The desktop app titles a chat after its first turns and stores it under
- * `%APPDATA%/Claude/claude-code-sessions/**` keyed by the cliSessionId — which is
- * exactly the `nativeSessionId` a claude-code session declares. So for any live
- * session that carries a claude-code `main` binding and has no title yet, the
- * daemon reads that title locally and writes it into the session metadata the
- * dashboard already renders (`metadata.title`). One place, no client poll.
+ * Each vendor names a session somewhere local and keys it by the same native
+ * session id the session declared as its binding: the Claude Code desktop app
+ * stores a `title` under `%APPDATA%/Claude/claude-code-sessions/**` keyed by the
+ * cliSessionId, and Codex appends a `thread_name` to `~/.codex/session_index.jsonl`
+ * keyed by the logical session id. So for any live session that carries a `main`
+ * binding for an adapter with a title source and has no title yet, the daemon
+ * reads that title locally and writes it into the session metadata the dashboard
+ * already renders (`metadata.title`). One place, no client poll.
  *
  * Deliberately conservative, because the only write channel here is the session
  * heartbeat, which also renews presence:
@@ -31,15 +32,17 @@ export type NativeTitleSummary = {
   skippedNotLive: number;
   skippedHasTitle: number;
   skippedNoBinding: number;
-  skippedNotClaudeCode: number;
+  skippedNoSource: number;
   skippedNoTitleOnDisk: number;
   writeErrors: number;
 };
 
+/** Answers the vendor's title for a native session id, or undefined for "none yet". */
+export type NativeTitleSource = (nativeSessionId: string) => Promise<string | undefined>;
+
 export type NativeTitleDependencies = {
-  fileSystem: Pick<TranscriptFileSystem, 'listDirectory' | 'readLines'>;
-  /** `ccdSessionsDir(env)`; undefined (no %APPDATA%) makes the scan a no-op. */
-  ccdRoot: string | undefined;
+  /** One source per adapter id; a binding whose adapter has no source is skipped. */
+  sources: Readonly<Record<string, NativeTitleSource>>;
   repository: {
     listSessions(): Promise<SessionView[]>;
     getSessionNativeBindingId(sessionId: string): Promise<string | null>;
@@ -47,8 +50,6 @@ export type NativeTitleDependencies = {
   };
   /** Writes `metadata` onto the session via the heartbeat path (full replacement). */
   setTitle: (sessionId: string, metadata: SessionView['metadata']) => Promise<void>;
-  /** The adapter half of the binding identity — 'claude-code'. */
-  adapterId: string;
 };
 
 export interface NativeTitleService {
@@ -69,7 +70,7 @@ function emptySummary(): NativeTitleSummary {
     skippedNotLive: 0,
     skippedHasTitle: 0,
     skippedNoBinding: 0,
-    skippedNotClaudeCode: 0,
+    skippedNoSource: 0,
     skippedNoTitleOnDisk: 0,
     writeErrors: 0,
   };
@@ -78,12 +79,12 @@ function emptySummary(): NativeTitleSummary {
 export function createNativeTitleService(
   dependencies: NativeTitleDependencies,
 ): NativeTitleService {
-  const { fileSystem, ccdRoot, repository, setTitle, adapterId } = dependencies;
+  const { sources, repository, setTitle } = dependencies;
 
   return {
     async resolveOnce(): Promise<NativeTitleSummary> {
       const summary = emptySummary();
-      if (ccdRoot === undefined) return summary;
+      if (Object.keys(sources).length === 0) return summary;
 
       const sessions = await repository.listSessions();
       for (const session of sessions) {
@@ -109,20 +110,21 @@ export function createNativeTitleService(
           continue;
         }
         const binding = await repository.getNativeBinding(bindingId);
-        if (binding === null || binding.adapterId !== adapterId || binding.kind !== 'main') {
-          summary.skippedNotClaudeCode += 1;
+        const source = binding === null ? undefined : sources[binding.adapterId];
+        if (binding === null || source === undefined || binding.kind !== 'main') {
+          summary.skippedNoSource += 1;
           continue;
         }
 
-        const found = await findNativeSessionTitle(fileSystem, ccdRoot, binding.nativeSessionId);
-        if (found === undefined) {
+        const title = await source(binding.nativeSessionId);
+        if (title === undefined) {
           summary.skippedNoTitleOnDisk += 1;
           continue;
         }
         summary.titlesResolved += 1;
 
         try {
-          await setTitle(session.id, { ...session.metadata, title: found.title });
+          await setTitle(session.id, { ...session.metadata, title });
           summary.titlesWritten += 1;
         } catch {
           // A write that races a close (or any transient repo error) must not

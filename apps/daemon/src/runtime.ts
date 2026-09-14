@@ -46,6 +46,8 @@ import {
   ccdSessionsDir,
   createCodexUsageReader,
   createTranscriptReader,
+  findCodexThreadName,
+  findNativeSessionTitle,
   NodeTranscriptFileSystem,
 } from '@luwi/adapters';
 
@@ -894,14 +896,26 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     onComplete: (summary) => app?.log.debug(summary, 'Codex ingestion completed'),
     onError: (error) => app?.log.error({ err: error }, 'Codex ingestion failed'),
   });
-  // Mirror the Claude Code desktop chat title onto its LUWI session, server-side,
-  // for any live session carrying a declared claude-code binding (ADR: native GUI
-  // title). Writes only an absent title on an online, non-terminal session, so the
-  // one-time heartbeat write cannot sustain a dead session (scan cadence >> presence
-  // TTL). Reuses the same local desktop store the attach poller reads.
+  // Mirror each vendor's own chat title onto its LUWI session, server-side, for any
+  // live session carrying a declared `main` binding: the Claude Code desktop store
+  // (the same one the attach poller reads) and Codex's session index (which never
+  // names a headless `codex exec` run, so fleet workers stay untitled). Writes only
+  // an absent title on an online, non-terminal session, so the one-time heartbeat
+  // write cannot sustain a dead session (scan cadence >> presence TTL). The Codex
+  // index follows nativeHome like its rollouts, for fixture isolation.
+  const titleStore = new NodeTranscriptFileSystem();
+  const ccdRoot = ccdSessionsDir(process.env);
+  const codexIndexPath = join(config.nativeHome ?? homedir(), '.codex', 'session_index.jsonl');
   const nativeTitleService = createNativeTitleService({
-    fileSystem: new NodeTranscriptFileSystem(),
-    ccdRoot: ccdSessionsDir(process.env),
+    sources: {
+      ...(ccdRoot === undefined
+        ? {}
+        : {
+            'claude-code': async (nativeSessionId: string) =>
+              (await findNativeSessionTitle(titleStore, ccdRoot, nativeSessionId))?.title,
+          }),
+      codex: (nativeSessionId) => findCodexThreadName(titleStore, codexIndexPath, nativeSessionId),
+    },
     repository: {
       listSessions: () => repository.listSessions(),
       getSessionNativeBindingId: (sessionId) => repository.getSessionNativeBindingId(sessionId),
@@ -909,7 +923,6 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     },
     setTitle: (sessionId, metadata) =>
       sessionService.heartbeat(sessionId, { metadata }).then(() => undefined),
-    adapterId: 'claude-code',
   });
   const nativeTitleTick = createNativeTitleTick({
     runtimeState: () => readiness.state,

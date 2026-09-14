@@ -1,40 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { TranscriptFileSystem } from '@luwi/adapters';
 import type { NativeSessionBinding, RuntimeStateName, SessionView } from '@luwi/protocol';
 
 import {
   createNativeTitleService,
   createNativeTitleTick,
   type NativeTitleDependencies,
+  type NativeTitleSource,
 } from './native-title-service.js';
 
-const CCD_ROOT = 'C:/ad/Claude/claude-code-sessions';
-
-/** A store with one desktop chat file per cliSessionId → title. */
-function fakeStore(
-  titles: Record<string, string>,
-): Pick<TranscriptFileSystem, 'listDirectory' | 'readLines'> {
-  const files = new Map<string, string>();
-  for (const [cliSessionId, title] of Object.entries(titles)) {
-    files.set(`${CCD_ROOT}/x/local_${cliSessionId}.json`, JSON.stringify({ cliSessionId, title }));
-  }
-  return {
-    async listDirectory(path) {
-      if (path === CCD_ROOT) return [{ name: 'x', isDirectory: true }];
-      if (path === `${CCD_ROOT}/x`) {
-        return [...files.keys()].map((f) => ({
-          name: f.slice(f.lastIndexOf('/') + 1),
-          isDirectory: false,
-        }));
-      }
-      return undefined;
-    },
-    async readLines(path) {
-      const content = files.get(path);
-      return content === undefined ? undefined : { lines: content.split('\n'), truncated: false };
-    },
-  };
+/** A title source: nativeSessionId → title, as the desktop or index store would answer. */
+function source(titles: Record<string, string>): NativeTitleSource {
+  return async (nativeSessionId) => titles[nativeSessionId];
 }
 
 function session(overrides: Partial<SessionView> & Pick<SessionView, 'id'>): SessionView {
@@ -81,13 +58,11 @@ function repo(
 }
 
 function makeDeps(
-  over: Partial<NativeTitleDependencies> &
-    Pick<NativeTitleDependencies, 'repository' | 'fileSystem'>,
+  over: Partial<NativeTitleDependencies> & Pick<NativeTitleDependencies, 'repository'>,
 ): NativeTitleDependencies {
   return {
-    ccdRoot: CCD_ROOT,
+    sources: {},
     setTitle: vi.fn(async () => undefined),
-    adapterId: 'claude-code',
     ...over,
   };
 }
@@ -97,7 +72,7 @@ describe('createNativeTitleService.resolveOnce', () => {
     const s = session({ id: 's1' });
     const setTitle = vi.fn(async () => undefined);
     const deps = makeDeps({
-      fileSystem: fakeStore({ 'cli-1': 'Build CB14' }),
+      sources: { 'claude-code': source({ 'cli-1': 'Build CB14' }) },
       repository: repo([s], { s1: claudeBinding('cli-1') }),
       setTitle,
     });
@@ -106,11 +81,37 @@ describe('createNativeTitleService.resolveOnce', () => {
     expect(summary.titlesWritten).toBe(1);
   });
 
+  it('routes each binding to the source of its own adapter', async () => {
+    const claude = session({ id: 'cc' });
+    const codex = session({ id: 'cx' });
+    const codexBinding: NativeSessionBinding = {
+      ...claudeBinding('thread-1'),
+      id: 'binding-cx',
+      adapterId: 'codex',
+    };
+    const claudeSource = vi.fn(source({ 'cli-1': 'Desktop chat' }));
+    const codexSource = vi.fn(source({ 'thread-1': 'Proje görevlerini sürdür' }));
+    const setTitle = vi.fn(async () => undefined);
+    const deps = makeDeps({
+      sources: { 'claude-code': claudeSource, codex: codexSource },
+      repository: repo([claude, codex], { cc: claudeBinding('cli-1'), cx: codexBinding }),
+      setTitle,
+    });
+    const summary = await createNativeTitleService(deps).resolveOnce();
+    expect(claudeSource).toHaveBeenCalledWith('cli-1');
+    expect(claudeSource).not.toHaveBeenCalledWith('thread-1');
+    expect(codexSource).toHaveBeenCalledWith('thread-1');
+    expect(codexSource).not.toHaveBeenCalledWith('cli-1');
+    expect(setTitle).toHaveBeenCalledWith('cc', { title: 'Desktop chat' });
+    expect(setTitle).toHaveBeenCalledWith('cx', { title: 'Proje görevlerini sürdür' });
+    expect(summary.titlesWritten).toBe(2);
+  });
+
   it('merges the title into existing metadata rather than clobbering it', async () => {
     const s = session({ id: 's1', metadata: { model: 'opus', bridge: 'native-headless' } });
     const setTitle = vi.fn(async () => undefined);
     const deps = makeDeps({
-      fileSystem: fakeStore({ 'cli-1': 'Title' }),
+      sources: { 'claude-code': source({ 'cli-1': 'Title' }) },
       repository: repo([s], { s1: claudeBinding('cli-1') }),
       setTitle,
     });
@@ -126,7 +127,7 @@ describe('createNativeTitleService.resolveOnce', () => {
     const s = session({ id: 's1', metadata: { title: 'Client-owned' } });
     const setTitle = vi.fn(async () => undefined);
     const deps = makeDeps({
-      fileSystem: fakeStore({ 'cli-1': 'Server' }),
+      sources: { 'claude-code': source({ 'cli-1': 'Server' }) },
       repository: repo([s], { s1: claudeBinding('cli-1') }),
       setTitle,
     });
@@ -140,7 +141,7 @@ describe('createNativeTitleService.resolveOnce', () => {
     const terminal = session({ id: 'term', status: 'completed' });
     const setTitle = vi.fn(async () => undefined);
     const deps = makeDeps({
-      fileSystem: fakeStore({ 'cli-1': 'T' }),
+      sources: { 'claude-code': source({ 'cli-1': 'T' }) },
       repository: repo([offline, terminal], {
         off: claudeBinding('cli-1'),
         term: claudeBinding('cli-1'),
@@ -152,22 +153,22 @@ describe('createNativeTitleService.resolveOnce', () => {
     expect(summary.skippedNotLive).toBe(2);
   });
 
-  it('skips sessions with no binding or a non-claude-code / subagent binding', async () => {
+  it('skips sessions with no binding, a sourceless adapter, or a subagent binding', async () => {
     const noBinding = session({ id: 'nb' });
-    const codex = session({ id: 'cx' });
+    const gemini = session({ id: 'gm' });
     const sub = session({ id: 'su' });
     const subagent: NativeSessionBinding = { ...claudeBinding('cli-3'), kind: 'subagent' };
-    const codexBinding: NativeSessionBinding = {
+    const geminiBinding: NativeSessionBinding = {
       ...claudeBinding('cli-2'),
-      id: 'binding-cx',
-      adapterId: 'codex',
+      id: 'binding-gm',
+      adapterId: 'gemini',
     };
     const setTitle = vi.fn(async () => undefined);
     const deps = makeDeps({
-      fileSystem: fakeStore({ 'cli-2': 'X', 'cli-3': 'Y' }),
-      repository: repo([noBinding, codex, sub], {
+      sources: { 'claude-code': source({ 'cli-2': 'X', 'cli-3': 'Y' }) },
+      repository: repo([noBinding, gemini, sub], {
         nb: null,
-        cx: codexBinding,
+        gm: geminiBinding,
         su: subagent,
       }),
       setTitle,
@@ -175,13 +176,13 @@ describe('createNativeTitleService.resolveOnce', () => {
     const summary = await createNativeTitleService(deps).resolveOnce();
     expect(setTitle).not.toHaveBeenCalled();
     expect(summary.skippedNoBinding).toBe(1);
-    expect(summary.skippedNotClaudeCode).toBe(2);
+    expect(summary.skippedNoSource).toBe(2);
   });
 
-  it('counts (does not throw) when the file has no matching title on disk', async () => {
+  it('counts (does not throw) when the source has no title for the id', async () => {
     const s = session({ id: 's1' });
     const deps = makeDeps({
-      fileSystem: fakeStore({ 'other-cli': 'Nope' }),
+      sources: { 'claude-code': source({ 'other-cli': 'Nope' }) },
       repository: repo([s], { s1: claudeBinding('cli-1') }),
     });
     const summary = await createNativeTitleService(deps).resolveOnce();
@@ -189,16 +190,17 @@ describe('createNativeTitleService.resolveOnce', () => {
     expect(summary.titlesWritten).toBe(0);
   });
 
-  it('is a no-op when there is no %APPDATA% store root', async () => {
+  it('is a no-op when no source is configured', async () => {
     const s = session({ id: 's1' });
     const setTitle = vi.fn(async () => undefined);
+    const listSessions = vi.fn(async () => [s]);
     const deps = makeDeps({
-      ccdRoot: undefined,
-      fileSystem: fakeStore({ 'cli-1': 'T' }),
-      repository: repo([s], { s1: claudeBinding('cli-1') }),
+      sources: {},
+      repository: { ...repo([s], { s1: claudeBinding('cli-1') }), listSessions },
       setTitle,
     });
     const summary = await createNativeTitleService(deps).resolveOnce();
+    expect(listSessions).not.toHaveBeenCalled();
     expect(setTitle).not.toHaveBeenCalled();
     expect(summary.sessionsScanned).toBe(0);
   });
@@ -211,7 +213,7 @@ describe('createNativeTitleService.resolveOnce', () => {
       .mockRejectedValueOnce(new Error('SESSION_TERMINAL'))
       .mockResolvedValueOnce(undefined);
     const deps = makeDeps({
-      fileSystem: fakeStore({ 'cli-1': 'A', 'cli-2': 'B' }),
+      sources: { 'claude-code': source({ 'cli-1': 'A', 'cli-2': 'B' }) },
       repository: repo([s1, s2], { s1: claudeBinding('cli-1'), s2: claudeBinding('cli-2') }),
       setTitle,
     });
