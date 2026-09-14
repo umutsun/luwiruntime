@@ -86,9 +86,15 @@ import { createWebSocketHub } from './websocket-hub.js';
 /**
  * The open native link a lapsing session holds, if it holds one.
  *
- * Fail-closed: no reverse index means no binding and the unchanged path is
- * correct, but partial evidence is a fault rather than an absence, because
- * disconnecting anyway would abandon an open link.
+ * Only this session's own live open link is ours to close. A binding may be
+ * shared by several LUWI sessions over time — codex `exec resume` keeps one
+ * native session while the fleet's LUWI session rotates, so the open link ends
+ * up owned by the newest holder. An older session that lapses then simply has
+ * nothing to unlink and disconnects cleanly; the same is true of a missing,
+ * foreign, or already-closed link. Returning `undefined` (rather than throwing)
+ * for every not-ours case is what keeps one shared binding from turning the
+ * presence sweep into a per-tick failure — the fail-closed throw here assumed a
+ * one-to-one binding, which the resume model no longer holds.
  */
 async function resolveExpiringNativeUnlink(
   repository: RuntimeRepository,
@@ -98,9 +104,7 @@ async function resolveExpiringNativeUnlink(
   if (bindingId === null) return undefined;
   const binding = await repository.getNativeBinding(bindingId);
   const openLinkId = binding?.openLinkId;
-  if (binding === null || openLinkId === undefined) {
-    throw new Error('The native session binding for the lapsing session cannot be resolved.');
-  }
+  if (binding === null || openLinkId === undefined) return undefined;
   const link = await repository.getNativeLink(openLinkId);
   if (
     link === null ||
@@ -109,7 +113,9 @@ async function resolveExpiringNativeUnlink(
     link.sessionId !== sessionId ||
     link.unlinkedAt !== undefined
   ) {
-    throw new Error('The native session link for the lapsing session cannot be resolved.');
+    // The open link is not this session's (a later session took the shared
+    // native binding over) or is already closed: nothing to unlink here.
+    return undefined;
   }
   return {
     bindingId,

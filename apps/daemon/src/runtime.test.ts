@@ -301,7 +301,11 @@ describe('presence sweeper native release', () => {
     expect(harness.calls[0]?.native).toBeUndefined();
   });
 
-  it('refuses to disconnect a session whose open link cannot be resolved', async () => {
+  it('disconnects cleanly when the open link belongs to another session (shared binding)', async () => {
+    // codex `exec resume` keeps one native session while the LUWI session
+    // rotates, so a shared binding's open link is owned by the newest holder.
+    // An older session that lapses has nothing to unlink and must not throw —
+    // that once turned the presence sweep into a per-tick failure.
     const harness = sweeperHarness({
       session: lapsingSession,
       binding: sweptBinding,
@@ -309,10 +313,11 @@ describe('presence sweeper native release', () => {
       reverseBindingId: 'binding-1',
     });
 
-    await expect(harness.disconnect({ sessionId: 'session-1', deadlineMs: 1_000 })).rejects.toThrow(
-      /native session link/i,
+    await expect(harness.disconnect({ sessionId: 'session-1', deadlineMs: 1_000 })).resolves.toBe(
+      'disconnected',
     );
-    expect(harness.calls).toHaveLength(0);
+    expect(harness.calls).toHaveLength(1);
+    expect(harness.calls[0]?.native).toBeUndefined();
   });
 
   it('re-reads the binding and succeeds on a retried disconnect', async () => {
