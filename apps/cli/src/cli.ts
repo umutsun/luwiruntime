@@ -36,6 +36,8 @@ import {
   type RealtimeEventMessage,
 } from '@luwi/protocol';
 import {
+  ccdSessionsDir,
+  findNativeSessionTitle,
   NodeTranscriptFileSystem,
   resolveNativeIdentity,
   resolveNativeIdentityFromDisk,
@@ -54,7 +56,6 @@ import { isAbsolute } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
 import { registerControlPlaneCli } from './control-plane-cli.js';
-import { ccdSessionsDir, findNativeSessionTitle } from './native-title.js';
 import {
   NodeNativeAgentProcessRunner,
   agentProvider,

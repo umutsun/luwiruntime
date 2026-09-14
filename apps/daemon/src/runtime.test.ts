@@ -646,6 +646,7 @@ describe('native link retention repository', () => {
       'gitScanTimer',
       'transcriptScanTimer',
       'codexScanTimer',
+      'nativeTitleTimer',
     ]);
     expect(timerNames).not.toContain('nativeLinkRetentionTimer');
     expect(source).toContain('nativeLinkRetentionSweeper.stop()');

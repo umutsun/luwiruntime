@@ -25,6 +25,7 @@ export type {
 } from './capability-observer.js';
 export { createTranscriptReader } from './transcript-reader.js';
 export { createCodexUsageReader } from './codex-usage-reader.js';
+export { ccdSessionsDir, findNativeSessionTitle } from './native-title.js';
 export type {
   TranscriptReader,
   TranscriptReaderOptions,

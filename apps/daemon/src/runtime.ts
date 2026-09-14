@@ -43,6 +43,7 @@ import {
   type StartingSessionReaperRepository,
 } from '@luwi/runtime';
 import {
+  ccdSessionsDir,
   createCodexUsageReader,
   createTranscriptReader,
   NodeTranscriptFileSystem,
@@ -76,6 +77,7 @@ import {
   createTranscriptIngestService,
   createTranscriptIngestTick,
 } from './transcript-ingest-service.js';
+import { createNativeTitleService, createNativeTitleTick } from './native-title-service.js';
 import {
   installGracefulShutdown,
   type GracefulShutdownController,
@@ -516,6 +518,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let gitScanTimer: NodeJS.Timeout | undefined;
   let transcriptScanTimer: NodeJS.Timeout | undefined;
   let codexScanTimer: NodeJS.Timeout | undefined;
+  let nativeTitleTimer: NodeJS.Timeout | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let sweeping = false;
   let reaping = false;
@@ -891,6 +894,30 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     onComplete: (summary) => app?.log.debug(summary, 'Codex ingestion completed'),
     onError: (error) => app?.log.error({ err: error }, 'Codex ingestion failed'),
   });
+  // Mirror the Claude Code desktop chat title onto its LUWI session, server-side,
+  // for any live session carrying a declared claude-code binding (ADR: native GUI
+  // title). Writes only an absent title on an online, non-terminal session, so the
+  // one-time heartbeat write cannot sustain a dead session (scan cadence >> presence
+  // TTL). Reuses the same local desktop store the attach poller reads.
+  const nativeTitleService = createNativeTitleService({
+    fileSystem: new NodeTranscriptFileSystem(),
+    ccdRoot: ccdSessionsDir(process.env),
+    repository: {
+      listSessions: () => repository.listSessions(),
+      getSessionNativeBindingId: (sessionId) => repository.getSessionNativeBindingId(sessionId),
+      getNativeBinding: (bindingId) => repository.getNativeBinding(bindingId),
+    },
+    setTitle: (sessionId, metadata) =>
+      sessionService.heartbeat(sessionId, { metadata }).then(() => undefined),
+    adapterId: 'claude-code',
+  });
+  const nativeTitleTick = createNativeTitleTick({
+    runtimeState: () => readiness.state,
+    schedule: (work, onError) => backgroundWork.run(work, onError),
+    resolveOnce: () => nativeTitleService.resolveOnce(),
+    onComplete: (summary) => app?.log.debug(summary, 'Native title resolution completed'),
+    onError: (error) => app?.log.error({ err: error }, 'Native title resolution failed'),
+  });
   const messageTimeoutSweeper = createMessageTimeoutSweeper({
     now: Date.now,
     batchSize: setting(config, 'messageTimeoutBatchSize'),
@@ -1006,6 +1033,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       }
       if (codexScanTimer !== undefined) {
         clearInterval(codexScanTimer);
+      }
+      if (nativeTitleTimer !== undefined) {
+        clearInterval(nativeTitleTimer);
       }
       const inFlightDrained = await readiness.waitForInFlight(Math.max(0, deadline - Date.now()));
       const backgroundDrained = await backgroundWork.waitForIdle(
@@ -1305,6 +1335,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
 
     codexScanTimer = setInterval(codexIngestTick, setting(config, 'transcriptScanIntervalMs'));
     codexScanTimer.unref?.();
+    nativeTitleTimer = setInterval(nativeTitleTick, setting(config, 'transcriptScanIntervalMs'));
+    nativeTitleTimer.unref?.();
 
     readiness.transitionTo('ready');
     await app.listen({ host: config.host, port: config.port });
@@ -1337,6 +1369,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     }
     if (codexScanTimer !== undefined) {
       clearInterval(codexScanTimer);
+    }
+    if (nativeTitleTimer !== undefined) {
+      clearInterval(nativeTitleTimer);
     }
     await backgroundWork.waitForIdle(setting(config, 'drainTimeoutMs'));
     await relay.stop().catch(() => undefined);

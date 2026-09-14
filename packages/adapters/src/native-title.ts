@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-import type { TranscriptFileSystem } from '@luwi/adapters';
+import type { TranscriptFileSystem } from './types.js';
 
 /**
  * Reads the human chat title the Claude Code desktop app gives a session.
@@ -51,7 +51,7 @@ function titleOf(read: { lines: string[] } | undefined, cliSessionId: string): s
  * next poll instead of walking the whole store again.
  */
 export async function findNativeSessionTitle(
-  fileSystem: TranscriptFileSystem,
+  fileSystem: Pick<TranscriptFileSystem, 'listDirectory' | 'readLines'>,
   root: string,
   cliSessionId: string,
   knownPath?: string,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { TranscriptFileSystem } from '@luwi/adapters';
+import type { TranscriptFileSystem } from './types.js';
 
 import { ccdSessionsDir, findNativeSessionTitle } from './native-title.js';
 
