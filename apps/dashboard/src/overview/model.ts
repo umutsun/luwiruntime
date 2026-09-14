@@ -127,7 +127,7 @@ export type OverviewSession = {
   branch?: string;
   taskSummary?: string;
   model?: string;
-  /** The native GUI chat title (Claude Code desktop), when the attach reported one. */
+  /** The native GUI chat title the desktop app reported, when the attach carried one. */
   title?: string;
   context: SessionContextEvidence;
   eventCount: number;
@@ -1235,6 +1235,8 @@ export type RadialNode = {
   kind: 'project' | 'session';
   label: string;
   sub: string;
+  /** The hover tooltip: names a node the orbit shows only as initials. */
+  hint: string;
   initials: string;
   x: number;
   y: number;
@@ -1261,6 +1263,8 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
     kind: 'project' | 'session';
     label: string;
     sub: string;
+    /** The hover tooltip: names a node the orbit shows only as initials. */
+    hint: string;
     initials: string;
     events: number;
     sessions: OverviewSession[];
@@ -1274,23 +1278,34 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
           kind: 'project',
           label: candidate.name,
           sub: candidate.badge.label,
+          hint: `${candidate.name} · ${String(candidate.sessions.length)} session${
+            candidate.sessions.length === 1 ? '' : 's'
+          }`,
           initials: candidate.initials,
           events: candidate.eventCount,
           sessions: candidate.sessions,
           selected: false,
           focus: { kind: 'project', id: candidate.id },
         }))
-      : project.sessions.map((session) => ({
-          key: session.id,
-          kind: 'session',
-          label: session.agentName,
-          sub: (session.branch ?? session.statusLabel).toUpperCase(),
-          initials: session.initials,
-          events: session.eventCount,
-          sessions: [session],
-          selected: focus.kind === 'session' && focus.id === session.id,
-          focus: { kind: 'session', id: session.id },
-        }));
+      : project.sessions.map((session) => {
+          // Prefer the native GUI chat title (what the user recognises the session
+          // by); fall back to the task subject; either way still name agent + status.
+          const detail = session.title ?? session.taskSummary;
+          return {
+            key: session.id,
+            kind: 'session',
+            label: session.agentName,
+            sub: (session.branch ?? session.statusLabel).toUpperCase(),
+            hint: `${session.agentName} · ${session.statusLabel}${
+              detail === undefined ? '' : ` · ${detail}`
+            }`,
+            initials: session.initials,
+            events: session.eventCount,
+            sessions: [session],
+            selected: focus.kind === 'session' && focus.id === session.id,
+            focus: { kind: 'session', id: session.id },
+          };
+        });
   const busiest = items.reduce((high, item) => Math.max(high, item.events), 0);
   const count = items.length;
   const nodes: RadialNode[] = items.map((item, index) => {
@@ -1312,6 +1327,7 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
       kind: item.kind,
       label: item.label,
       sub: item.sub,
+      hint: item.hint,
       initials: item.initials,
       x: Number(x.toFixed(1)),
       y: Number(y.toFixed(1)),

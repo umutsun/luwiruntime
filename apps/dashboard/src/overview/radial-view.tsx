@@ -163,6 +163,7 @@ export function RadialView({
                   style={{ left: pct(node.x), top: pct(node.y) }}
                   aria-pressed={node.selected}
                   aria-label={`Focus ${node.kind} ${node.label}`}
+                  title={node.hint}
                   onClick={() => onFocus(node.selected ? { kind: 'runtime' } : node.focus)}
                 >
                   {node.initials}

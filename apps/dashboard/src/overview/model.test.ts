@@ -549,6 +549,20 @@ describe('radial layout', () => {
     expect(layout.nodes.map((node) => node.key)).toEqual(['s-blocked', 's-think']);
     expect(layout.nodes[1]?.sub).toBe('FEATURE/GRAPH');
   });
+
+  it('hints a session node with its agent, status and task, and a project node with its count', () => {
+    // The orbit carries only initials, so the hover hint is the only place a
+    // session's task (or GUI title) names which session a node is.
+    const projects = layoutRadial(overview(), RUNTIME_FOCUS);
+    expect(projects.nodes[0]?.hint).toBe('Alpha Project · 2 sessions');
+
+    const sessions = layoutRadial(overview(), { kind: 'project', id: 'p1' });
+    expect(sessions.nodes[1]?.hint).toBe(
+      'Runner One · thinking · Implement graph generation transition',
+    );
+    // A session with neither title nor task still names its agent and status.
+    expect(sessions.nodes[0]?.hint).toBe('a2 · blocked');
+  });
 });
 
 describe('timeline layout', () => {
