@@ -550,18 +550,40 @@ describe('radial layout', () => {
     expect(layout.nodes[1]?.sub).toBe('FEATURE/GRAPH');
   });
 
-  it('hints a session node with its agent, status and task, and a project node with its count', () => {
-    // The orbit carries only initials, so the hover hint is the only place a
-    // session's task (or GUI title) names which session a node is.
+  it('hints a session node with its GUI title, falling back to the session id', () => {
+    // The orbit carries only initials, so the hover hint is the only place the
+    // native GUI chat title names which session a node is.
     const projects = layoutRadial(overview(), RUNTIME_FOCUS);
     expect(projects.nodes[0]?.hint).toBe('Alpha Project · 2 sessions');
 
-    const sessions = layoutRadial(overview(), { kind: 'project', id: 'p1' });
-    expect(sessions.nodes[1]?.hint).toBe(
-      'Runner One · thinking · Implement graph generation transition',
+    // No session in the fixture reported a GUI title, so the hint falls back to the
+    // session id — never the task subject, which is a different thing.
+    const untitled = layoutRadial(overview(), { kind: 'project', id: 'p1' });
+    expect(untitled.nodes[1]?.hint).toBe('Runner One · thinking · Session s-think');
+    expect(untitled.nodes[1]?.hint).not.toContain('Implement graph generation transition');
+    expect(untitled.nodes[0]?.hint).toBe('a2 · blocked · Session s-blocked');
+
+    // When the attach did report a GUI title, that title names the node.
+    const base = overview();
+    const titled = layoutRadial(
+      {
+        ...base,
+        projects: base.projects.map((project) =>
+          project.id === 'p1'
+            ? {
+                ...project,
+                sessions: project.sessions.map((session) =>
+                  session.id === 's-think'
+                    ? { ...session, title: 'Investigate R3-3 hardening' }
+                    : session,
+                ),
+              }
+            : project,
+        ),
+      },
+      { kind: 'project', id: 'p1' },
     );
-    // A session with neither title nor task still names its agent and status.
-    expect(sessions.nodes[0]?.hint).toBe('a2 · blocked');
+    expect(titled.nodes[1]?.hint).toBe('Runner One · thinking · Investigate R3-3 hardening');
   });
 });
 
