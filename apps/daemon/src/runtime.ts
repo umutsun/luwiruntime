@@ -1335,7 +1335,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
 
     codexScanTimer = setInterval(codexIngestTick, setting(config, 'transcriptScanIntervalMs'));
     codexScanTimer.unref?.();
-    nativeTitleTimer = setInterval(nativeTitleTick, setting(config, 'transcriptScanIntervalMs'));
+    // The title scan is light (online, untitled sessions only; at most one write per
+    // session ever), so it runs faster than the ingest scans: a title should land within
+    // about a minute of the desktop app generating it, not five. Env-overridable.
+    const nativeTitleScanIntervalMs = (() => {
+      const raw = Number(process.env['LUWI_NATIVE_TITLE_INTERVAL_MS']);
+      return Number.isFinite(raw) && raw >= 5_000 ? raw : 60_000;
+    })();
+    nativeTitleTimer = setInterval(nativeTitleTick, nativeTitleScanIntervalMs);
     nativeTitleTimer.unref?.();
 
     readiness.transitionTo('ready');
