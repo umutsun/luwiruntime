@@ -793,10 +793,14 @@ function sessionFacts(
   const ready = usage?.state === 'ready' ? usage.data : undefined;
   const cut = ready?.truncated === true ? '+' : '';
   const models = ready?.models ?? [];
+  // The real running model, when the transcript/rollout observed one, wins over
+  // the launcher's declared `metadata.model` label — the label is only a
+  // placeholder until the first run reveals what the vendor actually ran.
   const model =
-    session.model ??
     ready?.latestModel ??
-    (models.length > 0 ? models.join(', ') : word('not observed'));
+    (models.length > 0 ? models.join(', ') : undefined) ??
+    session.model ??
+    word('not observed');
 
   const best = ready?.sources.find((row) => row.totalTokens !== undefined);
   const counters = ready?.counters ?? {};
