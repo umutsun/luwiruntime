@@ -163,8 +163,9 @@ export function BoardView({
                     title={`${session.agentName} · ${session.statusLabel}${session.taskSummary === undefined ? '' : ` · ${session.taskSummary}`}`}
                   >
                     <span className={`chip__dot tone--${session.tone}`} aria-hidden="true" />
-                    {session.initials}
+                    {session.agentName}
                     <span className="chip__age">
+                      {session.statusLabel} ·{' '}
                       {formatRelativeTime(session.startedAt, overview.nowMs)}
                     </span>
                   </span>

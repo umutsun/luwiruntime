@@ -416,9 +416,11 @@
 }
 .tile__chips {
   display: flex;
+  flex: 1;
   flex-wrap: wrap;
+  align-content: flex-start;
   gap: var(--space-1h);
-  margin-top: auto;
+  margin-top: var(--space-2h);
   padding-top: var(--space-2h);
 }
 .chip {
