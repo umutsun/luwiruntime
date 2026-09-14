@@ -1497,6 +1497,51 @@ async function runNativeBridge(
 
   await bootstrap.start();
 
+  // Codex `exec` is stateless per run, so the bridge resumes one session after
+  // the first message and binds LUWI's native reference to it — the only thing
+  // that lets the rollout reader attribute codex token usage (ADR: codex usage
+  // ingestion). Requires codex to persist rollouts (no `--ephemeral`). Nothing
+  // here runs for claude/gemini, and a resolve that finds no rollout leaves the
+  // bridge unbound rather than breaking the run.
+  let codexNativeSessionId: string | undefined;
+  let codexNativeDeclared = false;
+  const declareCodexNativeOnce = async (): Promise<void> => {
+    if (provider.name !== 'codex' || codexNativeDeclared) return;
+    const sessionId = bootstrap.sessionId;
+    if (sessionId === undefined) return;
+    try {
+      const ref = await resolveNativeIdentityFromDisk('codex', {
+        environment: dependencies.environment,
+        workingDirectory,
+        platform: dependencies.platform,
+        fileSystem: dependencies.transcriptFileSystem,
+        now: dependencies.now,
+      });
+      if (ref === undefined) return;
+      // Lock onto the first session found and keep resuming it thereafter.
+      codexNativeSessionId ??= ref.nativeSessionId;
+      await boundedRequest(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${encodeURIComponent(sessionId)}/native`,
+        nativeDeclarationResponseSchema,
+        options.connectTimeoutMs,
+        jsonBody({
+          native: {
+            adapterId: ref.adapterId,
+            nativeSessionId: codexNativeSessionId,
+            ...(ref.nativeSubagentId === undefined
+              ? {}
+              : { nativeSubagentId: ref.nativeSubagentId }),
+          },
+        }),
+      );
+      codexNativeDeclared = true;
+    } catch (error) {
+      printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error);
+    }
+  };
+
   let activeRun: EventEmitter | undefined;
   const executor: NativeBridgeExecutor = {
     run: async ({ prompt, deadlineAt }): Promise<NativeBridgeRunResult> => {
@@ -1521,7 +1566,12 @@ async function runNativeBridge(
       try {
         const result = await dependencies.agentProcessRunner.run({
           executable: options.executable ?? context.executable ?? provider.executable,
-          args: nativeHeadlessArguments(provider.name, prompt, providerNativeArgs),
+          args: nativeHeadlessArguments(
+            provider.name,
+            prompt,
+            providerNativeArgs,
+            provider.name === 'codex' ? codexNativeSessionId : undefined,
+          ),
           workingDirectory,
           environment: {
             ...inherited,
@@ -1535,6 +1585,9 @@ async function runNativeBridge(
           onDiagnostic: (error) =>
             printAgentDiagnostic(dependencies, 'AGENT_PROCESS_DIAGNOSTIC', error),
         });
+        // After the run the codex rollout exists on disk; capture its session
+        // and bind it once so this and every resumed run attributes (best-effort).
+        await declareCodexNativeOnce();
         return {
           result: deadlineFired ? 'deadline' : 'completed',
           exitCode: result.exitCode,

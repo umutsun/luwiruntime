@@ -47,14 +47,24 @@ export function nativeHeadlessArguments(
   provider: NativeAgentName,
   prompt: string,
   nativeArgs: readonly string[],
+  /**
+   * Codex only: resume this session instead of starting a fresh one, so every
+   * message after the first shares one persistent codex session. That single
+   * session is what LUWI binds its native reference to, which is what lets the
+   * rollout reader attribute its token usage (ADR: codex usage ingestion).
+   */
+  codexResumeSessionId?: string,
 ): string[] {
   switch (provider) {
     case 'claude':
       // `--allowedTools` is variadic and would swallow a trailing prompt.
       return ['--print', prompt, ...nativeArgs];
     case 'codex':
-      // `codex exec [OPTIONS] [PROMPT]` — the prompt is the final positional.
-      return ['exec', ...nativeArgs, prompt];
+      // `codex exec [OPTIONS] [PROMPT]`; `codex exec resume [OPTIONS] [SESSION_ID]
+      // [PROMPT]` when resuming. The prompt is the final positional either way.
+      return codexResumeSessionId === undefined
+        ? ['exec', ...nativeArgs, prompt]
+        : ['exec', 'resume', ...nativeArgs, codexResumeSessionId, prompt];
     case 'gemini':
       return ['--prompt', prompt, ...nativeArgs];
     case 'antigravity':

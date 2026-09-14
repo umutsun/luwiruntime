@@ -30,6 +30,8 @@ export type ProjectServiceOptions = {
   canonicalizePath?: (input: string) => Promise<CanonicalPath>;
   detectGitMetadata?: (canonicalPath: string) => Promise<GitMetadata>;
   onRegistered?: (project: Project) => void;
+  /** Invoked after a successful update so the canonical manifest can follow the projection. */
+  onUpdated?: (project: Project) => Promise<void> | void;
 };
 
 async function gitValue(canonicalPath: string, arguments_: string[]): Promise<string | undefined> {
@@ -204,6 +206,14 @@ export function createProjectService(options: ProjectServiceOptions): ProjectSer
       if (result.status === 'not_found') {
         throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
       }
+      /*
+       * The canonical manifest (~/.luwi/manifest.json) is otherwise rewritten only by the
+       * start-up reconcile, and that reconcile refuses to start the daemon when a canonical
+       * project disagrees with its projection — so an update that reached Redis alone locked
+       * the next restart out (2026-09-13). Await the tracker: a manifest write that failed
+       * must surface here, not at the next start.
+       */
+      await options.onUpdated?.(result.project);
       return result.project;
     },
 

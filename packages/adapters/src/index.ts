@@ -24,6 +24,7 @@ export type {
   ObservedCapability,
 } from './capability-observer.js';
 export { createTranscriptReader } from './transcript-reader.js';
+export { createCodexUsageReader } from './codex-usage-reader.js';
 export type {
   TranscriptReader,
   TranscriptReaderOptions,

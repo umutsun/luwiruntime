@@ -128,6 +128,19 @@ describe('nativeHeadlessArguments', () => {
       ['--print', 'P', '--dangerously-skip-permissions'],
     );
   });
+
+  it('resumes a codex session when a session id is given', () => {
+    expect(nativeHeadlessArguments('codex', 'P', ['-c', 'k=v'], 'sess-1')).toEqual([
+      'exec',
+      'resume',
+      '-c',
+      'k=v',
+      'sess-1',
+      'P',
+    ]);
+    // The resume id is codex-only; other providers ignore it.
+    expect(nativeHeadlessArguments('claude', 'P', [], 'sess-1')).toEqual(['--print', 'P']);
+  });
 });
 
 describe('codexMcpBindingArgs', () => {

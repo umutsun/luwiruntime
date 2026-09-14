@@ -441,6 +441,77 @@ describe('project service update', () => {
     });
     await expect(service.update('missing', { name: 'x' })).rejects.toBeInstanceOf(ApplicationError);
   });
+
+  it('hands the updated project to onUpdated so the canonical manifest follows the projection', async () => {
+    const stored = {
+      id: 'project-1',
+      name: 'Renamed',
+      localPath: 'C:/workspace/luwi',
+      canonicalPath: 'C:/workspace/real/luwi',
+      repositoryUrl: 'https://example.test/luwi.git',
+      createdAt: '2026-07-28T12:00:00.000Z',
+      updatedAt: '2026-09-13T10:22:10.604Z',
+    };
+    const tracked: unknown[] = [];
+    const service = createProjectService({
+      repository: {
+        registerProject: async () => {
+          throw new Error('unexpected');
+        },
+        updateProject: async () => ({
+          status: 'updated',
+          project: stored,
+          event: {
+            id: 'event-9',
+            version: 1,
+            type: 'project.updated',
+            occurredAt: stored.updatedAt,
+            workspaceId: 'local',
+            projectId: 'project-1',
+            payload: {},
+          },
+          globalStreamId: '3-0',
+          projectStreamId: '4-0',
+        }),
+        getProject: async () => null,
+        listProjects: async () => [],
+      },
+      workspaceId: 'local',
+      onUpdated: async (project) => {
+        tracked.push(project);
+      },
+    });
+
+    await expect(service.update('project-1', { name: 'Renamed' })).resolves.toEqual(stored);
+    expect(tracked).toEqual([stored]);
+  });
+
+  it('surfaces a failed manifest write instead of leaving the projection ahead of the manifest', async () => {
+    const stored = {
+      id: 'project-1',
+      name: 'Renamed',
+      localPath: 'C:/workspace/luwi',
+      canonicalPath: 'C:/workspace/real/luwi',
+      createdAt: '2026-07-28T12:00:00.000Z',
+      updatedAt: '2026-09-13T10:22:10.604Z',
+    };
+    const service = createProjectService({
+      repository: {
+        registerProject: async () => {
+          throw new Error('unexpected');
+        },
+        updateProject: async () => ({ status: 'unchanged', project: stored }),
+        getProject: async () => null,
+        listProjects: async () => [],
+      },
+      workspaceId: 'local',
+      onUpdated: async () => {
+        throw new Error('disk full');
+      },
+    });
+
+    await expect(service.update('project-1', { name: 'Renamed' })).rejects.toThrow('disk full');
+  });
 });
 
 describe('project service unchanged update', () => {

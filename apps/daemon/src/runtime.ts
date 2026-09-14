@@ -42,7 +42,11 @@ import {
   type PresenceSweeperRepository,
   type StartingSessionReaperRepository,
 } from '@luwi/runtime';
-import { createTranscriptReader, NodeTranscriptFileSystem } from '@luwi/adapters';
+import {
+  createCodexUsageReader,
+  createTranscriptReader,
+  NodeTranscriptFileSystem,
+} from '@luwi/adapters';
 
 import { buildDaemon, type BuildDaemonOptions, type DaemonApp } from './app.js';
 import {
@@ -505,6 +509,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   let retentionTimer: NodeJS.Timeout | undefined;
   let gitScanTimer: NodeJS.Timeout | undefined;
   let transcriptScanTimer: NodeJS.Timeout | undefined;
+  let codexScanTimer: NodeJS.Timeout | undefined;
   let shutdownPromise: Promise<void> | undefined;
   let sweeping = false;
   let reaping = false;
@@ -559,6 +564,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     repository,
     workspaceId: config.workspaceId,
     onRegistered: (project) => refreshProject(project.id, 'project-registered'),
+    onUpdated: (project) => canonicalStore.trackProject(project),
   });
   const sessionService = createSessionService({
     repository,
@@ -835,6 +841,50 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     onComplete: (summary) => app?.log.debug(summary, 'Transcript ingestion completed'),
     onError: (error) => app?.log.error({ err: error }, 'Transcript ingestion failed'),
   });
+  // The same pipeline for Codex rollouts. Only the reader and the adapter id
+  // differ; the join, dedupe and persistence are vendor-generic, and a Codex
+  // session already attaches with an `adapterId: 'codex'` native ref, so its
+  // binding resolves the same way. Root follows nativeHome for fixture isolation.
+  const codexIngestService = createTranscriptIngestService({
+    reader: createCodexUsageReader({
+      fileSystem: new NodeTranscriptFileSystem(),
+      maxFileBytes: setting(config, 'transcriptMaxFileBytes'),
+      maxFilesPerScan: setting(config, 'transcriptMaxFilesPerScan'),
+    }),
+    repository: {
+      getNativeBinding: (bindingId) => repository.getNativeBinding(bindingId),
+      findNativeLinkAt: (bindingId, atMs) => repository.findNativeLinkAt(bindingId, atMs),
+    },
+    sessions: {
+      get: async (sessionId) => {
+        const session = await repository.getSession(sessionId);
+        return session === null
+          ? null
+          : { id: session.id, projectId: session.projectId, agentId: session.agentId };
+      },
+    },
+    projects: {
+      list: async () =>
+        (await projectService.list()).map((project) => ({
+          id: project.id,
+          canonicalPath: project.canonicalPath,
+        })),
+    },
+    intelligence: {
+      ingestUsage: async (input) => intelligenceService.ingestUsage(input),
+      projectSessionFileChanges: (changes) =>
+        intelligenceService.projectSessionFileChanges(changes),
+    },
+    transcriptRoot: join(config.nativeHome ?? homedir(), '.codex', 'sessions'),
+    adapterId: 'codex',
+  });
+  const codexIngestTick = createTranscriptIngestTick({
+    runtimeState: () => readiness.state,
+    schedule: (work, onError) => backgroundWork.run(work, onError),
+    ingestOnce: () => codexIngestService.ingestOnce(),
+    onComplete: (summary) => app?.log.debug(summary, 'Codex ingestion completed'),
+    onError: (error) => app?.log.error({ err: error }, 'Codex ingestion failed'),
+  });
   const messageTimeoutSweeper = createMessageTimeoutSweeper({
     now: Date.now,
     batchSize: setting(config, 'messageTimeoutBatchSize'),
@@ -947,6 +997,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       }
       if (transcriptScanTimer !== undefined) {
         clearInterval(transcriptScanTimer);
+      }
+      if (codexScanTimer !== undefined) {
+        clearInterval(codexScanTimer);
       }
       const inFlightDrained = await readiness.waitForInFlight(Math.max(0, deadline - Date.now()));
       const backgroundDrained = await backgroundWork.waitForIdle(
@@ -1244,6 +1297,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     );
     transcriptScanTimer.unref?.();
 
+    codexScanTimer = setInterval(codexIngestTick, setting(config, 'transcriptScanIntervalMs'));
+    codexScanTimer.unref?.();
+
     readiness.transitionTo('ready');
     await app.listen({ host: config.host, port: config.port });
   } catch (error) {
@@ -1272,6 +1328,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     }
     if (transcriptScanTimer !== undefined) {
       clearInterval(transcriptScanTimer);
+    }
+    if (codexScanTimer !== undefined) {
+      clearInterval(codexScanTimer);
     }
     await backgroundWork.waitForIdle(setting(config, 'drainTimeoutMs'));
     await relay.stop().catch(() => undefined);
