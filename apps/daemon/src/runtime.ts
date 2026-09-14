@@ -46,8 +46,10 @@ import {
   ccdSessionsDir,
   createCodexUsageReader,
   createTranscriptReader,
+  findAntigravityTitle,
   findCodexThreadName,
   findNativeSessionTitle,
+  NodeAntigravityFileSystem,
   NodeTranscriptFileSystem,
 } from '@luwi/adapters';
 
@@ -906,6 +908,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   const titleStore = new NodeTranscriptFileSystem();
   const ccdRoot = ccdSessionsDir(process.env);
   const codexIndexPath = join(config.nativeHome ?? homedir(), '.codex', 'session_index.jsonl');
+  // Antigravity keeps its titles keyed by conversation id in one protobuf file;
+  // the binding's nativeSessionId is that conversation id (see the disk resolver).
+  const antigravityStore = new NodeAntigravityFileSystem();
+  const antigravityHome = join(config.nativeHome ?? homedir(), '.gemini', 'antigravity');
   const nativeTitleService = createNativeTitleService({
     sources: {
       ...(ccdRoot === undefined
@@ -915,6 +921,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
               (await findNativeSessionTitle(titleStore, ccdRoot, nativeSessionId))?.title,
           }),
       codex: (nativeSessionId) => findCodexThreadName(titleStore, codexIndexPath, nativeSessionId),
+      antigravity: (nativeSessionId) =>
+        findAntigravityTitle(antigravityStore, antigravityHome, nativeSessionId),
     },
     repository: {
       listSessions: () => repository.listSessions(),

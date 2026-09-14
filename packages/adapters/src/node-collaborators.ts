@@ -2,6 +2,7 @@ import { access, open, readdir, readFile, realpath, stat } from 'node:fs/promise
 import { basename, delimiter, dirname, extname, isAbsolute, join, relative } from 'node:path';
 import { spawn } from 'node:child_process';
 
+import type { AntigravityFileSystem } from './antigravity-native.js';
 import type {
   AdapterCommandResult,
   AdapterCommandRunner,
@@ -271,6 +272,23 @@ export class NodeTranscriptFileSystem implements TranscriptFileSystem {
       throw error;
     } finally {
       await file?.close();
+    }
+  }
+}
+
+/**
+ * Node byte read for the Antigravity summaries reader. The summaries file is a
+ * binary protobuf, which `readLines`' utf8 decode would corrupt; a missing or
+ * forbidden path is `undefined`, following the transcript convention.
+ */
+export class NodeAntigravityFileSystem implements AntigravityFileSystem {
+  async readFileBytes(path: string, maxBytes: number): Promise<Uint8Array | undefined> {
+    try {
+      const buffer = await readFile(path);
+      return buffer.length > maxBytes ? buffer.subarray(0, maxBytes) : buffer;
+    } catch (error) {
+      if (isMissingOrForbidden(error)) return undefined;
+      throw error;
     }
   }
 }

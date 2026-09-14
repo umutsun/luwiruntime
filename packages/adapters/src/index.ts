@@ -9,6 +9,8 @@ export { resolveNativeIdentity } from './native-identity.js';
 export type { NativeIdentityEnvironment } from './native-identity.js';
 export { resolveNativeIdentityFromDisk } from './native-identity-disk.js';
 export type { DiskNativeIdentityContext } from './native-identity-disk.js';
+export { findAntigravityTitle } from './antigravity-native.js';
+export type { AntigravityFileSystem, AntigravitySummary } from './antigravity-native.js';
 export {
   createCapabilityObserver,
   NodeCapabilityObserverFileSystem,
@@ -34,6 +36,7 @@ export type {
 } from './transcript-reader.js';
 export {
   NodeAdapterFileSystem,
+  NodeAntigravityFileSystem,
   NodeTranscriptFileSystem,
   PathExecutableResolver,
   SpawnCommandRunner,
