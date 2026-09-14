@@ -1,4 +1,4 @@
-import { formatRelativeTime } from '../components/format.js';
+import { abbreviateId, formatRelativeTime } from '../components/format.js';
 import { CopyIdButton } from '../components/id-badge.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
 import type { Focus, OverviewSession, PanelModel } from './model.js';
@@ -38,7 +38,9 @@ export function SessionRow({
         {session.initials}
       </span>
       <span className="drill__row-text">
-        <span className="drill__row-title">{session.taskSummary ?? session.statusLabel}</span>
+        <span className="drill__row-title">
+          {session.title ?? session.taskSummary ?? `Session ${abbreviateId(session.id)}`}
+        </span>
         <span className="drill__row-sub">
           {session.agentName}
           {branch} · started {formatRelativeTime(session.startedAt, nowMs)}

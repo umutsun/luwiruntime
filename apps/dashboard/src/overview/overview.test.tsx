@@ -171,6 +171,8 @@ describe('Overview drill-down and ticker', () => {
     expect(within(aside).getByRole('link', { name: 'Detail ›' }).getAttribute('href')).toBe(
       '#/pulse/p2/detail',
     );
+    // A session with no task summary titles the row by its id, not a second copy of the status.
+    expect(within(aside).getByText('Session s2')).toBeTruthy();
   });
 
   it('focuses a session from a drill-down row and inspects it from the session panel', () => {

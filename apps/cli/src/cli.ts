@@ -54,6 +54,7 @@ import { isAbsolute } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
 import { registerControlPlaneCli } from './control-plane-cli.js';
+import { ccdSessionsDir, findNativeSessionTitle } from './native-title.js';
 import {
   NodeNativeAgentProcessRunner,
   agentProvider,
@@ -196,6 +197,9 @@ const defaultDependencies: CliDependencies = {
 };
 
 type Parser<Output> = { parse(value: unknown): Output };
+
+/** How often `session attach` re-reads the desktop chat title. */
+const TITLE_POLL_INTERVAL_MS = 15_000;
 
 function baseUrl(value: string): string {
   return value.replace(/\/+$/, '');
@@ -1439,6 +1443,7 @@ async function runNativeBridge(
     agentId?: string;
     workingDirectory: string;
     executable?: string;
+    model?: string;
     bridgeInstance: string;
     limit: number;
     blockMs: number;
@@ -1477,7 +1482,11 @@ async function runNativeBridge(
     projectId: context.projectId,
     agentId: context.agentId,
     workingDirectory,
-    metadata: { bridge: 'native-headless', provider: provider.name },
+    metadata: {
+      bridge: 'native-headless',
+      provider: provider.name,
+      ...(options.model === undefined ? {} : { model: options.model }),
+    },
     heartbeatIntervalMs: options.heartbeatMs,
     leaseRenewIntervalMs: options.leaseRenewMs,
     leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, options.connectTimeoutMs),
@@ -2347,13 +2356,61 @@ export function createCli(dependencies: CliDependencies): Command {
         dependencies.signals.once('SIGINT', stop);
         dependencies.signals.once('SIGTERM', stop);
 
+        // Mirror the Claude Code desktop chat title onto the LUWI session so the
+        // dashboard names the session as the GUI does (ADR: native GUI title).
+        // The title is auto-generated after the first turns, so it is polled and
+        // pushed through the heartbeat's metadata replacement. Best-effort and
+        // claude-code-only: no store, no title, or a failed push changes nothing.
+        const titleDir =
+          native !== undefined ? ccdSessionsDir(dependencies.environment) : undefined;
+        const cliSessionId = native?.nativeSessionId;
+        let titleFilePath: string | undefined;
+        let pushedTitle: string | undefined;
+        let pushedForSessionId: string | undefined;
+        let titleTimer: NodeJS.Timeout | undefined;
+        const pollTitle = async (): Promise<void> => {
+          const sessionId = bootstrap.sessionId;
+          if (titleDir === undefined || cliSessionId === undefined || sessionId === undefined) {
+            return;
+          }
+          try {
+            const found = await findNativeSessionTitle(
+              dependencies.transcriptFileSystem,
+              titleDir,
+              cliSessionId,
+              titleFilePath,
+            );
+            if (found === undefined) return;
+            titleFilePath = found.filePath;
+            // Re-push after a rotation even when the title is unchanged, so the
+            // successor session carries it too.
+            if (found.title === pushedTitle && sessionId === pushedForSessionId) return;
+            await callDaemon(
+              `/api/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+              heartbeatResponseSchema,
+              jsonBody({ metadata: { ...(request_.metadata ?? {}), title: found.title } }),
+            );
+            pushedTitle = found.title;
+            pushedForSessionId = sessionId;
+          } catch (error) {
+            dependencies.stderr.write(`${String(error)}\n`);
+          }
+        };
+
         try {
           await bootstrap.start();
           if (bootstrap.sessionId !== undefined) {
             printJson(dependencies, { attached: bootstrap.sessionId, ...request_ });
           }
+          if (titleDir !== undefined && cliSessionId !== undefined) {
+            void pollTitle();
+            titleTimer = dependencies.setInterval(() => {
+              void pollTitle();
+            }, TITLE_POLL_INTERVAL_MS);
+          }
           await stopped;
         } finally {
+          if (titleTimer !== undefined) dependencies.clearInterval(titleTimer);
           dependencies.signals.off('SIGINT', stop);
           dependencies.signals.off('SIGTERM', stop);
           await bootstrap.stop();
@@ -2494,6 +2551,7 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--agent-id <agentId>', 'Explicit LUWI AgentDefinition ID')
     .option('--working-directory <path>', 'Native agent working directory', dependencies.cwd())
     .option('--executable <path>', 'Explicit native agent executable')
+    .option('--model <model>', 'Model the agent runs, recorded as session metadata')
     .option('--bridge-instance <id>', 'Stable inbox consumer identity', 'native-bridge')
     .option('--limit <count>', 'Maximum inbox items per claim', '1')
     .option('--block-ms <milliseconds>', 'Bounded claim block interval', '30000')
@@ -2511,6 +2569,7 @@ export function createCli(dependencies: CliDependencies): Command {
           agentId?: string;
           workingDirectory: string;
           executable?: string;
+          model?: string;
           bridgeInstance: string;
           limit: string;
           blockMs: string;
@@ -2526,6 +2585,7 @@ export function createCli(dependencies: CliDependencies): Command {
           ...(options.agentId === undefined ? {} : { agentId: options.agentId }),
           workingDirectory: options.workingDirectory,
           ...(options.executable === undefined ? {} : { executable: options.executable }),
+          ...(options.model === undefined ? {} : { model: options.model }),
           bridgeInstance: options.bridgeInstance,
           limit: positiveIntegerOption(options.limit, '--limit', 1, INBOX_MAX_CLAIM_LIMIT),
           blockMs: positiveIntegerOption(options.blockMs, '--block-ms', 0, MESSAGE_MAX_WAIT_MS),

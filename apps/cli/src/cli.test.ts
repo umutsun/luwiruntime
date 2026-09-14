@@ -2945,6 +2945,8 @@ describe('session bridge native', () => {
         'claude',
         '--working-directory',
         'C:/work/app',
+        '--model',
+        'claude-opus-4-8',
         '--',
         '--allowedTools',
         'mcp__luwi-runtime',
@@ -2969,7 +2971,7 @@ describe('session bridge native', () => {
     expect(register?.body).toMatchObject({
       projectId: 'project-app',
       agentId: 'claude-code',
-      metadata: { bridge: 'native-headless', provider: 'claude' },
+      metadata: { bridge: 'native-headless', provider: 'claude', model: 'claude-opus-4-8' },
     });
     const claim = requests.find((entry) => entry.url.includes('/inbox/claim'));
     expect(claim?.body).toMatchObject({

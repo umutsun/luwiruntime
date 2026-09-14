@@ -127,6 +127,8 @@ export type OverviewSession = {
   branch?: string;
   taskSummary?: string;
   model?: string;
+  /** The native GUI chat title (Claude Code desktop), when the attach reported one. */
+  title?: string;
   context: SessionContextEvidence;
   eventCount: number;
 };
@@ -368,6 +370,7 @@ export function buildOverview(
       const startedMs = parseMs(session.startedAt);
       const heartbeatMs = parseMs(session.lastHeartbeatAt);
       const model = session.metadata?.['model'];
+      const title = session.metadata?.['title'];
       return {
         id: session.id,
         agentId: session.agentId,
@@ -387,6 +390,7 @@ export function buildOverview(
         ...(session.branch === undefined ? {} : { branch: session.branch }),
         ...(session.taskSummary === undefined ? {} : { taskSummary: session.taskSummary }),
         ...(typeof model === 'string' ? { model } : {}),
+        ...(typeof title === 'string' && title.trim() !== '' ? { title } : {}),
         context: session.context,
         eventCount: eventsBySession.get(session.id)?.length ?? 0,
       };
@@ -929,7 +933,7 @@ export function panelFor(
           : 'outline';
     return {
       eyebrow: `${session.projectName} · ${session.agentName}`,
-      title: session.taskSummary ?? `Session ${abbreviateId(session.id)}`,
+      title: session.title ?? session.taskSummary ?? `Session ${abbreviateId(session.id)}`,
       badge: { label: session.statusLabel.toUpperCase(), tone: badgeTone },
       sub: `${session.branch ?? 'no branch reported'} · started ${formatRelativeTime(session.startedAt, nowMs)} · heartbeat ${formatRelativeTime(session.lastHeartbeatAt, nowMs)}`,
       ...(session.tone === 'blocked' ? { block: blockedEvidence(session, events, nowMs) } : {}),
