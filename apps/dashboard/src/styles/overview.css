@@ -88,11 +88,12 @@
   gap: var(--space-2);
 }
 .stat-tile__value {
-  font-size: var(--font-size-3xl);
+  font-size: var(--font-size-2xl);
   font-weight: 600;
   letter-spacing: -0.03em;
   line-height: 1.05;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .stat-tile--unavailable .stat-tile__value {
   color: var(--text-dim);
