@@ -21,6 +21,7 @@ export {
   graphNeighborsResponseSchema,
   graphSubgraphResponseSchema,
   graphSummarySchema,
+  knowledgeGraphResponseSchema,
   optimizationFindingCollectionSchema,
   optimizationProposalCollectionSchema,
   packageCollectionSchema,

@@ -701,6 +701,48 @@ export const graphEdgeKindCountSchema = z.strictObject({
   count: z.number().int().nonnegative(),
 });
 
+export const knowledgeNodeKindSchema = z.enum(['god', 'hub', 'symbol']);
+export const knowledgeEdgeKindSchema = z.enum(['import', 'call']);
+
+export const knowledgeGraphNodeSchema = z.strictObject({
+  id: z.string().min(1).max(1024),
+  label: z.string().min(1).max(256),
+  sourceFile: z.string().min(1).max(4096),
+  community: z.number().int().optional(),
+  communityName: z.string().max(4096).optional(),
+  kind: knowledgeNodeKindSchema,
+  degree: z.number().int().nonnegative(),
+});
+export const knowledgeGraphEdgeSchema = z.strictObject({
+  source: z.string().min(1).max(1024),
+  target: z.string().min(1).max(1024),
+  kind: knowledgeEdgeKindSchema,
+});
+export const knowledgeCommunitySchema = z.strictObject({
+  id: z.number().int(),
+  name: z.string().min(1).max(4096),
+  size: z.number().int().nonnegative(),
+});
+export const knowledgeGraphSummarySchema = z.strictObject({
+  nodeCount: z.number().int().nonnegative(),
+  edgeCount: z.number().int().nonnegative(),
+  communityCount: z.number().int().nonnegative(),
+  hubCount: z.number().int().nonnegative(),
+  /** Always 0 — graphify is structural, no embeddings. Kept explicit so the stat is not fabricated. */
+  embeddings: z.literal(0),
+  builtAtCommit: z.string().min(1).max(256).optional(),
+  /** Absent only for the empty projection of a project with no graphify output. */
+  observedAt: timestampSchema.optional(),
+  truncated: z.boolean(),
+});
+export const knowledgeGraphResponseSchema = z.strictObject({
+  summary: knowledgeGraphSummarySchema,
+  communities: z.array(knowledgeCommunitySchema).max(64),
+  nodes: z.array(knowledgeGraphNodeSchema).max(GRAPH_MAX_SUBGRAPH_NODE_LIMIT),
+  edges: z.array(knowledgeGraphEdgeSchema).max(GRAPH_MAX_SUBGRAPH_NODE_LIMIT * 4),
+});
+export type KnowledgeGraphResponse = z.infer<typeof knowledgeGraphResponseSchema>;
+
 /**
  * The bounded global answer defined by ADR 0013.
  *

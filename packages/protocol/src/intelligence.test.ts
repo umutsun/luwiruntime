@@ -10,6 +10,7 @@ import {
   graphNodeSchema,
   graphPathQuerySchema,
   graphSummarySchema,
+  knowledgeGraphResponseSchema,
   optimizationEvaluationSchema,
   optimizationProposalSchema,
   packageScanResponseSchema,
@@ -508,5 +509,59 @@ describe('Phase 4 intelligence protocol', () => {
       completedAt: timestamp,
     });
     expect(evaluation.causalClaim).toBe(false);
+  });
+});
+
+describe('knowledgeGraphResponseSchema', () => {
+  it('accepts a bounded knowledge graph and rejects an unknown node kind', () => {
+    const valid = {
+      summary: {
+        nodeCount: 120,
+        edgeCount: 340,
+        communityCount: 7,
+        hubCount: 9,
+        embeddings: 0,
+        builtAtCommit: 'abc123',
+        observedAt: '2026-09-15T09:00:00.000Z',
+        truncated: true,
+      },
+      communities: [{ id: 0, name: 'graph', size: 40 }],
+      nodes: [
+        {
+          id: 'src/graph/builder.ts::build',
+          label: 'build',
+          sourceFile: 'src/graph/builder.ts',
+          community: 0,
+          communityName: 'graph',
+          kind: 'god',
+          degree: 12,
+        },
+      ],
+      edges: [{ source: 'a', target: 'b', kind: 'import' }],
+    };
+    expect(knowledgeGraphResponseSchema.parse(valid)).toEqual(valid);
+    expect(
+      knowledgeGraphResponseSchema.safeParse({
+        ...valid,
+        nodes: [{ ...valid.nodes[0], kind: 'planet' }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts the empty projection a project without graphify output returns', () => {
+    const empty = {
+      summary: {
+        nodeCount: 0,
+        edgeCount: 0,
+        communityCount: 0,
+        hubCount: 0,
+        embeddings: 0,
+        truncated: false,
+      },
+      communities: [],
+      nodes: [],
+      edges: [],
+    };
+    expect(knowledgeGraphResponseSchema.parse(empty)).toEqual(empty);
   });
 });
