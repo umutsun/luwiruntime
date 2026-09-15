@@ -35,6 +35,15 @@ const project: Project = {
   updatedAt: '2026-07-28T12:00:00.000Z',
 };
 
+const project2: Project = {
+  id: 'project-2',
+  name: 'Second Project',
+  localPath: 'C:/workspace/second',
+  canonicalPath: 'C:/workspace/second',
+  createdAt: '2026-07-28T12:00:00.000Z',
+  updatedAt: '2026-07-28T12:00:00.000Z',
+};
+
 const session: SessionView = {
   id: 'session-1',
   agentId: 'codex-sim',
@@ -77,7 +86,8 @@ function services(overrides?: {
     projects: {
       register: overrides?.projectRegister ?? (async () => project),
       update: overrides?.projectUpdate ?? (async () => project),
-      get: async (projectId) => (projectId === project.id ? project : null),
+      get: async (projectId) =>
+        projectId === project.id ? project : projectId === project2.id ? project2 : null,
       list: overrides?.projectList ?? (async () => [project]),
     },
     sessions: {
@@ -468,5 +478,51 @@ describe('Phase 1 HTTP routes', () => {
       });
     }
     expect(onRedisUnavailable).toHaveBeenCalledTimes(3);
+  });
+
+  it('serves a project knowledge graph, empty when there is no output, 404 for an unknown project', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      readKnowledgeGraph: async (localPath: string) =>
+        localPath === project.canonicalPath
+          ? {
+              nodes: [{ id: 'a::b', sourceFile: 'src/a.ts', community: 0, communityName: 'a' }],
+              links: [],
+              builtAtCommit: 'c1',
+              observedAt: '2026-09-15T00:00:00.000Z',
+            }
+          : null,
+      services: {
+        ...services(),
+        listEvents: async () => [],
+      },
+    });
+
+    const ok = await app.inject({
+      method: 'GET',
+      url: '/api/v1/projects/project-1/knowledge-graph',
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().summary.nodeCount).toBe(1);
+    expect(ok.json().nodes[0].kind).toBe('god');
+
+    const empty = await app.inject({
+      method: 'GET',
+      url: '/api/v1/projects/project-2/knowledge-graph',
+    });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json().summary.nodeCount).toBe(0);
+
+    const missing = await app.inject({
+      method: 'GET',
+      url: '/api/v1/projects/does-not-exist/knowledge-graph',
+    });
+    expect(missing.statusCode).toBe(404);
   });
 });

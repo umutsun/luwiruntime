@@ -51,6 +51,7 @@ import {
   heartbeatRequestSchema,
   inboxClaimRequestSchema,
   inboxClaimResponseSchema,
+  knowledgeGraphResponseSchema,
   leaseAcquireRequestSchema,
   leaseAcquireResponseSchema,
   leaseCollectionSchema,
@@ -136,6 +137,11 @@ import type { DaemonConfig } from './config.js';
 import { defaultDashboardDistRoot, readDashboardAsset } from './dashboard-assets.js';
 import type { ConfigControlService } from './config-control-service.js';
 import type { ControlPlaneService } from './control-plane-service.js';
+import {
+  projectKnowledgeGraph,
+  readGraphifyKnowledge,
+  type KnowledgeDocument,
+} from './graphify-knowledge.js';
 import type { LeaseService } from './lease-service.js';
 import type { MessageService } from './message-service.js';
 import type { IntelligenceService } from './intelligence-service.js';
@@ -181,6 +187,8 @@ export type BuildDaemonOptions = {
   dashboardDistRoot?: string;
   /** What the machine has and what this runtime costs on it; no route without it. */
   resources?: () => Promise<RuntimeResourcesResponse>;
+  /** Filesystem read of graphify's output; defaults to `readGraphifyKnowledge` so tests can stub it. */
+  readKnowledgeGraph?: (localPath: string) => Promise<KnowledgeDocument | null>;
   lifecycle?: {
     token: string;
     requestStop: () => Promise<void>;
@@ -551,6 +559,24 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       }
       return sessionCollectionResponseSchema.parse({
         sessions: await withCurrentRead(() => services.sessions.list(projectId)),
+      });
+    });
+    // Read-only per-project graphify knowledge graph (docs/superpowers/plans/2026-09-15-per-project-
+    // graphify-knowledge-graph.md). Needs only the project's canonicalPath, not the intelligence
+    // service, so it lives here beside the other /api/v1/projects/:projectId/* reads rather than
+    // inside the intelligence block.
+    app.get('/api/v1/projects/:projectId/knowledge-graph', async (request) => {
+      const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+      return withCurrentRead(async () => {
+        const project = await services.projects.get(projectId);
+        if (project === null) {
+          throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
+        }
+        const read =
+          options.readKnowledgeGraph ??
+          ((localPath: string) => readGraphifyKnowledge({ localPath }));
+        const document = await read(project.canonicalPath);
+        return knowledgeGraphResponseSchema.parse(projectKnowledgeGraph(document));
       });
     });
     app.get('/api/v1/events', async (request) => {
