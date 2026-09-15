@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import type { KnowledgeGraph } from '../api/knowledge-scope.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
@@ -9,8 +10,11 @@ import type { DashboardEvent } from '../realtime/schema.js';
 import { BoardView } from './board-view.js';
 import { DrillDown } from './drill-down.js';
 import { FlowView } from './flow-view.js';
+import { KnowledgeInspector, KnowledgeView, type KnowledgeState } from './knowledge-view.js';
 import {
   buildOverview,
+  emptyProjectsLabel,
+  focusProject,
   panelFor,
   resolveFocus,
   type Focus,
@@ -23,11 +27,14 @@ import { TimelineView } from './timeline-view.js';
 import type { ViewChoice } from './use-view-choice.js';
 
 /**
- * The overview: one model, four lenses, one drill-down.
+ * The overview: one model, five lenses, one docked aside.
  *
  * Focus is owned by the shell because the header's PROJECT switcher sets it
- * too; the lenses only report clicks. Every lens reads the same `Overview`,
- * so switching cannot change a number.
+ * too; the lenses only report clicks. Four lenses read the same `Overview`,
+ * so switching cannot change a number. The fifth, Knowledge, draws one
+ * project's graphify graph: it resolves the focus to a project (or takes the
+ * first one on the overview), reads that graph only while it is open, and
+ * swaps the drill-down for its own inspector.
  */
 export function Overview({
   snapshot,
@@ -43,6 +50,7 @@ export function Overview({
   onFocus,
   onInspect,
   loadSessionUsage,
+  loadKnowledge,
 }: {
   snapshot: PulseSnapshot;
   events: readonly DashboardEvent[];
@@ -64,6 +72,11 @@ export function Overview({
     sessionId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<SessionUsage>>;
+  /** Reads one project's knowledge graph for the Knowledge lens; absent renders it unavailable. */
+  loadKnowledge?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<KnowledgeGraph>>;
 }) {
   const overview = useMemo(
     () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages),
@@ -101,6 +114,38 @@ export function Overview({
   );
   const toRuntime = () => onFocus({ kind: 'runtime' });
 
+  // The Knowledge lens's project: the focus resolved to one, else the first on
+  // the overview. Undefined off the lens, so the read below never runs there.
+  const knowledgeProject =
+    view === 'knowledge' ? (focusProject(overview, resolved) ?? overview.projects[0]) : undefined;
+  const knowledgeProjectId = knowledgeProject?.id;
+  const [knowledge, setKnowledge] = useState<{
+    projectId: string;
+    state: ResourceState<KnowledgeGraph>;
+  }>();
+  const [knowledgeNode, setKnowledgeNode] = useState<string>();
+  // Reads once per project while the lens is open — not on every snapshot,
+  // because graphify output changes on git hooks, not every few seconds. A
+  // project switch clears the selection: node ids do not carry across graphs.
+  useEffect(() => {
+    setKnowledgeNode(undefined);
+    if (loadKnowledge === undefined || knowledgeProjectId === undefined) return undefined;
+    const controller = new AbortController();
+    void loadKnowledge(knowledgeProjectId, { signal: controller.signal }).then((state) => {
+      if (controller.signal.aborted) return;
+      setKnowledge({ projectId: knowledgeProjectId, state });
+    });
+    return () => controller.abort();
+  }, [loadKnowledge, knowledgeProjectId]);
+  const knowledgeState: KnowledgeState | undefined =
+    knowledgeProjectId === undefined
+      ? undefined
+      : loadKnowledge === undefined
+        ? { state: 'unavailable' }
+        : knowledge?.projectId === knowledgeProjectId
+          ? knowledge.state
+          : { state: 'loading' };
+
   return (
     <div className="overview">
       <div className="overview__main">
@@ -113,8 +158,18 @@ export function Overview({
           <FlowView overview={overview} focus={resolved} onFocus={onFocus} />
         ) : view === 'radial' ? (
           <RadialView overview={overview} focus={resolved} onFocus={onFocus} />
-        ) : (
+        ) : view === 'timeline' ? (
           <TimelineView overview={overview} focus={resolved} onFocus={onFocus} />
+        ) : (
+          <KnowledgeView
+            projects={overview.projects}
+            {...(knowledgeProjectId === undefined ? {} : { projectId: knowledgeProjectId })}
+            {...(knowledgeState === undefined ? {} : { graph: knowledgeState })}
+            emptyLabel={emptyProjectsLabel(overview)}
+            {...(knowledgeNode === undefined ? {} : { selectedId: knowledgeNode })}
+            onSelectNode={setKnowledgeNode}
+            onFocus={onFocus}
+          />
         )}
         <Ticker
           rows={overview.ticker}
@@ -123,7 +178,16 @@ export function Overview({
           available={overview.activityState === 'ready'}
         />
       </div>
-      <DrillDown panel={panel} nowMs={nowMs} onFocus={onFocus} onInspect={onInspect} />
+      {view === 'knowledge' ? (
+        <KnowledgeInspector
+          {...(knowledgeProject === undefined ? {} : { projectName: knowledgeProject.name })}
+          {...(knowledgeState === undefined ? {} : { graph: knowledgeState })}
+          {...(knowledgeNode === undefined ? {} : { selectedId: knowledgeNode })}
+          onSelectNode={setKnowledgeNode}
+        />
+      ) : (
+        <DrillDown panel={panel} nowMs={nowMs} onFocus={onFocus} onInspect={onInspect} />
+      )}
     </div>
   );
 }

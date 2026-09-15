@@ -230,3 +230,120 @@ describe('Overview drill-down and ticker', () => {
     expect(within(ticker).getByText('src/app.ts')).toBeTruthy();
   });
 });
+
+describe('Overview Knowledge lens', () => {
+  const ready = {
+    state: 'ready' as const,
+    data: {
+      summary: {
+        nodeCount: 1,
+        edgeCount: 0,
+        communityCount: 1,
+        hubCount: 0,
+        embeddings: 0 as const,
+        builtAtCommit: 'abc123',
+        observedAt: '2026-09-11T09:00:00.000Z',
+        truncated: false,
+      },
+      communities: [{ id: 0, name: 'core', size: 1 }],
+      nodes: [
+        {
+          id: 'core::god',
+          label: 'god',
+          sourceFile: 'src/core.ts',
+          community: 0,
+          communityName: 'core',
+          kind: 'god' as const,
+          degree: 0,
+        },
+      ],
+      edges: [],
+    },
+  };
+
+  it('reads the focused project once, draws it, and swaps the aside for its inspector', async () => {
+    const loadKnowledge = vi.fn().mockResolvedValue(ready);
+    const { rerender } = render(
+      <Overview
+        snapshot={buildPulseSnapshot(input())}
+        events={events}
+        nowMs={NOW}
+        view="knowledge"
+        focus={{ kind: 'session', id: 's2' }}
+        following
+        pendingCount={0}
+        realtime="live"
+        onFocus={vi.fn()}
+        onInspect={vi.fn()}
+        loadKnowledge={loadKnowledge}
+      />,
+    );
+    // A session focus resolves to its project (s2 belongs to Beta).
+    expect(loadKnowledge).toHaveBeenCalledWith('p2', expect.anything());
+    expect(screen.queryByRole('complementary', { name: 'Drill-down' })).toBeNull();
+    const aside = screen.getByRole('complementary', { name: 'Knowledge inspector' });
+    expect(within(aside).getByRole('heading', { name: 'Beta' })).toBeTruthy();
+    // The node on the canvas and its row in the inspector both select it.
+    expect(await screen.findAllByRole('button', { name: 'Select god' })).toHaveLength(2);
+    expect(within(aside).getByText('COMPLETE')).toBeTruthy();
+    // The stat strip and the ticker stay: the lens sits in the same frame as the other four.
+    expect(screen.getByRole('group', { name: 'Runtime totals' })).toBeTruthy();
+    expect(screen.getByRole('log', { name: 'Realtime stream' })).toBeTruthy();
+    // A re-render with the same project does not read again.
+    rerender(
+      <Overview
+        snapshot={buildPulseSnapshot(input())}
+        events={events}
+        nowMs={NOW + 1}
+        view="knowledge"
+        focus={{ kind: 'session', id: 's2' }}
+        following
+        pendingCount={0}
+        realtime="live"
+        onFocus={vi.fn()}
+        onInspect={vi.fn()}
+        loadKnowledge={loadKnowledge}
+      />,
+    );
+    expect(loadKnowledge).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back to the first project on the overview and never reads on another lens', () => {
+    const loadKnowledge = vi.fn().mockResolvedValue(ready);
+    render(
+      <Overview
+        snapshot={buildPulseSnapshot(input())}
+        events={events}
+        nowMs={NOW}
+        view="board"
+        focus={RUNTIME_FOCUS}
+        following
+        pendingCount={0}
+        realtime="live"
+        onFocus={vi.fn()}
+        onInspect={vi.fn()}
+        loadKnowledge={loadKnowledge}
+      />,
+    );
+    expect(loadKnowledge).not.toHaveBeenCalled();
+    cleanup();
+    render(
+      <Overview
+        snapshot={buildPulseSnapshot(input())}
+        events={events}
+        nowMs={NOW}
+        view="knowledge"
+        focus={RUNTIME_FOCUS}
+        following
+        pendingCount={0}
+        realtime="live"
+        onFocus={vi.fn()}
+        onInspect={vi.fn()}
+        loadKnowledge={loadKnowledge}
+      />,
+    );
+    // Projects are ordered blocked-first, so Beta (s2 blocked) leads the overview.
+    expect(loadKnowledge).toHaveBeenCalledWith('p2', expect.anything());
+    expect(screen.getByRole('combobox', { name: 'Knowledge graph project' })).toBeTruthy();
+  });
+});

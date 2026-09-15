@@ -125,32 +125,6 @@ button:focus-visible {
   flex: 1 1 auto;
 }
 /*
- * The Knowledge button: a route entry beside the lens switch (not a lens), so the
- * per-project knowledge graph is as discoverable as the lenses. It opens the
- * focused project's graph; the KG view's own switcher changes projects.
- */
-.topbar__kg {
-  display: inline-flex;
-  height: 32px;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: var(--space-1h);
-  padding: 0 var(--space-2h);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-  text-decoration: none;
-  cursor: pointer;
-}
-.topbar__kg:hover {
-  color: var(--text);
-  border-color: var(--border-strong);
-}
-.topbar__kg svg {
-  flex: 0 0 auto;
-}
-/*
  * The realtime switch. Pressed follows the feed; released holds what is on
  * screen and counts what arrives. The word follows the socket, so a pressed
  * switch never reads LIVE over a dead connection, and each state changes the

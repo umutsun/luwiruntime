@@ -26,7 +26,6 @@ import {
   inspectorTitle,
   type InspectorSelection,
 } from './inspectors/inspector-panel.js';
-import { KnowledgeView } from './knowledge/knowledge-view.js';
 import { formatClock, RUNTIME_FOCUS, sessionBadge, toneOf, type Focus } from './overview/model.js';
 import { Overview } from './overview/overview.js';
 import { useProjectFilter, visibleProjectIds } from './overview/use-project-filter.js';
@@ -74,7 +73,6 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   context: { eyebrow: 'Context evidence', heading: 'Context' },
   optimization: { eyebrow: 'Structural findings', heading: 'Optimization' },
   graph: { eyebrow: 'Operational graph', heading: 'Graph' },
-  knowledge: { eyebrow: 'Knowledge graph', heading: 'Knowledge graph' },
 };
 
 /** The project a `#/pulse/<projectId>` hash names; anything else is the runtime. */
@@ -219,8 +217,6 @@ export function DashboardApp({
   intelligenceResources = {},
   messageResources = {},
   messagesLoading = false,
-  knowledge,
-  knowledgeLoading = false,
   capabilityCatalogResources = {},
   capabilityCatalogLoading = false,
   configResources = {},
@@ -237,6 +233,7 @@ export function DashboardApp({
   loadSubgraph,
   loadResources,
   loadSessionUsage,
+  loadKnowledge,
   onRetry,
   onActivityStateChange,
   now = wallClock,
@@ -255,10 +252,6 @@ export function DashboardApp({
   messageResources?: Partial<MessageResources>;
   /** The on-demand message read has not returned yet. */
   messagesLoading?: boolean;
-  /** The per-project graphify knowledge graph; loaded only while `#/knowledge/<id>` is open. */
-  knowledge?: ResourceState<KnowledgeGraph> | undefined;
-  /** The on-demand knowledge-graph read has not returned yet. */
-  knowledgeLoading?: boolean;
   capabilityCatalogResources?: Partial<CapabilityCatalogResources>;
   /** The on-demand catalogue reads have not returned yet. */
   capabilityCatalogLoading?: boolean;
@@ -293,6 +286,11 @@ export function DashboardApp({
     sessionId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<SessionUsage>>;
+  /** Reads one project's knowledge graph for the overview's Knowledge lens. */
+  loadKnowledge?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<KnowledgeGraph>>;
   onRetry: () => void;
   onActivityStateChange?: (state: ActivityState) => void;
   /** Injectable clock, so tests can pin the header clock and every age. */
@@ -372,14 +370,6 @@ export function DashboardApp({
     [snapshot, visibleIds],
   );
   const hiddenProjects = snapshot.projects.length - visibleSnapshot.projects.length;
-  // The header Knowledge button opens the KG section for the focused project, or the
-  // first visible one when nothing is focused — the KG view's own project switcher
-  // changes it from there. KG is per-project; this button is only the entry point.
-  const knowledgeProjectId = focus.kind === 'project' ? focus.id : visibleSnapshot.projects[0]?.id;
-  const knowledgeHref =
-    knowledgeProjectId === undefined
-      ? '#/knowledge'
-      : routeHref({ name: 'knowledge', projectId: knowledgeProjectId });
   const retainedEvents = heldEvents ?? displayedActivity.events;
   const overviewEvents = useMemo(
     () =>
@@ -706,20 +696,6 @@ export function DashboardApp({
                 </button>
               ))}
             </div>
-            <a className="topbar__kg" href={knowledgeHref} title="Per-project knowledge graph">
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                <circle cx="4" cy="4" r="2" fill="currentColor" />
-                <circle cx="12" cy="6" r="1.6" fill="currentColor" />
-                <circle cx="6" cy="12" r="1.6" fill="currentColor" />
-                <path
-                  d="M4 4l8 2M4 4l2 8M12 6l-6 6"
-                  stroke="currentColor"
-                  strokeWidth="1"
-                  opacity="0.7"
-                />
-              </svg>
-              Knowledge
-            </a>
           </>
         ) : null}
 
@@ -765,6 +741,7 @@ export function DashboardApp({
             onFocus={changeFocus}
             onInspect={openInspector}
             {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
+            {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
           />
         ) : (
           <div className="route">
@@ -855,16 +832,6 @@ export function DashboardApp({
                   loading={intelligenceLoading}
                   seeds={graphSeeds}
                   {...(loadSubgraph === undefined ? {} : { loadSubgraph })}
-                />
-              ) : route.name === 'knowledge' ? (
-                <KnowledgeView
-                  graph={knowledge}
-                  loading={knowledgeLoading}
-                  {...(route.projectId === undefined ? {} : { projectId: route.projectId })}
-                  projects={snapshot.projects}
-                  onSelectProject={(id) => {
-                    window.location.hash = routeHref({ name: 'knowledge', projectId: id });
-                  }}
                 />
               ) : route.name === 'projects' ? (
                 <ProjectsView

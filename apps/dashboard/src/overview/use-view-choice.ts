@@ -1,7 +1,11 @@
 import { useCallback, useState } from 'react';
 
-/** The four lenses over the same overview model, in the order the switch shows them. */
-export const VIEW_CHOICES = ['board', 'flow', 'radial', 'timeline'] as const;
+/**
+ * The five lenses, in the order the switch shows them. Four draw the whole
+ * overview model; Knowledge draws one project's graphify graph and reads it
+ * only while it is open.
+ */
+export const VIEW_CHOICES = ['board', 'flow', 'radial', 'timeline', 'knowledge'] as const;
 export type ViewChoice = (typeof VIEW_CHOICES)[number];
 
 export const VIEW_LABELS: Record<ViewChoice, string> = {
@@ -9,6 +13,7 @@ export const VIEW_LABELS: Record<ViewChoice, string> = {
   flow: 'Flow',
   radial: 'Radial',
   timeline: 'Timeline',
+  knowledge: 'Knowledge',
 };
 
 const STORAGE_KEY = 'luwi.view';

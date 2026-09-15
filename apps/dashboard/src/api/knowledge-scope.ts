@@ -7,8 +7,8 @@ import type { DaemonClient } from './client.js';
 export type KnowledgeGraph = z.infer<typeof knowledgeGraphResponseSchema>;
 
 /**
- * The per-project graphify knowledge graph, read-only, loaded only while
- * `#/knowledge/<projectId>` is open — the overview never pays for it.
+ * The per-project graphify knowledge graph, read-only, loaded only while the
+ * overview's Knowledge lens is open — the other four lenses never pay for it.
  */
 export async function loadKnowledgeScope(
   client: DaemonClient,

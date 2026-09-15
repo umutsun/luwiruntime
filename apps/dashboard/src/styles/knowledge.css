@@ -1,113 +1,55 @@
 /*
- * The per-project graphify knowledge graph (read-only). Visual language
- * follows the "Graph" mockup under `temp/Luwi Runtime Dashboard Mockup/`:
- * a stat strip, a static SVG canvas (god = filled ink, hub = paper fill with
- * an ink stroke, symbol = dim and unlabelled unless selected or a neighbor),
- * and a docked inspector the width the overview's drill-down already uses
- * (`--overview-aside-width`).
+ * The Knowledge lens: one project's graphify graph inside the overview, drawn
+ * from the "Graph" comp under `temp/Luwi Runtime Dashboard Mockup/`. The lens
+ * shares the overview's frame — the uniform stat strip above it, the ticker
+ * below, the docked aside beside it (which reuses the `drill__*` anatomy) —
+ * and adds only the canvas: god = filled ink, hub = paper fill with an ink
+ * stroke, symbol = dim and unlabelled unless selected or a neighbour; import
+ * edges solid, call edges dashed. Positions are written per frame by the
+ * simulation, not by these rules.
  *
- * The mockup's write controls (Optimize / Prune / Delete / Rebuild) and its
- * GRAPH OPS ticker are not rendered here: this route only reads a projection,
- * never mutates or reruns graphify. The `$ graphify query` line is a static
- * hint, not a runnable field.
+ * The comp's write controls (Optimize / Delete / Rebuild) are not rendered:
+ * the lens reads a projection and never mutates or reruns graphify. The
+ * `$ graphify query` line is a static hint, not a runnable field.
  */
 
 .knowledge {
   display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
   flex-direction: column;
-  gap: var(--space-4);
 }
 
-.knowledge__toolbar {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.knowledge__switcher {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1h) var(--space-2h);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
-}
-
-.knowledge__switcher-label {
-  font-family: var(--font-mono);
-  font-size: var(--font-size-2xs);
-  letter-spacing: 0.12em;
-  color: var(--text-muted);
-}
-
-.knowledge__switcher-select {
-  border: none;
-  background: none;
-  color: var(--text);
-  font-family: var(--font-ui);
-  font-size: var(--font-size-sm);
-}
-
-.knowledge__status {
-  padding: var(--space-6);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface-1);
-  color: var(--text-secondary);
-}
-
-.knowledge__status p + p {
-  margin-top: var(--space-2);
-  color: var(--text-muted);
-}
-
-.knowledge__code {
-  padding: var(--space-0) var(--space-1);
-  border-radius: var(--radius-xs);
-  background: var(--surface-2);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-}
-
-.knowledge__stats {
-  display: flex;
-  align-items: center;
-  gap: var(--space-6);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface-1);
-  font-variant-numeric: tabular-nums;
-}
-
-.knowledge__stat {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-1h);
-}
-
-.knowledge__stat-value {
-  font-size: var(--font-size-2xl);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.knowledge__stat-label {
-  font-size: var(--font-size-xs);
-  color: var(--text-muted);
-}
-
-.knowledge__stats-spacer {
-  flex: 1;
-}
-
+/* ---- legend row: the graph's own figures, then the node vocabulary -------- */
 .knowledge__legend {
   display: flex;
   align-items: center;
-  gap: var(--space-3h);
+  gap: var(--space-6);
+  padding: var(--space-3h) var(--space-5h) 0;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--font-size-2xs);
+  animation: ov-fade 0.8s 0.3s both;
+}
+
+.knowledge__figure {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1h);
+  font-variant-numeric: tabular-nums;
+}
+
+.knowledge__figure-value {
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-lg);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.knowledge__legend-spacer {
+  flex: 1;
 }
 
 .knowledge__legend-item {
@@ -138,26 +80,12 @@
   background: var(--text-dim);
 }
 
-.knowledge__body {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--overview-aside-width);
-  align-items: start;
-  gap: var(--space-4);
-}
-
-.knowledge__canvas-col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2h);
-  min-width: 0;
-}
-
-.knowledge__frame {
+/* ---- stage: the canvas and its overlays --------------------------------- */
+.knowledge__stage {
   position: relative;
-  aspect-ratio: 1000 / 680;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--surface-1);
+  flex: 1 1 auto;
+  min-height: 420px;
+  margin: var(--space-2) var(--space-5h) var(--space-2h);
 }
 
 .knowledge__svg {
@@ -168,15 +96,74 @@
   font-family: var(--font-mono);
 }
 
-/* Edges: import solid, call dashed — set on the base class and the `--call`
-   modifier respectively so an inactive edge of either kind still reads. */
+.knowledge__empty {
+  margin: 0;
+  padding: var(--space-4) var(--space-5h);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.knowledge__empty p {
+  margin: 0;
+}
+
+.knowledge__empty p + p {
+  margin-top: var(--space-2);
+}
+
+.knowledge__code {
+  padding: var(--space-0) var(--space-1);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}
+
+/* The comp's PROJECT switcher, docked at the top-right of the stage. */
+.knowledge__switcher {
+  position: absolute;
+  z-index: 2;
+  right: 0;
+  top: 0;
+  display: flex;
+  height: 32px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-2h) 0 var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  animation: ov-fade 1s 0.6s both;
+}
+
+.knowledge__switcher-label {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.12em;
+}
+
+.knowledge__switcher-select {
+  min-width: 96px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  font-weight: 550;
+}
+
+/* ---- edges ---------------------------------------------------------------- */
 .knowledge__edge {
   stroke: var(--ink);
   stroke-width: 1;
   opacity: 0.16;
+  transition: opacity 0.3s;
 }
 
 .knowledge__edge--call {
+  stroke-width: 0.8;
   stroke-dasharray: 4 5;
   opacity: 0.1;
 }
@@ -186,21 +173,29 @@
   opacity: 0.75;
 }
 
+.knowledge__edge--active.knowledge__edge--import {
+  stroke-dasharray: 6 6;
+  animation: ov-flow 1.2s linear infinite;
+}
+
+.knowledge__edge--dim {
+  opacity: 0.04;
+}
+
+/* ---- community marks and nodes ------------------------------------------- */
 .knowledge__community-mark {
   fill: var(--text-muted);
   font-size: var(--font-size-2xs);
   letter-spacing: 0.14em;
   text-transform: uppercase;
+  opacity: 0.55;
   pointer-events: none;
+  transition: opacity 0.3s;
 }
 
 .knowledge__node {
   cursor: pointer;
-  transition: opacity var(--dur-2) var(--ease);
-}
-
-.knowledge__node--dim {
-  opacity: 0.25;
+  transition: opacity 0.3s;
 }
 
 .knowledge__node-hit {
@@ -218,9 +213,23 @@
   fill: var(--ink);
 }
 
+.knowledge__node--hub .knowledge__node-dot,
+.knowledge__node--selected .knowledge__node-dot {
+  stroke-width: 2;
+}
+
 .knowledge__node--hub .knowledge__node-dot {
   fill: var(--paper);
-  stroke-width: 2;
+}
+
+.knowledge__node--hub.knowledge__node--selected .knowledge__node-dot {
+  fill: var(--ink);
+}
+
+.knowledge__node--god .knowledge__node-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ov-pulse 2.4s ease-in-out infinite;
 }
 
 .knowledge__node-label {
@@ -229,10 +238,19 @@
   pointer-events: none;
 }
 
+.knowledge__node--god .knowledge__node-label {
+  font-size: var(--font-size-xs);
+}
+
+/* ---- overlays: the query hint and the provenance -------------------------- */
 .knowledge__hint {
+  position: absolute;
+  left: 0;
+  bottom: 0;
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  margin: 0;
   padding: var(--space-1h) var(--space-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -240,121 +258,44 @@
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--font-size-2xs);
+  animation: ov-fade 1s 1s both;
 }
 
 .knowledge__hint-prompt {
   color: var(--ink);
 }
 
+.knowledge__hint-query {
+  color: var(--text);
+}
+
+.knowledge__hint-caret {
+  width: 6px;
+  height: 13px;
+  background: var(--ink);
+  animation: ov-pulse 1.1s steps(1) infinite;
+}
+
 .knowledge__provenance {
+  position: absolute;
+  right: 0;
+  bottom: var(--space-1);
+  margin: 0;
   color: var(--text-dim);
   font-family: var(--font-mono);
   font-size: var(--font-size-2xs);
 }
 
-.knowledge__inspector {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-4);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-raised);
-}
-
-.knowledge__inspector-head {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.knowledge__inspector-eyebrow {
-  margin: 0 0 var(--space-1);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-2xs);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
-.knowledge__inspector-title-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.knowledge__inspector-title {
-  margin: 0;
-  overflow-wrap: break-word;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xl);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.knowledge__badge {
-  padding: var(--space-0) var(--space-2);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-2xs);
-  letter-spacing: 0.1em;
-}
-
-.knowledge__inspector-sub {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-}
-
-.knowledge__facts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: var(--space-2h);
-}
-
-.knowledge__fact {
-  padding: var(--space-2) var(--space-2h);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--surface-1);
-}
-
-.knowledge__fact-k {
-  display: block;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-2xs);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.knowledge__fact-v {
-  display: block;
-  overflow: hidden;
-  margin-top: var(--space-0);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.knowledge__section-label {
-  margin: 0 0 var(--space-2);
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-2xs);
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-}
-
+/* ---- the aside's community bars ------------------------------------------ */
 .knowledge__communities {
   display: flex;
   flex-direction: column;
   gap: var(--space-2h);
+  padding: var(--space-3h) var(--space-5h) var(--space-1);
+}
+
+.knowledge__communities .drill__section-label {
+  margin-bottom: 0;
 }
 
 .knowledge__community-row {
@@ -383,74 +324,14 @@
   display: block;
   height: 100%;
   background: var(--ink);
+  transform-origin: left;
+  animation: ov-bar 0.8s var(--ease-out) both;
 }
 
 .knowledge__community-n {
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: var(--font-size-2xs);
-}
-
-.knowledge__list {
-  display: flex;
-  flex-direction: column;
-}
-
-.knowledge__empty-inline {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: var(--font-size-xs);
-}
-
-.knowledge__row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2h);
-  padding: var(--space-2) 0;
-  border: none;
-  border-top: 1px solid var(--border);
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-.knowledge__row-glyph {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-2);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-2xs);
-  font-weight: 650;
-}
-
-.knowledge__row-text {
-  min-width: 0;
-}
-
-.knowledge__row-title {
-  display: block;
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  font-weight: 550;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.knowledge__row-sub {
-  display: block;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: var(--font-size-2xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .knowledge__row-meta {

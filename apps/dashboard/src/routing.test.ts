@@ -154,15 +154,10 @@ describe('project-agent pair routes', () => {
   });
 });
 
-describe('the knowledge route', () => {
-  it('parses and builds the knowledge route with and without a project id', () => {
-    expect(parseRoute('#/knowledge/p1')).toEqual({ name: 'knowledge', projectId: 'p1' });
-    expect(parseRoute('#/knowledge')).toEqual({ name: 'knowledge' });
-    expect(parseRoute('#/knowledge/')).toEqual({ name: 'knowledge' });
-    expect(routeHref({ name: 'knowledge', projectId: 'p1' })).toBe('#/knowledge/p1');
-    expect(routeHref({ name: 'knowledge' })).toBe('#/knowledge');
-    // an id containing a slash is encoded, not forged into a segment
-    expect(routeHref({ name: 'knowledge', projectId: 'a/b' })).toBe('#/knowledge/a%2Fb');
+describe('the retired knowledge route', () => {
+  it('is no longer a route: the knowledge graph is an overview lens, so it falls back', () => {
+    expect(parseRoute('#/knowledge/p1')).toEqual({ name: 'pulse' });
+    expect(parseRoute('#/knowledge')).toEqual({ name: 'pulse' });
   });
 });
 

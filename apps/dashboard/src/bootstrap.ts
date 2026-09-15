@@ -75,16 +75,6 @@ export function needsConfigOf(hash: string): boolean {
   return parseRoute(hash).name === 'config';
 }
 
-/** The overview never pays for it; the knowledge graph loads only while its own route is open. */
-export function needsKnowledgeOf(hash: string): boolean {
-  return selectedKnowledgeProjectOf(hash) !== undefined;
-}
-
-export function selectedKnowledgeProjectOf(hash: string): string | undefined {
-  const route = parseRoute(hash);
-  return route.name === 'knowledge' ? route.projectId : undefined;
-}
-
 /**
  * Whether a realtime event can change what the currently open project panels
  * show. An event for another project changes nothing that is rendered, so it
