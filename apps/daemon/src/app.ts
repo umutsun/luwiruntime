@@ -71,6 +71,7 @@ import {
   nativeConfigInspectionSchema,
   nativeDeclarationRequestSchema,
   nativeDeclarationResponseSchema,
+  sessionNativeRefResponseSchema,
   type HealthResponse,
   projectCollectionResponseSchema,
   projectRegistrationRequestSchema,
@@ -509,6 +510,15 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       return nativeDeclarationResponseSchema.parse(
         await withMutation(() => services.sessions.declareNative(sessionId, body.native)),
       );
+    });
+    // The native reference a session's binding holds, so a reader reviving a
+    // dropped session can re-declare it from the daemon's truth even when the
+    // session file never carried it (ADR 0034 revival native recovery).
+    app.get('/api/v1/sessions/:sessionId/native', async (request) => {
+      const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
+      return sessionNativeRefResponseSchema.parse({
+        native: await services.sessions.getNativeRef(sessionId),
+      });
     });
     app.post('/api/v1/sessions/:sessionId/heartbeat', async (request) => {
       const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);

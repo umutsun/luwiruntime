@@ -21,7 +21,12 @@ import type { SessionBindingRecord } from './session-binding.js';
  */
 export type SessionRevivalClient = Pick<
   McpDaemonClient,
-  'verifyBoundSession' | 'getSession' | 'registerSession' | 'heartbeat' | 'closeSession'
+  | 'verifyBoundSession'
+  | 'getSession'
+  | 'getSessionNative'
+  | 'registerSession'
+  | 'heartbeat'
+  | 'closeSession'
 >;
 
 export type SessionRevivalOptions = {
@@ -65,6 +70,19 @@ export function createSessionRevival(options: SessionRevivalOptions): SessionRev
       // Nothing to revive: the binding's own session is alive.
       return options.client.verifyBoundSession(id);
     }
+    // Carry the native reference to the successor so it keeps its title and usage
+    // attribution. The attach writes it into the session file, but a launcher that
+    // did not (or a rotated file) leaves it absent — so fall back to the daemon's
+    // truth for the dropped session. Best-effort: an absent ref just leaves the
+    // successor unbound, as before, never a thrown error.
+    let native = binding.native;
+    if (native === undefined) {
+      try {
+        native = await options.client.getSessionNative(id);
+      } catch {
+        native = undefined;
+      }
+    }
     await retire();
     const bootstrap = createSessionBootstrap({
       client: {
@@ -80,7 +98,7 @@ export function createSessionRevival(options: SessionRevivalOptions): SessionRev
       projectId: dropped.projectId,
       agentId: dropped.agentId,
       workingDirectory: dropped.workingDirectory,
-      ...(binding.native === undefined ? {} : { native: binding.native }),
+      ...(native === undefined ? {} : { native }),
       metadata: { ...dropped.metadata, revivedFrom: id },
       // This reader binds only on join. A successor the runtime reaps before the
       // next join must not come back on its own — the join after that revives.

@@ -227,6 +227,8 @@ async function resolveNativeUnlink(
 export type SessionService = {
   register(request: SessionRegistrationRequest): Promise<SessionView>;
   declareNative(sessionId: string, ref: NativeSessionRef): Promise<NativeDeclarationResponse>;
+  /** The native reference this session's binding holds, or null when it has none. */
+  getNativeRef(sessionId: string): Promise<NativeSessionRef | null>;
   get(sessionId: string): Promise<SessionView | null>;
   list(projectId?: string): Promise<SessionView[]>;
   updateStatus(sessionId: string, targetStatus: SessionStatusTarget): Promise<SessionView>;
@@ -339,6 +341,20 @@ export function createSessionService(options: SessionServiceOptions): SessionSer
      * because re-declaration is the steady state for anything that declares at
      * startup or on a timer.
      */
+    async getNativeRef(sessionId) {
+      const bindingId = await options.repository.getSessionNativeBindingId(sessionId);
+      if (bindingId === null) return null;
+      const binding = await options.repository.getNativeBinding(bindingId);
+      if (binding === null) return null;
+      return {
+        adapterId: binding.adapterId,
+        nativeSessionId: binding.nativeSessionId,
+        ...(binding.nativeSubagentId === undefined
+          ? {}
+          : { nativeSubagentId: binding.nativeSubagentId }),
+      };
+    },
+
     async declareNative(sessionId, ref) {
       const session = await requireSession(options.repository, sessionId);
       if (session.status === 'completed' || session.status === 'disconnected') {

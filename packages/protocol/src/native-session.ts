@@ -93,7 +93,13 @@ export const nativeDeclarationResponseSchema = z.strictObject({
   staleLink: nativeSessionLinkSchema.optional(),
 });
 
+/** The native reference a session currently holds, or null when it has none. */
+export const sessionNativeRefResponseSchema = z.strictObject({
+  native: nativeSessionRefSchema.nullable(),
+});
+
 export type NativeSessionRef = z.infer<typeof nativeSessionRefSchema>;
+export type SessionNativeRefResponse = z.infer<typeof sessionNativeRefResponseSchema>;
 export type NativeSessionKind = z.infer<typeof nativeSessionKindSchema>;
 export type NativeSessionBinding = z.infer<typeof nativeSessionBindingSchema>;
 export type NativeSessionLink = z.infer<typeof nativeSessionLinkSchema>;

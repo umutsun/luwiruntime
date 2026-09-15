@@ -833,3 +833,48 @@ describe('native session release', () => {
     }
   });
 });
+
+describe('session service getNativeRef', () => {
+  const options = {
+    workspaceId: 'local',
+    presenceTtlMs: 15_000,
+    createId: () => 'id',
+    canonicalizeWorkingDirectory: async () => ({
+      localPath: 'C:/workspace/luwi',
+      canonicalPath: 'C:/workspace/luwi',
+      identityPath: 'c:/workspace/luwi',
+      pathIdentityHash: 'a'.repeat(64),
+    }),
+  };
+
+  it('returns the binding native reference for a bound session', async () => {
+    const backing = repository();
+    const service = createSessionService({
+      ...options,
+      repository: {
+        ...backing,
+        getSessionNativeBindingId: async () => 'binding-1',
+        getNativeBinding: async () => ({
+          id: 'binding-1',
+          adapterId: 'codex',
+          nativeSessionId: '01a084e9-182a-7e81-bc8e-e0f33f3eda12',
+          kind: 'main',
+          version: 1,
+          linkCount: 1,
+          trimmedLinkCount: 0,
+          firstLinkedAt: '2026-09-14T00:00:00.000Z',
+          lastLinkedAt: '2026-09-14T00:00:00.000Z',
+        }),
+      },
+    });
+    expect(await service.getNativeRef('session-1')).toEqual({
+      adapterId: 'codex',
+      nativeSessionId: '01a084e9-182a-7e81-bc8e-e0f33f3eda12',
+    });
+  });
+
+  it('returns null when the session has no native binding', async () => {
+    const service = createSessionService({ ...options, repository: repository() });
+    expect(await service.getNativeRef('session-1')).toBeNull();
+  });
+});

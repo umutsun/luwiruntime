@@ -25,7 +25,10 @@ function harness(fileIds: string[]) {
   const sessions = new Map<string, SessionView>();
   let registrations = 0;
   let lostHeartbeats = 0;
+  let fileNative: { adapterId: string; nativeSessionId: string } | undefined = native;
+  let daemonNative: { adapterId: string; nativeSessionId: string } | undefined;
   const client = {
+    getSessionNative: vi.fn(async () => daemonNative),
     verifyBoundSession: vi.fn(async (sessionId: string) => {
       const session = sessions.get(sessionId);
       if (session === undefined) throw new McpDaemonError('SESSION_NOT_FOUND', 'missing', 404);
@@ -59,7 +62,10 @@ function harness(fileIds: string[]) {
     }),
     closeSession: vi.fn(async (sessionId: string) => sessions.get(sessionId) ?? live),
   };
-  const resolveBinding = vi.fn(async () => ({ attached: fileIds[0] ?? 'attached', native }));
+  const resolveBinding = vi.fn(async () => ({
+    attached: fileIds[0] ?? 'attached',
+    ...(fileNative === undefined ? {} : { native: fileNative }),
+  }));
   const revival = createSessionRevival({
     client,
     resolveBinding,
@@ -77,6 +83,12 @@ function harness(fileIds: string[]) {
     timers,
     setFileId: (id: string) => {
       fileIds[0] = id;
+    },
+    setFileNative: (value: { adapterId: string; nativeSessionId: string } | undefined) => {
+      fileNative = value;
+    },
+    setDaemonNative: (value: { adapterId: string; nativeSessionId: string } | undefined) => {
+      daemonNative = value;
     },
     loseNextHeartbeats: (count: number) => {
       lostHeartbeats = count;
@@ -127,6 +139,37 @@ describe('session revival', () => {
     // A second join does not register twice.
     await expect(revival.revive()).resolves.toMatchObject({ id: 'revived-1' });
     expect(client.registerSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers the native reference from the daemon when the session file lacks it', async () => {
+    const { client, revival, sessions, setFileNative, setDaemonNative } = harness(['attached']);
+    sessions.set('attached', dropped);
+    // The session file carries no native ref (a launcher that never wrote one),
+    // but the daemon still holds the dropped session's binding.
+    setFileNative(undefined);
+    setDaemonNative({ adapterId: 'codex', nativeSessionId: '01a084e9' });
+
+    await revival.revive();
+
+    expect(client.getSessionNative).toHaveBeenCalledWith('attached');
+    expect(client.registerSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        native: { adapterId: 'codex', nativeSessionId: '01a084e9' },
+      }),
+    );
+  });
+
+  it('registers a bindingless successor when neither the file nor the daemon has a native ref', async () => {
+    const { client, revival, sessions, setFileNative, setDaemonNative } = harness(['attached']);
+    sessions.set('attached', dropped);
+    setFileNative(undefined);
+    setDaemonNative(undefined);
+
+    await revival.revive();
+
+    expect(client.registerSession).toHaveBeenCalledWith(
+      expect.not.objectContaining({ native: expect.anything() }),
+    );
   });
 
   it('a successor dropped again is reported terminal until the next join registers anew', async () => {

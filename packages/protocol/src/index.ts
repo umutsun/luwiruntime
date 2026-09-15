@@ -74,6 +74,7 @@ export {
   nativeSessionKindSchema,
   nativeSessionLinkSchema,
   nativeSessionRefSchema,
+  sessionNativeRefResponseSchema,
 } from './native-session.js';
 export type {
   NativeDeclarationOutcome,
@@ -83,6 +84,7 @@ export type {
   NativeSessionKind,
   NativeSessionLink,
   NativeSessionRef,
+  SessionNativeRefResponse,
 } from './native-session.js';
 export {
   healthResponseSchema,

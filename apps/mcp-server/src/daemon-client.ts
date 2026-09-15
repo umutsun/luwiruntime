@@ -30,6 +30,7 @@ import {
   packageCollectionSchema,
   publicErrorResponseSchema,
   sessionCollectionResponseSchema,
+  sessionNativeRefResponseSchema,
   sessionResponseSchema,
   technologyCollectionSchema,
   usageSummarySchema,
@@ -103,6 +104,8 @@ export type McpDaemonClient = {
   listProjects(): Promise<ProjectCollectionResponse>;
   listProjectSessions(projectId: string): Promise<SessionCollectionResponse>;
   getSession(sessionId: string): Promise<SessionView>;
+  /** The native reference a session's binding holds, or undefined when none. */
+  getSessionNative(sessionId: string): Promise<NativeSessionRef | undefined>;
   getProject(projectId: string): Promise<Project>;
   listAgents(): Promise<AgentDefinition[]>;
   getAgent(agentId: string): Promise<AgentDefinition>;
@@ -291,6 +294,13 @@ export function createDaemonClient(options: {
         sessionCollectionResponseSchema,
       ),
     getSession,
+    getSessionNative: async (sessionId) =>
+      (
+        await request(
+          `/api/v1/sessions/${encodeURIComponent(sessionId)}/native`,
+          sessionNativeRefResponseSchema,
+        )
+      ).native ?? undefined,
     setSessionStatus: (sessionId, status) =>
       post(`/api/v1/sessions/${encodeURIComponent(sessionId)}/status`, sessionResponseSchema, {
         status,
