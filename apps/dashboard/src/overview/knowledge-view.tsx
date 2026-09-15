@@ -67,6 +67,25 @@ function prefersReducedMotion(): boolean {
 /** Depth from a community's projected scale: 0 far → 1 near, as the comp reads it. */
 const depthOf = (s: number): number => Math.max(0.45, Math.min(1, (s - 0.78) / (1.3 - 0.78)));
 
+/**
+ * A connection as a quadratic curve bowed outward from the centre, so the
+ * edges read as petals radiating from the core rather than a straight-line
+ * mesh — the Radial and Flow lenses' curved, flowing language.
+ */
+const ORBIT_RADIUS = 250;
+function curvePath(ax: number, ay: number, bx: number, by: number): string {
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+  const dx = mx - CX;
+  const dy = my - CY;
+  const dl = Math.hypot(dx, dy) || 1;
+  const len = Math.hypot(bx - ax, by - ay);
+  const off = Math.min(len * 0.16, 70);
+  const cx = mx + (dx / dl) * off;
+  const cy = my + (dy / dl) * off;
+  return `M${ax.toFixed(2)} ${ay.toFixed(2)} Q${cx.toFixed(2)} ${cy.toFixed(2)} ${bx.toFixed(2)} ${by.toFixed(2)}`;
+}
+
 /** Where the projects sit while none is focused: one at the centre, else a ring. */
 function projectRing(count: number): { x: number; y: number }[] {
   if (count <= 1) return [{ x: CX, y: CY }];
@@ -85,39 +104,70 @@ function ProjectPicker({
   onFocus: (focus: Focus) => void;
 }) {
   const ring = projectRing(projects.length);
+  const [tip, setTip] = useState<{ name: string; x: number; y: number }>();
   return (
-    <svg
-      className="knowledge__svg"
-      viewBox={`0 0 ${String(KNOWLEDGE_WIDTH)} ${String(KNOWLEDGE_HEIGHT)}`}
-      preserveAspectRatio="xMidYMid meet"
-      aria-label="Projects"
-    >
-      {projects.map((project, index) => {
-        const spot = ring[index] ?? { x: CX, y: CY };
-        const focus = () => onFocus({ kind: 'project', id: project.id });
-        return (
-          <g
-            key={project.id}
-            className="knowledge__project"
-            role="button"
-            tabIndex={0}
-            aria-label={`Focus project ${project.name}`}
-            transform={`translate(${spot.x.toFixed(1)} ${spot.y.toFixed(1)})`}
-            style={{ animationDelay: `${String(0.1 + index * 0.05)}s` }}
-            onClick={focus}
-            onKeyDown={activate(focus)}
-          >
-            <circle className="knowledge__project-disc" r={PROJECT_RADIUS} />
-            <text className="knowledge__project-initials" textAnchor="middle" dy="0.35em">
-              {project.initials}
-            </text>
-            <text className="knowledge__project-name" y={PROJECT_RADIUS + 18} textAnchor="middle">
-              {project.name}
-            </text>
-          </g>
-        );
-      })}
-    </svg>
+    <>
+      <svg
+        className="knowledge__svg"
+        viewBox={`0 0 ${String(KNOWLEDGE_WIDTH)} ${String(KNOWLEDGE_HEIGHT)}`}
+        preserveAspectRatio="xMidYMid meet"
+        aria-label="Projects"
+      >
+        <circle className="knowledge__orbit" cx={CX} cy={CY} r={ORBIT_RADIUS} />
+        {projects.map((project, index) => {
+          const spot = ring[index] ?? { x: CX, y: CY };
+          const focus = () => onFocus({ kind: 'project', id: project.id });
+          return (
+            <g
+              key={project.id}
+              className="knowledge__project"
+              role="button"
+              tabIndex={0}
+              aria-label={`Focus project ${project.name}`}
+              transform={`translate(${spot.x.toFixed(1)} ${spot.y.toFixed(1)})`}
+              style={{ animationDelay: `${String(0.1 + index * 0.05)}s` }}
+              onClick={focus}
+              onKeyDown={activate(focus)}
+              onMouseEnter={(event) => {
+                const box = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+                setTip({
+                  name: project.name,
+                  x: event.clientX - (box?.left ?? 0),
+                  y: event.clientY - (box?.top ?? 0),
+                });
+              }}
+              onMouseMove={(event) => {
+                const box = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+                setTip({
+                  name: project.name,
+                  x: event.clientX - (box?.left ?? 0),
+                  y: event.clientY - (box?.top ?? 0),
+                });
+              }}
+              onMouseLeave={() => setTip(undefined)}
+            >
+              <circle className="knowledge__project-disc" r={PROJECT_RADIUS} />
+              <text className="knowledge__project-initials" textAnchor="middle" dy="0.35em">
+                {project.initials}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+      {tip === undefined ? null : (
+        <div
+          className="knowledge__tip"
+          role="tooltip"
+          style={{
+            left: `${String(tip.x + TIP_OFFSET)}px`,
+            top: `${String(tip.y + TIP_OFFSET)}px`,
+          }}
+        >
+          <span className="knowledge__tip-title">{tip.name}</span>
+          <span className="knowledge__tip-meta">open knowledge graph</span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -181,7 +231,7 @@ function KnowledgeCanvas({
   const [tip, setTip] = useState<Tip>();
 
   const nodeEls = useRef(new Map<string, SVGGElement>());
-  const edgeEls = useRef<(SVGLineElement | null)[]>([]);
+  const edgeEls = useRef<(SVGPathElement | null)[]>([]);
   const markEls = useRef(new Map<number, SVGTextElement>());
   const selection = useRef({ selectedId, neighbours });
   selection.current = { selectedId, neighbours };
@@ -209,10 +259,7 @@ function KnowledgeCanvas({
     state.edges.forEach((edge, index) => {
       const el = edgeEls.current[index];
       if (el === null || el === undefined) return;
-      el.setAttribute('x1', edge.a.x.toFixed(2));
-      el.setAttribute('y1', edge.a.y.toFixed(2));
-      el.setAttribute('x2', edge.b.x.toFixed(2));
-      el.setAttribute('y2', edge.b.y.toFixed(2));
+      el.setAttribute('d', curvePath(edge.a.x, edge.a.y, edge.b.x, edge.b.y));
     });
     for (const community of state.communities) {
       const el = markEls.current.get(community.id);
@@ -271,22 +318,20 @@ function KnowledgeCanvas({
         aria-label="Project knowledge graph"
         onClick={() => onSelectNode(undefined)}
       >
+        <circle className="knowledge__orbit" cx={CX} cy={CY} r={ORBIT_RADIUS} />
         <g>
           {sim.edges.map((edge, index) => {
             const active =
               selectedId !== undefined && (edge.a.id === selectedId || edge.b.id === selectedId);
             const dim = selectedId !== undefined && !active;
             return (
-              <line
+              <path
                 key={`${edge.a.id}->${edge.b.id}:${String(index)}`}
                 ref={(el) => {
                   edgeEls.current[index] = el;
                 }}
                 className={`knowledge__edge knowledge__edge--${edge.kind}${active ? ' knowledge__edge--active' : ''}${dim ? ' knowledge__edge--dim' : ''}`}
-                x1={edge.a.x}
-                y1={edge.a.y}
-                x2={edge.b.x}
-                y2={edge.b.y}
+                d={curvePath(edge.a.x, edge.a.y, edge.b.x, edge.b.y)}
               />
             );
           })}
@@ -466,10 +511,6 @@ export function KnowledgeView({
       <div className="knowledge">
         <div className="knowledge__stage">
           <ProjectPicker projects={projects} onFocus={onFocus} />
-          <p className="knowledge__hint">
-            <span className="knowledge__hint-prompt">$</span> pick a project · its knowledge graph
-            opens here
-          </p>
         </div>
       </div>
     );

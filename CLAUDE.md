@@ -390,10 +390,14 @@ as a pure, seeded model (`overview/knowledge-model.ts`); the view steps it on
 `requestAnimationFrame` and writes positions into the SVG through refs, so no frame goes through
 React; jitter scales with alpha so a cooled layout only orbits (no perpetual tremor), the orbit
 advances by wall time (one speed on every refresh rate), it settles before first paint and never
-orbits under `prefers-reduced-motion`. **Nodes carry no label** — a hover shows a tooltip with the
-label, source file, kind, degree and community. The non-functional `$ graphify query` hint was
-removed; only the `built <commit> · observed <time>` provenance line remains. The daemon endpoint,
-reader, projection and protocol schema were correct and are unchanged. **All eleven registered
+orbits under `prefers-reduced-motion`. **Edges are curved paths** bowed outward from the core with an
+animated flow dash (the Flow lens's language, a selection brightens and quickens its own), and a slow
+dashed orbit ring frames the graph (the Radial lens's). **Nothing on the canvas carries a text label
+— every name is a hover tooltip:** a node's tooltip shows its label, source file, kind, degree and
+community; a picker disc carries only initials and shows its project name on hover. The
+non-functional `$ graphify query` hint was removed; only the `built <commit> · observed <time>`
+provenance line remains. The daemon endpoint, reader, projection and protocol schema were correct
+and are unchanged. **All eleven registered
 projects have graphify output**, so the `graphify build` empty state is covered by unit tests only. **The Flow lens now moves on observed activity** (`OverviewSession.live`): a ribbon
 animates when its session has a retained event in the last ten minutes that is not
 `session.heartbeat`/`registered`/`native.linked`/`native.unlinked`, because turn-based GUI agents
