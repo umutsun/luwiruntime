@@ -7,6 +7,7 @@ import type { ConfigMutations } from './api/config-mutations.js';
 import type { ConfigResources } from './api/config-scope.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
 import type { IntelligenceResources } from './api/intelligence-scope.js';
+import type { KnowledgeGraph } from './api/knowledge-scope.js';
 import type { LeaseResources } from './api/lease-scope.js';
 import type { MessageMutations } from './api/message-mutations.js';
 import type { MessageResources } from './api/messages-scope.js';
@@ -73,6 +74,7 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   context: { eyebrow: 'Context evidence', heading: 'Context' },
   optimization: { eyebrow: 'Structural findings', heading: 'Optimization' },
   graph: { eyebrow: 'Operational graph', heading: 'Graph' },
+  knowledge: { eyebrow: 'Knowledge graph', heading: 'Knowledge graph' },
 };
 
 /** The project a `#/pulse/<projectId>` hash names; anything else is the runtime. */
@@ -232,6 +234,8 @@ export function DashboardApp({
   intelligenceResources = {},
   messageResources = {},
   messagesLoading = false,
+  knowledge,
+  knowledgeLoading = false,
   capabilityCatalogResources = {},
   capabilityCatalogLoading = false,
   configResources = {},
@@ -266,6 +270,10 @@ export function DashboardApp({
   messageResources?: Partial<MessageResources>;
   /** The on-demand message read has not returned yet. */
   messagesLoading?: boolean;
+  /** The per-project graphify knowledge graph; loaded only while `#/knowledge/<id>` is open. */
+  knowledge?: ResourceState<KnowledgeGraph> | undefined;
+  /** The on-demand knowledge-graph read has not returned yet. */
+  knowledgeLoading?: boolean;
   capabilityCatalogResources?: Partial<CapabilityCatalogResources>;
   /** The on-demand catalogue reads have not returned yet. */
   capabilityCatalogLoading?: boolean;
@@ -842,6 +850,12 @@ export function DashboardApp({
                   seeds={graphSeeds}
                   {...(loadSubgraph === undefined ? {} : { loadSubgraph })}
                 />
+              ) : route.name === 'knowledge' ? (
+                // TODO(Task 8): replace with the real KnowledgeView.
+                <>
+                  {knowledgeLoading ? <p className="eyebrow">Loading…</p> : null}
+                  <pre>{JSON.stringify(knowledge)}</pre>
+                </>
               ) : route.name === 'projects' ? (
                 <ProjectsView
                   snapshot={snapshot}

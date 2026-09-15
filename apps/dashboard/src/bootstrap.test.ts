@@ -5,10 +5,12 @@ import {
   needsCapabilityCatalogOf,
   needsConfigOf,
   needsIntelligenceOf,
+  needsKnowledgeOf,
   needsMessagesOf,
   resourcesOf,
   seedActivity,
   selectedAgentOf,
+  selectedKnowledgeProjectOf,
   selectedProjectOf,
 } from './bootstrap.js';
 import type { PulseInput } from './pulse/model.js';
@@ -94,6 +96,18 @@ describe('needsMessagesOf', () => {
     }
     for (const route of ['#/capabilities', '#/activity', '#/config']) {
       expect(needsMessagesOf(route), route).toBe(false);
+    }
+  });
+});
+
+describe('knowledge scope selectors', () => {
+  it('loads only on #/knowledge with a project', () => {
+    expect(needsKnowledgeOf('#/knowledge/p1')).toBe(true);
+    expect(selectedKnowledgeProjectOf('#/knowledge/p1')).toBe('p1');
+    expect(needsKnowledgeOf('#/knowledge')).toBe(false); // no project → nothing to load
+    expect(selectedKnowledgeProjectOf('#/knowledge')).toBeUndefined();
+    for (const route of ['#/pulse', '#/graph', '#/messages']) {
+      expect(needsKnowledgeOf(route), route).toBe(false);
     }
   });
 });

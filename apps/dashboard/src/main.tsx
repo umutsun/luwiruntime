@@ -18,6 +18,7 @@ import {
   type IntelligenceResourceKey,
   type IntelligenceResources,
 } from './api/intelligence-scope.js';
+import { loadKnowledgeScope, type KnowledgeGraph } from './api/knowledge-scope.js';
 import {
   agentPairResourceKeys,
   agentPairResourcesForEvent,
@@ -76,8 +77,10 @@ import {
   resourcesOf,
   seedActivity,
   selectedAgentOf,
+  selectedKnowledgeProjectOf,
   selectedProjectOf,
 } from './bootstrap.js';
+import type { ResourceState } from './components/panel.js';
 import { DashboardErrorBoundary } from './error-boundary.js';
 import type { PulseInput } from './pulse/model.js';
 import {
@@ -179,6 +182,12 @@ function DashboardRoute() {
   const needsMessagesRef = useRef(needsMessages);
   needsMessagesRef.current = needsMessages;
 
+  const [knowledgeProjectId, setKnowledgeProjectId] = useState(() =>
+    selectedKnowledgeProjectOf(window.location.hash),
+  );
+  const [knowledge, setKnowledge] = useState<ResourceState<KnowledgeGraph>>();
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+
   const [needsCatalog, setNeedsCatalog] = useState(() =>
     needsCapabilityCatalogOf(window.location.hash),
   );
@@ -203,6 +212,7 @@ function DashboardRoute() {
       setNeedsMessages(needsMessagesOf(window.location.hash));
       setNeedsCatalog(needsCapabilityCatalogOf(window.location.hash));
       setNeedsConfig(needsConfigOf(window.location.hash));
+      setKnowledgeProjectId(selectedKnowledgeProjectOf(window.location.hash));
     };
     window.addEventListener('hashchange', update);
     return () => window.removeEventListener('hashchange', update);
@@ -235,6 +245,25 @@ function DashboardRoute() {
     );
     return () => controller.abort();
   }, [needsMessages, requestNumber]);
+
+  useEffect(() => {
+    if (knowledgeProjectId === undefined) {
+      setKnowledge(undefined);
+      setKnowledgeLoading(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setKnowledgeLoading(true);
+    setKnowledge(undefined); // clear so a slow load never shows another project's graph
+    void loadKnowledgeScope(client, knowledgeProjectId, { signal: controller.signal }).then(
+      (next) => {
+        if (controller.signal.aborted) return;
+        setKnowledge(next);
+        setKnowledgeLoading(false);
+      },
+    );
+    return () => controller.abort();
+  }, [knowledgeProjectId, requestNumber]);
 
   useEffect(() => {
     if (!needsCatalog) return undefined;
@@ -544,6 +573,8 @@ function DashboardRoute() {
       intelligenceLoading={intelligenceLoading}
       messageResources={messageResources}
       messagesLoading={messagesLoading}
+      knowledge={knowledge}
+      knowledgeLoading={knowledgeLoading}
       capabilityCatalogResources={capabilityCatalogResources}
       capabilityCatalogLoading={capabilityCatalogLoading}
       configResources={configResources}
