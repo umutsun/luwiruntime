@@ -501,7 +501,9 @@ describe('projectKnowledgeGraph', () => {
       { id: 'b::hub', sourceFile: 'src/b.ts', community: 2, communityName: 'b' },
     ];
     const links: KnowledgeDocument['links'] = [
-      { source: 'a::l1', target: 'a::hub', relation: 'imports' },
+      // a::l1 imports the god (not a::hub) so core::god out-degrees a::hub — the
+      // test asserts core::god is the god under godNodeCount:1.
+      { source: 'a::l1', target: 'core::god', relation: 'imports' },
       { source: 'a::l2', target: 'a::hub', relation: 'imports' },
       { source: 'a::l3', target: 'a::hub', relation: 'imports' },
       { source: 'a::hub', target: 'core::god', relation: 'imports' },
