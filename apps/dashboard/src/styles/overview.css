@@ -781,9 +781,6 @@
   opacity: 0.9;
   animation: ov-fade 1s 0.6s both;
 }
-.radial__core-disc--ink + .radial__core-gauge {
-  stroke: var(--paper);
-}
 .radial__node {
   transform-box: fill-box;
   transform-origin: center;

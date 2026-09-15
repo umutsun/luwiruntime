@@ -18,7 +18,13 @@ import {
  * node's active sessions by tone; packets on a spoke count its working ones.
  */
 const CIRCUMFERENCE = 2 * Math.PI * RADIAL_NODE;
-const CORE_CIRCUMFERENCE = 2 * Math.PI * 46;
+/**
+ * The core rate gauge rides a ring OUTSIDE the core disc (r 58) and its centred
+ * "N EVENTS / MIN" label, so the arc never crosses the text. It sits just past the
+ * dashed guide ring (r 70), which reads as its track.
+ */
+const CORE_GAUGE_RADIUS = 74;
+const CORE_CIRCUMFERENCE = 2 * Math.PI * CORE_GAUGE_RADIUS;
 const pct = (value: number): string => `${((value / RADIAL_SIZE) * 100).toFixed(2)}%`;
 
 export function RadialView({
@@ -99,7 +105,7 @@ export function RadialView({
                 className="radial__core-gauge"
                 cx={RADIAL_CENTRE}
                 cy={RADIAL_CENTRE}
-                r={46}
+                r={CORE_GAUGE_RADIUS}
                 strokeDasharray={`${(coreShare * CORE_CIRCUMFERENCE).toFixed(1)} ${CORE_CIRCUMFERENCE.toFixed(1)}`}
                 transform={`rotate(-90 ${String(RADIAL_CENTRE)} ${String(RADIAL_CENTRE)})`}
               />
