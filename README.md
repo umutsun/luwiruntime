@@ -347,6 +347,19 @@ this path for the attach sessions they own. Antigravity's application-global MCP
 the conversation selected when that launcher starts; file rotation does not add cross-conversation
 routing.
 
+**Dashboard overview, lenses, and the knowledge graph:** the dashboard is a single overview at
+`#/pulse` rendered from one pure model, with a 56 px header, a docked drill-down, and a stream
+ticker. The main canvas is one of five switchable lenses over that model: Board, Flow, Radial,
+Timeline, and Knowledge. The Knowledge lens shows one project's graphify knowledge graph, read-only:
+nothing focused draws the projects as clickable discs, and focusing one opens its bounded
+god/hub/symbol community graph read from `graphify-out/graph.json`; LUWI reads that output and never
+runs graphify. The twelve detail routes (sessions, agents, usage, context, optimization, graph,
+messages, capabilities, config, projects, runtime, activity) are reached from the drill-down's links.
+The dashboard writes only its own three mutation surfaces: config plan/approve/apply/rollback,
+message transitions, and project registration and settings (name, remote, and default branch, never
+the path). A reader that never became ready is dropped rather than left as a zombie, and `luwi_join`
+revives a dropped session from its own record so a GUI agent's inbox keeps answering after a restart.
+
 ## Architecture and security
 
 Redis is the only runtime datastore. It is the operational database, durable event bus,

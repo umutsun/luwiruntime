@@ -1240,6 +1240,21 @@ authoritative: exact child exit for `agent run`, exact `SessionEnd` for Claude, 
 detector, wake task, service, or watchdog was added; Redis integration verification remains gated by
 an explicit `LUWI_TEST_REDIS_URL`.
 
+**Built after ADR 0030 (2026-09-08 → 2026-09-15).** ADR 0031 added the native inbox bridge:
+`luwi session bridge native <claude|codex|gemini>` holds one LUWI session and runs the native CLI
+headless per claimed message so an agent's inbox answers itself; it spawns a process and injects into
+no terminal, so sections 3 and 21 hold. ADR 0032 rebuilt the dashboard as one overview (`#/pulse`)
+with five switchable lenses — Board, Flow, Radial, Timeline, and Knowledge — over one pure model,
+with a docked drill-down and a stream ticker; the twelve detail routes are reached from the
+drill-down. ADR 0033 added in-place project settings: register a project and edit its name, remote,
+and default branch (never its path), a third dashboard mutation surface beside config and messages.
+ADR 0034 made a reader-owned session revival keep a dropped session usable through `luwi_join`. The
+**Knowledge lens** renders each project's graphify knowledge graph read-only, read from that
+project's `graphify-out/graph.json` the ADR 0029 bounded way — LUWI reads graphify's structural
+output and never runs graphify or builds a graph of its own. This is **not** the semantic or vector
+knowledge graph the prohibition below still forbids: nothing here computes embeddings, similarity, or
+a LUWI-owned semantic index.
+
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers
 `POST /api/v1/config/reconcile`), lifecycle/release scoring, task orchestration, a semantic or
