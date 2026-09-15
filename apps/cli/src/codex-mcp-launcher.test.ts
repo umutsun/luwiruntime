@@ -128,13 +128,16 @@ describe('Codex MCP attach resolution', () => {
   });
 
   it('uses immediate self-resolution instead of waiting for SessionStart', async () => {
-    const source = await readFile(
-      join(import.meta.dirname, '..', '..', '..', 'scripts', 'codex-mcp-launch.mjs'),
-      'utf8',
-    );
+    // The deployed launcher (~/.codex/config.toml) is v3: a thin thread-id
+    // normaliser that delegates to v2, where the self-resolution lives. v1
+    // (`codex-mcp-launch.mjs`) was the pre-migration launcher and is deleted.
+    const scripts = join(import.meta.dirname, '..', '..', '..', 'scripts');
+    const entry = await readFile(join(scripts, 'codex-mcp-launch-v3.mjs'), 'utf8');
+    expect(entry).toContain("await import('./codex-mcp-launch-v2.mjs')");
 
-    expect(source).toContain('resolveCodexAttach({');
-    expect(source).toContain('cwd: process.cwd()');
-    expect(source).not.toContain('claimRecord(Date.now() + WAIT_MS');
+    const resolver = await readFile(join(scripts, 'codex-mcp-launch-v2.mjs'), 'utf8');
+    expect(resolver).toContain('resolveCodexAttach({');
+    expect(resolver).toContain('cwd: process.cwd()');
+    expect(resolver).not.toContain('claimRecord(Date.now() + WAIT_MS');
   });
 });
