@@ -104,50 +104,17 @@ export function Overview({
   return (
     <div className="overview">
       <div className="overview__main">
+        {/* One stat strip for every lens: the same header row and figures whichever
+            lens is open, so switching a lens never changes the numbers or their shape. */}
+        <StatsRow stats={overview.stats} variant="fill" onSelect={toRuntime} />
         {view === 'board' ? (
-          <>
-            <StatsRow
-              stats={overview.stats}
-              variant="inline"
-              onSelect={toRuntime}
-              trailing={
-                <span className="board__legend" aria-hidden="true">
-                  <span className="board__legend-item">
-                    <span className="board__legend-swatch board__legend-swatch--blocked" />
-                    blocked
-                  </span>
-                  <span className="board__legend-item">
-                    <span className="board__legend-swatch board__legend-swatch--active" />
-                    active
-                  </span>
-                  <span className="board__legend-item">
-                    <span className="board__legend-swatch board__legend-swatch--quiet" />
-                    quiet
-                  </span>
-                </span>
-              }
-            />
-            <BoardView overview={overview} focus={resolved} realtime={realtime} onFocus={onFocus} />
-          </>
+          <BoardView overview={overview} focus={resolved} realtime={realtime} onFocus={onFocus} />
         ) : view === 'flow' ? (
-          <>
-            <StatsRow stats={overview.stats} variant="fill" onSelect={toRuntime} />
-            <FlowView overview={overview} focus={resolved} onFocus={onFocus} />
-          </>
+          <FlowView overview={overview} focus={resolved} onFocus={onFocus} />
         ) : view === 'radial' ? (
-          <>
-            <StatsRow stats={overview.stats} variant="bars" onSelect={toRuntime} />
-            <RadialView overview={overview} focus={resolved} onFocus={onFocus} />
-          </>
+          <RadialView overview={overview} focus={resolved} onFocus={onFocus} />
         ) : (
-          <>
-            <StatsRow
-              stats={overview.stats.filter((stat) => stat.key !== 'events')}
-              variant="plain"
-              onSelect={toRuntime}
-            />
-            <TimelineView overview={overview} focus={resolved} onFocus={onFocus} />
-          </>
+          <TimelineView overview={overview} focus={resolved} onFocus={onFocus} />
         )}
         <Ticker
           rows={overview.ticker}

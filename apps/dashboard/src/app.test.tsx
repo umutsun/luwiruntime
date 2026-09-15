@@ -240,7 +240,9 @@ describe('overview shell', () => {
   it('shows the token figure by its grade and never as a sum across grades', () => {
     shell(input());
     const totals = screen.getByRole('group', { name: 'Runtime totals' });
-    expect(within(totals).getByText('tokens · exact')).toBeTruthy();
+    // The unified stat strip renders the grade label as-is (the old Board `inline`
+    // variant lowercased it); the figure is still one grade, never the sum.
+    expect(within(totals).getByText('Tokens · exact')).toBeTruthy();
     expect(within(totals).getByText('10')).toBeTruthy();
     expect(within(totals).queryByText('100')).toBeNull();
   });

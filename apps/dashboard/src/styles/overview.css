@@ -164,36 +164,6 @@
   letter-spacing: 0;
   text-transform: none;
 }
-.board__legend {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3h);
-  margin-left: auto;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-2xs);
-}
-.board__legend-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1h);
-}
-.board__legend-swatch {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-}
-.board__legend-swatch--blocked {
-  background: var(--ink);
-}
-.board__legend-swatch--active {
-  border: 1px solid var(--border-strong);
-  background: var(--surface-3);
-}
-.board__legend-swatch--quiet {
-  border: 1px dashed var(--border-strong);
-}
-
 /* ---- board ------------------------------------------------------------- */
 .board {
   display: flex;
