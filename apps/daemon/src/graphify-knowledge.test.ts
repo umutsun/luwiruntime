@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { knowledgeGraphResponseSchema } from '@luwi/protocol';
+
 import { GraphifyObserverError } from './graphify-observer.js';
 import { readGraphifyKnowledge, projectKnowledgeGraph } from './graphify-knowledge.js';
 import type { KnowledgeDocument } from './graphify-knowledge.js';
@@ -124,5 +126,26 @@ describe('projectKnowledgeGraph', () => {
     expect(out.edges.every((e) => e.kind === 'import' || e.kind === 'call')).toBe(true);
     // label is the id's terminal segment
     expect(byId.get('a::hub')?.label).toBe('hub');
+  });
+
+  it('guards an empty community name and an over-long derived label so the protocol schema still parses', () => {
+    const longTail = 'x'.repeat(300);
+    const nodes: KnowledgeDocument['nodes'] = [
+      { id: 'core::a', sourceFile: 'src/core.ts', community: 0, communityName: '' },
+      { id: `pkg::${longTail}`, sourceFile: 'src/pkg.ts' },
+    ];
+    const out = projectKnowledgeGraph({
+      nodes,
+      links: [],
+      observedAt: '2026-09-15T00:00:00.000Z',
+    });
+
+    expect(() => knowledgeGraphResponseSchema.parse(out)).not.toThrow();
+
+    const community = out.communities.find((c) => c.id === 0);
+    expect(community?.name.length).toBeGreaterThan(0);
+
+    const longNode = out.nodes.find((n) => n.id === `pkg::${longTail}`);
+    expect(longNode?.label.length).toBeLessThanOrEqual(256);
   });
 });

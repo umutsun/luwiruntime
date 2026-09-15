@@ -117,10 +117,14 @@ const DEFAULT_GOD_NODE_COUNT = 6;
 const DEFAULT_MAX_RENDER_NODES = 40;
 const DEFAULT_MAX_COMMUNITIES = 12;
 
-/** The id's terminal segment: graphify ids are path-like (`a/b::symbol`). */
+/**
+ * The id's terminal segment: graphify ids are path-like (`a/b::symbol`).
+ * Capped to the protocol's `label` limit (256) since an id can be up to 1024;
+ * falls back to the (also-capped) id if the computed label is somehow empty.
+ */
 function labelOf(id: string): string {
   const tail = id.split(/[/:]/u).filter((part) => part !== '');
-  return tail[tail.length - 1] ?? id;
+  return (tail[tail.length - 1] ?? id).slice(0, 256);
 }
 
 const EMPTY: KnowledgeGraphResponse = {
@@ -208,13 +212,19 @@ export function projectKnowledgeGraph(
   const communityAgg = new Map<number, { id: number; name: string; size: number }>();
   for (const node of document.nodes) {
     if (node.community === undefined) continue;
+    // An empty/whitespace communityName is treated as absent — the protocol
+    // requires a non-empty community name, but the reader's schema allows "".
+    const named =
+      node.communityName !== undefined && node.communityName.trim() !== ''
+        ? node.communityName
+        : undefined;
     const existing = communityAgg.get(node.community) ?? {
       id: node.community,
-      name: node.communityName ?? `community ${String(node.community)}`,
+      name: named ?? `community ${String(node.community)}`,
       size: 0,
     };
     existing.size += 1;
-    if (node.communityName !== undefined) existing.name = node.communityName;
+    if (named !== undefined) existing.name = named;
     communityAgg.set(node.community, existing);
   }
   const communities = [...communityAgg.values()]
