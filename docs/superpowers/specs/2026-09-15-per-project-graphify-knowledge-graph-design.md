@@ -29,9 +29,10 @@ inspector, a project switcher, and a stat strip. This builds that as a **read-on
 
 Three units, each independently testable:
 
-### A. Bounded reader — `@luwi/adapters`
+### A. Bounded reader — `apps/daemon` (beside `graphify-observer.ts`)
 
-A new reader beside `graphify-observer.ts` (or an added method on it) that returns graphify's own
+A new reader beside `graphify-observer.ts` (which lives in `apps/daemon/src/`, where graphify reading
+already lives per §12/§18) that returns graphify's own
 structure rather than the file-collapsed projection the observer produces. It reuses the observer's
 document read: the `GRAPHIFY_OUTPUT_RELATIVE_PATH`, the `MAX_OUTPUT_BYTES` size cap, and the
 `nodeSchema`/`linkSchema` parse. It does **not** run graphify and does **not** execute anything found
@@ -51,9 +52,10 @@ KnowledgeGraphDocument = {
 `null` when the project has no `graphify-out/graph.json` (an honest absence, not an error). A file that
 exceeds the cap or fails to parse throws the existing `GraphifyObserverError` codes.
 
-### B. Bounded projection — `@luwi/runtime` (pure)
+### B. Bounded projection — `apps/daemon` (pure)
 
-A pure function `projectKnowledgeGraph(document, options)` turns the raw document into the bounded
+A pure function `projectKnowledgeGraph(document, options)` — co-located with reader A in the daemon,
+since the two change together and are graphify-specific — turns the raw document into the bounded
 render model. This is where the graph is made small enough to draw (real graphify graphs reach ~20k
 nodes; the view shows tens). Deterministic, no I/O, unit-tested in isolation.
 
