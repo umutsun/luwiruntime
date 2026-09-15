@@ -132,7 +132,35 @@ export type OverviewSession = {
   title?: string;
   context: SessionContextEvidence;
   eventCount: number;
+  /**
+   * Active, with a retained event inside `ACTIVITY_WINDOW_MS` that is not
+   * presence or lifecycle. Turn-based GUI agents never report `thinking`, so
+   * a status alone leaves a busy session reading idle; this is the observed
+   * signal the Flow lens animates on instead of a status it was never given.
+   */
+  live: boolean;
 };
+
+/** The window a retained event keeps a session `live` for. */
+export const ACTIVITY_WINDOW_MS = 10 * 60_000;
+/** Events every online session emits whether or not it is doing anything. */
+const PRESENCE_EVENT_TYPES = new Set([
+  'session.heartbeat',
+  'session.registered',
+  'session.native.linked',
+  'session.native.unlinked',
+]);
+
+/** The newest retained event that shows work, from a stream-ordered list. */
+function lastActivityMs(events: readonly DashboardEvent[] | undefined): number | undefined {
+  if (events === undefined) return undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]!;
+    if (PRESENCE_EVENT_TYPES.has(event.type)) continue;
+    return parseMs(event.occurredAt);
+  }
+  return undefined;
+}
 
 /** A badge derived from sessions only; blocked outranks a count. */
 export type Badge = { label: string; tone: 'ink' | 'outline' | 'dim' };
@@ -429,6 +457,11 @@ export function buildOverview(
         session.status === 'idle' &&
         respondedAt !== undefined &&
         nowMs - respondedAt <= RESPONDED_WINDOW_MS;
+      const activityMs = lastActivityMs(eventsBySession.get(session.id));
+      const live =
+        activeIds.has(session.id) &&
+        activityMs !== undefined &&
+        nowMs - activityMs <= ACTIVITY_WINDOW_MS;
       return {
         id: session.id,
         agentId: session.agentId,
@@ -451,6 +484,7 @@ export function buildOverview(
         ...(typeof title === 'string' && title.trim() !== '' ? { title } : {}),
         context: session.context,
         eventCount: eventsBySession.get(session.id)?.length ?? 0,
+        live,
       };
     })
     .sort((left, right) => (right.startedMs ?? 0) - (left.startedMs ?? 0));
@@ -1117,6 +1151,8 @@ export type FlowRibbon = {
   width: number;
   tone: Tone;
   dim: boolean;
+  /** The session showed work recently (`OverviewSession.live`); the ribbon moves. */
+  live: boolean;
   sessionId: string;
 };
 
@@ -1263,6 +1299,7 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
       width,
       tone: session.tone,
       dim,
+      live: session.live,
       sessionId: session.id,
     });
     ribbons.push({
@@ -1276,6 +1313,7 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
       width,
       tone: session.tone,
       dim,
+      live: session.live,
       sessionId: session.id,
     });
   }

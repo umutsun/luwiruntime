@@ -257,6 +257,24 @@ describe('buildOverview', () => {
     expect(model.agents[0]?.models).toEqual(['model-x']);
   });
 
+  it('marks a session live on a recent non-presence event, never on heartbeats alone', () => {
+    const model = overview();
+    const live = new Map(model.sessions.map((session) => [session.id, session.live]));
+    // s-think: a context event 4 min ago; s-blocked: a lease event 3 min ago.
+    expect(live.get('s-think')).toBe(true);
+    expect(live.get('s-blocked')).toBe(true);
+    // s-wait has a heartbeat only, which every online session emits regardless.
+    expect(live.get('s-wait')).toBe(false);
+    const ribbons = layoutFlow(model, RUNTIME_FOCUS).ribbons;
+    expect(
+      new Set(ribbons.filter((ribbon) => ribbon.live).map((ribbon) => ribbon.sessionId)),
+    ).toEqual(new Set(['s-think', 's-blocked']));
+    // Seven minutes later the 4-minute-old event is past the window; the 3-minute one is on it.
+    const later = buildOverview(buildPulseSnapshot(input()), events(), NOW + 7 * 60_000);
+    expect(later.sessions.find((session) => session.id === 's-think')?.live).toBe(false);
+    expect(later.sessions.find((session) => session.id === 's-blocked')?.live).toBe(true);
+  });
+
   it('lists the statuses present in vocabulary order, never a "running"', () => {
     const model = overview();
     expect(model.statuses.map((status) => status.status)).toEqual([

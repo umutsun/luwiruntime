@@ -71,7 +71,7 @@ export function FlowView({
           {layout.ribbons.map((ribbon, index) => (
             <g
               key={ribbon.key}
-              className={`flow__ribbon flow__ribbon--${ribbon.tone}${ribbon.dim ? ' flow__ribbon--dim' : ''}`}
+              className={`flow__ribbon flow__ribbon--${ribbon.tone}${ribbon.live ? ' flow__ribbon--live' : ''}${ribbon.dim ? ' flow__ribbon--dim' : ''}`}
             >
               <path
                 className="flow__ribbon-base"
@@ -145,6 +145,9 @@ export function FlowView({
             </div>
           ))}
         </div>
+        <p className="flow__note" aria-hidden="true">
+          moving ribbon = working status, or an event in the last 10 min
+        </p>
       </div>
     </div>
   );
