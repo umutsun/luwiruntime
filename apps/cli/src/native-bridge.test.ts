@@ -141,6 +141,19 @@ describe('nativeHeadlessArguments', () => {
     // The resume id is codex-only; other providers ignore it.
     expect(nativeHeadlessArguments('claude', 'P', [], 'sess-1')).toEqual(['--print', 'P']);
   });
+
+  it('strips --approve-for-me when resuming codex (exec resume rejects it)', () => {
+    // codex `exec` accepts --approve-for-me but `exec resume` (codex 0.154) does not, so it
+    // must be dropped on resume while the -c MCP bindings and --skip-git-repo-check remain.
+    expect(
+      nativeHeadlessArguments(
+        'codex',
+        'P',
+        ['--approve-for-me', '--skip-git-repo-check', '-c', 'k=v'],
+        'sess-1',
+      ),
+    ).toEqual(['exec', 'resume', '--skip-git-repo-check', '-c', 'k=v', 'sess-1', 'P']);
+  });
 });
 
 describe('codexMcpBindingArgs', () => {

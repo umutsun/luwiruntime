@@ -62,9 +62,19 @@ export function nativeHeadlessArguments(
     case 'codex':
       // `codex exec [OPTIONS] [PROMPT]`; `codex exec resume [OPTIONS] [SESSION_ID]
       // [PROMPT]` when resuming. The prompt is the final positional either way.
-      return codexResumeSessionId === undefined
-        ? ['exec', ...nativeArgs, prompt]
-        : ['exec', 'resume', ...nativeArgs, codexResumeSessionId, prompt];
+      if (codexResumeSessionId === undefined) return ['exec', ...nativeArgs, prompt];
+      // `--approve-for-me` is accepted by `codex exec` but NOT by `codex exec resume`
+      // (codex 0.154 dropped it from the resume subcommand — resume inherits the session's
+      // approval policy set on the initial `exec`). Passing it on resume makes codex exit 2
+      // with "unexpected argument '--approve-for-me'", killing every task after the first.
+      // Strip it here; the `-c` MCP bindings and `--skip-git-repo-check` stay valid on resume.
+      return [
+        'exec',
+        'resume',
+        ...nativeArgs.filter((arg) => arg !== '--approve-for-me'),
+        codexResumeSessionId,
+        prompt,
+      ];
     case 'gemini':
       return ['--prompt', prompt, ...nativeArgs];
     case 'antigravity':
