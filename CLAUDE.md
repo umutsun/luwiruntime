@@ -379,17 +379,22 @@ opens as a drawer over the overview rather than a page. And the project detail d
 as a separate `#/knowledge/<id>` route with a static ring layout; the owner rejected it as a page
 disconnected from the overview and unlike the `Graph.dc.html` comp. It is now a `VIEW_CHOICE` beside
 Board/Flow/Radial/Timeline, drawn in the same frame (uniform stat strip, ticker, the docked aside
-swapped for a knowledge inspector on the `drill__*` anatomy). The lens shows the **focused** project
-(`focusProject`, else the first on the overview); its PROJECT switcher reports a project focus, so the
-hash follows and every lens agrees. `GET /api/v1/projects/:id/knowledge-graph` is read only while the
-lens is open and once per project (graphify output changes on git hooks, not per snapshot), through a
-`loadKnowledge` prop threaded like `loadSessionUsage`. The canvas is the comp's 3D-orbit force
-simulation ported verbatim as a pure, seeded model (`overview/knowledge-model.ts`); the view steps
-it on `requestAnimationFrame` and writes positions into the SVG through refs, so no frame goes
-through React; it settles before first paint and never orbits under `prefers-reduced-motion`. The
-daemon endpoint, reader, projection and protocol schema were correct and are unchanged. **All
-eleven registered projects have graphify output**, so the `graphify build` empty state is covered by
-unit tests only. **The Flow lens now moves on observed activity** (`OverviewSession.live`): a ribbon
+swapped for a knowledge inspector on the `drill__*` anatomy). **There is no project switcher:** with
+nothing focused the lens draws the projects themselves as clickable discs in the centre (the picker),
+and a click focuses one (`onFocus({kind:'project'})`, so the hash follows and every lens agrees) and
+opens its graph; the focused project sits at the centre as an ink core disc that clicks back to the
+picker. `GET /api/v1/projects/:id/knowledge-graph` is read only while the lens is open and once per
+project (graphify output changes on git hooks, not per snapshot), through a `loadKnowledge` prop
+threaded like `loadSessionUsage`. The canvas is the comp's 3D-orbit force simulation ported verbatim
+as a pure, seeded model (`overview/knowledge-model.ts`); the view steps it on
+`requestAnimationFrame` and writes positions into the SVG through refs, so no frame goes through
+React; jitter scales with alpha so a cooled layout only orbits (no perpetual tremor), the orbit
+advances by wall time (one speed on every refresh rate), it settles before first paint and never
+orbits under `prefers-reduced-motion`. **Nodes carry no label** — a hover shows a tooltip with the
+label, source file, kind, degree and community. The non-functional `$ graphify query` hint was
+removed; only the `built <commit> · observed <time>` provenance line remains. The daemon endpoint,
+reader, projection and protocol schema were correct and are unchanged. **All eleven registered
+projects have graphify output**, so the `graphify build` empty state is covered by unit tests only. **The Flow lens now moves on observed activity** (`OverviewSession.live`): a ribbon
 animates when its session has a retained event in the last ten minutes that is not
 `session.heartbeat`/`registered`/`native.linked`/`native.unlinked`, because turn-based GUI agents
 never report `thinking` and heartbeats alone would animate every online session forever; the board

@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { KnowledgeGraph } from '../api/knowledge-scope.js';
-import { KnowledgeInspector, KnowledgeView, shortLabel } from './knowledge-view.js';
+import { KnowledgeInspector, KnowledgeView } from './knowledge-view.js';
 
 afterEach(cleanup);
 
@@ -58,24 +58,25 @@ const empty: KnowledgeGraph = {
 };
 
 const projects = [
-  { id: 'p1', name: 'Alpha' },
-  { id: 'p2', name: 'Beta' },
+  { id: 'p1', name: 'Alpha', initials: 'AL' },
+  { id: 'p2', name: 'Beta', initials: 'BE' },
 ];
+const alpha = projects[0]!;
 
 function lens(
   overrides: Partial<{
-    projectId: string | undefined;
+    project: (typeof projects)[number] | undefined;
     graph: Parameters<typeof KnowledgeView>[0]['graph'];
     selectedId: string;
   }> = {},
 ) {
   const onSelectNode = vi.fn();
   const onFocus = vi.fn();
-  const projectId = 'projectId' in overrides ? overrides.projectId : 'p1';
+  const project = 'project' in overrides ? overrides.project : alpha;
   const utils = render(
     <KnowledgeView
       projects={projects}
-      {...(projectId === undefined ? {} : { projectId })}
+      {...(project === undefined ? {} : { project })}
       {...(overrides.graph === undefined ? {} : { graph: overrides.graph })}
       {...(overrides.selectedId === undefined ? {} : { selectedId: overrides.selectedId })}
       emptyLabel="No registered projects"
@@ -88,15 +89,31 @@ function lens(
 
 describe('KnowledgeView', () => {
   it('says why there is nothing to draw when the overview has no project', () => {
-    lens({ projectId: undefined });
+    const { container } = lens({ project: undefined });
+    render(
+      <KnowledgeView
+        projects={[]}
+        emptyLabel="No registered projects"
+        onSelectNode={vi.fn()}
+        onFocus={vi.fn()}
+      />,
+    );
     expect(screen.getByText('No registered projects')).toBeTruthy();
-    expect(screen.queryByRole('combobox')).toBeNull();
+    // With projects but none focused, the picker draws the projects themselves.
+    expect(container.querySelectorAll('.knowledge__project')).toHaveLength(2);
   });
 
-  it('shows a busy loading state while the read is in flight, with the switcher', () => {
+  it('focuses a project when its disc on the picker is clicked', () => {
+    const { onFocus } = lens({ project: undefined });
+    fireEvent.click(screen.getByRole('button', { name: 'Focus project Beta' }));
+    expect(onFocus).toHaveBeenCalledWith({ kind: 'project', id: 'p2' });
+  });
+
+  it('shows a busy loading state while the read is in flight', () => {
     lens({ graph: { state: 'loading' } });
     expect(screen.getByText('Loading').getAttribute('aria-busy')).toBe('true');
-    expect(screen.getByRole('combobox', { name: 'Knowledge graph project' })).toBeTruthy();
+    // The focused project sits at the centre and leads back to all projects.
+    expect(screen.getByRole('button', { name: 'Back to all projects' })).toBeTruthy();
   });
 
   it('reports a failed read as unavailable, never as the empty state', () => {
@@ -110,25 +127,54 @@ describe('KnowledgeView', () => {
     expect(screen.getByText(/graphify build/i)).toBeTruthy();
   });
 
-  it('draws a node per record, the legend figures and the provenance', () => {
+  it('draws a node per record and the legend figures, and carries no label on the node', () => {
     const { container } = lens({ graph: { state: 'ready', data: graph } });
     expect(container.querySelectorAll('.knowledge__node')).toHaveLength(2);
     expect(container.querySelectorAll('.knowledge__edge--import')).toHaveLength(1);
     const legend = container.querySelector('.knowledge__legend') as HTMLElement;
     expect(within(legend).getByText('communities')).toBeTruthy();
     expect(screen.getByText('abc123def456')).toBeTruthy();
-    expect(screen.getByText(/what breaks if I change god/)).toBeTruthy();
-    // A symbol is unlabelled until it is selected or a neighbour of the selection.
-    expect(container.querySelectorAll('.knowledge__node-label')).toHaveLength(1);
+    // Labels are gone from the canvas: a node shows its name only on hover.
+    expect(container.querySelector('.knowledge__node-label')).toBeNull();
+    expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
-  it('marks only the communities the endpoint named and keeps the tail of a long label', () => {
+  it('shows a hover tooltip with the node label and drops it on leave', () => {
+    lens({ graph: { state: 'ready', data: graph } });
+    const node = screen.getByRole('button', { name: 'Select god' });
+    fireEvent.mouseEnter(node);
+    const tip = screen.getByRole('tooltip');
+    expect(within(tip).getByText('god')).toBeTruthy();
+    expect(within(tip).getByText('src/g.ts')).toBeTruthy();
+    fireEvent.mouseLeave(node);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('reports a node click as a selection and a background click as clearing it', () => {
+    const { container, onSelectNode } = lens({ graph: { state: 'ready', data: graph } });
+    fireEvent.click(screen.getByRole('button', { name: 'Select god' }));
+    expect(onSelectNode).toHaveBeenLastCalledWith('g::god');
+    fireEvent.click(container.querySelector('.knowledge__svg') as Element);
+    expect(onSelectNode).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it('marks a selection edge active and clears the selection on a re-click', () => {
+    const { container, onSelectNode } = lens({
+      graph: { state: 'ready', data: graph },
+      selectedId: 'g::god',
+    });
+    expect(container.querySelector('.knowledge__edge--active')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Select god' }));
+    expect(onSelectNode).toHaveBeenLastCalledWith(undefined);
+  });
+
+  it('marks only the communities the endpoint named', () => {
     const wide: KnowledgeGraph = {
       ...graph,
       nodes: [
         ...graph.nodes,
         {
-          id: 'x::apps_dashboard_src_overview_knowledge_model',
+          id: 'x::hub',
           label: 'apps_dashboard_src_overview_knowledge_model',
           sourceFile: 'apps/dashboard/src/overview/knowledge-model.ts',
           community: 7,
@@ -142,39 +188,12 @@ describe('KnowledgeView', () => {
     // Community 7 anchors a ring position but is not in `communities`, so no mark.
     const marks = [...container.querySelectorAll('.knowledge__community-mark')];
     expect(marks.map((mark) => mark.textContent)).toEqual(['graph']);
-    const short = shortLabel('apps_dashboard_src_overview_knowledge_model');
-    expect(short).toBe('…verview_knowledge_model');
-    expect(screen.getByText(short)).toBeTruthy();
-    expect(shortLabel('short')).toBe('short');
   });
 
-  it('reports a node click as a selection and a background click as clearing it', () => {
-    const { container, onSelectNode } = lens({ graph: { state: 'ready', data: graph } });
-    fireEvent.click(screen.getByRole('button', { name: 'Select god' }));
-    expect(onSelectNode).toHaveBeenLastCalledWith('g::god');
-    fireEvent.click(container.querySelector('.knowledge__svg') as Element);
-    expect(onSelectNode).toHaveBeenLastCalledWith(undefined);
-  });
-
-  it('labels the neighbours of a selection and marks its edge active', () => {
-    const { container, onSelectNode } = lens({
-      graph: { state: 'ready', data: graph },
-      selectedId: 'g::god',
-    });
-    expect(container.querySelectorAll('.knowledge__node-label')).toHaveLength(2);
-    expect(container.querySelector('.knowledge__edge--active')).not.toBeNull();
-    expect(screen.getByText(/path god/)).toBeTruthy();
-    // Clicking the selected node again clears the selection.
-    fireEvent.click(screen.getByRole('button', { name: 'Select god' }));
-    expect(onSelectNode).toHaveBeenLastCalledWith(undefined);
-  });
-
-  it('reports the switcher as a project focus, so every lens follows it', () => {
+  it('returns to all projects when the centre disc is clicked', () => {
     const { onFocus } = lens({ graph: { state: 'ready', data: graph } });
-    fireEvent.change(screen.getByRole('combobox', { name: 'Knowledge graph project' }), {
-      target: { value: 'p2' },
-    });
-    expect(onFocus).toHaveBeenCalledWith({ kind: 'project', id: 'p2' });
+    fireEvent.click(screen.getByRole('button', { name: 'Back to all projects' }));
+    expect(onFocus).toHaveBeenCalledWith({ kind: 'runtime' });
   });
 });
 

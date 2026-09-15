@@ -35,6 +35,12 @@ const DAMPING = 0.9;
 const ALPHA_DECAY = 0.993;
 const ALPHA_FLOOR = 0.04;
 const MARGIN = 30;
+/** The comp's orbit was per frame at 60 Hz; per millisecond it is the same speed everywhere. */
+const FRAME_MS = 1000 / 60;
+const ORBIT_PER_MS = ORBIT_PER_TICK / FRAME_MS;
+/** Nodes stay out of the centre, where the focused project's disc sits. */
+const CORE_CLEAR = 95;
+const CORE_PUSH = 0.05;
 
 export type SimNode = {
   id: string;
@@ -62,8 +68,11 @@ export type KnowledgeSim = {
   edges: { a: SimNode; b: SimNode; kind: 'import' | 'call' }[];
   communities: CommunityProjection[];
   alpha: number;
-  /** One tick. `orbit` false holds the ring still, for reduced motion. */
-  step: (orbit: boolean) => void;
+  /**
+   * One tick. `orbit` false holds the ring still, for reduced motion; `dtMs`
+   * is how far the orbit advances (a frame at 60 Hz by default).
+   */
+  step: (orbit: boolean, dtMs?: number) => void;
 };
 
 /** mulberry32 — the comp's generator, seeded so a layout is reproducible. */
@@ -137,8 +146,8 @@ export function createKnowledgeSim(
     edges,
     communities,
     alpha: 1,
-    step(orbit) {
-      if (orbit) baseAngle += ORBIT_PER_TICK;
+    step(orbit, dtMs = FRAME_MS) {
+      if (orbit) baseAngle += ORBIT_PER_MS * dtMs;
       communities.forEach((c, i) => {
         const a = baseAngle + (i / count) * Math.PI * 2;
         const rx = RING_RADIUS * Math.cos(a);
@@ -191,8 +200,18 @@ export function createKnowledgeSim(
         n.vy += (ty - n.y) * COMMUNITY_PULL * alpha;
         n.vx += (CX - n.x) * CENTRE_PULL;
         n.vy += (CY - n.y) * CENTRE_PULL;
-        n.vx += (random() - 0.5) * JITTER;
-        n.vy += (random() - 0.5) * JITTER;
+        const ox = n.x - CX;
+        const oy = n.y - CY;
+        const od = Math.sqrt(ox * ox + oy * oy) || 1;
+        if (od < CORE_CLEAR) {
+          const f = (CORE_CLEAR - od) * CORE_PUSH;
+          n.vx += (ox / od) * f;
+          n.vy += (oy / od) * f;
+        }
+        // The comp's jitter, scaled by alpha so it dies with the layout's heat:
+        // a cooled graph holds still and only the orbit moves it.
+        n.vx += (random() - 0.5) * JITTER * alpha;
+        n.vy += (random() - 0.5) * JITTER * alpha;
         n.vx *= DAMPING;
         n.vy *= DAMPING;
         n.x = clamp(n.x + n.vx, MARGIN, KNOWLEDGE_WIDTH - MARGIN);

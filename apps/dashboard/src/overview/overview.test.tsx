@@ -308,7 +308,7 @@ describe('Overview Knowledge lens', () => {
     expect(loadKnowledge).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to the first project on the overview and never reads on another lens', () => {
+  it('shows the project picker with nothing focused and never reads on another lens', () => {
     const loadKnowledge = vi.fn().mockResolvedValue(ready);
     render(
       <Overview
@@ -327,6 +327,7 @@ describe('Overview Knowledge lens', () => {
     );
     expect(loadKnowledge).not.toHaveBeenCalled();
     cleanup();
+    const onFocus = vi.fn();
     render(
       <Overview
         snapshot={buildPulseSnapshot(input())}
@@ -337,13 +338,17 @@ describe('Overview Knowledge lens', () => {
         following
         pendingCount={0}
         realtime="live"
-        onFocus={vi.fn()}
+        onFocus={onFocus}
         onInspect={vi.fn()}
         loadKnowledge={loadKnowledge}
       />,
     );
-    // Projects are ordered blocked-first, so Beta (s2 blocked) leads the overview.
-    expect(loadKnowledge).toHaveBeenCalledWith('p2', expect.anything());
-    expect(screen.getByRole('combobox', { name: 'Knowledge graph project' })).toBeTruthy();
+    // Nothing focused: the projects are the canvas and no graph is read.
+    expect(loadKnowledge).not.toHaveBeenCalled();
+    const aside = screen.getByRole('complementary', { name: 'Knowledge inspector' });
+    expect(within(aside).getByText('NO PROJECT')).toBeTruthy();
+    // Clicking a project on the picker focuses it.
+    fireEvent.click(screen.getByRole('button', { name: 'Focus project Beta' }));
+    expect(onFocus).toHaveBeenCalledWith({ kind: 'project', id: 'p2' });
   });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 
 import type { KnowledgeGraph } from '../api/knowledge-scope.js';
 import type { ResourceState } from '../components/panel.js';
@@ -10,61 +10,51 @@ import {
   settleKnowledgeSim,
   type KnowledgeSim,
 } from './knowledge-model.js';
-import type { Focus } from './model.js';
+import { RUNTIME_FOCUS, type Focus } from './model.js';
 
 /**
  * The Knowledge lens: one project's graphify graph, drawn the comp's way.
  *
  * The overview owns the read and the selection, because the docked aside
- * shows the same graph; this file draws it. The canvas is the comp's 3D-orbit
- * force layout over the endpoint's bounded backbone: React renders the nodes,
- * edges and community marks once per graph or selection, and a
- * `requestAnimationFrame` loop steps the simulation and writes positions into
- * those elements through refs, so no frame goes through React. The loop stops
- * when the lens unmounts, and `prefers-reduced-motion` settles the layout once
- * and never orbits.
+ * shows the same graph; this file draws it. With no project focused the
+ * canvas holds the projects themselves, in the centre, and a click focuses
+ * one — that is the picker, not a control beside the canvas. Focused, the
+ * project sits at the centre as an ink disc and its communities orbit it:
+ * the comp's 3D-orbit force layout over the endpoint's bounded backbone.
+ * React renders the nodes, edges and community marks once per graph or
+ * selection, and a `requestAnimationFrame` loop steps the simulation and
+ * writes positions into those elements through refs, so no frame goes
+ * through React. Nodes carry no label; a hover shows one. The loop stops when
+ * the lens unmounts, and `prefers-reduced-motion` settles the layout once and
+ * never orbits.
  *
  * Read-only, like everything the lens shows: the comp's Optimize / Delete /
- * Rebuild controls are not here, and the `$ graphify query` line is a hint,
- * not a field. LUWI reads graphify's output; it never runs it.
+ * Rebuild controls are not here. LUWI reads graphify's output; it never runs
+ * it. Only the provenance line remains, naming the commit and observation.
  */
 export type KnowledgeState = { state: 'loading' } | ResourceState<KnowledgeGraph>;
 
-type LensProject = { id: string; name: string };
+type LensProject = { id: string; name: string; initials: string };
 
+const CX = KNOWLEDGE_WIDTH / 2;
+const CY = KNOWLEDGE_HEIGHT / 2;
 const R = { god: 15, hub: 10, symbol: 5.5 } as const;
-const SETTLE_STEPS = 120;
-const STILL_STEPS = 400;
-const LABEL_GAP = 6;
+const PROJECT_RADIUS = 30;
+const CORE_RADIUS = 34;
+/** Enough steps that the layout is cool before the first paint; only the orbit moves after. */
+const SETTLE_STEPS = 400;
+const STILL_STEPS = 200;
 const MARK_GAP = 16;
+const FRAME_MS = 1000 / 60;
+const TIP_OFFSET = 14;
 
-function ProjectSwitcher({
-  projects,
-  projectId,
-  onFocus,
-}: {
-  projects: readonly LensProject[];
-  projectId?: string;
-  onFocus: (focus: Focus) => void;
-}) {
-  return (
-    <label className="knowledge__switcher">
-      <span className="knowledge__switcher-label">PROJECT</span>
-      <select
-        className="knowledge__switcher-select"
-        aria-label="Knowledge graph project"
-        value={projectId ?? ''}
-        onChange={(event) => onFocus({ kind: 'project', id: event.target.value })}
-      >
-        {projects.map((project) => (
-          <option key={project.id} value={project.id}>
-            {project.name}
-          </option>
-        ))}
-      </select>
-    </label>
-  );
-}
+const activate =
+  (run: () => void) =>
+  (event: KeyboardEvent<SVGGElement>): void => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    run();
+  };
 
 function prefersReducedMotion(): boolean {
   return (
@@ -74,27 +64,105 @@ function prefersReducedMotion(): boolean {
   );
 }
 
-/**
- * Graphify labels are path-derived ids (`apps_dashboard_src_overview_model`),
- * so the canvas keeps the tail, which is the distinctive end; the inspector
- * shows the whole label and the source file.
- */
-const LABEL_MAX = 24;
-export function shortLabel(label: string): string {
-  return label.length <= LABEL_MAX ? label : `…${label.slice(label.length - LABEL_MAX + 1)}`;
-}
-
 /** Depth from a community's projected scale: 0 far → 1 near, as the comp reads it. */
 const depthOf = (s: number): number => Math.max(0.45, Math.min(1, (s - 0.78) / (1.3 - 0.78)));
 
+/** Where the projects sit while none is focused: one at the centre, else a ring. */
+function projectRing(count: number): { x: number; y: number }[] {
+  if (count <= 1) return [{ x: CX, y: CY }];
+  const radius = count <= 6 ? 150 : 205;
+  return Array.from({ length: count }, (_, index) => {
+    const angle = -Math.PI / 2 + (index / count) * Math.PI * 2;
+    return { x: CX + radius * Math.cos(angle), y: CY + radius * Math.sin(angle) };
+  });
+}
+
+function ProjectPicker({
+  projects,
+  onFocus,
+}: {
+  projects: readonly LensProject[];
+  onFocus: (focus: Focus) => void;
+}) {
+  const ring = projectRing(projects.length);
+  return (
+    <svg
+      className="knowledge__svg"
+      viewBox={`0 0 ${String(KNOWLEDGE_WIDTH)} ${String(KNOWLEDGE_HEIGHT)}`}
+      preserveAspectRatio="xMidYMid meet"
+      aria-label="Projects"
+    >
+      {projects.map((project, index) => {
+        const spot = ring[index] ?? { x: CX, y: CY };
+        const focus = () => onFocus({ kind: 'project', id: project.id });
+        return (
+          <g
+            key={project.id}
+            className="knowledge__project"
+            role="button"
+            tabIndex={0}
+            aria-label={`Focus project ${project.name}`}
+            transform={`translate(${spot.x.toFixed(1)} ${spot.y.toFixed(1)})`}
+            style={{ animationDelay: `${String(0.1 + index * 0.05)}s` }}
+            onClick={focus}
+            onKeyDown={activate(focus)}
+          >
+            <circle className="knowledge__project-disc" r={PROJECT_RADIUS} />
+            <text className="knowledge__project-initials" textAnchor="middle" dy="0.35em">
+              {project.initials}
+            </text>
+            <text className="knowledge__project-name" y={PROJECT_RADIUS + 18} textAnchor="middle">
+              {project.name}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+/** The focused project at the centre; a click returns to all projects. */
+function CoreDisc({ project, onFocus }: { project: LensProject; onFocus: (focus: Focus) => void }) {
+  const back = () => onFocus(RUNTIME_FOCUS);
+  return (
+    <g
+      className="knowledge__core"
+      role="button"
+      tabIndex={0}
+      aria-label="Back to all projects"
+      transform={`translate(${String(CX)} ${String(CY)})`}
+      onClick={(event) => {
+        event.stopPropagation();
+        back();
+      }}
+      onKeyDown={activate(back)}
+    >
+      <circle className="knowledge__core-ring" r={CORE_RADIUS + 9} />
+      <circle className="knowledge__core-disc" r={CORE_RADIUS} />
+      <text className="knowledge__core-initials" textAnchor="middle" dy="0.35em">
+        {project.initials}
+      </text>
+      <text className="knowledge__core-name" y={CORE_RADIUS + 20} textAnchor="middle">
+        {project.name}
+      </text>
+    </g>
+  );
+}
+
+type Tip = { id: string; x: number; y: number };
+
 function KnowledgeCanvas({
+  project,
   graph,
   selectedId,
   onSelectNode,
+  onFocus,
 }: {
+  project: LensProject;
   graph: KnowledgeGraph;
   selectedId?: string;
   onSelectNode: (id?: string) => void;
+  onFocus: (focus: Focus) => void;
 }) {
   const sim = useMemo(() => {
     const next = createKnowledgeSim(graph);
@@ -110,6 +178,7 @@ function KnowledgeCanvas({
     }
     return set;
   }, [graph, selectedId]);
+  const [tip, setTip] = useState<Tip>();
 
   const nodeEls = useRef(new Map<string, SVGGElement>());
   const edgeEls = useRef<(SVGLineElement | null)[]>([]);
@@ -127,7 +196,7 @@ function KnowledgeCanvas({
       const s = community?.s ?? 1;
       el.setAttribute(
         'transform',
-        `translate(${node.x.toFixed(1)} ${node.y.toFixed(1)}) scale(${s.toFixed(3)})`,
+        `translate(${node.x.toFixed(2)} ${node.y.toFixed(2)}) scale(${s.toFixed(3)})`,
       );
       const opacity =
         picked === undefined
@@ -140,10 +209,10 @@ function KnowledgeCanvas({
     state.edges.forEach((edge, index) => {
       const el = edgeEls.current[index];
       if (el === null || el === undefined) return;
-      el.setAttribute('x1', edge.a.x.toFixed(1));
-      el.setAttribute('y1', edge.a.y.toFixed(1));
-      el.setAttribute('x2', edge.b.x.toFixed(1));
-      el.setAttribute('y2', edge.b.y.toFixed(1));
+      el.setAttribute('x1', edge.a.x.toFixed(2));
+      el.setAttribute('y1', edge.a.y.toFixed(2));
+      el.setAttribute('x2', edge.b.x.toFixed(2));
+      el.setAttribute('y2', edge.b.y.toFixed(2));
     });
     for (const community of state.communities) {
       const el = markEls.current.get(community.id);
@@ -152,8 +221,8 @@ function KnowledgeCanvas({
       if (members.length === 0) continue;
       const x = members.reduce((sum, node) => sum + node.x, 0) / members.length;
       const y = Math.min(...members.map((node) => node.y)) - MARK_GAP;
-      el.setAttribute('x', x.toFixed(1));
-      el.setAttribute('y', y.toFixed(1));
+      el.setAttribute('x', x.toFixed(2));
+      el.setAttribute('y', y.toFixed(2));
       el.style.opacity = picked === undefined ? '0.55' : '0.25';
     }
   }, []);
@@ -170,8 +239,13 @@ function KnowledgeCanvas({
       return undefined;
     }
     let frame = 0;
-    const tick = () => {
-      sim.step(true);
+    let last: number | undefined;
+    // The orbit advances by wall time, so the ring turns at one speed on
+    // every refresh rate; a long pause (a hidden tab) is clamped, not replayed.
+    const tick = (now: number) => {
+      const dt = last === undefined ? FRAME_MS : Math.min(50, now - last);
+      last = now;
+      sim.step(true, dt);
       paint(sim);
       frame = requestAnimationFrame(tick);
     };
@@ -183,86 +257,114 @@ function KnowledgeCanvas({
   // Every community present anchors a ring position, but only the ones the
   // endpoint named (its largest, the same list the inspector bars show) get a
   // mark: a backbone of forty nodes can span forty communities, and forty
-  // uppercase marks over forty labels is a wall, not a map.
+  // uppercase marks over forty nodes is a wall, not a map.
   const namedIds = new Set(graph.communities.map((c) => c.id));
   const named = (community: { id: number }) => namedIds.has(community.id);
+  const tipNode = tip === undefined ? undefined : graph.nodes.find((n) => n.id === tip.id);
+
   return (
-    <svg
-      className="knowledge__svg"
-      viewBox={`0 0 ${String(KNOWLEDGE_WIDTH)} ${String(KNOWLEDGE_HEIGHT)}`}
-      preserveAspectRatio="xMidYMid meet"
-      aria-label="Project knowledge graph"
-      onClick={() => onSelectNode(undefined)}
-    >
-      <g>
-        {sim.edges.map((edge, index) => {
-          const active =
-            selectedId !== undefined && (edge.a.id === selectedId || edge.b.id === selectedId);
-          const dim = selectedId !== undefined && !active;
+    <>
+      <svg
+        className="knowledge__svg"
+        viewBox={`0 0 ${String(KNOWLEDGE_WIDTH)} ${String(KNOWLEDGE_HEIGHT)}`}
+        preserveAspectRatio="xMidYMid meet"
+        aria-label="Project knowledge graph"
+        onClick={() => onSelectNode(undefined)}
+      >
+        <g>
+          {sim.edges.map((edge, index) => {
+            const active =
+              selectedId !== undefined && (edge.a.id === selectedId || edge.b.id === selectedId);
+            const dim = selectedId !== undefined && !active;
+            return (
+              <line
+                key={`${edge.a.id}->${edge.b.id}:${String(index)}`}
+                ref={(el) => {
+                  edgeEls.current[index] = el;
+                }}
+                className={`knowledge__edge knowledge__edge--${edge.kind}${active ? ' knowledge__edge--active' : ''}${dim ? ' knowledge__edge--dim' : ''}`}
+                x1={edge.a.x}
+                y1={edge.a.y}
+                x2={edge.b.x}
+                y2={edge.b.y}
+              />
+            );
+          })}
+        </g>
+        {sim.communities.filter(named).map((community) => (
+          <text
+            key={community.id}
+            ref={(el) => {
+              if (el === null) markEls.current.delete(community.id);
+              else markEls.current.set(community.id, el);
+            }}
+            className="knowledge__community-mark"
+            x={community.x}
+            y={community.y}
+            textAnchor="middle"
+          >
+            {community.label}
+          </text>
+        ))}
+        {graph.nodes.map((node) => {
+          const selected = node.id === selectedId;
+          const r = R[node.kind] + (selected ? 2 : 0);
+          const position = sim.byId.get(node.id);
+          const s = node.community === undefined ? 1 : (communityById.get(node.community)?.s ?? 1);
+          const toggle = () => onSelectNode(selected ? undefined : node.id);
           return (
-            <line
-              key={`${edge.a.id}->${edge.b.id}:${String(index)}`}
+            <g
+              key={node.id}
               ref={(el) => {
-                edgeEls.current[index] = el;
+                if (el === null) nodeEls.current.delete(node.id);
+                else nodeEls.current.set(node.id, el);
               }}
-              className={`knowledge__edge knowledge__edge--${edge.kind}${active ? ' knowledge__edge--active' : ''}${dim ? ' knowledge__edge--dim' : ''}`}
-              x1={edge.a.x}
-              y1={edge.a.y}
-              x2={edge.b.x}
-              y2={edge.b.y}
-            />
+              className={`knowledge__node knowledge__node--${node.kind}${selected ? ' knowledge__node--selected' : ''}`}
+              transform={`translate(${String(position?.x ?? 0)} ${String(position?.y ?? 0)}) scale(${String(s)})`}
+              role="button"
+              tabIndex={0}
+              aria-label={`Select ${node.label}`}
+              aria-pressed={selected}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggle();
+              }}
+              onKeyDown={activate(toggle)}
+              onMouseEnter={(event) => {
+                const box = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
+                setTip({
+                  id: node.id,
+                  x: event.clientX - (box?.left ?? 0),
+                  y: event.clientY - (box?.top ?? 0),
+                });
+              }}
+              onMouseLeave={() => setTip(undefined)}
+            >
+              <circle className="knowledge__node-hit" r={r + 9} />
+              <circle className="knowledge__node-dot" r={r} />
+            </g>
           );
         })}
-      </g>
-      {sim.communities.filter(named).map((community) => (
-        <text
-          key={community.id}
-          ref={(el) => {
-            if (el === null) markEls.current.delete(community.id);
-            else markEls.current.set(community.id, el);
+        <CoreDisc project={project} onFocus={onFocus} />
+      </svg>
+      {tip === undefined || tipNode === undefined ? null : (
+        <div
+          className="knowledge__tip"
+          role="tooltip"
+          style={{
+            left: `${String(tip.x + TIP_OFFSET)}px`,
+            top: `${String(tip.y + TIP_OFFSET)}px`,
           }}
-          className="knowledge__community-mark"
-          x={community.x}
-          y={community.y}
-          textAnchor="middle"
         >
-          {community.label}
-        </text>
-      ))}
-      {graph.nodes.map((node) => {
-        const selected = node.id === selectedId;
-        const showLabel = node.kind !== 'symbol' || selected || neighbours.has(node.id);
-        const r = R[node.kind] + (selected ? 2 : 0);
-        const position = sim.byId.get(node.id);
-        const s = node.community === undefined ? 1 : (communityById.get(node.community)?.s ?? 1);
-        return (
-          <g
-            key={node.id}
-            ref={(el) => {
-              if (el === null) nodeEls.current.delete(node.id);
-              else nodeEls.current.set(node.id, el);
-            }}
-            className={`knowledge__node knowledge__node--${node.kind}${selected ? ' knowledge__node--selected' : ''}`}
-            transform={`translate(${String(position?.x ?? 0)} ${String(position?.y ?? 0)}) scale(${String(s)})`}
-            role="button"
-            aria-label={`Select ${node.label}`}
-            aria-pressed={selected}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelectNode(selected ? undefined : node.id);
-            }}
-          >
-            <circle className="knowledge__node-hit" r={r + 9} />
-            <circle className="knowledge__node-dot" r={r} />
-            {showLabel ? (
-              <text className="knowledge__node-label" y={-(r + LABEL_GAP)} textAnchor="middle">
-                {shortLabel(node.label)}
-              </text>
-            ) : null}
-          </g>
-        );
-      })}
-    </svg>
+          <span className="knowledge__tip-title">{tipNode.label}</span>
+          <span className="knowledge__tip-sub">{tipNode.sourceFile}</span>
+          <span className="knowledge__tip-meta">
+            {tipNode.kind} · {tipNode.degree} deg
+            {tipNode.communityName === undefined ? '' : ` · ${tipNode.communityName}`}
+          </span>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -299,15 +401,43 @@ function Legend({ summary }: { summary: KnowledgeGraph['summary'] }) {
   );
 }
 
+/** A state screen for a focused project: the message, and the disc that leads back. */
+function StateStage({
+  project,
+  onFocus,
+  children,
+}: {
+  project: LensProject;
+  onFocus: (focus: Focus) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="knowledge">
+      <div className="knowledge__stage">
+        <svg
+          className="knowledge__svg"
+          viewBox={`0 0 ${String(KNOWLEDGE_WIDTH)} ${String(KNOWLEDGE_HEIGHT)}`}
+          preserveAspectRatio="xMidYMid meet"
+          aria-label={`${project.name} knowledge graph`}
+        >
+          <CoreDisc project={project} onFocus={onFocus} />
+        </svg>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 /**
- * Five states, kept apart: no project on the overview (the filter, or an empty
- * registry); a read in flight; a failed read — including an unknown project's
- * 404, which is a fault, not "no graph"; a successful read with `nodeCount` 0,
- * the honest report that `graphify build` has never run here; and the graph.
+ * Six states, kept apart: no project on the overview (the filter, or an empty
+ * registry); no project focused, so the projects themselves are the canvas;
+ * a read in flight; a failed read — including an unknown project's 404, which
+ * is a fault, not "no graph"; a successful read with `nodeCount` 0, the honest
+ * report that `graphify build` has never run here; and the graph.
  */
 export function KnowledgeView({
   projects,
-  projectId,
+  project,
   graph,
   emptyLabel,
   selectedId,
@@ -315,7 +445,8 @@ export function KnowledgeView({
   onFocus,
 }: {
   projects: readonly LensProject[];
-  projectId?: string;
+  /** The focused project, when the focus resolves to one. */
+  project?: LensProject;
   graph?: KnowledgeState;
   /** What to say when there is no project to draw: `emptyProjectsLabel(overview)`. */
   emptyLabel: string;
@@ -323,80 +454,67 @@ export function KnowledgeView({
   onSelectNode: (id?: string) => void;
   onFocus: (focus: Focus) => void;
 }) {
-  if (projectId === undefined) {
+  if (projects.length === 0) {
     return (
       <div className="knowledge">
         <p className="knowledge__empty">{emptyLabel}</p>
       </div>
     );
   }
-  const switcher = <ProjectSwitcher projects={projects} projectId={projectId} onFocus={onFocus} />;
-  if (graph === undefined || graph.state === 'loading') {
+  if (project === undefined) {
     return (
       <div className="knowledge">
         <div className="knowledge__stage">
-          {switcher}
-          <p className="knowledge__empty" aria-busy="true">
-            Loading
+          <ProjectPicker projects={projects} onFocus={onFocus} />
+          <p className="knowledge__hint">
+            <span className="knowledge__hint-prompt">$</span> pick a project · its knowledge graph
+            opens here
           </p>
         </div>
       </div>
     );
   }
+  if (graph === undefined || graph.state === 'loading') {
+    return (
+      <StateStage project={project} onFocus={onFocus}>
+        <p className="knowledge__empty" aria-busy="true">
+          Loading
+        </p>
+      </StateStage>
+    );
+  }
   if (graph.state !== 'ready') {
     return (
-      <div className="knowledge">
-        <div className="knowledge__stage">
-          {switcher}
-          <p className="knowledge__empty">Unavailable</p>
-        </div>
-      </div>
+      <StateStage project={project} onFocus={onFocus}>
+        <p className="knowledge__empty">Unavailable</p>
+      </StateStage>
     );
   }
   const data = graph.data;
   if (data.summary.nodeCount === 0) {
     return (
-      <div className="knowledge">
-        <div className="knowledge__stage">
-          {switcher}
-          <div className="knowledge__empty">
-            <p>This project has no graphify output yet.</p>
-            <p>
-              Run <code className="knowledge__code">graphify build</code> in this project. LUWI
-              reads the result; it does not run it for you.
-            </p>
-          </div>
+      <StateStage project={project} onFocus={onFocus}>
+        <div className="knowledge__empty">
+          <p>This project has no graphify output yet.</p>
+          <p>
+            Run <code className="knowledge__code">graphify build</code> in this project. LUWI reads
+            the result; it does not run it for you.
+          </p>
         </div>
-      </div>
+      </StateStage>
     );
   }
-  const selected =
-    selectedId === undefined ? undefined : data.nodes.find((n) => n.id === selectedId);
-  const god = data.nodes.find((node) => node.kind === 'god') ?? data.nodes[0];
-  const query =
-    selected === undefined
-      ? god === undefined
-        ? undefined
-        : `what breaks if I change ${god.label}`
-      : `path ${selected.label} → *`;
-
   return (
     <div className="knowledge">
       <Legend summary={data.summary} />
       <div className="knowledge__stage">
-        {switcher}
         <KnowledgeCanvas
+          project={project}
           graph={data}
           onSelectNode={onSelectNode}
+          onFocus={onFocus}
           {...(selectedId === undefined ? {} : { selectedId })}
         />
-        {query === undefined ? null : (
-          <p className="knowledge__hint">
-            <span className="knowledge__hint-prompt">$</span> graphify query{' '}
-            <span className="knowledge__hint-query">&quot;{query}&quot;</span>
-            <span className="knowledge__hint-caret" aria-hidden="true" />
-          </p>
-        )}
         <p className="knowledge__provenance">
           built{' '}
           <code className="knowledge__code">
@@ -445,7 +563,7 @@ export function KnowledgeInspector({
   if (projectName === undefined) {
     return (
       <aside className="drill" aria-label="Knowledge inspector">
-        {head('Project graph', title, 'NO PROJECT', 'Nothing on the overview to draw')}
+        {head('Project graph', title, 'NO PROJECT', 'Pick a project on the canvas')}
       </aside>
     );
   }

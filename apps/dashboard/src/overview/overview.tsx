@@ -114,10 +114,10 @@ export function Overview({
   );
   const toRuntime = () => onFocus({ kind: 'runtime' });
 
-  // The Knowledge lens's project: the focus resolved to one, else the first on
-  // the overview. Undefined off the lens, so the read below never runs there.
-  const knowledgeProject =
-    view === 'knowledge' ? (focusProject(overview, resolved) ?? overview.projects[0]) : undefined;
+  // The Knowledge lens's project is the focus resolved to one; nothing focused
+  // means the lens shows the project picker and reads nothing. Undefined off
+  // the lens too, so the read below never runs there.
+  const knowledgeProject = view === 'knowledge' ? focusProject(overview, resolved) : undefined;
   const knowledgeProjectId = knowledgeProject?.id;
   const [knowledge, setKnowledge] = useState<{
     projectId: string;
@@ -163,7 +163,7 @@ export function Overview({
         ) : (
           <KnowledgeView
             projects={overview.projects}
-            {...(knowledgeProjectId === undefined ? {} : { projectId: knowledgeProjectId })}
+            {...(knowledgeProject === undefined ? {} : { project: knowledgeProject })}
             {...(knowledgeState === undefined ? {} : { graph: knowledgeState })}
             emptyLabel={emptyProjectsLabel(overview)}
             {...(knowledgeNode === undefined ? {} : { selectedId: knowledgeNode })}
