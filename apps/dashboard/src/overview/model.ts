@@ -231,6 +231,8 @@ export type Stat = {
   unavailable: boolean;
   fraction: number;
   bars?: number[];
+  /** The detail route this hero tile opens as a drawer over the overview. */
+  route: string;
 };
 
 export type TickerRow = {
@@ -653,6 +655,7 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
           : breakdown,
       unavailable: sessionsUnavailable,
       fraction: active === 0 ? 0 : working / active,
+      route: '#/sessions',
     },
     {
       key: 'projects',
@@ -663,6 +666,7 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
         : `${String(withSessions)} with sessions · ${String(blockedProjects)} blocked`,
       unavailable: projectsUnavailable,
       fraction: projects.length === 0 ? 0 : withSessions / projects.length,
+      route: '#/projects',
     },
     {
       key: 'events',
@@ -677,6 +681,7 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
       unavailable: snapshot.activityState === 'unavailable',
       fraction: rate.latestShare,
       bars: rate.buckets,
+      route: '#/activity',
     },
     {
       key: 'tokens',
@@ -691,6 +696,7 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
             : others.join(' · '),
       unavailable: usageUnavailable,
       fraction: best === undefined ? 0 : 1,
+      route: '#/usage',
     },
     {
       key: 'context',
@@ -701,6 +707,7 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
         : `${String(invoked)} invoked · ${String(snapshot.contextInsights.loadedNotInvoked)} loaded, never invoked`,
       unavailable: contextUnavailable,
       fraction: loaded === 0 ? 0 : invoked / loaded,
+      route: '#/context',
     },
   ];
 }
@@ -1084,7 +1091,14 @@ export function panelFor(
     ],
     trend: trendOf('Events · retained', events, overview),
     list: { label: 'Active sessions', rows: overview.sessions, empty: sessionsEmpty(overview) },
-    links: [{ kind: 'route', label: 'Runtime', href: '#/runtime' }],
+    // The runtime-global drawers not already opened by a hero tile. Kept short,
+    // not a menu: the stat strip covers activity/usage/context/sessions/projects.
+    links: [
+      { kind: 'route', label: 'Runtime', href: '#/runtime' },
+      { kind: 'route', label: 'Agents', href: '#/agents' },
+      { kind: 'route', label: 'Graph', href: '#/graph' },
+      { kind: 'route', label: 'Optimization', href: '#/optimization' },
+    ],
   };
 }
 

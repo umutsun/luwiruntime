@@ -112,7 +112,11 @@ export function Overview({
       panelFor(overview, resolved, realtime, sessionUsage === undefined ? {} : { sessionUsage }),
     [overview, resolved, realtime, sessionUsage],
   );
-  const toRuntime = () => onFocus({ kind: 'runtime' });
+  // Each hero tile opens its own detail drawer over the overview, the owner's
+  // opener for the folded routes.
+  const openStat = (stat: { route: string }) => {
+    window.location.hash = stat.route;
+  };
 
   // The Knowledge lens's project is the focus resolved to one; nothing focused
   // means the lens shows the project picker and reads nothing. Undefined off
@@ -151,7 +155,7 @@ export function Overview({
       <div className="overview__main">
         {/* One stat strip for every lens: the same header row and figures whichever
             lens is open, so switching a lens never changes the numbers or their shape. */}
-        <StatsRow stats={overview.stats} variant="fill" onSelect={toRuntime} />
+        <StatsRow stats={overview.stats} variant="fill" onSelect={openStat} />
         {view === 'board' ? (
           <BoardView overview={overview} focus={resolved} realtime={realtime} onFocus={onFocus} />
         ) : view === 'flow' ? (

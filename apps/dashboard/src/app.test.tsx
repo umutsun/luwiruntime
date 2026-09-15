@@ -335,12 +335,15 @@ describe('overview shell', () => {
     expect(screen.getByRole('button', { name: 'Focus project Retained Project' })).toBeTruthy();
   });
 
-  it('exposes Activity as a real route with its own heading', () => {
+  it('opens Activity as a drawer over the overview', () => {
     window.location.hash = '#/activity';
     shell(input(), { websocketState: 'reconnecting' });
 
-    expect(screen.getByRole('heading', { name: 'Activity', level: 1 })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Activity' })).toBeTruthy();
+    // The overview stays mounted underneath, so its realtime switch is present.
     expect(screen.getByRole('button', { name: 'Realtime reconnecting' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Close drawer' }));
+    expect(window.location.hash).toBe('#/pulse');
   });
 
   it('uses explicit empty and unavailable session states', () => {
@@ -536,19 +539,24 @@ describe('detail routes', () => {
     return value;
   };
 
-  const routes = [
+  // Routes not yet folded still render as pages with an h1 and a back link.
+  const pageRoutes = [
     ['#/sessions', 'Sessions'],
-    ['#/agents', 'Agents'],
     ['#/messages', 'Messages'],
     ['#/capabilities', 'Capabilities'],
     ['#/config', 'Configuration'],
+  ] as const;
+
+  // The six read-only routes folded into drawers over the always-mounted overview.
+  const drawerRoutes = [
+    ['#/agents', 'Agents'],
     ['#/usage', 'Usage'],
     ['#/context', 'Context'],
     ['#/optimization', 'Optimization'],
     ['#/graph', 'Graph'],
   ] as const;
 
-  it.each(routes)(
+  it.each(pageRoutes)(
     'activates %s with its own heading and a way back to the overview',
     (hash, heading) => {
       window.location.hash = hash;
@@ -558,6 +566,27 @@ describe('detail routes', () => {
       expect(screen.getByRole('link', { name: '← Overview' }).getAttribute('href')).toBe('#/pulse');
     },
   );
+
+  it.each(drawerRoutes)(
+    'folds %s into a drawer over the overview, closing back to it',
+    (hash, heading) => {
+      window.location.hash = hash;
+      shell(snapshot());
+
+      const drawer = screen.getByRole('dialog', { name: heading });
+      // The overview stays mounted behind the drawer.
+      expect(drillDown()).toBeTruthy();
+      fireEvent.click(within(drawer).getByRole('button', { name: 'Close drawer' }));
+      expect(window.location.hash).toBe('#/pulse');
+    },
+  );
+
+  it('navigates to a folded route from its hero stat tile', () => {
+    shell(snapshot());
+    // Each hero tile opens its own detail drawer; the Events tile is Activity.
+    fireEvent.click(screen.getByRole('button', { name: 'Open Events / min' }));
+    expect(window.location.hash).toBe('#/activity');
+  });
 
   /**
    * The capability is threaded as a prop rather than imported by the view, so

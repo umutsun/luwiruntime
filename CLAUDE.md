@@ -404,6 +404,24 @@ animates when its session has a retained event in the last ten minutes that is n
 never report `thinking` and heartbeats alone would animate every online session forever; the board
 says so in words.
 
+**Detail routes fold into the overview as drawers (2026-09-15, Phase 1 vertical slice).** The owner's
+direction is a single unified overview with no separate pages: the twelve detail routes become
+`DetailDrawer`s over an always-mounted `#/pulse`, the way `#/runtime` already did. `app.tsx` drives it
+— `FOLDED_DRAWER_ROUTES` + `routeDrawer` + `isOverview`, a `foldedRouteView(name)` helper, and one
+general drawer branch replacing the old `runtimeDrawer` one. `main.tsx`/`bootstrap.ts` loaders and
+`routing.ts`/`routeTitles` **do not change** — the hashes stay for deep-link/reload; drawer-vs-page is
+purely an `app.tsx` render decision. **This slice folded the six read-only routes with no inner modal:**
+runtime, activity, usage, agents, context, optimization, graph. **Still pages, deferred to iteration 2:**
+sessions, messages, capabilities, config (each renders its OWN inner `DetailDrawer`/modal — `AskSessionDialog`
+for sessions — so wrapping them nests two `aria-modal` surfaces; their inner detail must become an inline
+pane first), and the projects LIST (its detail is already a drawer). The `.route`/`.route-head`/`.route-body`
+page shell stays until all routes fold, then it is deleted. **Openers (the owner's choice):** the five hero
+stat tiles open their domain drawer (Sessions→`#/sessions`, Projects→`#/projects`, Events→`#/activity`,
+Tokens→`#/usage`, Context→`#/context`; each `Stat` carries a `route`), and the runtime-focus drill-down adds
+Graph/Optimization beside Runtime/Agents. No menu or palette (both were removed). `app.test.tsx` splits its
+route assertions into `pageRoutes` (h1 + `← Overview`) and `drawerRoutes` (a `dialog` named by heading, Close →
+`#/pulse`); the Runtime test is the template.
+
 **Two sides of one rule, 2026-09-11: a session that never becomes ready is dropped, and not
 re-created.** A session registers as `starting` and leaves it only when a reader binds — the
 native-headless bridge's poll loop, or the MCP server's `luwi_join`; the message router skips

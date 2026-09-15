@@ -488,10 +488,83 @@ export function DashboardApp({
             detail: agentId === undefined ? {} : { agentId },
           });
 
-  // Runtime opens as a drawer over the overview rather than as a page: the
-  // owner reads it beside the lens, the way project detail is read.
-  const runtimeDrawer = route.name === 'runtime';
-  const isOverview = route.name === 'pulse' || runtimeDrawer;
+  // The detail routes fold into drawers over the always-mounted overview (the
+  // owner's single-overview direction). This slice folds the six read-only
+  // routes that carry no inner modal; the rest still render as pages. Runtime
+  // was the first, proving the pattern.
+  const FOLDED_DRAWER_ROUTES = [
+    'runtime',
+    'activity',
+    'usage',
+    'agents',
+    'context',
+    'optimization',
+    'graph',
+  ] as const;
+  const routeDrawer = (FOLDED_DRAWER_ROUTES as readonly string[]).includes(route.name)
+    ? (route.name as (typeof FOLDED_DRAWER_ROUTES)[number])
+    : undefined;
+  const isOverview = route.name === 'pulse' || routeDrawer !== undefined;
+
+  /** The view a folded route renders inside its drawer. */
+  const foldedRouteView = (name: (typeof FOLDED_DRAWER_ROUTES)[number]) => {
+    switch (name) {
+      case 'runtime':
+        return (
+          <RuntimeView
+            snapshot={snapshot}
+            websocketState={websocketState}
+            {...(loadResources === undefined ? {} : { loadResources })}
+          />
+        );
+      case 'activity':
+        return (
+          <ActivityView
+            state={displayedActivity}
+            available={snapshot.activityState === 'ready'}
+            onStateChange={onActivityStateChange ?? (() => undefined)}
+            onOpenEvent={(event) => openInspector({ kind: 'event', streamId: event.streamId })}
+          />
+        );
+      case 'usage':
+        return <UsageView snapshot={snapshot} />;
+      case 'agents':
+        return <AgentsView snapshot={snapshot} />;
+      case 'context':
+        return (
+          <ContextView
+            snapshot={snapshot}
+            loading={intelligenceLoading}
+            sources={
+              intelligenceResources.sources?.state === 'ready'
+                ? intelligenceResources.sources.data
+                : undefined
+            }
+          />
+        );
+      case 'optimization':
+        return (
+          <OptimizationView
+            snapshot={snapshot}
+            loading={intelligenceLoading}
+            proposals={
+              intelligenceResources.proposals?.state === 'ready'
+                ? intelligenceResources.proposals.data
+                : undefined
+            }
+          />
+        );
+      case 'graph':
+        return (
+          <GraphView
+            summary={intelligenceResources.graph}
+            loading={intelligenceLoading}
+            seeds={graphSeeds}
+            {...(loadSubgraph === undefined ? {} : { loadSubgraph })}
+          />
+        );
+    }
+  };
 
   return (
     <div className="app-shell">
@@ -755,16 +828,7 @@ export function DashboardApp({
               </a>
             </div>
             <div className="route-body">
-              {route.name === 'activity' ? (
-                <ActivityView
-                  state={displayedActivity}
-                  available={snapshot.activityState === 'ready'}
-                  onStateChange={onActivityStateChange ?? (() => undefined)}
-                  onOpenEvent={(event) =>
-                    openInspector({ kind: 'event', streamId: event.streamId })
-                  }
-                />
-              ) : route.name === 'sessions' ? (
+              {route.name === 'sessions' ? (
                 <SessionsView
                   snapshot={snapshot}
                   {...(messageMutations === undefined ? {} : { messageMutations })}
@@ -801,37 +865,6 @@ export function DashboardApp({
                   loading={configLoading}
                   {...(configMutations === undefined ? {} : { mutations: configMutations })}
                   {...(onConfigMutated === undefined ? {} : { onMutated: onConfigMutated })}
-                />
-              ) : route.name === 'agents' ? (
-                <AgentsView snapshot={snapshot} />
-              ) : route.name === 'usage' ? (
-                <UsageView snapshot={snapshot} />
-              ) : route.name === 'context' ? (
-                <ContextView
-                  snapshot={snapshot}
-                  loading={intelligenceLoading}
-                  sources={
-                    intelligenceResources.sources?.state === 'ready'
-                      ? intelligenceResources.sources.data
-                      : undefined
-                  }
-                />
-              ) : route.name === 'optimization' ? (
-                <OptimizationView
-                  snapshot={snapshot}
-                  loading={intelligenceLoading}
-                  proposals={
-                    intelligenceResources.proposals?.state === 'ready'
-                      ? intelligenceResources.proposals.data
-                      : undefined
-                  }
-                />
-              ) : route.name === 'graph' ? (
-                <GraphView
-                  summary={intelligenceResources.graph}
-                  loading={intelligenceLoading}
-                  seeds={graphSeeds}
-                  {...(loadSubgraph === undefined ? {} : { loadSubgraph })}
                 />
               ) : route.name === 'projects' ? (
                 <ProjectsView
@@ -945,19 +978,15 @@ export function DashboardApp({
             }}
           />
         </DetailDrawer>
-      ) : runtimeDrawer ? (
+      ) : routeDrawer !== undefined ? (
         <DetailDrawer
-          eyebrow={routeTitles.runtime.eyebrow}
-          title={routeTitles.runtime.heading}
+          eyebrow={routeTitles[routeDrawer].eyebrow}
+          title={routeTitles[routeDrawer].heading}
           onClose={() => {
             window.location.hash = hrefOfFocus(focus);
           }}
         >
-          <RuntimeView
-            snapshot={snapshot}
-            websocketState={websocketState}
-            {...(loadResources === undefined ? {} : { loadResources })}
-          />
+          {foldedRouteView(routeDrawer)}
         </DetailDrawer>
       ) : null}
     </div>

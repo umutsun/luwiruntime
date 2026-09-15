@@ -19,7 +19,8 @@ export function StatsRow({
 }: {
   stats: readonly Stat[];
   variant: 'fill' | 'bars' | 'plain' | 'inline';
-  onSelect: () => void;
+  /** Opens the tile's own detail drawer (each stat carries its route). */
+  onSelect: (stat: Stat) => void;
   trailing?: ReactNode;
 }) {
   const max = (bars: readonly number[]) => bars.reduce((high, value) => Math.max(high, value), 0);
@@ -31,7 +32,8 @@ export function StatsRow({
           type="button"
           className={`stat-tile${stat.unavailable ? ' stat-tile--unavailable' : ''}`}
           style={{ animationDelay: `${String(0.1 + index * 0.06)}s` }}
-          onClick={onSelect}
+          onClick={() => onSelect(stat)}
+          aria-label={`Open ${stat.label}`}
           title={`${stat.label}: ${stat.value} — ${stat.sub}`}
         >
           {variant === 'inline' ? (
