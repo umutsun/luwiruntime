@@ -952,6 +952,11 @@ export function panelFor(
           label: 'Detail',
           href: `#/pulse/${encodeURIComponent(project.id)}/detail`,
         },
+        {
+          kind: 'route',
+          label: 'Knowledge graph',
+          href: `#/knowledge/${encodeURIComponent(project.id)}`,
+        },
       ],
     };
   }

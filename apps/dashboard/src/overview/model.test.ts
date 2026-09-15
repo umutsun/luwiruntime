@@ -431,7 +431,7 @@ describe('panelFor', () => {
       { k: 'State', v: '3 untracked' },
       { k: 'Tags', v: '2' },
     ]);
-    expect(panel.links.map((link) => link.kind)).toEqual(['inspect-project', 'route']);
+    expect(panel.links.map((link) => link.kind)).toEqual(['inspect-project', 'route', 'route']);
   });
 
   it('says so when a blocked session has no denial in the retained stream', () => {

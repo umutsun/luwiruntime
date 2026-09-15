@@ -1,0 +1,460 @@
+/*
+ * The per-project graphify knowledge graph (read-only). Visual language
+ * follows the "Graph" mockup under `temp/Luwi Runtime Dashboard Mockup/`:
+ * a stat strip, a static SVG canvas (god = filled ink, hub = paper fill with
+ * an ink stroke, symbol = dim and unlabelled unless selected or a neighbor),
+ * and a docked inspector the width the overview's drill-down already uses
+ * (`--overview-aside-width`).
+ *
+ * The mockup's write controls (Optimize / Prune / Delete / Rebuild) and its
+ * GRAPH OPS ticker are not rendered here: this route only reads a projection,
+ * never mutates or reruns graphify. The `$ graphify query` line is a static
+ * hint, not a runnable field.
+ */
+
+.knowledge {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.knowledge__toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.knowledge__switcher {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-2h);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.knowledge__switcher-label {
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+}
+
+.knowledge__switcher-select {
+  border: none;
+  background: none;
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+}
+
+.knowledge__status {
+  padding: var(--space-6);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  color: var(--text-secondary);
+}
+
+.knowledge__status p + p {
+  margin-top: var(--space-2);
+  color: var(--text-muted);
+}
+
+.knowledge__code {
+  padding: var(--space-0) var(--space-1);
+  border-radius: var(--radius-xs);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+}
+
+.knowledge__stats {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  font-variant-numeric: tabular-nums;
+}
+
+.knowledge__stat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1h);
+}
+
+.knowledge__stat-value {
+  font-size: var(--font-size-2xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.knowledge__stat-label {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+}
+
+.knowledge__stats-spacer {
+  flex: 1;
+}
+
+.knowledge__legend {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3h);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}
+
+.knowledge__legend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1h);
+}
+
+.knowledge__legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+}
+
+.knowledge__legend-dot--god {
+  background: var(--ink);
+}
+
+.knowledge__legend-dot--hub {
+  background: var(--paper);
+  border: 2px solid var(--ink);
+}
+
+.knowledge__legend-dot--symbol {
+  width: 6px;
+  height: 6px;
+  background: var(--text-dim);
+}
+
+.knowledge__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--overview-aside-width);
+  align-items: start;
+  gap: var(--space-4);
+}
+
+.knowledge__canvas-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2h);
+  min-width: 0;
+}
+
+.knowledge__frame {
+  position: relative;
+  aspect-ratio: 1000 / 680;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+}
+
+.knowledge__svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  font-family: var(--font-mono);
+}
+
+/* Edges: import solid, call dashed — set on the base class and the `--call`
+   modifier respectively so an inactive edge of either kind still reads. */
+.knowledge__edge {
+  stroke: var(--ink);
+  stroke-width: 1;
+  opacity: 0.16;
+}
+
+.knowledge__edge--call {
+  stroke-dasharray: 4 5;
+  opacity: 0.1;
+}
+
+.knowledge__edge--active {
+  stroke-width: 1.6;
+  opacity: 0.75;
+}
+
+.knowledge__community-mark {
+  fill: var(--text-muted);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.knowledge__node {
+  cursor: pointer;
+  transition: opacity var(--dur-2) var(--ease);
+}
+
+.knowledge__node--dim {
+  opacity: 0.25;
+}
+
+.knowledge__node-hit {
+  fill: transparent;
+}
+
+.knowledge__node-dot {
+  fill: var(--text-dim);
+  stroke: var(--ink);
+  stroke-width: 0;
+}
+
+.knowledge__node--god .knowledge__node-dot,
+.knowledge__node--selected .knowledge__node-dot {
+  fill: var(--ink);
+}
+
+.knowledge__node--hub .knowledge__node-dot {
+  fill: var(--paper);
+  stroke-width: 2;
+}
+
+.knowledge__node-label {
+  fill: var(--text);
+  font-size: var(--font-size-2xs);
+  pointer-events: none;
+}
+
+.knowledge__hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1h) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}
+
+.knowledge__hint-prompt {
+  color: var(--ink);
+}
+
+.knowledge__provenance {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}
+
+.knowledge__inspector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-raised);
+}
+
+.knowledge__inspector-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.knowledge__inspector-eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.knowledge__inspector-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.knowledge__inspector-title {
+  margin: 0;
+  overflow-wrap: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.knowledge__badge {
+  padding: var(--space-0) var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.1em;
+}
+
+.knowledge__inspector-sub {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.knowledge__facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2h);
+}
+
+.knowledge__fact {
+  padding: var(--space-2) var(--space-2h);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+}
+
+.knowledge__fact-k {
+  display: block;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.knowledge__fact-v {
+  display: block;
+  overflow: hidden;
+  margin-top: var(--space-0);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge__section-label {
+  margin: 0 0 var(--space-2);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.knowledge__communities {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2h);
+}
+
+.knowledge__community-row {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2h);
+}
+
+.knowledge__community-label {
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge__community-track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+}
+
+.knowledge__community-fill {
+  display: block;
+  height: 100%;
+  background: var(--ink);
+}
+
+.knowledge__community-n {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}
+
+.knowledge__list {
+  display: flex;
+  flex-direction: column;
+}
+
+.knowledge__empty-inline {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.knowledge__row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2h);
+  padding: var(--space-2) 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.knowledge__row-glyph {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  font-weight: 650;
+}
+
+.knowledge__row-text {
+  min-width: 0;
+}
+
+.knowledge__row-title {
+  display: block;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-xs);
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge__row-sub {
+  display: block;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-size-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.knowledge__row-meta {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}

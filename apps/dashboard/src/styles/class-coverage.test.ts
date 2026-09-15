@@ -53,6 +53,9 @@ const VIEWS = [
   '../routes/ask-session-dialog.tsx',
   '../components/project-form.tsx',
   '../components/luwibot-chat.tsx',
+  '../knowledge/knowledge-view.tsx',
+  '../knowledge/knowledge-canvas.tsx',
+  '../knowledge/knowledge-inspector.tsx',
 ] as const;
 
 const STYLESHEETS = [
@@ -62,6 +65,7 @@ const STYLESHEETS = [
   './activity.css',
   './projects.css',
   './overview.css',
+  './knowledge.css',
 ] as const;
 
 function definedClasses(): Set<string> {

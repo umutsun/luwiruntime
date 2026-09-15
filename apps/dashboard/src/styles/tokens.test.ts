@@ -96,6 +96,7 @@ const STYLESHEETS = [
   'pulse.css',
   'projects.css',
   'overview.css',
+  'knowledge.css',
 ] as const;
 
 const colourProperty = /^\s*(background|background-color|color|border-top-color)\s*:\s*([^;]+);/gmu;

@@ -101,6 +101,7 @@ import './styles/pulse.css';
 import './styles/activity.css';
 import './styles/projects.css';
 import './styles/overview.css';
+import './styles/knowledge.css';
 
 const client = createDaemonClient();
 

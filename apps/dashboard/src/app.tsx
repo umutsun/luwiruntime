@@ -27,6 +27,7 @@ import {
   inspectorTitle,
   type InspectorSelection,
 } from './inspectors/inspector-panel.js';
+import { KnowledgeView } from './knowledge/knowledge-view.js';
 import { formatClock, RUNTIME_FOCUS, sessionBadge, toneOf, type Focus } from './overview/model.js';
 import { Overview } from './overview/overview.js';
 import { useProjectFilter, visibleProjectIds } from './overview/use-project-filter.js';
@@ -851,11 +852,15 @@ export function DashboardApp({
                   {...(loadSubgraph === undefined ? {} : { loadSubgraph })}
                 />
               ) : route.name === 'knowledge' ? (
-                // TODO(Task 8): replace with the real KnowledgeView.
-                <>
-                  {knowledgeLoading ? <p className="eyebrow">Loading…</p> : null}
-                  <pre>{JSON.stringify(knowledge)}</pre>
-                </>
+                <KnowledgeView
+                  graph={knowledge}
+                  loading={knowledgeLoading}
+                  {...(route.projectId === undefined ? {} : { projectId: route.projectId })}
+                  projects={snapshot.projects}
+                  onSelectProject={(id) => {
+                    window.location.hash = routeHref({ name: 'knowledge', projectId: id });
+                  }}
+                />
               ) : route.name === 'projects' ? (
                 <ProjectsView
                   snapshot={snapshot}
