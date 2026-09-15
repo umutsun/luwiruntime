@@ -17,7 +17,6 @@ import type { PulseFreshness } from './api/refresh-state.js';
 import type { RuntimeResources } from './api/runtime-resources.js';
 import type { SessionUsage } from './api/session-usage.js';
 import { BrandMark } from './components/brand-mark.js';
-import { CommandPalette } from './components/command-palette.js';
 import { DetailDrawer } from './components/detail-drawer.js';
 import { ProjectForm } from './components/project-form.js';
 import type { ResourceState } from './components/panel.js';
@@ -85,10 +84,6 @@ function focusOfRoute(route: DashboardRoute): Focus {
     : RUNTIME_FOCUS;
 }
 
-function pluralize(count: number, noun: string): string {
-  return `${String(count)} ${noun}${count === 1 ? '' : 's'}`;
-}
-
 /**
  * Roots the Graph explorer can start from (ADR 0016).
  *
@@ -110,17 +105,6 @@ function graphSeedsOf(snapshot: PulseSnapshot): GraphSeed[] {
       label: `${session.agentId} · ${session.projectName}`,
     })),
   ];
-}
-
-/** What the palette's scope line says: the runtime's own counts, never a zero for a failed read. */
-function scopeSummary(snapshot: PulseSnapshot): string {
-  const count = (value: PulseSnapshot['projectCount'], noun: string, label: string): string =>
-    value.state === 'unavailable' ? `${label} unavailable` : pluralize(value.value, noun);
-  return `${count(snapshot.projectCount, 'project', 'Projects')} · ${count(
-    snapshot.activeSessionCount,
-    'active session',
-    'Sessions',
-  )}`;
 }
 
 /**
@@ -717,7 +701,6 @@ export function DashboardApp({
           </>
         ) : null}
 
-        <CommandPalette snapshot={snapshot} scopeSummary={scopeSummary(snapshot)} />
         <div className="segmented segmented--icons" role="group" aria-label="Theme">
           {THEME_OPTIONS.map((option) => (
             <button

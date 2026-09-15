@@ -190,14 +190,14 @@ describe('overview shell', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('renders the identity, the lens switch and the Ctrl K jump, and no navigation rail', () => {
+  it('renders the identity and the lens switch, and no navigation rail', () => {
     shell(input());
 
     expect(screen.getByRole('link', { name: 'Luwi Runtime overview' })).toBeTruthy();
     expect(screen.getByRole('group', { name: 'View' })).toBeTruthy();
-    // The palette is the only route list: the overview's own links reach the
-    // rest, and a Details menu tried on 2026-09-11 was removed on the owner's read.
-    expect(screen.getByLabelText('Current scope')).toBeTruthy();
+    // The Ctrl K command palette was removed (2026-09-15): the overview's own
+    // drill-down links reach the detail routes, and the palette's route/search
+    // list was redundant after the redesign.
     expect(screen.queryByRole('navigation')).toBeNull();
   });
 
@@ -622,26 +622,6 @@ describe('detail routes', () => {
 
     await waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
     expect(window.location.hash).toBe('#/messages/corr%2Fcreated');
-  });
-});
-
-describe('palette scope line', () => {
-  it('states what the runtime holds instead of advertising an absent search', () => {
-    const value = input();
-    value.projects = {
-      state: 'ready',
-      data: [{ id: 'p1', name: 'Alpha', localPath: 'C:/work/alpha' }],
-    };
-    shell(value);
-    expect(screen.getByLabelText('Current scope').textContent).toContain('1 project');
-  });
-
-  it('reports an unavailable count as unavailable rather than as zero', () => {
-    const value = input();
-    value.projects = { state: 'unavailable' };
-    shell(value);
-    expect(screen.getByLabelText('Current scope').textContent).toContain('Projects unavailable');
-    expect(screen.getByText('Projects unavailable')).toBeTruthy();
   });
 });
 
