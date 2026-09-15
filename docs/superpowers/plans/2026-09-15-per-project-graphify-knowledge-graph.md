@@ -60,7 +60,7 @@ Vitest.
 - `apps/dashboard/src/bootstrap.test.ts` — tests for the new selectors. Modify.
 - `apps/dashboard/src/main.tsx` — load the knowledge scope while `#/knowledge` is open. Modify.
 - `apps/dashboard/src/app.tsx` — render `KnowledgeView` for the route; add the overview drill-down link
-  - Ctrl-K entry. Modify.
+  (no Ctrl-K entry — palette slated for removal). Modify.
 
 ---
 
@@ -1439,7 +1439,7 @@ git commit -m "feat(dashboard): pure knowledge-graph layout and inspector model"
 - Create: `apps/dashboard/src/knowledge/knowledge-view.test.tsx`
 - Create: `apps/dashboard/src/styles/knowledge.css`
 - Modify: `apps/dashboard/src/main.tsx` (import `./styles/knowledge.css`)
-- Modify: `apps/dashboard/src/app.tsx` (render `KnowledgeView`; add the overview drill-down link + Ctrl-K entry)
+- Modify: `apps/dashboard/src/app.tsx` (render `KnowledgeView`; add the overview drill-down link — no Ctrl-K entry, the palette is slated for removal)
 - Modify: `apps/dashboard/src/styles/tokens.test.ts` and `class-coverage.test.ts` registrations if they
   enumerate stylesheets/views explicitly (they do — add `knowledge.css` and the view).
 
@@ -1560,9 +1560,11 @@ onSelectProject={(id) => { window.location.hash = routeHref({ name: 'knowledge',
 - In the overview **project drill-down** (`overview/drill-down.tsx`, the project panel's links row —
   where "Inspect / Evidence / Settings" already are), add a "Knowledge graph" link → `routeHref({ name:
 'knowledge', projectId })`.
-- Add `knowledge` to the **Ctrl-K** command list (wherever the detail routes are enumerated for the
-  palette) as "Knowledge graph", navigating to `#/knowledge/<focusedProjectId>` (or `#/knowledge` when
-  no project is focused, which shows a "pick a project" empty state — the switcher then selects one).
+- Do **not** add a Ctrl-K palette entry. The Ctrl-K command palette is slated for removal (owner,
+  2026-09-15: the route/search palette is redundant after the redesign), so the knowledge graph is
+  reached only from the overview project drill-down link above. When `#/knowledge` is opened with no
+  project (e.g. a bookmarked bare hash), the view shows a "pick a project" empty state and the project
+  switcher selects one.
 - In `main.tsx`, add `import './styles/knowledge.css';` beside the other style imports.
 
 - [ ] **Step 6: Update the guards**
