@@ -154,6 +154,18 @@ describe('project-agent pair routes', () => {
   });
 });
 
+describe('the knowledge route', () => {
+  it('parses and builds the knowledge route with and without a project id', () => {
+    expect(parseRoute('#/knowledge/p1')).toEqual({ name: 'knowledge', projectId: 'p1' });
+    expect(parseRoute('#/knowledge')).toEqual({ name: 'knowledge' });
+    expect(parseRoute('#/knowledge/')).toEqual({ name: 'knowledge' });
+    expect(routeHref({ name: 'knowledge', projectId: 'p1' })).toBe('#/knowledge/p1');
+    expect(routeHref({ name: 'knowledge' })).toBe('#/knowledge');
+    // an id containing a slash is encoded, not forged into a segment
+    expect(routeHref({ name: 'knowledge', projectId: 'a/b' })).toBe('#/knowledge/a%2Fb');
+  });
+});
+
 describe('the overview detail drawer route', () => {
   it('parses the detail drawer, with and without an agent, and degrades bad segments', () => {
     expect(parseRoute('#/pulse/p1/detail')).toEqual({ name: 'pulse', projectId: 'p1', detail: {} });

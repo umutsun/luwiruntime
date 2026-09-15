@@ -51,6 +51,7 @@ export type DashboardRoute =
     }
   | { name: SimpleRouteName }
   | { name: 'messages'; correlationId?: string }
+  | { name: 'knowledge'; projectId?: string }
   /**
    * `agentId` is only meaningful with a `projectId`: the reads it selects are
    * pair-scoped, so an agent without a project addresses nothing.
@@ -123,6 +124,14 @@ export function parseRoute(hash: string): DashboardRoute {
     }
   }
 
+  if (head === 'knowledge') {
+    if (second === undefined) return { name: 'knowledge' };
+    const projectId = decodeSegment(second).trim();
+    return projectId !== '' && projectId.length <= MAX_IDENTIFIER_LENGTH
+      ? { name: 'knowledge', projectId }
+      : { name: 'knowledge' };
+  }
+
   return { name: 'pulse' };
 }
 
@@ -147,6 +156,11 @@ export function routeHref(route: DashboardRoute): string {
     return route.agentId === undefined
       ? base
       : `${base}/agents/${encodeURIComponent(route.agentId)}`;
+  }
+  if (route.name === 'knowledge') {
+    return route.projectId === undefined
+      ? '#/knowledge'
+      : `#/knowledge/${encodeURIComponent(route.projectId)}`;
   }
   return `#/${route.name}`;
 }
