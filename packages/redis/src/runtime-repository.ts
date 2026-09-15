@@ -300,6 +300,21 @@ export type DisconnectExpiredSessionResult =
 /** A session still `starting` and older than the grace window, ready to reap. */
 export type StartingSessionCandidate = { sessionId: string; projectId: string };
 
+/**
+ * A bridge (headless) session carries `metadata.bridge`; a GUI attach never does.
+ * Only bridges are reaped when stuck `starting`: a bridge that never binds a
+ * reader is broken and `recoverUnready` rotates it into a fresh attempt, whereas
+ * a GUI attach between turns is legitimately `starting`-but-present — reaping it
+ * would drop an open editor from the dashboard and close its native link mid-
+ * conversation (cutting off usage attribution). A GUI attach that truly dies
+ * stops heartbeating and the presence sweeper disconnects it on the expired
+ * deadline, which is the correct, activity-based boundary.
+ */
+export function isBridgeSession(session: Pick<SessionView, 'metadata'>): boolean {
+  const bridge = session.metadata['bridge'];
+  return typeof bridge === 'string' && bridge.length > 0;
+}
+
 export type ReapStartingSessionInput = {
   sessionId: string;
   projectId: string;
@@ -1504,9 +1519,13 @@ export function createRuntimeRepository(options: {
       const cutoff = nowMs - graceMs;
       const candidates: StartingSessionCandidate[] = [];
       // listSessions already returns oldest-first, so the coarsest offenders are
-      // reaped first and the limit is a stable prefix.
+      // reaped first and the limit is a stable prefix. Only bridge sessions are
+      // reapable; a GUI attach stuck `starting` is kept present (see isBridgeSession).
       for (const session of await this.listSessions()) {
         if (session.status !== 'starting' || Date.parse(session.startedAt) > cutoff) {
+          continue;
+        }
+        if (!isBridgeSession(session)) {
           continue;
         }
         candidates.push({ sessionId: session.id, projectId: session.projectId });

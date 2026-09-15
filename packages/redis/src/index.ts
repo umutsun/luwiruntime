@@ -36,7 +36,11 @@ export type {
   RuntimeNamespaceOptions,
   RuntimeNamespaceResetResult,
 } from './runtime-reset.js';
-export { createRuntimeRepository, RedisRepositoryError } from './runtime-repository.js';
+export {
+  createRuntimeRepository,
+  isBridgeSession,
+  RedisRepositoryError,
+} from './runtime-repository.js';
 export type {
   RedisCommandClient,
   CloseSessionInput,

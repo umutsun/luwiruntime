@@ -29,7 +29,11 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
     let commandClient: RedisCommandClient;
     let repository: RuntimeRepository;
 
-    const register = async (sessionId: string, native?: NativeRegistrationInput) =>
+    const register = async (
+      sessionId: string,
+      native?: NativeRegistrationInput,
+      metadataJson = '{"source":"reap-integration","bridge":"native-headless"}',
+    ) =>
       repository.registerSession({
         session: {
           id: sessionId,
@@ -37,7 +41,7 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
           projectId: 'project-1',
           status: 'starting',
           workingDirectory: 'C:/workspace/luwi',
-          metadataJson: '{"source":"reap-integration"}',
+          metadataJson,
         },
         workspaceId: 'local',
         eventId: `event-session-${sessionId}`,
@@ -259,6 +263,21 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       for (const candidate of pastGrace) {
         expect(candidate.projectId).toBe('project-1');
       }
+    });
+
+    it('never reaps a GUI attach (no bridge marker) stuck starting, only bridge sessions', async () => {
+      const gui = 'reap-finder-gui';
+      const bridge = 'reap-finder-bridge';
+      // A GUI attach carries no bridge marker; a bridge session does.
+      await register(gui, undefined, '{"source":"reap-integration","title":"Open editor"}');
+      await register(bridge);
+
+      const pastGrace = await repository.findStartingSessionsPastGrace(Date.now(), 0, 50);
+      const ids = pastGrace.map((candidate) => candidate.sessionId);
+      // The GUI attach is present-but-starting and must be kept; only the bridge
+      // is a reap candidate.
+      expect(ids).not.toContain(gui);
+      expect(ids).toContain(bridge);
     });
   },
 );

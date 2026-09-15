@@ -1,16 +1,23 @@
 /**
  * A session registers as `starting` and only leaves it when a reader binds — the
- * native-headless bridge poll loop or the LUWI MCP server binding. A session
- * whose reader never binds stays `starting` forever: it keeps heartbeating, so
- * its presence never lapses and the presence sweeper (which only disconnects
- * sessions whose heartbeat deadline expired) never touches it. This reaper is
- * the universal bound on those ghosts, regardless of which spawner created them:
- * a session still `starting` past a grace window is made `disconnected`.
+ * native-headless bridge poll loop or the LUWI MCP server binding. A **bridge**
+ * whose reader never binds is broken and stays `starting` forever (its heartbeat
+ * keeps presence alive, so the presence sweeper never touches it); this reaper is
+ * the bound on those, making one still `starting` past a grace window
+ * `disconnected` so `recoverUnready` can rotate it into a fresh attempt.
+ *
+ * A **GUI attach is deliberately exempt** (the candidate query returns only
+ * bridge sessions — see `isBridgeSession`): between turns a GUI editor is
+ * legitimately `starting`-but-present, and reaping it would drop an open editor
+ * from the dashboard and close its native link mid-conversation, cutting off
+ * usage attribution. A GUI attach that truly dies stops heartbeating and the
+ * presence sweeper disconnects it on the expired deadline — the correct,
+ * activity-based boundary.
  *
  * It mirrors the presence sweeper's find-then-act shape rather than sharing it,
  * because the two select on different axes — the presence sweeper on an expired
  * heartbeat deadline (a real zset index), this one on `startedAt` age with the
- * status still `starting`.
+ * status still `starting` and a bridge marker.
  */
 export type StartingSessionCandidate = {
   sessionId: string;

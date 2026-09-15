@@ -4,8 +4,18 @@ import {
   createFunctionRegistry,
   createRedisKeys,
   createRuntimeRepository,
+  isBridgeSession,
   type RedisCommandClient,
 } from './index.js';
+
+describe('isBridgeSession', () => {
+  it('is true only when metadata carries a non-empty bridge marker', () => {
+    expect(isBridgeSession({ metadata: { bridge: 'native-headless' } })).toBe(true);
+    expect(isBridgeSession({ metadata: { bridge: '', provider: 'codex' } })).toBe(false);
+    expect(isBridgeSession({ metadata: { title: 'My chat' } })).toBe(false);
+    expect(isBridgeSession({ metadata: {} })).toBe(false);
+  });
+});
 
 class FakeCommandClient implements RedisCommandClient {
   readonly commands: string[][] = [];
