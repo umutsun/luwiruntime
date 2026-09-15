@@ -725,3 +725,194 @@ button:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+/*
+ * LuwiBot — the docked assistant. A fixed launcher at the bottom-right corner
+ * that opens a chat panel; it sits below the modal drawer scrim, so an open
+ * inspector or project drawer covers it. Every colour, space and type value is
+ * a token, so it follows both themes and passes the shell guards.
+ */
+.luwibot {
+  position: fixed;
+  left: var(--space-5);
+  /* Sits at the bottom-left, lifted clear of the 44px STREAM ticker so it never
+     overlaps the ticker or the lens (e.g. the radial events/min gauge). */
+  bottom: calc(44px + var(--space-4));
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.luwibot__fab {
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: var(--radius-pill);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+  transition: transform var(--dur-1) var(--ease);
+}
+.luwibot__fab:hover {
+  transform: translateY(-1px);
+}
+.luwibot__fab:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+.luwibot__fab svg {
+  width: 22px;
+  height: 22px;
+}
+.luwibot__panel {
+  width: 360px;
+  max-width: calc(100vw - var(--space-8));
+  height: 460px;
+  max-height: calc(100vh - var(--space-8));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.luwibot__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2h) var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+.luwibot__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+}
+.luwibot__dot--open {
+  background: var(--success);
+}
+.luwibot__dot--connecting {
+  background: var(--warning);
+}
+.luwibot__dot--error {
+  background: var(--danger);
+}
+.luwibot__dot--idle {
+  background: var(--text-dim);
+}
+.luwibot__title {
+  flex: 1;
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  font-weight: 600;
+  color: var(--text);
+}
+.luwibot__close {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.luwibot__close:hover {
+  color: var(--text);
+}
+.luwibot__close svg {
+  width: 15px;
+  height: 15px;
+}
+.luwibot__log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+.luwibot__empty {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+.luwibot__msg {
+  margin: 0;
+  max-width: 85%;
+  padding: var(--space-2) var(--space-2h);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.luwibot__msg--user {
+  align-self: flex-end;
+  background: var(--surface-3);
+  color: var(--text);
+}
+.luwibot__msg--assistant {
+  align-self: flex-start;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  border: 1px solid var(--line-soft);
+}
+.luwibot__msg--error {
+  align-self: flex-start;
+  background: var(--surface-1);
+  color: var(--danger);
+}
+.luwibot__form {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2h);
+  background: var(--surface-1);
+  border-top: 1px solid var(--border);
+}
+.luwibot__input {
+  flex: 1;
+  resize: none;
+  max-height: 96px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-2h);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  line-height: 1.5;
+}
+.luwibot__input:focus-visible {
+  outline: none;
+  border-color: var(--border-strong);
+  box-shadow: var(--focus);
+}
+.luwibot__send {
+  flex: none;
+  width: 36px;
+  display: grid;
+  place-items: center;
+  background: var(--ink);
+  color: var(--paper);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+.luwibot__send:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.luwibot__send svg {
+  width: 16px;
+  height: 16px;
+}

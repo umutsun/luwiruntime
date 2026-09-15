@@ -1,4 +1,5 @@
 import { BrandMark } from './components/brand-mark.js';
+import { LuwiBotChat } from './components/luwibot-chat.js';
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -574,6 +575,7 @@ createRoot(root).render(
   <StrictMode>
     <DashboardErrorBoundary>
       <DashboardRoute />
+      <LuwiBotChat />
     </DashboardErrorBoundary>
   </StrictMode>,
 );

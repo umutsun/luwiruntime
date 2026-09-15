@@ -52,6 +52,7 @@ const VIEWS = [
   '../components/detail-drawer.tsx',
   '../routes/ask-session-dialog.tsx',
   '../components/project-form.tsx',
+  '../components/luwibot-chat.tsx',
 ] as const;
 
 const STYLESHEETS = [
