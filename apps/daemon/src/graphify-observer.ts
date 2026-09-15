@@ -28,7 +28,7 @@ export const GRAPHIFY_PROVENANCE = 'graphify-graph-json@1';
 
 // ponytail: the document is parsed whole (5–15 MB measured across ten projects);
 // stream it if a repository ever outgrows 64 MiB.
-const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
+export const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
 const MAX_FILES = 20_000;
 /** An evidence id holds at most this many characters, so a longer path would be refused at projection. */
 const MAX_PATH_LENGTH = 256;
