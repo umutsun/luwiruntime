@@ -768,3 +768,59 @@ describe('formatting', () => {
     expect(eventDetail(event('1-0', 'x', 0))).toBe('');
   });
 });
+
+describe('responded transient', () => {
+  const responded = (updatedAt: string): AgentMessage => ({
+    id: 'm-r',
+    correlationId: 'corr-r',
+    projectId: 'p1',
+    sourceSessionId: 'src',
+    sourceAgentId: 'codex',
+    targetSessionId: 's-think',
+    targetAgentId: 'claude-code',
+    selectionReason: 'direct',
+    kind: 'instruction',
+    content: 'x',
+    evidenceRequirements: [],
+    state: 'responded',
+    createdAt: minutesAgo(2),
+    updatedAt,
+    deadlineAt: minutesAgo(0),
+  });
+  const idleSnapshot = () => {
+    const base = buildPulseSnapshot(input());
+    return {
+      ...base,
+      sessions: base.sessions.map((s) =>
+        s.id === 's-think' ? { ...s, status: 'idle', statusLabel: 'idle' } : s,
+      ),
+    };
+  };
+
+  it('labels an idle session "Responded" when its answer is within the window', () => {
+    const model = buildOverview(idleSnapshot(), events(), NOW, 0, [
+      responded(new Date(NOW - 20_000).toISOString()),
+    ]);
+    const session = model.allSessions.find((x) => x.id === 's-think');
+    expect(session?.statusLabel).toBe('Responded');
+    expect(session?.tone).toBe('working');
+  });
+
+  it('reads as idle once the responded window has passed', () => {
+    const model = buildOverview(idleSnapshot(), events(), NOW, 0, [
+      responded(new Date(NOW - 60_000).toISOString()),
+    ]);
+    const session = model.allSessions.find((x) => x.id === 's-think');
+    expect(session?.statusLabel).toBe('idle');
+    expect(session?.tone).toBe('quiet');
+  });
+
+  it('never labels a non-idle (still working) session as responded', () => {
+    // s-think stays `thinking` here; a recent answer must not override real work.
+    const model = buildOverview(buildPulseSnapshot(input()), events(), NOW, 0, [
+      responded(new Date(NOW - 20_000).toISOString()),
+    ]);
+    const session = model.allSessions.find((x) => x.id === 's-think');
+    expect(session?.statusLabel).not.toBe('Responded');
+  });
+});

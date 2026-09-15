@@ -364,6 +364,9 @@ function healthOf(snapshot: PulseSnapshot): Health {
   };
 }
 
+/** How long a just-answered session shows "Responded" before it reads as idle. */
+const RESPONDED_WINDOW_MS = 45_000;
+
 export function buildOverview(
   snapshot: PulseSnapshot,
   retained: readonly DashboardEvent[],
@@ -401,12 +404,31 @@ export function buildOverview(
       : undefined;
 
   const activeIds = new Set(snapshot.activeSessions.map((session) => session.id));
+  // The daemon settles a session to `idle` the moment it answers a message, so a
+  // just-answered session would otherwise flip straight to a flat "Idle". Surface
+  // the working→responded→idle lifecycle by showing a brief "Responded" for a
+  // session whose newest answered message resolved within the window — derived
+  // from the message record, no protocol status. Only `responded` qualifies, so a
+  // rejected or failed exchange never reads as answered.
+  const respondedAtBySession = new Map<string, number>();
+  for (const message of messages) {
+    if (message.state !== 'responded') continue;
+    const at = parseMs(message.updatedAt);
+    if (at === undefined) continue;
+    const prior = respondedAtBySession.get(message.targetSessionId);
+    if (prior === undefined || at > prior) respondedAtBySession.set(message.targetSessionId, at);
+  }
   const allSessions: OverviewSession[] = snapshot.sessions
     .map((session): OverviewSession => {
       const startedMs = parseMs(session.startedAt);
       const heartbeatMs = parseMs(session.lastHeartbeatAt);
       const model = session.metadata?.['model'];
       const title = session.metadata?.['title'];
+      const respondedAt = respondedAtBySession.get(session.id);
+      const justResponded =
+        session.status === 'idle' &&
+        respondedAt !== undefined &&
+        nowMs - respondedAt <= RESPONDED_WINDOW_MS;
       return {
         id: session.id,
         agentId: session.agentId,
@@ -416,8 +438,8 @@ export function buildOverview(
         projectId: session.projectId,
         projectName: session.projectName,
         status: session.status,
-        statusLabel: session.statusLabel,
-        tone: toneOf(session.status),
+        statusLabel: justResponded ? 'Responded' : session.statusLabel,
+        tone: justResponded ? 'working' : toneOf(session.status),
         active: activeIds.has(session.id),
         startedAt: session.startedAt,
         lastHeartbeatAt: session.lastHeartbeatAt,

@@ -373,3 +373,55 @@ describe('message service', () => {
     ).resolves.toEqual({ items: [] });
   });
 });
+
+describe('responder session status follows the message lifecycle', () => {
+  const answer = {
+    status: 'answered' as const,
+    answer: 'done',
+    evidence: [],
+    verifiedAt: now,
+  };
+
+  it('marks the responder tool_running on processing and idle on respond', async () => {
+    const sessions = sessionService();
+    const service = createMessageService({
+      repository: repository(),
+      sessions,
+      workspaceId: 'local',
+    });
+
+    await service.processing('correlation-1', { responderSessionId: 'target' });
+    expect(sessions.updateStatus).toHaveBeenCalledWith('target', 'tool_running');
+
+    await service.respond('correlation-1', 'target', answer);
+    expect(sessions.updateStatus).toHaveBeenCalledWith('target', 'idle');
+  });
+
+  it('settles the responder to idle on reject and fail too', async () => {
+    const sessions = sessionService();
+    const service = createMessageService({
+      repository: repository(),
+      sessions,
+      workspaceId: 'local',
+    });
+
+    await service.reject('correlation-1', 'target', { ...answer, status: 'rejected' });
+    await service.fail('correlation-1', 'target', { ...answer, status: 'failed' });
+    expect(sessions.updateStatus).toHaveBeenNthCalledWith(1, 'target', 'idle');
+    expect(sessions.updateStatus).toHaveBeenNthCalledWith(2, 'target', 'idle');
+  });
+
+  it('never fails the message transition when the status write throws', async () => {
+    const sessions = sessionService();
+    sessions.updateStatus = vi.fn(async () => {
+      throw new Error('SESSION_TERMINAL');
+    });
+    const service = createMessageService({
+      repository: repository(),
+      sessions,
+      workspaceId: 'local',
+    });
+
+    await expect(service.respond('correlation-1', 'target', answer)).resolves.toBeDefined();
+  });
+});

@@ -209,6 +209,25 @@ export function createMessageService(options: MessageServiceOptions): MessageSer
         ...(response === undefined ? {} : { responseJson: JSON.stringify(response) }),
         idempotencyRetentionMs: options.idempotencyRetentionMs ?? 86_400_000,
       });
+      // Reflect the responder's coordination lifecycle on its session status, so
+      // the dashboard shows it working while it handles a message and settles to
+      // idle when done — for GUI sessions too, which report no status of their
+      // own. Best-effort: a status write must never fail the message transition
+      // (LUWI must not stop the tool it coordinates), and `updateStatus` already
+      // no-ops an unchanged status and refuses a terminal one.
+      const lifecycleStatus =
+        kind === 'acknowledged' || kind === 'processing'
+          ? 'tool_running'
+          : kind === 'responded' || kind === 'rejected' || kind === 'failed'
+            ? 'idle'
+            : undefined;
+      if (lifecycleStatus !== undefined) {
+        try {
+          await options.sessions.updateStatus(responderSessionId, lifecycleStatus);
+        } catch {
+          // Advisory only — the message transition already succeeded.
+        }
+      }
       return result.message;
     } catch (error) {
       return repositoryError(error);
