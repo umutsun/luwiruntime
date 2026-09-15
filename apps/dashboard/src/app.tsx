@@ -745,6 +745,9 @@ export function DashboardApp({
             following={following}
             pendingCount={displayedActivity.pendingCount}
             realtime={realtime.word.toLowerCase()}
+            {...(messageResources.messages?.state === 'ready'
+              ? { messages: messageResources.messages.data.items }
+              : {})}
             onFocus={changeFocus}
             onInspect={openInspector}
             {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}

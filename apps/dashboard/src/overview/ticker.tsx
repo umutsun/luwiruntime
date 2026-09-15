@@ -1,3 +1,4 @@
+import { routeHref } from '../routing.js';
 import type { TickerRow } from './model.js';
 
 /**
@@ -31,7 +32,17 @@ export function Ticker({
             <div key={row.key} className="ticker__row" style={{ opacity: 1 - index * 0.22 }}>
               <span className="ticker__time">{row.time}</span>
               <span className="ticker__type">{row.type}</span>
-              {row.detail === '' ? null : <span className="ticker__detail">{row.detail}</span>}
+              {row.detail === '' ? null : row.correlationId === undefined ? (
+                <span className="ticker__detail">{row.detail}</span>
+              ) : (
+                <a
+                  className="ticker__detail"
+                  href={routeHref({ name: 'messages', correlationId: row.correlationId })}
+                  title="Open this exchange in Messages"
+                >
+                  {row.detail}
+                </a>
+              )}
               <span className="ticker__project">· {row.project}</span>
             </div>
           ))

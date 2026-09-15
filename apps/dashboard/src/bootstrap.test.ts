@@ -86,10 +86,13 @@ describe('needsConfigOf', () => {
 });
 
 describe('needsMessagesOf', () => {
-  it('opens the message read only on its own route', () => {
-    expect(needsMessagesOf('#/messages')).toBe(true);
-    expect(needsMessagesOf('#/messages/corr%2F1')).toBe(true);
-    for (const route of ['#/pulse', '#/capabilities', '#/activity', '']) {
+  it('opens the message read on the overview and its own route', () => {
+    // The overview enriches its stream with each exchange's response, so it reads
+    // the same bounded list #/messages does; the default hash is the overview.
+    for (const route of ['#/messages', '#/messages/corr%2F1', '#/pulse', '#/pulse/p1', '']) {
+      expect(needsMessagesOf(route), route).toBe(true);
+    }
+    for (const route of ['#/capabilities', '#/activity', '#/config']) {
       expect(needsMessagesOf(route), route).toBe(false);
     }
   });

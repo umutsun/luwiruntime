@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
@@ -38,6 +39,7 @@ export function Overview({
   pendingCount,
   realtime,
   hiddenProjects = 0,
+  messages = [],
   onFocus,
   onInspect,
   loadSessionUsage,
@@ -53,6 +55,8 @@ export function Overview({
   realtime: string;
   /** Registered projects the owner's filter keeps off this overview. */
   hiddenProjects?: number;
+  /** The bounded message list, so the stream can show what each exchange answered. */
+  messages?: readonly AgentMessage[];
   onFocus: (focus: Focus) => void;
   onInspect: (selection: InspectorSelection) => void;
   /** Reads a focused session's usage (model, tokens); absent leaves those facts as dashes. */
@@ -62,8 +66,8 @@ export function Overview({
   ) => Promise<ResourceState<SessionUsage>>;
 }) {
   const overview = useMemo(
-    () => buildOverview(snapshot, events, nowMs, hiddenProjects),
-    [snapshot, events, nowMs, hiddenProjects],
+    () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages),
+    [snapshot, events, nowMs, hiddenProjects, messages],
   );
   const resolved = resolveFocus(overview, focus);
   const focusedSessionId = resolved.kind === 'session' ? resolved.id : undefined;

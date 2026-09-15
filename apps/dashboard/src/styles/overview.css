@@ -1305,6 +1305,14 @@
   color: var(--text-muted);
   text-overflow: ellipsis;
 }
+/* A message row's detail links to its `#/messages` exchange; keep it in palette
+   (a bare UA anchor would win on specificity and paint it link-blue). */
+a.ticker__detail {
+  color: var(--text-muted);
+}
+a.ticker__detail:hover {
+  color: var(--text);
+}
 .ticker__project,
 .ticker__empty {
   color: var(--text-dim);

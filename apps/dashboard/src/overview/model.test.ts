@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import type { AgentMessage } from '../api/messages-scope.js';
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 import {
@@ -297,6 +298,63 @@ describe('buildOverview', () => {
     expect(model.ticker[2]?.detail).toBe('src/inventory/packages.ts');
     expect(model.ticker[2]?.project).toBe('Alpha Project');
     expect(model.ticker[0]?.detail).toBe('31c4f54abcde');
+  });
+
+  it('enriches a message stream row with its subject, outcome and answer, linking the exchange', () => {
+    const message: AgentMessage = {
+      id: 'm-1',
+      correlationId: 'corr-1',
+      projectId: 'p1',
+      sourceSessionId: 'src',
+      sourceAgentId: 'codex',
+      targetSessionId: 's-think',
+      targetAgentId: 'claude-code',
+      selectionReason: 'direct',
+      kind: 'instruction',
+      subject: 'Inspect ALB-1',
+      content: 'Inspect and report.',
+      evidenceRequirements: [],
+      state: 'responded',
+      createdAt: minutesAgo(2),
+      updatedAt: minutesAgo(1),
+      deadlineAt: minutesAgo(0),
+      respondedAt: minutesAgo(1),
+      response: {
+        status: 'answered',
+        answer: 'Done — all 14 checks pass on the branch.',
+        evidenceCount: 1,
+        verifiedAt: minutesAgo(1),
+      },
+    };
+    const model = buildOverview(
+      buildPulseSnapshot(input()),
+      [event('9-0', 'message.responded', 0, { projectId: 'p1', payload: { messageId: 'm-1' } })],
+      NOW,
+      0,
+      [message],
+    );
+    expect(model.ticker[0]?.type).toBe('message.responded');
+    expect(model.ticker[0]?.detail).toBe(
+      'Inspect ALB-1 · answered: Done — all 14 checks pass on the branch.',
+    );
+    expect(model.ticker[0]?.correlationId).toBe('corr-1');
+  });
+
+  it('falls back to the plain detail when the message is older than the bounded list', () => {
+    const model = buildOverview(
+      buildPulseSnapshot(input()),
+      [
+        event('9-0', 'message.responded', 0, {
+          sessionId: 'abcdef12-0000-0000-0000-000000000000',
+          payload: { messageId: 'gone' },
+        }),
+      ],
+      NOW,
+      0,
+      [],
+    );
+    expect(model.ticker[0]?.detail).toBe('abcdef12');
+    expect(model.ticker[0]?.correlationId).toBeUndefined();
   });
 
   it('never sums tokens across grades and labels the figure with its grade', () => {

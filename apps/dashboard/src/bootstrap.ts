@@ -46,15 +46,17 @@ export function needsIntelligenceOf(hash: string): boolean {
 }
 
 /**
- * The message list is its own scope for the same reason.
+ * The message list is its own scope, loaded by two routes.
  *
- * It is a bounded read of up to 101 records that only `#/messages` renders, so
- * the overview must not pay for it. Keeping it separate from the intelligence
- * scope also keeps their refresh domains apart: a `message.*` event should not
- * re-read the graph summary.
+ * `#/messages` renders the full table, and the overview enriches its stream with
+ * each exchange's response — so both read the same bounded list (up to 101
+ * records). Every other route stays off it, and its refresh domain is kept apart
+ * from the intelligence scope so a `message.*` event never re-reads the graph
+ * summary.
  */
 export function needsMessagesOf(hash: string): boolean {
-  return parseRoute(hash).name === 'messages';
+  const name = parseRoute(hash).name;
+  return name === 'messages' || name === 'pulse';
 }
 
 /**

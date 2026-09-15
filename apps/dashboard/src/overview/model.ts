@@ -4,6 +4,7 @@ import {
   formatRelativeTime,
   monogramInitials,
 } from '../components/format.js';
+import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
 import type { CountValue, PulseSnapshot, SessionContextEvidence } from '../pulse/model.js';
@@ -210,6 +211,8 @@ export type TickerRow = {
   type: string;
   detail: string;
   project: string;
+  /** Set on a `message.*` row so the stream can link to its `#/messages` detail. */
+  correlationId?: string;
 };
 
 export type Health = {
@@ -312,6 +315,37 @@ export function eventDetail(event: DashboardEvent): string {
   return '';
 }
 
+/** One line, trimmed to a stream-sized snippet — the whole answer lives in `#/messages`. */
+function snippet(text: string, max = 72): string {
+  const oneLine = text.replace(/\s+/gu, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
+}
+
+/**
+ * The stream row for a `message.*` event, enriched from the message record.
+ *
+ * The event payload carries only `{messageId, previousState, currentState}`, so
+ * on its own the row could say a message changed state but never what was asked
+ * or what came back. Joining the loaded message record turns the row into "what
+ * task, and how it ended" — the response reflected in the flow, not buried in
+ * `#/messages`. A record that is not loaded (older than the bounded list) falls
+ * back to the plain detail.
+ */
+function messageTickerDetail(
+  event: DashboardEvent,
+  messageById: Map<string, AgentMessage>,
+): { detail: string; correlationId?: string } {
+  const messageId = stringField(event.payload, 'messageId');
+  const message = messageId === undefined ? undefined : messageById.get(messageId);
+  if (message === undefined) return { detail: eventDetail(event) };
+  const subject = message.subject ?? 'no subject';
+  const detail =
+    message.response === undefined
+      ? subject
+      : `${subject} · ${message.response.status}: ${snippet(message.response.answer)}`;
+  return { detail, correlationId: message.correlationId };
+}
+
 function healthOf(snapshot: PulseSnapshot): Health {
   if (snapshot.health.state !== 'ready') return { label: 'OFFLINE', daemon: 'Daemon offline' };
   const health = snapshot.health.data;
@@ -335,10 +369,12 @@ export function buildOverview(
   retained: readonly DashboardEvent[],
   nowMs: number,
   hiddenProjects = 0,
+  messages: readonly AgentMessage[] = [],
 ): Overview {
   const events = [...retained].sort((left, right) =>
     compareStreamIds(left.streamId, right.streamId),
   );
+  const messageById = new Map(messages.map((message) => [message.id, message]));
   const eventsBySession = new Map<string, DashboardEvent[]>();
   const eventsByProject = new Map<string, DashboardEvent[]>();
   const eventsByAgent = new Map<string, DashboardEvent[]>();
@@ -480,16 +516,20 @@ export function buildOverview(
     .reverse()
     .map((event) => {
       const at = parseMs(event.occurredAt);
+      const message = event.type.startsWith('message.')
+        ? messageTickerDetail(event, messageById)
+        : undefined;
       return {
         key: event.streamId,
         time: at === undefined ? '--:--:--' : formatClock(at),
         type: event.type,
-        detail: eventDetail(event),
+        detail: message?.detail ?? eventDetail(event),
         project:
           event.projectId === undefined
             ? 'runtime'
             : (projects.find((project) => project.id === event.projectId)?.name ??
               abbreviateId(event.projectId)),
+        ...(message?.correlationId === undefined ? {} : { correlationId: message.correlationId }),
       };
     });
 
