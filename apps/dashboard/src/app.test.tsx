@@ -195,6 +195,10 @@ describe('overview shell', () => {
 
     expect(screen.getByRole('link', { name: 'Luwi Runtime overview' })).toBeTruthy();
     expect(screen.getByRole('group', { name: 'View' })).toBeTruthy();
+    // The header Knowledge button is a route entry beside the lenses; it targets the
+    // knowledge route (a project when one is focused/visible, the bare section otherwise).
+    const knowledge = screen.getByRole('link', { name: /knowledge/i });
+    expect(knowledge.getAttribute('href')).toMatch(/^#\/knowledge/u);
     // The Ctrl K command palette was removed (2026-09-15): the overview's own
     // drill-down links reach the detail routes, and the palette's route/search
     // list was redundant after the redesign.

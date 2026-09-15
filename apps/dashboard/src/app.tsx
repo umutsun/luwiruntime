@@ -372,6 +372,14 @@ export function DashboardApp({
     [snapshot, visibleIds],
   );
   const hiddenProjects = snapshot.projects.length - visibleSnapshot.projects.length;
+  // The header Knowledge button opens the KG section for the focused project, or the
+  // first visible one when nothing is focused — the KG view's own project switcher
+  // changes it from there. KG is per-project; this button is only the entry point.
+  const knowledgeProjectId = focus.kind === 'project' ? focus.id : visibleSnapshot.projects[0]?.id;
+  const knowledgeHref =
+    knowledgeProjectId === undefined
+      ? '#/knowledge'
+      : routeHref({ name: 'knowledge', projectId: knowledgeProjectId });
   const retainedEvents = heldEvents ?? displayedActivity.events;
   const overviewEvents = useMemo(
     () =>
@@ -698,6 +706,20 @@ export function DashboardApp({
                 </button>
               ))}
             </div>
+            <a className="topbar__kg" href={knowledgeHref} title="Per-project knowledge graph">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="4" cy="4" r="2" fill="currentColor" />
+                <circle cx="12" cy="6" r="1.6" fill="currentColor" />
+                <circle cx="6" cy="12" r="1.6" fill="currentColor" />
+                <path
+                  d="M4 4l8 2M4 4l2 8M12 6l-6 6"
+                  stroke="currentColor"
+                  strokeWidth="1"
+                  opacity="0.7"
+                />
+              </svg>
+              Knowledge
+            </a>
           </>
         ) : null}
 
