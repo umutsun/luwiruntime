@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   createLifecycleService,
   NodeLifecycleFileSystem,
+  rotateLogIfOversized,
   type LifecycleCommandResult,
   type LifecycleDependencies,
   type LifecycleFileSystem,
@@ -163,6 +164,37 @@ function fixture(
   });
   return { service, dependencies, files, runCommand };
 }
+
+describe('rotateLogIfOversized', () => {
+  it('rotates a log past the cap to a single backup, replacing an older one', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-log-rotate-'));
+    try {
+      const logFile = join(directory, 'daemon.log');
+      await writeFile(`${logFile}.1`, 'stale backup');
+      await writeFile(logFile, 'x'.repeat(2_048));
+      await rotateLogIfOversized(logFile, 1_024);
+      await expect(readFile(logFile, 'utf8').catch(() => 'GONE')).resolves.toBe('GONE');
+      await expect(readFile(`${logFile}.1`, 'utf8')).resolves.toBe('x'.repeat(2_048));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a log at or under the cap in place, and tolerates a missing log', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-log-rotate-'));
+    try {
+      const logFile = join(directory, 'daemon.log');
+      await writeFile(logFile, 'small');
+      await rotateLogIfOversized(logFile, 1_024);
+      await expect(readFile(logFile, 'utf8')).resolves.toBe('small');
+      await expect(readFile(`${logFile}.1`, 'utf8').catch(() => 'GONE')).resolves.toBe('GONE');
+      // A missing log is a no-op, never a throw.
+      await expect(rotateLogIfOversized(join(directory, 'absent.log'), 1)).resolves.toBeUndefined();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('CLI lifecycle', () => {
   it('previews and applies the fixed runtime reset only while the daemon is stopped', async () => {

@@ -13,13 +13,51 @@ import { ApplicationError } from '@luwi/runtime';
 import { createAutostart, type AutostartState } from './autostart.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, open, readFile, realpath, rename, rm } from 'node:fs/promises';
+import { access, mkdir, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as nodePath from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CONFIG_MAX_BYTES = 64 * 1024;
 const OWNER_MAX_BYTES = 16 * 1024;
+/**
+ * The daemon appends pino to `daemon.log` with no rotation, and Fastify logs
+ * every request at info, so a busy fleet grows it without bound (measured near
+ * 1 GB). Rotating at start keeps the footprint to about twice this across
+ * restarts without losing recent history.
+ *
+ * ponytail: startup rotation, one backup — the minimal size-cap. The real volume
+ * driver is per-request logging; disabling it (Fastify `disableRequestLogging`)
+ * is the upgrade path if a single run's growth ever matters.
+ */
+const DEFAULT_LOG_MAX_BYTES = 128 * 1024 * 1024;
+const LOG_MAX_BYTES_ENV = 'LUWI_LOG_MAX_BYTES';
+
+function logMaxBytes(environment: Readonly<Record<string, string | undefined>>): number {
+  const raw = environment[LOG_MAX_BYTES_ENV];
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_LOG_MAX_BYTES;
+}
+
+/**
+ * Rotates `daemon.log` to `daemon.log.1` when it exceeds `maxBytes`, replacing
+ * any previous backup. Best-effort by construction: a missing log (nothing to
+ * rotate) or a failed rename must never keep the daemon from starting.
+ */
+export async function rotateLogIfOversized(logFile: string, maxBytes: number): Promise<void> {
+  let size: number;
+  try {
+    size = (await stat(logFile)).size;
+  } catch {
+    return;
+  }
+  if (size <= maxBytes) return;
+  try {
+    await rename(logFile, `${logFile}.1`);
+  } catch {
+    // A busy or locked log stays; the next start retries.
+  }
+}
 const REQUEST_TIMEOUT_MS = 2_000;
 // A first start may rebuild the bounded operational graph before readiness.
 // Ten local projects can legitimately exceed 30 seconds on Windows, while the
@@ -570,6 +608,7 @@ async function probeTcpPort(host: string, port: number, timeoutMs: number): Prom
 }
 
 async function spawnDetachedDaemon(input: SpawnDaemonInput): Promise<SpawnedDaemon> {
+  await rotateLogIfOversized(input.logFile, logMaxBytes(input.environment));
   const log = await open(input.logFile, 'a', 0o600);
   let child;
   try {
