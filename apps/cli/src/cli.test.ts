@@ -2923,6 +2923,7 @@ describe('session bridge native', () => {
           return response({ ...session, status: 'completed', presence: 'offline' });
         }
         if (url.includes('/leases')) return response({ leases: [], truncated: false });
+        if (url.endsWith('/native')) return response({ outcome: 'unchanged' });
         if (url.endsWith('/api/v1/messages/correlation-1/acknowledge')) {
           return response(message('acknowledged'));
         }
@@ -2960,10 +2961,22 @@ describe('session bridge native', () => {
       environment: Record<string, string>;
     };
     expect(runInput.executable).toBe('C:/tools/claude.exe');
-    expect(runInput.args[0]).toBe('--print');
+    // The bridge forces a minted claude session id on the first run so the transcript
+    // reader can attribute it; the prompt stays right after --print, native args last.
+    expect(runInput.args[0]).toBe('--session-id');
+    const claudeNativeSessionId = runInput.args[1];
+    expect(claudeNativeSessionId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+    );
+    expect(runInput.args[2]).toBe('--print');
     expect(runInput.args.slice(-2)).toEqual(['--allowedTools', 'mcp__luwi-runtime']);
     expect(runInput.environment.LUWI_SESSION_ID).toBe('session-1');
     expect(runInput.environment.LUWI_DAEMON_URL).toBe('http://127.0.0.1:4782');
+    // That same id is declared as the session's native binding, so the two match.
+    const declare = requests.find((entry) => entry.url.endsWith('/native'));
+    expect(declare?.body).toEqual({
+      native: { adapterId: 'claude-code', nativeSessionId: claudeNativeSessionId },
+    });
 
     const register = requests.find(
       (entry) => entry.url.endsWith('/api/v1/sessions') && entry.method === 'POST',

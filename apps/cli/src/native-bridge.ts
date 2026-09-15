@@ -48,21 +48,40 @@ export function nativeHeadlessArguments(
   prompt: string,
   nativeArgs: readonly string[],
   /**
-   * Codex only: resume this session instead of starting a fresh one, so every
-   * message after the first shares one persistent codex session. That single
-   * session is what LUWI binds its native reference to, which is what lets the
-   * rollout reader attribute its token usage (ADR: codex usage ingestion).
+   * The native session this run should bind to, so every message a worker serves
+   * shares one persistent native session. That single session is what LUWI binds
+   * its native reference to, which is what lets the transcript/rollout reader
+   * attribute the worker's token usage.
+   *
+   * `resume` picks the CLI's continue form over its create form:
+   *  - codex only ever resumes (`exec resume <id>`), and the bridge learns the id
+   *    only after the first run (from the rollout), so this is passed with
+   *    `resume: true` from the second run on and `undefined` before.
+   *  - claude gets a caller-chosen id up front: the bridge forces it with
+   *    `--session-id` on the first run (`resume: false`) and `--resume` after
+   *    (`resume: true`), so a claude worker also lands in one attributable session.
+   *
+   * gemini and antigravity pass nothing here — neither exposes a per-process
+   * session id the bridge can force or recover without guessing.
    */
-  codexResumeSessionId?: string,
+  session?: { id: string; resume: boolean },
 ): string[] {
   switch (provider) {
     case 'claude':
-      // `--allowedTools` is variadic and would swallow a trailing prompt.
-      return ['--print', prompt, ...nativeArgs];
+      // `--allowedTools` is variadic and would swallow a trailing prompt, so the
+      // prompt stays immediately after `--print`; the session flag leads.
+      if (session === undefined) return ['--print', prompt, ...nativeArgs];
+      return [
+        session.resume ? '--resume' : '--session-id',
+        session.id,
+        '--print',
+        prompt,
+        ...nativeArgs,
+      ];
     case 'codex':
       // `codex exec [OPTIONS] [PROMPT]`; `codex exec resume [OPTIONS] [SESSION_ID]
       // [PROMPT]` when resuming. The prompt is the final positional either way.
-      if (codexResumeSessionId === undefined) return ['exec', ...nativeArgs, prompt];
+      if (session === undefined) return ['exec', ...nativeArgs, prompt];
       // `--approve-for-me` is accepted by `codex exec` but NOT by `codex exec resume`
       // (codex 0.154 dropped it from the resume subcommand — resume inherits the session's
       // approval policy set on the initial `exec`). Passing it on resume makes codex exit 2
@@ -72,7 +91,7 @@ export function nativeHeadlessArguments(
         'exec',
         'resume',
         ...nativeArgs.filter((arg) => arg !== '--approve-for-me'),
-        codexResumeSessionId,
+        session.id,
         prompt,
       ];
     case 'gemini':
@@ -80,7 +99,9 @@ export function nativeHeadlessArguments(
     case 'antigravity':
       // agy is Claude-Code-flavoured: `--print <prompt>`, and its only headless
       // auto-approve is `--dangerously-skip-permissions` (no --allowed-tools), which
-      // the operator passes after `--`.
+      // the operator passes after `--`. No session binding: a headless agy process
+      // has no conversation id to force or resume, and guessing one from disk would
+      // steal the GUI IDE's conversation (it shares the working directory).
       return ['--print', prompt, ...nativeArgs];
   }
 }

@@ -130,16 +130,23 @@ describe('nativeHeadlessArguments', () => {
   });
 
   it('resumes a codex session when a session id is given', () => {
-    expect(nativeHeadlessArguments('codex', 'P', ['-c', 'k=v'], 'sess-1')).toEqual([
-      'exec',
-      'resume',
-      '-c',
-      'k=v',
-      'sess-1',
+    expect(
+      nativeHeadlessArguments('codex', 'P', ['-c', 'k=v'], { id: 'sess-1', resume: true }),
+    ).toEqual(['exec', 'resume', '-c', 'k=v', 'sess-1', 'P']);
+  });
+
+  it('forces a claude session id with --session-id first, then --resume', () => {
+    // The bridge mints the id, so a claude worker lands in one attributable session:
+    // create it on the first run, resume it after, prompt kept right after --print.
+    expect(
+      nativeHeadlessArguments('claude', 'P', ['--allowedTools', 'x'], { id: 'c1', resume: false }),
+    ).toEqual(['--session-id', 'c1', '--print', 'P', '--allowedTools', 'x']);
+    expect(nativeHeadlessArguments('claude', 'P', [], { id: 'c1', resume: true })).toEqual([
+      '--resume',
+      'c1',
+      '--print',
       'P',
     ]);
-    // The resume id is codex-only; other providers ignore it.
-    expect(nativeHeadlessArguments('claude', 'P', [], 'sess-1')).toEqual(['--print', 'P']);
   });
 
   it('strips --approve-for-me when resuming codex (exec resume rejects it)', () => {
@@ -150,7 +157,7 @@ describe('nativeHeadlessArguments', () => {
         'codex',
         'P',
         ['--approve-for-me', '--skip-git-repo-check', '-c', 'k=v'],
-        'sess-1',
+        { id: 'sess-1', resume: true },
       ),
     ).toEqual(['exec', 'resume', '--skip-git-repo-check', '-c', 'k=v', 'sess-1', 'P']);
   });

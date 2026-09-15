@@ -1498,46 +1498,60 @@ async function runNativeBridge(
 
   await bootstrap.start();
 
-  // Codex `exec` is stateless per run, so the bridge resumes one session after
-  // the first message and binds LUWI's native reference to it — the only thing
-  // that lets the rollout reader attribute codex token usage (ADR: codex usage
-  // ingestion). Requires codex to persist rollouts (no `--ephemeral`). Nothing
-  // here runs for claude/gemini, and a resolve that finds no rollout leaves the
-  // bridge unbound rather than breaking the run.
+  // Both codex and claude bind LUWI's native reference to one persistent native
+  // session so the transcript/rollout reader can attribute the worker's token
+  // usage. They differ only in where the id comes from: codex `exec` is stateless
+  // per run, so the bridge recovers the id from the rollout after the first run
+  // (ADR: codex usage ingestion) and resumes it thereafter; claude accepts a
+  // caller-chosen id, so the bridge mints one up front, forces it with
+  // `--session-id`/`--resume`, and declares it after the first run creates the
+  // transcript. antigravity/gemini stay unbound — neither exposes a per-process id
+  // the bridge can force or recover without guessing (an agy fleet worker shares
+  // the GUI IDE's working directory, so a disk guess would steal its conversation).
   let codexNativeSessionId: string | undefined;
-  let codexNativeDeclared = false;
-  const declareCodexNativeOnce = async (): Promise<void> => {
-    if (provider.name !== 'codex' || codexNativeDeclared) return;
+  // Minted up front for claude; `undefined` for every other provider.
+  const claudeNativeSessionId = provider.name === 'claude' ? randomUUID() : undefined;
+  let claudeSessionStarted = false;
+  let nativeDeclared = false;
+  const resolveNativeRefOnce = async (): Promise<NativeSessionRef | undefined> => {
+    if (provider.name === 'claude') {
+      return claudeNativeSessionId === undefined
+        ? undefined
+        : { adapterId: 'claude-code', nativeSessionId: claudeNativeSessionId };
+    }
+    if (provider.name !== 'codex') return undefined;
+    const ref = await resolveNativeIdentityFromDisk('codex', {
+      environment: dependencies.environment,
+      workingDirectory,
+      platform: dependencies.platform,
+      fileSystem: dependencies.transcriptFileSystem,
+      now: dependencies.now,
+    });
+    if (ref === undefined) return undefined;
+    // Lock onto the first session found and keep resuming it thereafter.
+    codexNativeSessionId ??= ref.nativeSessionId;
+    return {
+      adapterId: ref.adapterId,
+      nativeSessionId: codexNativeSessionId,
+      ...(ref.nativeSubagentId === undefined ? {} : { nativeSubagentId: ref.nativeSubagentId }),
+    };
+  };
+  const declareNativeOnce = async (): Promise<void> => {
+    if (nativeDeclared) return;
     const sessionId = bootstrap.sessionId;
     if (sessionId === undefined) return;
     try {
-      const ref = await resolveNativeIdentityFromDisk('codex', {
-        environment: dependencies.environment,
-        workingDirectory,
-        platform: dependencies.platform,
-        fileSystem: dependencies.transcriptFileSystem,
-        now: dependencies.now,
-      });
-      if (ref === undefined) return;
-      // Lock onto the first session found and keep resuming it thereafter.
-      codexNativeSessionId ??= ref.nativeSessionId;
+      const native = await resolveNativeRefOnce();
+      if (native === undefined) return;
       await boundedRequest(
         dependencies,
         daemonUrl,
         `/api/v1/sessions/${encodeURIComponent(sessionId)}/native`,
         nativeDeclarationResponseSchema,
         options.connectTimeoutMs,
-        jsonBody({
-          native: {
-            adapterId: ref.adapterId,
-            nativeSessionId: codexNativeSessionId,
-            ...(ref.nativeSubagentId === undefined
-              ? {}
-              : { nativeSubagentId: ref.nativeSubagentId }),
-          },
-        }),
+        jsonBody({ native }),
       );
-      codexNativeDeclared = true;
+      nativeDeclared = true;
     } catch (error) {
       printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error);
     }
@@ -1564,15 +1578,21 @@ async function runNativeBridge(
         provider.name === 'codex' && bootstrap.sessionId !== undefined
           ? [...codexMcpBindingArgs(bootstrap.sessionId, daemonUrl), ...nativeArgs]
           : nativeArgs;
+      // codex learns its id only after the first run, so it passes nothing until
+      // then; claude forces its minted id, creating on the first run and resuming
+      // after. Everything else stays a fresh, unbound run.
+      const nativeSession: { id: string; resume: boolean } | undefined =
+        provider.name === 'codex'
+          ? codexNativeSessionId === undefined
+            ? undefined
+            : { id: codexNativeSessionId, resume: true }
+          : claudeNativeSessionId === undefined
+            ? undefined
+            : { id: claudeNativeSessionId, resume: claudeSessionStarted };
       try {
         const result = await dependencies.agentProcessRunner.run({
           executable: options.executable ?? context.executable ?? provider.executable,
-          args: nativeHeadlessArguments(
-            provider.name,
-            prompt,
-            providerNativeArgs,
-            provider.name === 'codex' ? codexNativeSessionId : undefined,
-          ),
+          args: nativeHeadlessArguments(provider.name, prompt, providerNativeArgs, nativeSession),
           workingDirectory,
           environment: {
             ...inherited,
@@ -1586,9 +1606,12 @@ async function runNativeBridge(
           onDiagnostic: (error) =>
             printAgentDiagnostic(dependencies, 'AGENT_PROCESS_DIAGNOSTIC', error),
         });
-        // After the run the codex rollout exists on disk; capture its session
-        // and bind it once so this and every resumed run attributes (best-effort).
-        await declareCodexNativeOnce();
+        // The first run has now created the native session (codex's rollout on
+        // disk, claude's transcript under the forced id), so flip claude to resume
+        // and bind the reference once — best-effort, and only after a run that
+        // actually started, so a child that never launched is not resumed next time.
+        if (provider.name === 'claude') claudeSessionStarted = true;
+        await declareNativeOnce();
         return {
           result: deadlineFired ? 'deadline' : 'completed',
           exitCode: result.exitCode,
