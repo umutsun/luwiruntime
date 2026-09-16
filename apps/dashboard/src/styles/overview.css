@@ -99,12 +99,14 @@
   color: var(--text-dim);
 }
 .stat-tile__sub {
-  overflow: hidden;
   min-width: 0;
   color: var(--text-muted);
   font-size: var(--font-size-2xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Wrap rather than truncate: the delivery tile's sub (failure rate, p50, recent window) must stay
+     fully visible at 1366x768, where nowrap+ellipsis clipped everything past p50. A sub that fits
+     one line still renders on one; only an over-long one wraps. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .stat-tile__bar {
   display: block;
@@ -902,7 +904,7 @@
   letter-spacing: 0.1em;
 }
 .radial__label-title {
-  color: var(--text);
+  color: var(--text-muted);
   font-size: var(--font-size-2xs);
 }
 .radial__title {

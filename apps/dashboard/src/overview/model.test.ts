@@ -449,10 +449,11 @@ describe('buildOverview', () => {
     const model = buildOverview(buildPulseSnapshot(input()), [], NOW, 0, messages);
     const delivery = model.stats.find((stat) => stat.key === 'delivery');
     expect(delivery?.value).toBe('33%'); // 2 answered of 6 terminal — partial_answered is NOT answered
-    expect(delivery?.sub).toContain('2 answered');
-    expect(delivery?.sub).toContain('3 failed/timed out'); // failed + timed_out + rejected
+    // Failure as a SHARE of terminal, not a bare count: 3 of 6 = 50% (failed + timed_out + rejected).
+    expect(delivery?.sub).toContain('50% failed/timed out');
     expect(delivery?.sub).toContain('recent 6');
-    expect(delivery?.sub).toMatch(/p50 30s/u);
+    // True median of 30s and 90s is 60s, not the lower-middle 30s.
+    expect(delivery?.sub).toMatch(/p50 60s/u);
     expect(delivery?.route).toBe('#/messages');
     expect(delivery?.unavailable).toBe(false);
   });

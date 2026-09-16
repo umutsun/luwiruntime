@@ -205,6 +205,43 @@ describe('message service', () => {
     });
   });
 
+  it('replays an offline bridge worker as deferred, not a false live-reader timeout', async () => {
+    // Regression: the bridge flag is RETAINED after the reader exits, so a replay whose target now
+    // carries `metadata.bridge` but is offline/terminal must degrade to `deferred`. Before the
+    // reader-liveness fix this re-derived `live`, and the caller waited for a reply no live reader
+    // would give — the exact false timeout the delivery signal exists to prevent.
+    const fingerprint = createMessageRequestFingerprint(request);
+    const service = createMessageService({
+      repository: repository({
+        findIdempotentMessage: async () => ({
+          message: { ...message, state: 'responded' },
+          requestFingerprint: fingerprint,
+        }),
+      }),
+      sessions: sessionService([
+        source,
+        {
+          ...target,
+          metadata: { bridge: 'native-headless' },
+          presence: 'offline',
+          status: 'disconnected',
+        },
+      ]),
+      workspaceId: 'local',
+    });
+
+    // Idempotent: the replay answers `deferred` every time it re-derives the retained record.
+    await expect(service.ask(request, 'retry-1')).resolves.toMatchObject({
+      selectedTargetSessionId: 'target',
+      delivery: 'deferred',
+      idempotent: true,
+    });
+    await expect(service.ask(request, 'retry-1')).resolves.toMatchObject({
+      delivery: 'deferred',
+      idempotent: true,
+    });
+  });
+
   it('returns authoritative terminal state or a bounded latest projection while waiting', async () => {
     let reads = 0;
     let clock = 0;

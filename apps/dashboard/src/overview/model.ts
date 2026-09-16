@@ -368,17 +368,34 @@ function deliveryQualityOf(messages: readonly AgentMessage[]): {
     )
     .filter((value) => Number.isFinite(value) && value >= 0)
     .sort((left, right) => left - right);
-  const p50 =
-    latencies.length === 0 ? undefined : latencies[Math.floor((latencies.length - 1) / 2)];
+  const p50 = median(latencies);
   const latency =
     p50 === undefined
       ? ''
       : ` · p50 ${p50 < 120_000 ? `${String(Math.round(p50 / 1000))}s` : formatDuration(p50)}`;
+  // Failure as a SHARE of terminal exchanges, not a bare count — a count reads the same at any fleet
+  // size. The value tile already carries the answered %, so the sub drops that (kept it visible) and
+  // states the three complementary facts that must survive 1366×768: failure rate, p50, window.
+  const failPct = Math.round((failed.length / terminal.length) * 100);
   return {
     value: `${String(Math.round((answered.length / terminal.length) * 100))}%`,
-    sub: `${String(answered.length)} answered · ${String(failed.length)} failed/timed out${latency} · recent ${String(terminal.length)}`,
+    sub: `${String(failPct)}% failed/timed out${latency} · recent ${String(terminal.length)}`,
     fraction: answered.length / terminal.length,
   };
+}
+
+/**
+ * A true median: an even-sized sample averages its two middle values (30s & 90s → 60s), never the
+ * lower-middle one. The `?? ` guards satisfy `noUncheckedIndexedAccess`; `mid` is always in range
+ * because an empty sample returns early.
+ */
+function median(sorted: readonly number[]): number | undefined {
+  if (sorted.length === 0) return undefined;
+  const mid = Math.floor(sorted.length / 2);
+  const hi = sorted[mid] ?? 0;
+  if (sorted.length % 2 !== 0) return hi;
+  const lo = sorted[mid - 1] ?? hi;
+  return (lo + hi) / 2;
 }
 
 /** The first present payload string that tells a reader what the event touched. */

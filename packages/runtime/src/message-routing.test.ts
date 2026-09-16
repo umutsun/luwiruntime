@@ -1,7 +1,7 @@
 import type { SessionView } from '@luwi/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { selectMessageTarget } from './index.js';
+import { deliveryForSession, selectMessageTarget } from './index.js';
 
 const session = (
   id: string,
@@ -213,5 +213,40 @@ describe('message target routing', () => {
         targetAgentId: 'claude-code',
       }),
     ).toMatchObject({ status: 'selected', delivery: 'live' });
+  });
+});
+
+describe('deliveryForSession reader liveness', () => {
+  const bridge = (overrides: Partial<SessionView>): SessionView =>
+    session('w', 'claude-code', 'idle', '2026-07-29T12:00:00.000Z', {
+      metadata: { bridge: 'native-headless' },
+      ...overrides,
+    });
+
+  it('is live only for an online, non-terminal bridge reader', () => {
+    expect(deliveryForSession(bridge({}))).toBe('live');
+  });
+
+  it('is deferred for a non-bridge session even when online', () => {
+    expect(
+      deliveryForSession(session('gui', 'claude-code', 'idle', '2026-07-29T12:00:00.000Z')),
+    ).toBe('deferred');
+  });
+
+  // The bridge flag is retained on the record after the reader exits. Classifying such a
+  // dead-reader session `live` is the exact false-timeout the signal exists to prevent — and it is
+  // reached on the idempotent-replay path, which does not pass through selectMessageTarget's
+  // availability gate.
+  it('is deferred for a retained bridge session that has gone offline (idempotent offline replay)', () => {
+    const offlineReplayTarget = bridge({ presence: 'offline' });
+    expect(deliveryForSession(offlineReplayTarget)).toBe('deferred');
+    // Idempotent: re-deriving the same retained record answers deferred every time, so a replay
+    // never resurrects a false live-reader wait.
+    expect(deliveryForSession(offlineReplayTarget)).toBe('deferred');
+  });
+
+  it('is deferred for a terminal bridge session (completed or disconnected)', () => {
+    expect(deliveryForSession(bridge({ status: 'completed' }))).toBe('deferred');
+    expect(deliveryForSession(bridge({ status: 'disconnected' }))).toBe('deferred');
   });
 });
