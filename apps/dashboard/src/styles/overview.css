@@ -409,8 +409,11 @@
   letter-spacing: 0.06em;
 }
 .tile--on .chip {
-  border-color: transparent;
-  background: rgba(255, 255, 255, 0.12);
+  /* currentColor is the focused tile's text colour, which contrasts with its
+     inverted background in both themes — a fixed white tint vanished on the
+     light (dark-mode `--ink`) tile. */
+  border-color: currentColor;
+  background: color-mix(in srgb, currentColor 12%, transparent);
 }
 .chip--blocked {
   border-color: var(--ink);
