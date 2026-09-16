@@ -14,12 +14,15 @@ export function DetailDrawer({
   eyebrow,
   title,
   meta,
+  wide = false,
   onClose,
   children,
 }: {
   eyebrow: string;
   title: string;
   meta?: ReactNode;
+  /** The wide variant, for a route whose tables run six to eight columns. */
+  wide?: boolean;
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -77,7 +80,7 @@ export function DetailDrawer({
     >
       <section
         ref={surface}
-        className="detail-drawer"
+        className={`detail-drawer${wide ? ' detail-drawer--wide' : ''}`}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

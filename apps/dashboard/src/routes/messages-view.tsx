@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import type { AgentMessage, Bounded, MessageState } from '../api/messages-scope.js';
-import { DetailDrawer } from '../components/detail-drawer.js';
+import { DetailPane } from '../components/detail-pane.js';
 import { IdBadge } from '../components/id-badge.js';
 import { PanelBody, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
 import { StatusChip, type StatusTone } from '../components/status-chip.js';
@@ -51,6 +51,8 @@ const stateTones: Record<MessageState, StatusTone> = {
 
 const TERMINAL: readonly MessageState[] = ['responded', 'rejected', 'timed_out', 'failed'];
 
+const NO_MESSAGES: readonly AgentMessage[] = [];
+
 function StateChip({ state }: { state: MessageState }) {
   return <StatusChip tone={stateTones[state]}>{stateLabels[state]}</StatusChip>;
 }
@@ -86,7 +88,9 @@ export function MessagesView({
   const [stateFilter, setStateFilter] = useState('');
   const [selectedId, setSelectedId] = useState<string>();
 
-  const all = messages?.state === 'ready' ? messages.data.items : [];
+  // One stable empty list: a fresh `[]` per render would re-run the routed
+  // selection effect below on every render of the shell.
+  const all = messages?.state === 'ready' ? messages.data.items : NO_MESSAGES;
 
   useEffect(() => {
     if (selectedCorrelationId === undefined) return;
@@ -212,7 +216,7 @@ export function MessagesView({
       </ResourcePanel>
 
       {selected === undefined ? null : (
-        <DetailDrawer
+        <DetailPane
           eyebrow="Read-only evidence"
           title="Message detail"
           meta={selected.correlationId}
@@ -320,7 +324,7 @@ export function MessagesView({
               <pre className="message-body">{selected.response.answer}</pre>
             </>
           )}
-        </DetailDrawer>
+        </DetailPane>
       )}
     </div>
   );

@@ -59,3 +59,29 @@ second iteration.
 
 Dashboard typecheck, `vitest run apps/dashboard`, build, `tsc -b`; live-verify each of the six opens
 as a drawer over the overview, the stat tiles open their drawers, and Close returns to the overview.
+
+## Iteration 2 — the remaining five routes, and the page shell goes (2026-09-15, later)
+
+Folded the four inner-modal routes and the projects registry, then deleted the page shell.
+
+- **Inner detail → inline pane.** A message (messages), a package and a profile (capabilities), a plan
+  and a snapshot (config) opened a second `DetailDrawer`; inside a route drawer that nested two
+  `aria-modal` surfaces. They now open as a `DetailPane`: the drawer header's anatomy as a labelled
+  `region` stacked under its list — no portal, no focus trap, no scroll lock — scrolled into view on
+  mount because the drawer caps its tables at 340px. The evidence is unchanged; only where it sits.
+- **Gates stay modal.** `AskSessionDialog` (sessions) and `ConfirmDialog` (config apply) are
+  confirmations, not evidence, and remain dialogs over their drawer. Their Escape handlers stop
+  propagation and their Tab handling keeps focus inside them, so the drawer's trap never fights them.
+- **Projects.** `#/projects` is the registry drawer (`ProjectsView`, `renderDetailInline={false}`);
+  picking a project navigates to `#/projects/<id>`, which is the project drawer already in place. One
+  drawer at a time: the registry yields and is remounted on Close, so focus lands on its Close rather
+  than on the row that opened the project.
+- **Wide drawer.** `DetailDrawer` gained `wide` (`--detail-drawer-width-wide`, 72rem) for the routes
+  whose tables run six to eight columns: sessions, messages, capabilities, config, projects.
+- **Shell.** `routeDrawer` is every route but `pulse`; `isOverview`, `page--route` and the
+  `.route`/`.route-head`/`.route-body` block are deleted. The skip link reads "Skip to overview".
+- **Tests.** Every route asserts as a `dialog` named by its heading, Close → the focused overview hash.
+  The three view tests query the inner detail as a `region` closed by "Close detail". A jsdom trap
+  surfaced: `hashchange` fires from a zero timer, synchronous tests never let one run, and the queued
+  events burst into the first awaiting test — 56 identical events tripped React's nested-update limit.
+  `afterEach` now awaits one timer turn so each test's events fire with nothing mounted.

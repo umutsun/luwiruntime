@@ -157,7 +157,7 @@ describe('CapabilitiesView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Code review' }));
 
-    const detail = screen.getByRole('dialog', { name: 'Package detail' });
+    const detail = screen.getByRole('region', { name: 'Package detail' });
     expect(within(detail).getByText('Reviewer')).toBeTruthy();
     expect(within(detail).getByText('Restricted')).toBeTruthy();
     expect(within(detail).getByText('Disabled by this profile')).toBeTruthy();
@@ -169,7 +169,7 @@ describe('CapabilitiesView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Code review' }));
 
-    const detail = screen.getByRole('dialog', { name: 'Package detail' });
+    const detail = screen.getByRole('region', { name: 'Package detail' });
     expect(within(detail).getByText('No profile names this package')).toBeTruthy();
   });
 
@@ -187,7 +187,7 @@ describe('CapabilitiesView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Code review' }));
 
-    const detail = screen.getByRole('dialog', { name: 'Package detail' });
+    const detail = screen.getByRole('region', { name: 'Package detail' });
     expect(within(detail).getByText('Profile list unavailable')).toBeTruthy();
     expect(within(detail).queryByText('No profile names this package')).toBeNull();
   });
@@ -207,7 +207,7 @@ describe('CapabilitiesView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open Reviewer' }));
 
-    const detail = screen.getByRole('dialog', { name: 'Profile detail' });
+    const detail = screen.getByRole('region', { name: 'Profile detail' });
     expect(within(detail).getByText('Code review')).toBeTruthy();
     const migrate = within(detail).getByRole('row', { name: /Migrate/ });
     expect(within(migrate).getByText('Disabled by profile')).toBeTruthy();
@@ -223,7 +223,7 @@ describe('CapabilitiesView', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Open Reviewer' }));
     expect(
-      within(screen.getByRole('dialog', { name: 'Profile detail' })).getByText(
+      within(screen.getByRole('region', { name: 'Profile detail' })).getByText(
         'Beyond loaded page',
       ),
     ).toBeTruthy();
@@ -234,7 +234,7 @@ describe('CapabilitiesView', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Open Reviewer' }));
     expect(
-      within(screen.getByRole('dialog', { name: 'Profile detail' })).getByText('Not registered'),
+      within(screen.getByRole('region', { name: 'Profile detail' })).getByText('Not registered'),
     ).toBeTruthy();
   });
 

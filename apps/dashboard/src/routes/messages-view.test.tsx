@@ -110,14 +110,13 @@ describe('MessagesView', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Open' }));
 
-    const detail = screen.getByRole('dialog', { name: 'Message detail' });
+    const detail = screen.getByRole('region', { name: 'Message detail' });
     expect(within(detail).getByText(/only online session/)).toBeTruthy();
     expect(within(detail).getByText(/Asking before I change/)).toBeTruthy();
     expect(within(detail).getByText('The background worker owns it.')).toBeTruthy();
-    expect(screen.queryByRole('region', { name: 'Message detail' })).toBeNull();
 
-    fireEvent.click(within(detail).getByRole('button', { name: 'Close drawer' }));
-    expect(screen.queryByRole('dialog', { name: 'Message detail' })).toBeNull();
+    fireEvent.click(within(detail).getByRole('button', { name: 'Close detail' }));
+    expect(screen.queryByRole('region', { name: 'Message detail' })).toBeNull();
   });
 
   it('opens the message selected by correlation once the bounded list arrives', () => {

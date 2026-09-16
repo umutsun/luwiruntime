@@ -126,6 +126,7 @@
   --topbar-height: 56px;
   --overview-aside-width: 360px;
   --detail-drawer-width: min(42rem, calc(100vw - var(--space-8)));
+  --detail-drawer-width-wide: min(72rem, calc(100vw - var(--space-8)));
   /*
    * Panel and cell padding, shared by every detail route so the horizontal
    * edge is continuous down a column.

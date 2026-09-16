@@ -75,6 +75,15 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   graph: { eyebrow: 'Operational graph', heading: 'Graph' },
 };
 
+/** The routes whose tables run six to eight columns take the wide drawer. */
+const WIDE_DRAWER_ROUTES: ReadonlySet<DashboardRouteName> = new Set<DashboardRouteName>([
+  'sessions',
+  'messages',
+  'capabilities',
+  'config',
+  'projects',
+]);
+
 /** The project a `#/pulse/<projectId>` hash names; anything else is the runtime. */
 function focusOfRoute(route: DashboardRoute): Focus {
   return route.name === 'pulse' && route.projectId !== undefined
@@ -427,7 +436,6 @@ export function DashboardApp({
     if (window.location.hash !== href) window.history.replaceState(window.history.state, '', href);
   };
 
-  const titles = routeTitles[route.name];
   const realtime = realtimeFace(websocketState, following, displayedActivity.pendingCount);
   const snapshotTag =
     freshness === 'refreshing'
@@ -488,26 +496,15 @@ export function DashboardApp({
             detail: agentId === undefined ? {} : { agentId },
           });
 
-  // The detail routes fold into drawers over the always-mounted overview (the
-  // owner's single-overview direction). This slice folds the six read-only
-  // routes that carry no inner modal; the rest still render as pages. Runtime
-  // was the first, proving the pattern.
-  const FOLDED_DRAWER_ROUTES = [
-    'runtime',
-    'activity',
-    'usage',
-    'agents',
-    'context',
-    'optimization',
-    'graph',
-  ] as const;
-  const routeDrawer = (FOLDED_DRAWER_ROUTES as readonly string[]).includes(route.name)
-    ? (route.name as (typeof FOLDED_DRAWER_ROUTES)[number])
-    : undefined;
-  const isOverview = route.name === 'pulse' || routeDrawer !== undefined;
+  // Every detail route is a drawer over the always-mounted overview (the
+  // owner's single-overview direction): the overview never unmounts, the hash
+  // still names the drawer for a deep link and a reload, and closing returns
+  // to the focus. A project's own detail (`#/projects/<id>`) is the project
+  // drawer above, which takes precedence in the chain below.
+  const routeDrawer = route.name === 'pulse' ? undefined : route.name;
 
   /** The view a folded route renders inside its drawer. */
-  const foldedRouteView = (name: (typeof FOLDED_DRAWER_ROUTES)[number]) => {
+  const foldedRouteView = (name: Exclude<DashboardRouteName, 'pulse'>) => {
     switch (name) {
       case 'runtime':
         return (
@@ -563,6 +560,67 @@ export function DashboardApp({
             {...(loadSubgraph === undefined ? {} : { loadSubgraph })}
           />
         );
+      case 'sessions':
+        return (
+          <SessionsView
+            snapshot={snapshot}
+            {...(messageMutations === undefined ? {} : { messageMutations })}
+            onMessageCreated={(correlationId) => {
+              window.location.hash = routeHref({ name: 'messages', correlationId });
+            }}
+            onOpenSession={(session) => openInspector({ kind: 'session', sessionId: session.id })}
+          />
+        );
+      case 'messages':
+        return (
+          <MessagesView
+            messages={messageResources.messages}
+            loading={messagesLoading}
+            onCloseRoutedDetail={() => {
+              window.location.hash = routeHref({ name: 'messages' });
+            }}
+            {...(route.name === 'messages' && route.correlationId !== undefined
+              ? { selectedCorrelationId: route.correlationId }
+              : {})}
+          />
+        );
+      case 'capabilities':
+        return (
+          <CapabilitiesView
+            capabilities={capabilityCatalogResources.capabilities}
+            profiles={capabilityCatalogResources.profiles}
+            loading={capabilityCatalogLoading}
+          />
+        );
+      case 'config':
+        return (
+          <ConfigView
+            drifts={configResources.drifts}
+            plans={configResources.plans}
+            snapshots={configResources.snapshots}
+            agents={configResources.agents}
+            loading={configLoading}
+            {...(configMutations === undefined ? {} : { mutations: configMutations })}
+            {...(onConfigMutated === undefined ? {} : { onMutated: onConfigMutated })}
+          />
+        );
+      case 'projects':
+        // The registry only: a selected project is the project drawer, which
+        // the hash addresses as `#/projects/<id>`.
+        return (
+          <ProjectsView
+            snapshot={snapshot}
+            resources={projectResources}
+            scopeLoading={projectScopeLoading}
+            agentPairResources={agentPairResources}
+            agentPairLoading={agentPairLoading}
+            leaseResources={leaseResources}
+            renderDetailInline={false}
+            onSelectProject={(projectId) => {
+              window.location.hash = routeHref({ name: 'projects', projectId });
+            }}
+          />
+        );
     }
   };
 
@@ -581,7 +639,7 @@ export function DashboardApp({
           mainRegion.current?.focus();
         }}
       >
-        Skip to {titles.heading}
+        Skip to overview
       </a>
 
       <header className="topbar">
@@ -639,138 +697,132 @@ export function DashboardApp({
 
         <span className="topbar__spacer" />
 
-        {isOverview ? (
-          <>
-            <div className="menu">
+        <div className="menu">
+          <button
+            type="button"
+            className="menu__trigger"
+            aria-label="Project scope"
+            aria-haspopup="true"
+            aria-expanded={projectMenuOpen}
+            onClick={() => setProjectMenuOpen((open) => !open)}
+          >
+            <span className="menu__eyebrow">PROJECTS</span>
+            <span className="menu__value">
+              {hiddenProjects === 0
+                ? 'All projects'
+                : `${String(visibleSnapshot.projects.length)} of ${String(snapshot.projects.length)}`}
+            </span>
+            <svg
+              viewBox="0 0 16 16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              aria-hidden="true"
+            >
+              <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <Popover
+            open={projectMenuOpen}
+            onClose={() => setProjectMenuOpen(false)}
+            className="menu__list"
+          >
+            <div role="group" aria-label="Projects">
               <button
                 type="button"
-                className="menu__trigger"
-                aria-label="Project scope"
-                aria-haspopup="true"
-                aria-expanded={projectMenuOpen}
-                onClick={() => setProjectMenuOpen((open) => !open)}
+                className="menu__item menu__item--switch"
+                aria-pressed={filter.hideQuiet}
+                onClick={() => filter.setHideQuiet(!filter.hideQuiet)}
               >
-                <span className="menu__eyebrow">PROJECTS</span>
-                <span className="menu__value">
-                  {hiddenProjects === 0
-                    ? 'All projects'
-                    : `${String(visibleSnapshot.projects.length)} of ${String(snapshot.projects.length)}`}
+                <span className="menu__label">Hide quiet projects</span>
+                <span className="switch" aria-hidden="true">
+                  <span className="switch__knob" />
                 </span>
-                <svg
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.6"
-                  aria-hidden="true"
-                >
-                  <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
               </button>
-              <Popover
-                open={projectMenuOpen}
-                onClose={() => setProjectMenuOpen(false)}
-                className="menu__list"
+              <button
+                type="button"
+                className="menu__item"
+                aria-pressed={filter.hidden.size === 0}
+                aria-label="All projects"
+                onClick={() => filter.showAll()}
               >
-                <div role="group" aria-label="Projects">
-                  <button
-                    type="button"
-                    className="menu__item menu__item--switch"
-                    aria-pressed={filter.hideQuiet}
-                    onClick={() => filter.setHideQuiet(!filter.hideQuiet)}
+                <span className="menu__glyph">ALL</span>
+                <span className="menu__label">All projects</span>
+                <span className="menu__hint">
+                  {snapshot.projectCount.state === 'unavailable'
+                    ? 'UNAVAILABLE'
+                    : `${String(snapshot.projectCount.value)} REGISTERED`}
+                </span>
+              </button>
+              <div className="menu__divider" role="separator" />
+              {menuProjects.map((project) => {
+                const on = !filter.hidden.has(project.id);
+                const quietHidden = filter.hideQuiet && !activeProjectIds.has(project.id);
+                return (
+                  <div
+                    key={project.id}
+                    className={`menu__row${on ? '' : ' menu__row--off'}${quietHidden ? ' menu__row--quiet' : ''}`}
                   >
-                    <span className="menu__label">Hide quiet projects</span>
-                    <span className="switch" aria-hidden="true">
-                      <span className="switch__knob" />
-                    </span>
-                  </button>
+                    <button
+                      type="button"
+                      className="menu__item menu__item--switch"
+                      aria-pressed={on}
+                      aria-label={`Show ${project.name}`}
+                      title={
+                        quietHidden ? 'Quiet: hidden while quiet projects are hidden' : undefined
+                      }
+                      onClick={() => filter.toggle(project.id)}
+                    >
+                      <span className="menu__glyph">{monogramInitials(project.name)}</span>
+                      <span className="menu__label">{project.name}</span>
+                      <span className="menu__hint">{projectBadge(project.id)}</span>
+                      <span className="switch" aria-hidden="true">
+                        <span className="switch__knob" />
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="menu__only"
+                      aria-label={`Show only ${project.name}`}
+                      onClick={() => filter.only(project.id, allIds)}
+                    >
+                      only
+                    </button>
+                  </div>
+                );
+              })}
+              {projectMutations === undefined ? null : (
+                <>
+                  <div className="menu__divider" role="separator" />
                   <button
                     type="button"
                     className="menu__item"
-                    aria-pressed={filter.hidden.size === 0}
-                    aria-label="All projects"
-                    onClick={() => filter.showAll()}
+                    onClick={() => {
+                      setProjectMenuOpen(false);
+                      setRegistering(true);
+                    }}
                   >
-                    <span className="menu__glyph">ALL</span>
-                    <span className="menu__label">All projects</span>
-                    <span className="menu__hint">
-                      {snapshot.projectCount.state === 'unavailable'
-                        ? 'UNAVAILABLE'
-                        : `${String(snapshot.projectCount.value)} REGISTERED`}
-                    </span>
+                    <span className="menu__glyph">+</span>
+                    <span className="menu__label">Register a project</span>
                   </button>
-                  <div className="menu__divider" role="separator" />
-                  {menuProjects.map((project) => {
-                    const on = !filter.hidden.has(project.id);
-                    const quietHidden = filter.hideQuiet && !activeProjectIds.has(project.id);
-                    return (
-                      <div
-                        key={project.id}
-                        className={`menu__row${on ? '' : ' menu__row--off'}${quietHidden ? ' menu__row--quiet' : ''}`}
-                      >
-                        <button
-                          type="button"
-                          className="menu__item menu__item--switch"
-                          aria-pressed={on}
-                          aria-label={`Show ${project.name}`}
-                          title={
-                            quietHidden
-                              ? 'Quiet: hidden while quiet projects are hidden'
-                              : undefined
-                          }
-                          onClick={() => filter.toggle(project.id)}
-                        >
-                          <span className="menu__glyph">{monogramInitials(project.name)}</span>
-                          <span className="menu__label">{project.name}</span>
-                          <span className="menu__hint">{projectBadge(project.id)}</span>
-                          <span className="switch" aria-hidden="true">
-                            <span className="switch__knob" />
-                          </span>
-                        </button>
-                        <button
-                          type="button"
-                          className="menu__only"
-                          aria-label={`Show only ${project.name}`}
-                          onClick={() => filter.only(project.id, allIds)}
-                        >
-                          only
-                        </button>
-                      </div>
-                    );
-                  })}
-                  {projectMutations === undefined ? null : (
-                    <>
-                      <div className="menu__divider" role="separator" />
-                      <button
-                        type="button"
-                        className="menu__item"
-                        onClick={() => {
-                          setProjectMenuOpen(false);
-                          setRegistering(true);
-                        }}
-                      >
-                        <span className="menu__glyph">+</span>
-                        <span className="menu__label">Register a project</span>
-                      </button>
-                    </>
-                  )}
-                </div>
-              </Popover>
+                </>
+              )}
             </div>
-            <div className="segmented segmented--mono" role="group" aria-label="View">
-              {VIEW_CHOICES.map((choice) => (
-                <button
-                  key={choice}
-                  type="button"
-                  className="segmented__option"
-                  aria-pressed={view === choice}
-                  onClick={() => setView(choice)}
-                >
-                  {VIEW_LABELS[choice]}
-                </button>
-              ))}
-            </div>
-          </>
-        ) : null}
+          </Popover>
+        </div>
+        <div className="segmented segmented--mono" role="group" aria-label="View">
+          {VIEW_CHOICES.map((choice) => (
+            <button
+              key={choice}
+              type="button"
+              className="segmented__option"
+              aria-pressed={view === choice}
+              onClick={() => setView(choice)}
+            >
+              {VIEW_LABELS[choice]}
+            </button>
+          ))}
+        </div>
 
         <div className="segmented segmented--icons" role="group" aria-label="Theme">
           {THEME_OPTIONS.map((option) => (
@@ -791,108 +843,25 @@ export function DashboardApp({
 
       {/* `tabIndex={-1}` makes the region focusable by the skip link without
           adding a tab stop of its own. */}
-      <main
-        id="main-content"
-        className={`page${isOverview ? '' : ' page--route'}`}
-        ref={mainRegion}
-        tabIndex={-1}
-      >
-        {isOverview ? (
-          <Overview
-            snapshot={visibleSnapshot}
-            events={overviewEvents}
-            hiddenProjects={hiddenProjects}
-            nowMs={nowMs}
-            view={view}
-            focus={focus}
-            following={following}
-            pendingCount={displayedActivity.pendingCount}
-            realtime={realtime.word.toLowerCase()}
-            {...(messageResources.messages?.state === 'ready'
-              ? { messages: messageResources.messages.data.items }
-              : {})}
-            onFocus={changeFocus}
-            onInspect={openInspector}
-            {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
-            {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
-          />
-        ) : (
-          <div className="route">
-            <div className="route-head">
-              <div>
-                <p className="eyebrow">{titles.eyebrow}</p>
-                <h1>{titles.heading}</h1>
-              </div>
-              <a className="route-head__back" href={hrefOfFocus(focus)}>
-                ← Overview
-              </a>
-            </div>
-            <div className="route-body">
-              {route.name === 'sessions' ? (
-                <SessionsView
-                  snapshot={snapshot}
-                  {...(messageMutations === undefined ? {} : { messageMutations })}
-                  onMessageCreated={(correlationId) => {
-                    window.location.hash = routeHref({ name: 'messages', correlationId });
-                  }}
-                  onOpenSession={(session) =>
-                    openInspector({ kind: 'session', sessionId: session.id })
-                  }
-                />
-              ) : route.name === 'messages' ? (
-                <MessagesView
-                  messages={messageResources.messages}
-                  loading={messagesLoading}
-                  onCloseRoutedDetail={() => {
-                    window.location.hash = routeHref({ name: 'messages' });
-                  }}
-                  {...(route.correlationId === undefined
-                    ? {}
-                    : { selectedCorrelationId: route.correlationId })}
-                />
-              ) : route.name === 'capabilities' ? (
-                <CapabilitiesView
-                  capabilities={capabilityCatalogResources.capabilities}
-                  profiles={capabilityCatalogResources.profiles}
-                  loading={capabilityCatalogLoading}
-                />
-              ) : route.name === 'config' ? (
-                <ConfigView
-                  drifts={configResources.drifts}
-                  plans={configResources.plans}
-                  snapshots={configResources.snapshots}
-                  agents={configResources.agents}
-                  loading={configLoading}
-                  {...(configMutations === undefined ? {} : { mutations: configMutations })}
-                  {...(onConfigMutated === undefined ? {} : { onMutated: onConfigMutated })}
-                />
-              ) : route.name === 'projects' ? (
-                <ProjectsView
-                  snapshot={snapshot}
-                  {...(route.projectId === undefined ? {} : { selectedProjectId: route.projectId })}
-                  {...(route.agentId === undefined ? {} : { selectedAgentId: route.agentId })}
-                  resources={projectResources}
-                  scopeLoading={projectScopeLoading}
-                  agentPairResources={agentPairResources}
-                  agentPairLoading={agentPairLoading}
-                  leaseResources={leaseResources}
-                  renderDetailInline={false}
-                  onSelectProject={(projectId) => {
-                    window.location.hash = routeHref({ name: 'projects', projectId });
-                  }}
-                  onSelectAgent={(agentId) => {
-                    if (route.projectId === undefined) return;
-                    window.location.hash = routeHref({
-                      name: 'projects',
-                      projectId: route.projectId,
-                      ...(agentId === undefined ? {} : { agentId }),
-                    });
-                  }}
-                />
-              ) : null}
-            </div>
-          </div>
-        )}
+      <main id="main-content" className="page" ref={mainRegion} tabIndex={-1}>
+        <Overview
+          snapshot={visibleSnapshot}
+          events={overviewEvents}
+          hiddenProjects={hiddenProjects}
+          nowMs={nowMs}
+          view={view}
+          focus={focus}
+          following={following}
+          pendingCount={displayedActivity.pendingCount}
+          realtime={realtime.word.toLowerCase()}
+          {...(messageResources.messages?.state === 'ready'
+            ? { messages: messageResources.messages.data.items }
+            : {})}
+          onFocus={changeFocus}
+          onInspect={openInspector}
+          {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
+          {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
+        />
       </main>
 
       {selection !== undefined ? (
@@ -982,6 +951,7 @@ export function DashboardApp({
         <DetailDrawer
           eyebrow={routeTitles[routeDrawer].eyebrow}
           title={routeTitles[routeDrawer].heading}
+          wide={WIDE_DRAWER_ROUTES.has(routeDrawer)}
           onClose={() => {
             window.location.hash = hrefOfFocus(focus);
           }}

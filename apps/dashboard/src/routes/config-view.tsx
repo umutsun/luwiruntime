@@ -11,7 +11,7 @@ import {
   type DriftSeverity,
 } from '../api/config-scope.js';
 import { ConfirmDialog } from '../components/confirm-dialog.js';
-import { DetailDrawer } from '../components/detail-drawer.js';
+import { DetailPane } from '../components/detail-pane.js';
 import { IdBadge } from '../components/id-badge.js';
 import {
   Panel,
@@ -683,25 +683,25 @@ export function ConfigView({
       </ResourcePanel>
 
       {selectedPlan === undefined ? null : (
-        <DetailDrawer
+        <DetailPane
           eyebrow="Configuration evidence"
           title="Plan detail"
           meta={selectedPlan.kind}
           onClose={() => setSelection(undefined)}
         >
           <PlanDetail plan={selectedPlan} />
-        </DetailDrawer>
+        </DetailPane>
       )}
 
       {selectedSnapshot === undefined ? null : (
-        <DetailDrawer
+        <DetailPane
           eyebrow="Configuration evidence"
           title="Snapshot detail"
           meta={selectedSnapshot.adapterVersion}
           onClose={() => setSelection(undefined)}
         >
           <SnapshotDetail snapshot={selectedSnapshot} />
-        </DetailDrawer>
+        </DetailPane>
       )}
 
       {pendingPlan === undefined ? null : (

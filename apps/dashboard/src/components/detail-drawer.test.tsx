@@ -104,4 +104,17 @@ describe('detail drawer', () => {
     fireEvent.keyDown(drawer, { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toBe(inner);
   });
+
+  it('takes the wide variant only when asked', () => {
+    openDrawer();
+    expect(screen.getByRole('dialog').classList.contains('detail-drawer--wide')).toBe(false);
+    cleanup();
+
+    render(
+      <DetailDrawer eyebrow="Registry" title="Sessions" wide onClose={() => undefined}>
+        <p>Every session</p>
+      </DetailDrawer>,
+    );
+    expect(screen.getByRole('dialog').classList.contains('detail-drawer--wide')).toBe(true);
+  });
 });

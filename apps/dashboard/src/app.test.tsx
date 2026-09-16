@@ -43,11 +43,15 @@ beforeEach(() => {
   Object.defineProperty(window, 'localStorage', { value: memoryStorage(), configurable: true });
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
-  window.location.hash = '#/pulse';
   vi.restoreAllMocks();
   vi.useRealTimers();
+  window.location.hash = '#/pulse';
+  // jsdom fires `hashchange` from a zero timer, and a synchronous test never
+  // lets one run. Let every event this test queued fire now, with nothing
+  // mounted, rather than as a burst inside the first later test that awaits.
+  await new Promise((resolve) => setTimeout(resolve, 0));
 });
 
 const NOW = Date.parse('2026-08-05T08:00:00.000Z');
@@ -491,13 +495,14 @@ describe('Projects route', () => {
     return value;
   };
 
-  it('renders the project registry when the route is active', () => {
+  it('renders the project registry as a drawer over the overview', () => {
     window.location.hash = '#/projects';
     shell(withProjects());
 
-    expect(screen.getByRole('heading', { level: 1, name: 'Projects' })).toBeTruthy();
-    expect(screen.getAllByText('Scoped Project').length).toBeGreaterThan(0);
-    expect(screen.getByText(/load its scoped evidence/i)).toBeTruthy();
+    const registry = screen.getByRole('dialog', { name: 'Projects' });
+    expect(drillDown()).toBeTruthy();
+    expect(within(registry).getAllByText('Scoped Project').length).toBeGreaterThan(0);
+    expect(within(registry).getByText(/load its scoped evidence/i)).toBeTruthy();
   });
 
   it('reports a loading state for the selected project scope', () => {
@@ -513,10 +518,18 @@ describe('Projects route', () => {
     expect(within(repository).getByText('Unavailable')).toBeTruthy();
   });
 
-  it('leaves the overview one link away from every detail route', () => {
+  it('opens a project from the registry as the project drawer, and closes back to the registry', () => {
     window.location.hash = '#/projects';
     shell(withProjects());
-    expect(screen.getByRole('link', { name: '← Overview' }).getAttribute('href')).toBe('#/pulse');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Scoped Project' }));
+    expect(window.location.hash).toBe('#/projects/p1');
+    fireEvent(window, new Event('hashchange'));
+    const detail = screen.getByRole('dialog', { name: 'Project detail' });
+    // One drawer at a time: the registry drawer yields to the project's own.
+    expect(screen.queryByRole('dialog', { name: 'Projects' })).toBeNull();
+    fireEvent.click(within(detail).getByRole('button', { name: 'Close drawer' }));
+    expect(window.location.hash).toBe('#/projects');
   });
 });
 
@@ -539,33 +552,21 @@ describe('detail routes', () => {
     return value;
   };
 
-  // Routes not yet folded still render as pages with an h1 and a back link.
-  const pageRoutes = [
-    ['#/sessions', 'Sessions'],
-    ['#/messages', 'Messages'],
-    ['#/capabilities', 'Capabilities'],
-    ['#/config', 'Configuration'],
-  ] as const;
-
-  // The six read-only routes folded into drawers over the always-mounted overview.
+  // Every detail route is a drawer over the always-mounted overview; there is
+  // no page shell left. Runtime has its own test above.
   const drawerRoutes = [
+    ['#/activity', 'Activity'],
     ['#/agents', 'Agents'],
     ['#/usage', 'Usage'],
     ['#/context', 'Context'],
     ['#/optimization', 'Optimization'],
     ['#/graph', 'Graph'],
+    ['#/sessions', 'Sessions'],
+    ['#/messages', 'Messages'],
+    ['#/capabilities', 'Capabilities'],
+    ['#/config', 'Configuration'],
+    ['#/projects', 'Projects'],
   ] as const;
-
-  it.each(pageRoutes)(
-    'activates %s with its own heading and a way back to the overview',
-    (hash, heading) => {
-      window.location.hash = hash;
-      shell(snapshot());
-
-      expect(screen.getByRole('heading', { level: 1, name: heading })).toBeTruthy();
-      expect(screen.getByRole('link', { name: '← Overview' }).getAttribute('href')).toBe('#/pulse');
-    },
-  );
 
   it.each(drawerRoutes)(
     'folds %s into a drawer over the overview, closing back to it',
@@ -777,16 +778,15 @@ describe('focus in the hash', () => {
     expect(pushSpy).not.toHaveBeenCalled();
   });
 
-  it('returns from a detail route to the project that was focused', () => {
+  it('returns from a detail drawer to the project that was focused', () => {
     window.location.hash = '#/pulse/p1';
     shell(twoProjects());
     window.location.hash = '#/sessions';
     fireEvent(window, new Event('hashchange'));
 
-    expect(screen.getByRole('heading', { level: 1, name: 'Sessions' })).toBeTruthy();
-    expect(screen.getByRole('link', { name: '← Overview' }).getAttribute('href')).toBe(
-      '#/pulse/p1',
-    );
+    const drawer = screen.getByRole('dialog', { name: 'Sessions' });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Close drawer' }));
+    expect(window.location.hash).toBe('#/pulse/p1');
   });
 });
 
@@ -888,14 +888,15 @@ describe('project evidence drawer', () => {
     return value;
   };
 
-  it('shows the selected project evidence in the right drawer, not below the table', () => {
+  it('shows the selected project evidence in its own drawer, with the registry drawer yielding', () => {
     window.location.hash = '#/projects/p1';
     shell(withDrawerProject());
 
     const drawer = screen.getByRole('dialog', { name: 'Project detail' });
     expect(within(drawer).getByRole('region', { name: /repository/i })).toBeTruthy();
-    const registry = screen.getByRole('region', { name: /registered projects/i });
-    expect(within(registry).queryByRole('region', { name: /repository/i })).toBeNull();
+    // One drawer at a time: the evidence appears once, and not under a registry.
+    expect(screen.getAllByRole('region', { name: /repository/i })).toHaveLength(1);
+    expect(screen.queryByRole('dialog', { name: 'Projects' })).toBeNull();
   });
 
   it('closes back to the registry', () => {
@@ -905,7 +906,7 @@ describe('project evidence drawer', () => {
     expect(window.location.hash).toBe('#/projects');
   });
 
-  it('closes on Escape and returns focus to the row that opened it', async () => {
+  it('closes on Escape back to the registry drawer, which takes focus again', async () => {
     window.location.hash = '#/projects';
     shell(withDrawerProject());
 
@@ -920,8 +921,13 @@ describe('project evidence drawer', () => {
     expect(window.location.hash).toBe('#/projects');
     fireEvent(window, new Event('hashchange'));
     expect(screen.queryByRole('dialog', { name: 'Project detail' })).toBeNull();
+    // The registry drawer is remounted, so the row that opened the project is
+    // gone with the old one; focus lands on the new drawer's Close, inside it.
+    const registry = screen.getByRole('dialog', { name: 'Projects' });
     await vi.waitFor(() => {
-      expect(document.activeElement).toBe(opener);
+      expect(document.activeElement).toBe(
+        within(registry).getByRole('button', { name: 'Close drawer' }),
+      );
     });
   });
 
@@ -955,7 +961,9 @@ describe('project evidence drawer', () => {
     fireEvent(window, new Event('hashchange'));
 
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
-    expect(screen.getByRole('dialog', { name: 'Message detail' })).toBeTruthy();
+    const messages = screen.getByRole('dialog', { name: 'Messages' });
+    // The routed message opens inline inside the one drawer, not as a second.
+    expect(within(messages).getByRole('region', { name: 'Message detail' })).toBeTruthy();
   });
 });
 

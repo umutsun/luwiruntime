@@ -70,7 +70,8 @@ realtime Pulse and the Phase 1–4 runtime foundation:
 - a loopback-served React/TypeScript dashboard whose front door (ADR 0032, 2026-09-11) is an
   overview with four switchable lenses — Board, Flow, Radial, Timeline — over one pure model, a
   docked drill-down for the runtime, a project, an agent or a session, and a stream ticker; the
-  twelve detail routes stay, reached from the drill-down's links and `Ctrl K`; every comp claim the runtime
+  twelve detail routes open as drawers over that overview, from the hero stat tiles, the drill-down's
+  links and the stream ticker — there is no separate page; every comp claim the runtime
   cannot know (release readiness, lifecycle stage, task leases, 7-day trends, tokens summed across
   grades, a `running` status) is replaced by an observed fact or an honest `—`;
 - independently validated observational health, project, session, agent, activity, usage,
@@ -354,7 +355,10 @@ Timeline, and Knowledge. The Knowledge lens shows one project's graphify knowled
 nothing focused draws the projects as clickable discs, and focusing one opens its bounded
 god/hub/symbol community graph read from `graphify-out/graph.json`; LUWI reads that output and never
 runs graphify. The twelve detail routes (sessions, agents, usage, context, optimization, graph,
-messages, capabilities, config, projects, runtime, activity) are reached from the drill-down's links.
+messages, capabilities, config, projects, runtime, activity) open as drawers over the always-mounted
+overview — from the hero stat tiles, the drill-down's links and the stream ticker — and their hashes
+still deep-link and reload; a message, package, profile, plan or snapshot detail opens inline inside its
+drawer rather than as a second one.
 The dashboard writes only its own three mutation surfaces: config plan/approve/apply/rollback,
 message transitions, and project registration and settings (name, remote, and default branch, never
 the path). A reader that never became ready is dropped rather than left as a zombie, and `luwi_join`

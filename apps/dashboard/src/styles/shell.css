@@ -75,8 +75,8 @@ button:focus-visible {
 }
 /*
  * The shell is the viewport, not a document: a 56px header over one page
- * region that fills the rest. The overview never scrolls the page; the detail
- * routes scroll inside `.page--route`. There is no rail track any more — the
+ * region that fills the rest. The overview never scrolls the page; every
+ * detail route is a drawer over it. There is no rail track any more — the
  * comps' three regions are the header, the picture and the docked drill-down,
  * and the last two are the overview's own grid.
  */
@@ -438,45 +438,10 @@ button:focus-visible {
   width: 14px;
   height: 14px;
 }
-/* The page region: the overview fills it; a detail route scrolls inside it. */
+/* The page region: the overview fills it; every detail is a drawer over it. */
 .page {
   min-width: 0;
   min-height: 0;
-}
-.page--route {
-  overflow: auto;
-}
-.route {
-  width: 100%;
-  max-width: 1680px;
-  margin: 0 auto;
-  padding: var(--space-4) var(--space-5h) var(--space-7);
-}
-.route-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
-}
-.route-head h1 {
-  margin: 0;
-  font-size: var(--font-size-2xl);
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-.route-head__back {
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: var(--font-size-xs);
-  text-decoration: none;
-  white-space: nowrap;
-}
-.route-head__back:hover {
-  color: var(--text);
-}
-.route-body {
-  min-width: 0;
 }
 /*
  * 0.13em, not the design system's 0.22em: these eyebrows are small uppercase

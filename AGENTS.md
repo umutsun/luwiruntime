@@ -1245,8 +1245,9 @@ an explicit `LUWI_TEST_REDIS_URL`.
 headless per claimed message so an agent's inbox answers itself; it spawns a process and injects into
 no terminal, so sections 3 and 21 hold. ADR 0032 rebuilt the dashboard as one overview (`#/pulse`)
 with five switchable lenses — Board, Flow, Radial, Timeline, and Knowledge — over one pure model,
-with a docked drill-down and a stream ticker; the twelve detail routes are reached from the
-drill-down. ADR 0033 added in-place project settings: register a project and edit its name, remote,
+with a docked drill-down and a stream ticker; the twelve detail routes open as drawers over that
+overview (from the stat tiles, the drill-down and the ticker), with no separate page left and any inner
+detail opening inline rather than as a second drawer. ADR 0033 added in-place project settings: register a project and edit its name, remote,
 and default branch (never its path), a third dashboard mutation surface beside config and messages.
 ADR 0034 made a reader-owned session revival keep a dropped session usable through `luwi_join`. The
 **Knowledge lens** renders each project's graphify knowledge graph read-only, read from that

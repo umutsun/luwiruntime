@@ -50,6 +50,7 @@ const VIEWS = [
   '../routes/graph-view.tsx',
   '../inspectors/inspector-panel.tsx',
   '../components/detail-drawer.tsx',
+  '../components/detail-pane.tsx',
   '../routes/ask-session-dialog.tsx',
   '../components/project-form.tsx',
   '../components/luwibot-chat.tsx',

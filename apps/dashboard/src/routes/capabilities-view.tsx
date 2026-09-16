@@ -9,7 +9,7 @@ import {
   type CatalogProfile,
   type ResolvedProfileCapability,
 } from '../api/capability-catalog.js';
-import { DetailDrawer } from '../components/detail-drawer.js';
+import { DetailPane } from '../components/detail-pane.js';
 import { PanelBody, ResourcePanel, TableWrap, type ResourceState } from '../components/panel.js';
 import { StatusChip } from '../components/status-chip.js';
 
@@ -529,25 +529,25 @@ export function CapabilitiesView({
       </ResourcePanel>
 
       {selectedCapability === undefined ? null : (
-        <DetailDrawer
+        <DetailPane
           eyebrow="Read-only evidence"
           title="Package detail"
           meta={selectedCapability.kind}
           onClose={() => setSelection(undefined)}
         >
           <PackageDetail capability={selectedCapability} profiles={profiles} />
-        </DetailDrawer>
+        </DetailPane>
       )}
 
       {selectedProfile === undefined ? null : (
-        <DetailDrawer
+        <DetailPane
           eyebrow="Read-only evidence"
           title="Profile detail"
           meta={selectedProfile.scope}
           onClose={() => setSelection(undefined)}
         >
           <ProfileDetail profile={selectedProfile} capabilities={capabilities} />
-        </DetailDrawer>
+        </DetailPane>
       )}
 
       <p className="bounded-note">

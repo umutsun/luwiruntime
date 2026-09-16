@@ -404,23 +404,32 @@ animates when its session has a retained event in the last ten minutes that is n
 never report `thinking` and heartbeats alone would animate every online session forever; the board
 says so in words.
 
-**Detail routes fold into the overview as drawers (2026-09-15, Phase 1 vertical slice).** The owner's
-direction is a single unified overview with no separate pages: the twelve detail routes become
-`DetailDrawer`s over an always-mounted `#/pulse`, the way `#/runtime` already did. `app.tsx` drives it
-— `FOLDED_DRAWER_ROUTES` + `routeDrawer` + `isOverview`, a `foldedRouteView(name)` helper, and one
-general drawer branch replacing the old `runtimeDrawer` one. `main.tsx`/`bootstrap.ts` loaders and
-`routing.ts`/`routeTitles` **do not change** — the hashes stay for deep-link/reload; drawer-vs-page is
-purely an `app.tsx` render decision. **This slice folded the six read-only routes with no inner modal:**
-runtime, activity, usage, agents, context, optimization, graph. **Still pages, deferred to iteration 2:**
-sessions, messages, capabilities, config (each renders its OWN inner `DetailDrawer`/modal — `AskSessionDialog`
-for sessions — so wrapping them nests two `aria-modal` surfaces; their inner detail must become an inline
-pane first), and the projects LIST (its detail is already a drawer). The `.route`/`.route-head`/`.route-body`
-page shell stays until all routes fold, then it is deleted. **Openers (the owner's choice):** the five hero
-stat tiles open their domain drawer (Sessions→`#/sessions`, Projects→`#/projects`, Events→`#/activity`,
-Tokens→`#/usage`, Context→`#/context`; each `Stat` carries a `route`), and the runtime-focus drill-down adds
-Graph/Optimization beside Runtime/Agents. No menu or palette (both were removed). `app.test.tsx` splits its
-route assertions into `pageRoutes` (h1 + `← Overview`) and `drawerRoutes` (a `dialog` named by heading, Close →
-`#/pulse`); the Runtime test is the template.
+**Every detail route is a drawer over the overview (2026-09-15, Phase 1 complete).** The owner's
+direction is a single unified overview with no separate pages: the twelve detail routes are
+`DetailDrawer`s over an always-mounted `#/pulse`, the way `#/runtime` first did. `app.tsx` drives it —
+`routeDrawer` is every route name but `pulse`, `foldedRouteView(name)` renders the route's view inside
+one general drawer branch, and `WIDE_DRAWER_ROUTES` (sessions, messages, capabilities, config, projects)
+take the `wide` variant (`--detail-drawer-width-wide`, 72rem) because their tables run six to eight
+columns. `main.tsx`/`bootstrap.ts` loaders and `routing.ts`/`routeTitles` **did not change** — the hashes
+stay for deep-link/reload; drawer-vs-page was purely an `app.tsx` render decision, and the
+`.route`/`.route-head`/`.route-body`/`.page--route` page shell is **deleted**. **The inner details became
+inline panes:** a message, a package, a profile, a plan and a snapshot open as a `DetailPane` (the drawer
+header's anatomy as a labelled `region` stacked under its list, no portal, no focus trap, no scroll lock;
+it scrolls itself into view because a drawer caps its tables) instead of a second `DetailDrawer`, so no
+route nests two `aria-modal` surfaces. The two **gates** stay modal over their drawer — `AskSessionDialog`
+(sessions) and `ConfirmDialog` (config apply) — because a confirmation is not evidence; their own Escape
+handlers stop propagation, so the drawer's trap never fights them. `#/projects` is the registry drawer;
+picking a project navigates to `#/projects/<id>`, which is the project drawer (one drawer at a time, so
+the registry yields and is remounted on Close — focus lands on its Close, not on the row). **Openers (the
+owner's choice):** the five hero stat tiles open their domain drawer (Sessions→`#/sessions`,
+Projects→`#/projects`, Events→`#/activity`, Tokens→`#/usage`, Context→`#/context`; each `Stat` carries a
+`route`), the runtime-focus drill-down adds Graph/Optimization beside Runtime/Agents, and the stream
+ticker links a message row to `#/messages/<correlationId>`, which opens the routed message inline. No menu
+or palette (both were removed). `app.test.tsx` asserts every route as a `dialog` named by its heading with
+Close → the focused overview hash. **One harness trap:** jsdom fires `hashchange` from a zero timer, so a
+synchronous test never lets one run and they pile up until the first test that awaits — a burst of
+dozens of identical events tripped React's nested-update limit; `afterEach` now awaits one timer turn so
+each test's events fire with nothing mounted.
 
 **Two sides of one rule, 2026-09-11: a session that never becomes ready is dropped, and not
 re-created.** A session registers as `starting` and leaves it only when a reader binds — the
