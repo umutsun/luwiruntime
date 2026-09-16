@@ -1046,6 +1046,13 @@ function createBridgeDaemonClient(
         `/api/v1/messages/${encodeURIComponent(correlationId)}`,
         messageResponseSchema,
       ),
+    listLeases: async (projectId) =>
+      request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/leases?projectId=${encodeURIComponent(projectId)}&limit=200`,
+        leaseCollectionSchema,
+      ),
     transitionMessage: async (action, sessionId, correlationId) =>
       request(
         dependencies,
@@ -1629,6 +1636,7 @@ async function runNativeBridge(
     executor,
     currentSessionId: () => bootstrap.sessionId,
     agentId: context.agentId,
+    projectId: context.projectId,
     bridgeInstanceId: options.bridgeInstance,
     claimLimit: options.limit,
     claimBlockMs: options.blockMs,

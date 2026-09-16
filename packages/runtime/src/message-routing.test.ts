@@ -38,6 +38,7 @@ describe('message target routing', () => {
       status: 'selected',
       session: target,
       reason: 'direct target session target',
+      delivery: 'deferred',
     });
   });
 
@@ -95,6 +96,7 @@ describe('message target routing', () => {
       status: 'selected',
       session: candidates[3],
       reason: 'selected agent gemini-sim session idle-a by status, heartbeat, and session ID',
+      delivery: 'deferred',
     });
   });
 
@@ -116,6 +118,7 @@ describe('message target routing', () => {
       status: 'selected',
       session: worker,
       reason: 'selected agent claude-code session worker by status, heartbeat, and session ID',
+      delivery: 'live',
     });
   });
 
@@ -132,6 +135,7 @@ describe('message target routing', () => {
       status: 'selected',
       session: interactive,
       reason: 'selected agent claude-code session pm by status, heartbeat, and session ID',
+      delivery: 'deferred',
     });
   });
 
@@ -175,6 +179,7 @@ describe('message target routing', () => {
       status: 'selected',
       session: ready,
       reason: 'selected agent gemini-sim session ready by status, heartbeat, and session ID',
+      delivery: 'deferred',
     });
   });
 
@@ -191,6 +196,22 @@ describe('message target routing', () => {
       status: 'selected',
       session: target,
       reason: 'direct target session bound',
+      delivery: 'deferred',
     });
+  });
+
+  it('classifies any bridge session (not only native-headless) as live delivery', () => {
+    // Regression: a DeepSeek ACP bridge is a continuous inbox reader too, so it must be 'live' —
+    // otherwise luwi_ask_agent stops waiting for a reply it is about to give.
+    const deepseek = session('ds', 'claude-code', 'idle', '2026-07-29T12:01:00.000Z', {
+      metadata: { bridge: 'deepseek-harness-acp' },
+    });
+    expect(
+      selectMessageTarget({
+        sourceSession: source,
+        sessions: [deepseek],
+        targetAgentId: 'claude-code',
+      }),
+    ).toMatchObject({ status: 'selected', delivery: 'live' });
   });
 });

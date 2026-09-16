@@ -142,11 +142,22 @@ export const agentMessageSchema = z.strictObject({
   response: agentMessageResponseSchema.optional(),
 });
 
+/**
+ * How the selected target will actually receive the message (ADR 0006 / turn-based-GUI gap):
+ * `live` — the target continuously claims its inbox (a native-bridge worker), so a prompt reply is
+ * expected; `deferred` — the target is a turn-based reader (an interactive GUI) whose inbox is only
+ * claimed during its own turn, so the durable message waits until that next turn rather than being
+ * answered now. It lets a caller stop presenting a deferred delivery as a live-reader timeout.
+ */
+export const messageDeliverySchema = z.enum(['live', 'deferred']);
+export type MessageDelivery = z.infer<typeof messageDeliverySchema>;
+
 export const messageCreateResponseSchema = z.strictObject({
   message: agentMessageSchema,
   selectedTargetSessionId: identifierSchema,
   selectedTargetAgentId: agentIdSchema,
   selectionReason: z.string().min(1).max(1024),
+  delivery: messageDeliverySchema,
   idempotent: z.boolean(),
 });
 

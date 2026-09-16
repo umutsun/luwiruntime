@@ -279,13 +279,21 @@ export function createMcpToolHandlers(
         },
         parsed.idempotencyKey,
       );
-      if (parsed.waitMs === 0) {
+      // A `deferred` target (a turn-based GUI, not a continuously-reading bridge worker) claims its
+      // inbox only on its next turn, so waiting here would just burn the deadline and report a false
+      // `timed_out`. Return the accepted, durable message immediately with delivery: 'deferred' so the
+      // caller collects the reply later via luwi_await_response instead of blocking on a dead drop.
+      if (parsed.waitMs === 0 || created.delivery === 'deferred') {
         return {
           correlationId: created.message.correlationId,
           selectedTargetSessionId: created.selectedTargetSessionId,
           selectedTargetAgentId: created.selectedTargetAgentId,
+          delivery: created.delivery,
           state: created.message.state,
           idempotent: created.idempotent,
+          // Surface an already-attached answer (e.g. an idempotent replay of a message that is
+          // already terminal) rather than dropping it on the no-wait path.
+          ...(created.message.response === undefined ? {} : { response: created.message.response }),
         };
       }
       const latest = requireBoundMessage(
@@ -296,6 +304,7 @@ export function createMcpToolHandlers(
         correlationId: latest.correlationId,
         selectedTargetSessionId: created.selectedTargetSessionId,
         selectedTargetAgentId: created.selectedTargetAgentId,
+        delivery: created.delivery,
         state: latest.state,
         idempotent: created.idempotent,
         ...(latest.response === undefined ? {} : { response: latest.response }),

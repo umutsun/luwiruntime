@@ -138,6 +138,7 @@ function client(): McpDaemonClient {
       selectedTargetSessionId: 'target',
       selectedTargetAgentId: 'gemini-sim',
       selectionReason: 'selected target',
+      delivery: 'live' as const,
       idempotent: false,
     })),
     getMessage: vi.fn(),
@@ -264,6 +265,46 @@ describe('MCP tool handlers', () => {
       expect.objectContaining({ sourceSessionId: rotated.id }),
       undefined,
     );
+  });
+
+  it('does not wait on a deferred (turn-based GUI) target, returning delivery immediately', async () => {
+    const daemon = client();
+    daemon.askAgent = vi.fn(async (body) => ({
+      message: {
+        id: 'message-1',
+        correlationId: 'correlation-1',
+        projectId: 'project-1',
+        sourceSessionId: body.sourceSessionId,
+        sourceAgentId: 'claude-sim',
+        targetSessionId: 'gui-1',
+        targetAgentId: 'gemini-sim',
+        selectionReason: 'selected target',
+        kind: body.kind,
+        content: body.content,
+        evidenceRequirements: body.evidenceRequirements,
+        state: 'queued' as const,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deadlineAt: '2026-07-29T12:02:00.000Z',
+      },
+      selectedTargetSessionId: 'gui-1',
+      selectedTargetAgentId: 'gemini-sim',
+      selectionReason: 'selected target',
+      delivery: 'deferred' as const,
+      idempotent: false,
+    }));
+    daemon.waitForMessage = vi.fn();
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await expect(
+      tools.askAgent({
+        targetAgentId: 'gemini-sim',
+        kind: 'question',
+        content: 'Status?',
+        waitMs: 5_000,
+      }),
+    ).resolves.toMatchObject({ delivery: 'deferred', state: 'queued' });
+    expect(daemon.waitForMessage).not.toHaveBeenCalled();
   });
 
   it('resolves a fresh verified session for consecutive operations', async () => {

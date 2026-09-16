@@ -60,7 +60,7 @@ export type {
 } from './starting-session-reaper.js';
 export { evaluateMessageTransition } from './message-state.js';
 export type { MessageTransitionResult } from './message-state.js';
-export { selectMessageTarget } from './message-routing.js';
+export { selectMessageTarget, deliveryForSession } from './message-routing.js';
 export type { MessageTargetSelection, SelectMessageTargetInput } from './message-routing.js';
 export {
   createMessageRequestFingerprint,

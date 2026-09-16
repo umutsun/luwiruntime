@@ -1,4 +1,4 @@
-import type { AgentId, SessionView } from '@luwi/protocol';
+import type { AgentId, MessageDelivery, SessionView } from '@luwi/protocol';
 
 const statusRank: Readonly<Record<SessionView['status'], number>> = {
   idle: 0,
@@ -13,7 +13,7 @@ const statusRank: Readonly<Record<SessionView['status'], number>> = {
 };
 
 export type MessageTargetSelection =
-  | { status: 'selected'; session: SessionView; reason: string }
+  | { status: 'selected'; session: SessionView; reason: string; delivery: MessageDelivery }
   | { status: 'project_mismatch'; targetSessionId: string }
   | { status: 'unavailable'; selector: string };
 
@@ -43,6 +43,18 @@ function isDispatchWorker(session: SessionView): boolean {
   return session.metadata['bridge'] === 'native-headless';
 }
 
+// A bridge session — any non-empty `metadata.bridge`: the native-headless fleet worker, the DeepSeek
+// ACP bridge, and any future bridge — runs a continuous inbox-claim loop, so it answers within a
+// claim block: `live`. Any other session (an interactive GUI) claims its inbox only during its own
+// turn, so a routed message waits in the durable inbox until that next turn: `deferred`. Callers use
+// this to stop presenting a deferred delivery as a live-reader timeout (ADR 0006 turn-based-GUI gap).
+// This is deliberately BROADER than `isDispatchWorker` (native-headless only), which governs routing
+// PREFERENCE, not reader liveness — a DeepSeek bridge is a live reader but not a native fleet worker.
+export function deliveryForSession(session: SessionView): MessageDelivery {
+  const bridge = session.metadata['bridge'];
+  return typeof bridge === 'string' && bridge.length > 0 ? 'live' : 'deferred';
+}
+
 export function selectMessageTarget(input: SelectMessageTargetInput): MessageTargetSelection {
   if (input.targetSessionId !== undefined) {
     const target = input.sessions.find((candidate) => candidate.id === input.targetSessionId);
@@ -56,6 +68,7 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
       status: 'selected',
       session: target,
       reason: `direct target session ${target.id}`,
+      delivery: deliveryForSession(target),
     };
   }
 
@@ -103,5 +116,6 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
     status: 'selected',
     session: selected,
     reason: `selected agent ${targetAgentId} session ${selected.id} by status, heartbeat, and session ID`,
+    delivery: deliveryForSession(selected),
   };
 }

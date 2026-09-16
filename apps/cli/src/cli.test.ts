@@ -933,6 +933,7 @@ describe('LUWI CLI', () => {
                 selectedTargetSessionId: 'target',
                 selectedTargetAgentId: 'gemini-sim',
                 selectionReason: 'selected target',
+                delivery: 'live',
                 idempotent: false,
               });
         },

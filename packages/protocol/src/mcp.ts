@@ -12,6 +12,7 @@ import {
   agentMessageSchema,
   evidenceTypeSchema,
   inboxClaimResponseSchema,
+  messageDeliverySchema,
   messageKindSchema,
   messageStateSchema,
 } from './message.js';
@@ -269,6 +270,7 @@ export const mcpAskAgentOutputSchema = z.strictObject({
   correlationId: identifierSchema,
   selectedTargetSessionId: identifierSchema,
   selectedTargetAgentId: agentIdSchema,
+  delivery: messageDeliverySchema,
   state: messageStateSchema,
   idempotent: z.boolean(),
   response: agentMessageResponseSchema.optional(),

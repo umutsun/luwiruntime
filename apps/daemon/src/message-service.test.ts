@@ -128,6 +128,7 @@ describe('message service', () => {
     await expect(service.ask(request, ' retry-1 ')).resolves.toMatchObject({
       message: { correlationId: 'correlation-1' },
       selectedTargetSessionId: 'target',
+      delivery: 'deferred',
       idempotent: false,
     });
     expect(createMessage).toHaveBeenCalledWith(
@@ -176,6 +177,30 @@ describe('message service', () => {
     await expect(service.ask(request, 'retry-1')).resolves.toMatchObject({
       message: { state: 'responded' },
       selectedTargetSessionId: 'target',
+      delivery: 'deferred',
+      idempotent: true,
+    });
+  });
+
+  it('reclassifies an idempotent replay as live when the original target is a live bridge worker', async () => {
+    // Regression: the idempotent path must re-derive delivery from the current target, not hardcode
+    // 'deferred'. A replay of an ask to a live bridge worker must stay 'live' so the caller still
+    // waits for (and recovers) the reply.
+    const fingerprint = createMessageRequestFingerprint(request);
+    const service = createMessageService({
+      repository: repository({
+        findIdempotentMessage: async () => ({
+          message: { ...message, state: 'responded' },
+          requestFingerprint: fingerprint,
+        }),
+      }),
+      sessions: sessionService([source, { ...target, metadata: { bridge: 'native-headless' } }]),
+      workspaceId: 'local',
+    });
+
+    await expect(service.ask(request, 'retry-1')).resolves.toMatchObject({
+      selectedTargetSessionId: 'target',
+      delivery: 'live',
       idempotent: true,
     });
   });

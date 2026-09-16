@@ -89,6 +89,7 @@ function messageService(): MessageService {
       selectedTargetSessionId: 'target',
       selectedTargetAgentId: 'gemini-sim',
       selectionReason: 'selected target',
+      delivery: 'live' as const,
       idempotent: false,
     })),
     get: vi.fn(async () => message),

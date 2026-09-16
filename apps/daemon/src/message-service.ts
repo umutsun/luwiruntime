@@ -22,6 +22,7 @@ import {
 import {
   ApplicationError,
   createMessageRequestFingerprint,
+  deliveryForSession,
   hashIdempotencyKey,
   selectMessageTarget,
   utf8ByteLength,
@@ -281,11 +282,22 @@ export function createMessageService(options: MessageServiceOptions): MessageSer
                 409,
               );
             }
+            // Re-classify delivery from the existing target's CURRENT session, so an idempotent
+            // replay of a live-worker ask still reports `live` (and its caller still waits for the
+            // reply, recovering a response lost on the original attempt) instead of a false
+            // `deferred`. A target that has since vanished degrades to `deferred`.
+            const replayTarget = (await options.sessions.list()).find(
+              (candidate) => candidate.id === existing.message.targetSessionId,
+            );
             return {
               message: existing.message,
               selectedTargetSessionId: existing.message.targetSessionId,
               selectedTargetAgentId: existing.message.targetAgentId,
               selectionReason: existing.message.selectionReason,
+              delivery:
+                replayTarget === undefined
+                  ? ('deferred' as const)
+                  : deliveryForSession(replayTarget),
               idempotent: true,
             };
           }
@@ -347,6 +359,7 @@ export function createMessageService(options: MessageServiceOptions): MessageSer
           selectedTargetSessionId: result.message.targetSessionId,
           selectedTargetAgentId: result.message.targetAgentId,
           selectionReason: result.message.selectionReason,
+          delivery: selection.delivery,
           idempotent: result.status === 'existing',
         };
       } catch (error) {
