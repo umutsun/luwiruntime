@@ -5,9 +5,28 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProjectGit, ProjectScopeResources } from '../api/project-scope.js';
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
-import { ProjectsView } from './projects-view.js';
+import { ProjectsView, commitUrl } from './projects-view.js';
 
 afterEach(cleanup);
+
+describe('commitUrl', () => {
+  const sha = 'a'.repeat(40);
+  it('builds a GitHub commit URL from an https remote, stripping .git', () => {
+    expect(commitUrl('https://github.com/umutsun/luwi.git', sha)).toBe(
+      `https://github.com/umutsun/luwi/commit/${sha}`,
+    );
+  });
+  it('normalizes an scp-style remote to https', () => {
+    expect(commitUrl('git@github.com:umutsun/luwi.git', sha)).toBe(
+      `https://github.com/umutsun/luwi/commit/${sha}`,
+    );
+  });
+  it('is undefined for a missing or non-http remote (the sha stays plain text)', () => {
+    expect(commitUrl(undefined, sha)).toBeUndefined();
+    expect(commitUrl('', sha)).toBeUndefined();
+    expect(commitUrl('/local/only/path', sha)).toBeUndefined();
+  });
+});
 
 /**
  * Evidence cards other than the repository start folded, so a test that reads

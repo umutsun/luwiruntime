@@ -1062,11 +1062,9 @@ export function panelFor(
           label: 'Detail',
           href: `#/pulse/${encodeURIComponent(project.id)}/detail`,
         },
-        {
-          kind: 'route',
-          label: 'Knowledge graph',
-          href: `#/knowledge/${encodeURIComponent(project.id)}`,
-        },
+        // Knowledge is a top-level lens now (ADR 0032), so a per-drill-down "Knowledge
+        // graph" link just repeats the header bar — the separate #/knowledge/<id> page was
+        // rejected. Dropped as redundant UI.
       ],
     };
   }

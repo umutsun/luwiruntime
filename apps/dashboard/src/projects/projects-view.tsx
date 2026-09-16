@@ -142,6 +142,23 @@ function WorktreeTable({ worktrees }: { worktrees: ProjectWorktree[] }) {
   );
 }
 
+/**
+ * A browsable commit URL from a git remote, or `undefined` when there is no usable remote (then the
+ * sha renders as plain text). Normalizes an scp-style `git@host:user/repo(.git)` to
+ * `https://host/user/repo` and strips a trailing `.git`.
+ * ponytail: emits the GitHub/GitLab web `/commit/<sha>` path; a Bitbucket remote would want
+ * `/commits/`. Add that branch only if a Bitbucket remote actually shows up.
+ */
+export function commitUrl(remote: string | undefined, sha: string): string | undefined {
+  if (remote === undefined || remote.trim() === '') return undefined;
+  const scp = /^git@([^:]+):(.+)$/.exec(remote.trim());
+  const base = (scp ? `https://${scp[1]}/${scp[2]}` : remote.trim())
+    .replace(/\.git$/, '')
+    .replace(/\/$/, '');
+  if (!/^https?:\/\//.test(base)) return undefined;
+  return `${base}/commit/${encodeURIComponent(sha)}`;
+}
+
 function RepositoryBody({ git, project }: { git: ProjectGit; project: PulseProject }) {
   return (
     <div className="project-detail__body">
@@ -253,15 +270,24 @@ function RepositoryBody({ git, project }: { git: ProjectGit; project: PulseProje
                 </tr>
               </thead>
               <tbody>
-                {git.recentCommits.slice(0, RECENT_COMMIT_LIMIT).map((commit) => (
-                  <tr key={commit.sha}>
-                    <td>
-                      <code title={commit.sha}>{abbreviateSha(commit.sha)}</code>
-                    </td>
-                    <td>{commit.subject ?? <span className="unavailable">No subject</span>}</td>
-                    <td>{commit.changedPathCount}</td>
-                  </tr>
-                ))}
+                {git.recentCommits.slice(0, RECENT_COMMIT_LIMIT).map((commit) => {
+                  const url = commitUrl(git.remoteUrl ?? project.repositoryUrl, commit.sha);
+                  return (
+                    <tr key={commit.sha}>
+                      <td>
+                        {url === undefined ? (
+                          <code title={commit.sha}>{abbreviateSha(commit.sha)}</code>
+                        ) : (
+                          <a href={url} target="_blank" rel="noreferrer" title={commit.sha}>
+                            <code>{abbreviateSha(commit.sha)}</code>
+                          </a>
+                        )}
+                      </td>
+                      <td>{commit.subject ?? <span className="unavailable">No subject</span>}</td>
+                      <td>{commit.changedPathCount}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

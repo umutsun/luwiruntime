@@ -526,7 +526,9 @@ describe('panelFor', () => {
       { k: 'State', v: '3 untracked' },
       { k: 'Tags', v: '2' },
     ]);
-    expect(panel.links.map((link) => link.kind)).toEqual(['inspect-project', 'route', 'route']);
+    // Inspect + Detail only; the redundant Knowledge-graph link was dropped (Knowledge is a lens).
+    expect(panel.links.map((link) => link.kind)).toEqual(['inspect-project', 'route']);
+    expect(panel.links.map((link) => link.label)).toEqual(['Inspect', 'Detail']);
   });
 
   it('says so when a blocked session has no denial in the retained stream', () => {

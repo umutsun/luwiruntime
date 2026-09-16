@@ -892,6 +892,11 @@
   transform: translate(-50%, -50%);
   white-space: nowrap;
 }
+.radial__label-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1h);
+}
 .radial__label-name {
   color: var(--text);
   font-size: clamp(var(--font-size-2xs), 1.7cqw, var(--font-size-xs));
