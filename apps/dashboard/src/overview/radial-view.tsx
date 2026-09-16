@@ -180,6 +180,7 @@ export function RadialView({
                 >
                   <span className="radial__label-name">{node.label}</span>
                   <span className="radial__label-sub">{node.sub}</span>
+                  {node.name ? <span className="radial__label-title">{node.name}</span> : null}
                 </span>
               </div>
             ))}

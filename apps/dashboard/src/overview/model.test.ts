@@ -391,13 +391,83 @@ describe('buildOverview', () => {
     failed.projects = { state: 'unavailable' };
     failed.activity = { state: 'unavailable' };
     const model = buildOverview(buildPulseSnapshot(failed), [], NOW);
-    for (const key of ['sessions', 'projects', 'tokens', 'context', 'events']) {
+    for (const key of ['sessions', 'projects', 'tokens', 'context']) {
       const stat = model.stats.find((candidate) => candidate.key === key);
       expect(stat?.value, key).toBe('—');
       expect(stat?.unavailable, key).toBe(true);
       expect(stat?.sub, key).toMatch(/unavailable/u);
     }
     expect(model.health.label).toBe('HEALTHY');
+  });
+
+  it('derives fleet delivery quality (answered rate, latency, failures) from the message list', () => {
+    const base: AgentMessage = {
+      id: 'm',
+      correlationId: 'c',
+      projectId: 'p1',
+      sourceSessionId: 's',
+      sourceAgentId: 'a',
+      targetSessionId: 't',
+      targetAgentId: 'b',
+      selectionReason: 'r',
+      kind: 'instruction',
+      content: 'x',
+      evidenceRequirements: [],
+      state: 'responded',
+      createdAt: '2026-07-29T12:00:00.000Z',
+      updatedAt: '2026-07-29T12:00:30.000Z',
+      deadlineAt: '2026-07-29T12:02:00.000Z',
+    };
+    const answered = (id: string, respondedAt: string): AgentMessage => ({
+      ...base,
+      id,
+      state: 'responded',
+      respondedAt,
+      response: { status: 'answered', answer: 'ok', evidenceCount: 0, verifiedAt: respondedAt },
+    });
+    const messages: AgentMessage[] = [
+      answered('m1', '2026-07-29T12:00:30.000Z'), // 30s
+      answered('m2', '2026-07-29T12:01:30.000Z'), // 90s
+      { ...base, id: 'm3', state: 'failed' },
+      { ...base, id: 'm4', state: 'timed_out' },
+      // Terminal (responded) but NOT answered → counts in the denominator, never as answered.
+      {
+        ...base,
+        id: 'm5',
+        state: 'responded',
+        respondedAt: '2026-07-29T12:00:30.000Z',
+        response: {
+          status: 'partially_answered',
+          answer: 'part',
+          evidenceCount: 0,
+          verifiedAt: '2026-07-29T12:00:30.000Z',
+        },
+      },
+      { ...base, id: 'm6', state: 'rejected' },
+    ];
+    const model = buildOverview(buildPulseSnapshot(input()), [], NOW, 0, messages);
+    const delivery = model.stats.find((stat) => stat.key === 'delivery');
+    expect(delivery?.value).toBe('33%'); // 2 answered of 6 terminal — partial_answered is NOT answered
+    expect(delivery?.sub).toContain('2 answered');
+    expect(delivery?.sub).toContain('3 failed/timed out'); // failed + timed_out + rejected
+    expect(delivery?.sub).toContain('recent 6');
+    expect(delivery?.sub).toMatch(/p50 30s/u);
+    expect(delivery?.route).toBe('#/messages');
+    expect(delivery?.unavailable).toBe(false);
+  });
+
+  it('shows delivery as unavailable, not "no exchanges", when the messages read failed', () => {
+    const model = buildOverview(buildPulseSnapshot(input()), [], NOW, 0, [], true);
+    const delivery = model.stats.find((stat) => stat.key === 'delivery');
+    expect(delivery?.value).toBe('—');
+    expect(delivery?.sub).toBe('messages unavailable');
+    expect(delivery?.unavailable).toBe(true);
+  });
+
+  it('shows delivery as a dash with no exchanges when the message list is empty', () => {
+    const delivery = overview().stats.find((stat) => stat.key === 'delivery');
+    expect(delivery?.value).toBe('—');
+    expect(delivery?.sub).toBe('no exchanges');
   });
 
   it('breaks the sessions stat down by real status words', () => {
@@ -430,6 +500,10 @@ describe('panelFor', () => {
     ]);
     expect(panel.list.rows.map((row) => row.id)).toEqual(['s-wait', 's-blocked', 's-think']);
     expect(panel.block).toBeUndefined();
+    // Activity opens from here now that the Delivery tile took the events tile's hero slot.
+    expect(panel.links.some((link) => link.kind === 'route' && link.href === '#/activity')).toBe(
+      true,
+    );
   });
 
   it('explains a blocked project from the newest lease denial for that session', () => {
@@ -660,6 +734,39 @@ describe('radial layout', () => {
       { kind: 'project', id: 'p1' },
     );
     expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening');
+  });
+
+  it('shows a session name as a truncated third label line, full name on hover', () => {
+    // No GUI title → the visible name line falls back to the session id (short, untruncated).
+    const untitled = layoutRadial(overview(), { kind: 'project', id: 'p1' });
+    expect(untitled.nodes[1]?.name).toBe('Session s-think');
+    expect(untitled.nodes[1]?.hint).toBe('Session s-think');
+    // A long GUI title is truncated on the visible line but kept whole in the hover hint.
+    const base = overview();
+    const titled = layoutRadial(
+      {
+        ...base,
+        projects: base.projects.map((project) =>
+          project.id === 'p1'
+            ? {
+                ...project,
+                sessions: project.sessions.map((session) =>
+                  session.id === 's-think'
+                    ? { ...session, title: 'Investigate R3-3 hardening e2e failure' }
+                    : session,
+                ),
+              }
+            : project,
+        ),
+      },
+      { kind: 'project', id: 'p1' },
+    );
+    expect(titled.nodes[1]?.name).toMatch(/^Investigate R3-3.*…$/u);
+    expect((titled.nodes[1]?.name ?? '').length).toBeLessThanOrEqual(18);
+    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening e2e failure');
+    // A project node carries no name line.
+    const projects = layoutRadial(overview(), RUNTIME_FOCUS);
+    expect(projects.nodes[0]?.name).toBe('');
   });
 });
 

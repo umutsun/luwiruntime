@@ -47,6 +47,7 @@ export function Overview({
   realtime,
   hiddenProjects = 0,
   messages = [],
+  messagesUnavailable = false,
   onFocus,
   onInspect,
   loadSessionUsage,
@@ -65,6 +66,7 @@ export function Overview({
   hiddenProjects?: number;
   /** The bounded message list, so the stream can show what each exchange answered. */
   messages?: readonly AgentMessage[];
+  messagesUnavailable?: boolean;
   onFocus: (focus: Focus) => void;
   onInspect: (selection: InspectorSelection) => void;
   /** Reads a focused session's usage (model, tokens); absent leaves those facts as dashes. */
@@ -79,8 +81,8 @@ export function Overview({
   ) => Promise<ResourceState<KnowledgeGraph>>;
 }) {
   const overview = useMemo(
-    () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages),
-    [snapshot, events, nowMs, hiddenProjects, messages],
+    () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable),
+    [snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable],
   );
   const resolved = resolveFocus(overview, focus);
   const focusedSessionId = resolved.kind === 'session' ? resolved.id : undefined;

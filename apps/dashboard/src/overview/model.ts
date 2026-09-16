@@ -335,6 +335,52 @@ function rateOf(events: readonly DashboardEvent[]): Rate {
   };
 }
 
+/**
+ * Fleet delivery quality folded from the bounded message list — observed FACTS (answered share,
+ * latency, failed/timed-out share), never an aggregate score or release/lifecycle judgement. The
+ * window is the recent bounded list, stated in the sub so it never reads as all-time.
+ */
+function deliveryQualityOf(messages: readonly AgentMessage[]): {
+  value: string;
+  sub: string;
+  fraction: number;
+} {
+  const terminal = messages.filter(
+    (message) =>
+      message.state === 'responded' ||
+      message.state === 'rejected' ||
+      message.state === 'timed_out' ||
+      message.state === 'failed',
+  );
+  if (terminal.length === 0) return { value: '—', sub: 'no exchanges', fraction: 0 };
+  const answered = terminal.filter(
+    (message) => message.state === 'responded' && message.response?.status === 'answered',
+  );
+  const failed = terminal.filter(
+    (message) =>
+      message.state === 'failed' || message.state === 'timed_out' || message.state === 'rejected',
+  );
+  const latencies = answered
+    .map((message) =>
+      message.respondedAt === undefined
+        ? Number.NaN
+        : Date.parse(message.respondedAt) - Date.parse(message.createdAt),
+    )
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .sort((left, right) => left - right);
+  const p50 =
+    latencies.length === 0 ? undefined : latencies[Math.floor((latencies.length - 1) / 2)];
+  const latency =
+    p50 === undefined
+      ? ''
+      : ` · p50 ${p50 < 120_000 ? `${String(Math.round(p50 / 1000))}s` : formatDuration(p50)}`;
+  return {
+    value: `${String(Math.round((answered.length / terminal.length) * 100))}%`,
+    sub: `${String(answered.length)} answered · ${String(failed.length)} failed/timed out${latency} · recent ${String(terminal.length)}`,
+    fraction: answered.length / terminal.length,
+  };
+}
+
 /** The first present payload string that tells a reader what the event touched. */
 export function eventDetail(event: DashboardEvent): string {
   for (const key of ['path', 'subject', 'status', 'reason', 'branch', 'headSha', 'kind', 'name']) {
@@ -403,6 +449,7 @@ export function buildOverview(
   nowMs: number,
   hiddenProjects = 0,
   messages: readonly AgentMessage[] = [],
+  messagesUnavailable = false,
 ): Overview {
   const events = [...retained].sort((left, right) =>
     compareStreamIds(left.streamId, right.streamId),
@@ -599,7 +646,7 @@ export function buildOverview(
     sessions,
     allSessions,
     rate,
-    stats: statsOf(snapshot, projects, rate),
+    stats: statsOf(snapshot, projects, messages, messagesUnavailable),
     ticker,
     health: healthOf(snapshot),
     projectsState: snapshot.projectCount.state === 'unavailable' ? 'unavailable' : 'ready',
@@ -616,7 +663,13 @@ export function buildOverview(
 // Stats
 // ---------------------------------------------------------------------------
 
-function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rate): Stat[] {
+function statsOf(
+  snapshot: PulseSnapshot,
+  projects: OverviewProject[],
+  messages: readonly AgentMessage[],
+  messagesUnavailable: boolean,
+): Stat[] {
+  const quality = deliveryQualityOf(messages);
   const sessionsUnavailable = snapshot.activeSessionCount.state === 'unavailable';
   const active =
     snapshot.activeSessionCount.state === 'unavailable' ? 0 : snapshot.activeSessionCount.value;
@@ -669,19 +722,15 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
       route: '#/projects',
     },
     {
-      key: 'events',
-      label: 'Events / min',
-      value: snapshot.activityState === 'unavailable' ? '—' : rate.label,
-      sub:
-        snapshot.activityState === 'unavailable'
-          ? 'activity unavailable'
-          : rate.total === 0
-            ? 'no retained events'
-            : `${String(rate.total)} retained over ${rate.spanLabel ?? 'a moment'}`,
-      unavailable: snapshot.activityState === 'unavailable',
-      fraction: rate.latestShare,
-      bars: rate.buckets,
-      route: '#/activity',
+      // Fleet delivery quality replaces raw events/min here (activity is not delivery quality); the
+      // events/min figure still lives on the Radial lens centre disc, so activity is not lost.
+      key: 'delivery',
+      label: 'Delivery',
+      value: messagesUnavailable ? '—' : quality.value,
+      sub: messagesUnavailable ? 'messages unavailable' : quality.sub,
+      unavailable: messagesUnavailable,
+      fraction: messagesUnavailable ? 0 : quality.fraction,
+      route: '#/messages',
     },
     {
       key: 'tokens',
@@ -1092,9 +1141,11 @@ export function panelFor(
     trend: trendOf('Events · retained', events, overview),
     list: { label: 'Active sessions', rows: overview.sessions, empty: sessionsEmpty(overview) },
     // The runtime-global drawers not already opened by a hero tile. Kept short,
-    // not a menu: the stat strip covers activity/usage/context/sessions/projects.
+    // not a menu: the hero stat strip covers usage/context/sessions/projects, and
+    // Activity lives here now that the Delivery tile took the events tile's slot.
     links: [
       { kind: 'route', label: 'Runtime', href: '#/runtime' },
+      { kind: 'route', label: 'Activity', href: '#/activity' },
       { kind: 'route', label: 'Agents', href: '#/agents' },
       { kind: 'route', label: 'Graph', href: '#/graph' },
       { kind: 'route', label: 'Optimization', href: '#/optimization' },
@@ -1354,6 +1405,8 @@ export type RadialNode = {
   kind: 'project' | 'session';
   label: string;
   sub: string;
+  /** The session's own name (GUI chat title), shown as a third visible label line at a glance; '' for a project node. */
+  name: string;
   /** The hover tooltip: names a node the orbit shows only as initials. */
   hint: string;
   initials: string;
@@ -1382,6 +1435,8 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
     kind: 'project' | 'session';
     label: string;
     sub: string;
+    /** The session's own name for the third visible label line; '' for a project node. */
+    name: string;
     /** The hover tooltip: names a node the orbit shows only as initials. */
     hint: string;
     initials: string;
@@ -1397,6 +1452,7 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
           kind: 'project',
           label: candidate.name,
           sub: candidate.badge.label,
+          name: '',
           hint: `${candidate.name} · ${String(candidate.sessions.length)} session${
             candidate.sessions.length === 1 ? '' : 's'
           }`,
@@ -1416,6 +1472,7 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
             kind: 'session',
             label: session.agentName,
             sub: (session.branch ?? session.statusLabel).toUpperCase(),
+            name: snippet(session.title ?? `Session ${abbreviateId(session.id)}`, 18),
             hint: session.title ?? `Session ${abbreviateId(session.id)}`,
             initials: session.initials,
             events: session.eventCount,
@@ -1445,6 +1502,7 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
       kind: item.kind,
       label: item.label,
       sub: item.sub,
+      name: item.name,
       hint: item.hint,
       initials: item.initials,
       x: Number(x.toFixed(1)),

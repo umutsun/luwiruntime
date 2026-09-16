@@ -584,9 +584,9 @@ describe('detail routes', () => {
 
   it('navigates to a folded route from its hero stat tile', () => {
     shell(snapshot());
-    // Each hero tile opens its own detail drawer; the Events tile is Activity.
-    fireEvent.click(screen.getByRole('button', { name: 'Open Events / min' }));
-    expect(window.location.hash).toBe('#/activity');
+    // Each hero tile opens its own detail drawer; the Delivery tile is Messages.
+    fireEvent.click(screen.getByRole('button', { name: 'Open Delivery' }));
+    expect(window.location.hash).toBe('#/messages');
   });
 
   /**

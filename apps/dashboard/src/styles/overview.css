@@ -901,6 +901,10 @@
   font-size: var(--font-size-2xs);
   letter-spacing: 0.1em;
 }
+.radial__label-title {
+  color: var(--text);
+  font-size: var(--font-size-2xs);
+}
 .radial__title {
   position: absolute;
   right: var(--space-5h);

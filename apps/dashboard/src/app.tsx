@@ -857,6 +857,7 @@ export function DashboardApp({
           {...(messageResources.messages?.state === 'ready'
             ? { messages: messageResources.messages.data.items }
             : {})}
+          messagesUnavailable={messageResources.messages?.state === 'unavailable'}
           onFocus={changeFocus}
           onInspect={openInspector}
           {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
