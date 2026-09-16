@@ -7,7 +7,12 @@ import {
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
-import type { CountValue, PulseSnapshot, SessionContextEvidence } from '../pulse/model.js';
+import type {
+  ClientKind,
+  CountValue,
+  PulseSnapshot,
+  SessionContextEvidence,
+} from '../pulse/model.js';
 import { bucketRetainedWindow, type RetainedBounds } from '../pulse/retained-window.js';
 import { compareStreamIds } from '../realtime/activity-store.js';
 import type { DashboardEvent } from '../realtime/schema.js';
@@ -130,6 +135,8 @@ export type OverviewSession = {
   model?: string;
   /** The native GUI chat title the desktop app reported, when the attach carried one. */
   title?: string;
+  /** How the session reached the runtime (cli/gui/ide/bridge), for the hover hint. */
+  clientKind: ClientKind;
   context: SessionContextEvidence;
   eventCount: number;
   /**
@@ -548,6 +555,7 @@ export function buildOverview(
         ...(session.taskSummary === undefined ? {} : { taskSummary: session.taskSummary }),
         ...(typeof model === 'string' ? { model } : {}),
         ...(typeof title === 'string' && title.trim() !== '' ? { title } : {}),
+        clientKind: session.clientKind,
         context: session.context,
         eventCount: eventsBySession.get(session.id)?.length ?? 0,
         live,
@@ -1485,13 +1493,15 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
           // cannot: the native GUI chat title (what the user recognises the session
           // by), when the attach reported one, else the session id so two same-agent
           // nodes are still told apart — never the task subject, a different thing.
+          // The client kind rides along so a bridge worker is told from a GUI attach.
+          const hintName = session.title ?? `Session ${abbreviateId(session.id)}`;
           return {
             key: session.id,
             kind: 'session',
             label: session.agentName,
             sub: (session.branch ?? session.statusLabel).toUpperCase(),
             name: snippet(session.title ?? `Session ${abbreviateId(session.id)}`, 18),
-            hint: session.title ?? `Session ${abbreviateId(session.id)}`,
+            hint: `${hintName} · ${session.clientKind}`,
             initials: session.initials,
             events: session.eventCount,
             sessions: [session],

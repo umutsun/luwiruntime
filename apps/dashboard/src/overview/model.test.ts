@@ -714,9 +714,9 @@ describe('radial layout', () => {
     // No session in the fixture reported a GUI title, so the hint falls back to the
     // session id — never the task subject, which is a different thing.
     const untitled = layoutRadial(overview(), { kind: 'project', id: 'p1' });
-    expect(untitled.nodes[1]?.hint).toBe('Session s-think');
+    expect(untitled.nodes[1]?.hint).toBe('Session s-think · cli');
     expect(untitled.nodes[1]?.hint).not.toContain('Implement graph generation transition');
-    expect(untitled.nodes[0]?.hint).toBe('Session s-blocked');
+    expect(untitled.nodes[0]?.hint).toBe('Session s-blocked · cli');
 
     // When the attach did report a GUI title, that title names the node.
     const base = overview();
@@ -738,14 +738,35 @@ describe('radial layout', () => {
       },
       { kind: 'project', id: 'p1' },
     );
-    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening');
+    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening · cli');
+
+    // The client kind rides the hint, so a bridge worker is told from a GUI attach.
+    const bridged = layoutRadial(
+      {
+        ...base,
+        projects: base.projects.map((project) =>
+          project.id === 'p1'
+            ? {
+                ...project,
+                sessions: project.sessions.map((session) =>
+                  session.id === 's-think'
+                    ? { ...session, clientKind: 'bridge' as const }
+                    : session,
+                ),
+              }
+            : project,
+        ),
+      },
+      { kind: 'project', id: 'p1' },
+    );
+    expect(bridged.nodes[1]?.hint).toBe('Session s-think · bridge');
   });
 
   it('shows a session name as a truncated third label line, full name on hover', () => {
     // No GUI title → the visible name line falls back to the session id (short, untruncated).
     const untitled = layoutRadial(overview(), { kind: 'project', id: 'p1' });
     expect(untitled.nodes[1]?.name).toBe('Session s-think');
-    expect(untitled.nodes[1]?.hint).toBe('Session s-think');
+    expect(untitled.nodes[1]?.hint).toBe('Session s-think · cli');
     // A long GUI title is truncated on the visible line but kept whole in the hover hint.
     const base = overview();
     const titled = layoutRadial(
@@ -768,7 +789,7 @@ describe('radial layout', () => {
     );
     expect(titled.nodes[1]?.name).toMatch(/^Investigate R3-3.*…$/u);
     expect((titled.nodes[1]?.name ?? '').length).toBeLessThanOrEqual(18);
-    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening e2e failure');
+    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening e2e failure · cli');
     // A project node carries no name line.
     const projects = layoutRadial(overview(), RUNTIME_FOCUS);
     expect(projects.nodes[0]?.name).toBe('');

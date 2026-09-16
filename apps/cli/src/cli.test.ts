@@ -2345,6 +2345,46 @@ describe('session attach', () => {
       native: { adapterId: 'claude-code', nativeSessionId: 'abc-123' },
     });
   });
+
+  it('stamps a valid --client kind into the declared metadata', async () => {
+    let output = '';
+    const dependencies: Partial<CliDependencies> = {
+      environment: { CLAUDE_CODE_SESSION_ID: 'abc-123' },
+      fetch: async () => response(registered),
+      stdout: {
+        write: (text) => {
+          output += text;
+        },
+      },
+    };
+
+    await runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'claude-code',
+        '--client',
+        'gui',
+        '--dry-run',
+      ],
+      dependencies,
+    );
+
+    expect(JSON.parse(output)).toMatchObject({ metadata: { client: 'gui' } });
+  });
+
+  it('rejects an unknown --client kind', async () => {
+    await expect(
+      runCli(['session', 'attach', '--project', 'project-1', '--client', 'nope', '--dry-run'], {
+        environment: { CLAUDE_CODE_SESSION_ID: 'abc-123' },
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      }),
+    ).rejects.toMatchObject({ code: 'CLI_OPTION_INVALID' });
+  });
 });
 
 describe('agent run', () => {
@@ -2450,6 +2490,7 @@ describe('agent run', () => {
         projectId: 'project-app',
         agentId: 'codex-main',
         workingDirectory: 'C:/work/app',
+        metadata: { client: 'cli' },
       },
     });
     expect(setExitCode).toHaveBeenCalledWith(0);

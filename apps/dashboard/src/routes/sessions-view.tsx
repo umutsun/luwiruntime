@@ -16,6 +16,8 @@ type SortDirection = 'ascending' | 'descending';
 
 const systemNow = (): Date => new Date();
 
+const clientKindLabels = { cli: 'CLI', gui: 'GUI', ide: 'IDE', bridge: 'Bridge' } as const;
+
 function compareRows(left: SessionRow, right: SessionRow, key: SortKey): number {
   if (key === 'agent') return left.agentId.localeCompare(right.agentId);
   if (key === 'status') return left.statusLabel.localeCompare(right.statusLabel);
@@ -243,6 +245,7 @@ export function SessionsView({
                           </td>
                           <td>
                             <IdBadge id={row.agentId} label="agent" />
+                            <StatusChip tone="info">{clientKindLabels[row.clientKind]}</StatusChip>
                           </td>
                           <td>
                             {row.projectName === 'Unavailable' ? <Unavailable /> : row.projectName}

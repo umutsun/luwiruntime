@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildPulseSnapshot,
+  deriveClientKind,
   labelSessionStatus,
   scopePulseSnapshotToProjects,
   type PulseInput,
@@ -29,7 +30,60 @@ const baseInput = (): PulseInput => ({
   findings: { state: 'ready', data: [] },
 });
 
+describe('client kind derivation', () => {
+  it('takes an explicit marker only when it names a known kind', () => {
+    expect(deriveClientKind({ client: 'gui' })).toBe('gui');
+    expect(deriveClientKind({ client: 'ide' })).toBe('ide');
+    expect(deriveClientKind({ client: 'bridge' })).toBe('bridge');
+    // An unknown string is not honoured — it falls through to derivation.
+    expect(deriveClientKind({ client: 'nonsense' })).toBe('cli');
+  });
+
+  it('derives bridge, then gui (native title), then cli when unmarked', () => {
+    expect(deriveClientKind({ bridge: 'native-headless' })).toBe('bridge');
+    // An explicit marker still wins over a derivable signal.
+    expect(deriveClientKind({ bridge: 'native-headless', client: 'ide' })).toBe('ide');
+    expect(deriveClientKind({ title: 'Fix the router' })).toBe('gui');
+    expect(deriveClientKind({ model: 'claude-opus-4-8' })).toBe('cli');
+    expect(deriveClientKind(undefined)).toBe('cli');
+    // Empty strings state nothing.
+    expect(deriveClientKind({ bridge: '', title: '' })).toBe('cli');
+  });
+});
+
 describe('Pulse snapshot mapping', () => {
+  it('tags each session with its derived client kind', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      sessions: {
+        state: 'ready',
+        data: [
+          {
+            id: 'b',
+            agentId: 'a',
+            projectId: 'p',
+            status: 'idle',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:50.000Z',
+            metadata: { bridge: 'native-headless' },
+          },
+          {
+            id: 'g',
+            agentId: 'a',
+            projectId: 'p',
+            status: 'idle',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:50.000Z',
+            metadata: { title: 'A task' },
+          },
+        ],
+      },
+    });
+    expect(snapshot.sessions.map((session) => session.clientKind)).toEqual(['bridge', 'gui']);
+  });
+
   it('distinguishes empty projects and no active sessions from unavailable data', () => {
     const empty = buildPulseSnapshot(baseInput());
     const unavailable = buildPulseSnapshot({

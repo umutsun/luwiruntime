@@ -313,6 +313,22 @@ function positiveIntegerOption(
   return parsed;
 }
 
+// Client shapes a session can declare at attach, kept in step with the
+// dashboard's own list. Free-form metadata, no protocol schema — a launcher hook
+// stamps its kind so the dashboard tells a GUI/IDE attach from a CLI worker
+// without guessing from a title.
+const CLIENT_KINDS = ['cli', 'gui', 'ide', 'bridge'] as const;
+function clientKindOption(value: string): (typeof CLIENT_KINDS)[number] {
+  if ((CLIENT_KINDS as readonly string[]).includes(value)) {
+    return value as (typeof CLIENT_KINDS)[number];
+  }
+  throw new ApplicationError(
+    'CLI_OPTION_INVALID',
+    `--client must be one of ${CLIENT_KINDS.join(', ')}.`,
+    400,
+  );
+}
+
 function safeErrorCode(error: unknown): string {
   return error instanceof ApplicationError ? error.code : 'DAEMON_UNAVAILABLE';
 }
@@ -1491,6 +1507,7 @@ async function runNativeBridge(
     agentId: context.agentId,
     workingDirectory,
     metadata: {
+      client: 'bridge',
       bridge: 'native-headless',
       provider: provider.name,
       ...(options.model === undefined ? {} : { model: options.model }),
@@ -1772,6 +1789,8 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
                 projectId: context.projectId,
                 agentId: context.agentId,
                 workingDirectory,
+                // A headless CLI worker wrapping a native agent (`agent run`).
+                metadata: { client: 'cli' },
                 heartbeatIntervalMs: heartbeatMs,
                 leaseRenewIntervalMs: leaseRenewMs,
                 leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, connectTimeoutMs),
@@ -2185,6 +2204,10 @@ export function createCli(dependencies: CliDependencies): Command {
     )
     .option('--model <model>', 'Model the agent runs, recorded as session metadata')
     .option(
+      '--client <kind>',
+      `How the session reached the runtime (${CLIENT_KINDS.join('|')}); a launcher hook stamps its kind`,
+    )
+    .option(
       '--native-adapter <adapterId>',
       'Adapter namespace of a native session reference the launcher already knows',
     )
@@ -2206,6 +2229,7 @@ export function createCli(dependencies: CliDependencies): Command {
         workingDirectory: string;
         agentKind?: string;
         model?: string;
+        client?: string;
         nativeAdapter?: string;
         nativeSession?: string;
         nativeSubagent?: string;
@@ -2298,12 +2322,15 @@ export function createCli(dependencies: CliDependencies): Command {
           },
           dependencies.platform,
         );
+        const metadata: Record<string, string> = {};
+        if (options.model !== undefined) metadata.model = options.model;
+        if (options.client !== undefined) metadata.client = clientKindOption(options.client);
         const request_ = {
           projectId,
           agentId: options.agent ?? kind,
           workingDirectory,
           ...(native === undefined ? {} : { native }),
-          ...(options.model === undefined ? {} : { metadata: { model: options.model } }),
+          ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
         };
 
         if (options.dryRun === true) {

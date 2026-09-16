@@ -215,6 +215,34 @@ export function labelSessionStatus(status: string): string {
   return status.replaceAll('_', ' ');
 }
 
+/**
+ * How a session reached the runtime: a headless `cli` worker (`agent run`), an
+ * interactive `gui`/`ide` attach, or the realtime `bridge`. Generic by design —
+ * `product-independence.test.ts` forbids vendor names in production source, and
+ * these four are client shapes, not vendors.
+ */
+export type ClientKind = 'cli' | 'gui' | 'ide' | 'bridge';
+const knownClientKinds = new Set<ClientKind>(['cli', 'gui', 'ide', 'bridge']);
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0;
+
+/**
+ * The client kind, from an explicit `metadata.client` marker when one is present,
+ * else derived from the signals the runtime already carries: a bridge stamps
+ * `metadata.bridge`, an interactive attach earns a native `metadata.title`, and a
+ * plain session is a CLI worker. The marker makes new sessions exact; the
+ * fallback keeps every already-registered session answerable.
+ */
+export function deriveClientKind(metadata: Record<string, unknown> | undefined): ClientKind {
+  const explicit = metadata?.['client'];
+  if (typeof explicit === 'string' && knownClientKinds.has(explicit as ClientKind)) {
+    return explicit as ClientKind;
+  }
+  if (isNonEmptyString(metadata?.['bridge'])) return 'bridge';
+  if (isNonEmptyString(metadata?.['title'])) return 'gui';
+  return 'cli';
+}
+
 /** One entry per status actually present, so an absent status states nothing. */
 export type SessionStatusCount = { status: string; label: string; count: number };
 
@@ -285,6 +313,7 @@ export function buildPulseSnapshot(input: PulseInput) {
              */
             agentName: definition?.displayName ?? session.agentId,
             agentKnown: definition !== undefined,
+            clientKind: deriveClientKind(session.metadata),
             context: sessionContext(session.id),
           };
         })
