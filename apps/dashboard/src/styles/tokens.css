@@ -114,6 +114,7 @@
    * 11px is the floor. The comps go to 9.5px; the 2026-08-05 audit raised
    * anything under 11px because metadata that small is not readable here.
    */
+  --font-size-3xs: 10px;
   --font-size-2xs: 11px;
   --font-size-xs: 12px;
   --font-size-sm: 13px;

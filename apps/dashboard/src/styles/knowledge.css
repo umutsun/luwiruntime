@@ -204,18 +204,21 @@
 .knowledge__edge {
   fill: none;
   stroke: var(--ink);
-  stroke-width: 1.1;
+  stroke-width: 1.25;
   stroke-linecap: round;
-  opacity: 0.14;
-  stroke-dasharray: 3 9;
+  /* `--ink` is the theme's foreground (near-black on light, near-white on
+     dark), so one opacity reads in both — a notch darker on paper, a notch
+     lighter in dark. The edges were near-invisible at 0.14. */
+  opacity: 0.32;
+  stroke-dasharray: 4 7;
   animation: ov-flow 3.6s linear infinite;
   transition: opacity 0.3s;
 }
 
 .knowledge__edge--call {
-  stroke-width: 0.8;
-  stroke-dasharray: 2 8;
-  opacity: 0.1;
+  stroke-width: 0.9;
+  stroke-dasharray: 3 7;
+  opacity: 0.24;
 }
 
 .knowledge__edge--active {
@@ -226,17 +229,19 @@
 }
 
 .knowledge__edge--dim {
-  opacity: 0.04;
+  opacity: 0.1;
   animation: none;
 }
 
 /* ---- community marks and nodes ------------------------------------------- */
 .knowledge__community-mark {
   fill: var(--text-muted);
-  font-size: var(--font-size-2xs);
-  letter-spacing: 0.14em;
+  /* Smaller and tighter than the labels elsewhere: many community centroids
+     cluster near the core, and the wide-spaced 11px marks piled up unreadably. */
+  font-size: var(--font-size-3xs);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
-  opacity: 0.55;
+  opacity: 0.6;
   pointer-events: none;
   transition: opacity 0.3s;
 }
