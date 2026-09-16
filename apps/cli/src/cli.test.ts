@@ -948,6 +948,23 @@ describe('LUWI CLI', () => {
     expect(JSON.parse(output)).toMatchObject({ state: 'responded' });
   });
 
+  it('names the state vocabulary when a message list filter is outside it', async () => {
+    const fetch = vi.fn();
+
+    // `pending` is not a state. Before this the ZodError surfaced as
+    // INTERNAL_ERROR, which an agent read as the daemon being unreachable.
+    await expect(
+      runCli(['message', 'list', '--state', 'pending'], {
+        fetch,
+        stdout: { write: () => undefined },
+      }),
+    ).rejects.toMatchObject({
+      code: 'CLI_OPTION_INVALID',
+      message: expect.stringContaining('queued, delivered, acknowledged, processing') as string,
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('claims inbox work and submits validated responder transitions', async () => {
     const requested: Array<{ url: string; body: unknown }> = [];
     let output = '';

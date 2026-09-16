@@ -2768,14 +2768,25 @@ export function createCli(dependencies: CliDependencies): Command {
         limit: string;
         url: string;
       }) => {
+        // A state outside the vocabulary is the caller's mistake, named as
+        // such: `parse` would throw a ZodError that the entry point reports as
+        // INTERNAL_ERROR, which reads as a daemon fault (an agent asking for
+        // `pending` concluded the runtime was unreachable).
+        const state =
+          options.state === undefined ? undefined : messageStateSchema.safeParse(options.state);
+        if (state !== undefined && !state.success) {
+          throw new ApplicationError(
+            'CLI_OPTION_INVALID',
+            `--state must be one of ${messageStateSchema.options.join(', ')}.`,
+            400,
+          );
+        }
         const query = new URLSearchParams({
           limit: options.limit,
           ...(options.project === undefined ? {} : { projectId: options.project }),
           ...(options.source === undefined ? {} : { sourceSessionId: options.source }),
           ...(options.target === undefined ? {} : { targetSessionId: options.target }),
-          ...(options.state === undefined
-            ? {}
-            : { state: messageStateSchema.parse(options.state) }),
+          ...(state === undefined ? {} : { state: state.data }),
         });
         printJson(
           dependencies,
