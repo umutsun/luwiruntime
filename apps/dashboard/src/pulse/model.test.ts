@@ -176,6 +176,7 @@ describe('Pulse snapshot mapping', () => {
                   clean: false,
                   untrackedCount: 3,
                   tagCount: 2,
+                  recentCommitCount: 5,
                   observedAt: '2026-08-05T08:00:00.000Z',
                 },
               },
@@ -189,7 +190,7 @@ describe('Pulse snapshot mapping', () => {
     expect(snapshot.repositoryFacts[0]).toMatchObject({
       projectId: 'p1',
       name: 'LUWI',
-      git: { state: 'ready', data: { branch: 'main', untrackedCount: 3 } },
+      git: { state: 'ready', data: { branch: 'main', untrackedCount: 3, recentCommitCount: 5 } },
     });
     expect(snapshot.repositoryFacts[1]).toMatchObject({
       projectId: 'p2',

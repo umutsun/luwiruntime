@@ -90,6 +90,8 @@ export type PulseGitFacts = {
   clean: boolean;
   untrackedCount: number;
   tagCount: number;
+  /** Commits in the observer's bounded recent window (git log -n), not a total. */
+  recentCommitCount: number;
   observedAt: string;
 };
 

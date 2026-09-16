@@ -98,6 +98,7 @@ function input(): PulseInput {
                 clean: false,
                 untrackedCount: 3,
                 tagCount: 2,
+                recentCommitCount: 7,
                 observedAt: minutesAgo(1),
               },
             },
@@ -520,6 +521,7 @@ describe('panelFor', () => {
     ]);
     expect(panel.facts).toEqual([
       { k: 'HEAD', v: '31c4f54' },
+      { k: 'Commits', v: '7 recent' },
       { k: 'State', v: '3 untracked' },
       { k: 'Tags', v: '2' },
     ]);

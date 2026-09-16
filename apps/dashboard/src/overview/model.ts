@@ -897,6 +897,7 @@ function gitFacts(project: OverviewProject): Array<{ k: string; v: string }> {
     const word = project.git.state === 'not-observed' ? 'not observed' : 'unavailable';
     return [
       { k: 'HEAD', v: word },
+      { k: 'Commits', v: word },
       { k: 'State', v: word },
       { k: 'Tags', v: word },
     ];
@@ -904,6 +905,8 @@ function gitFacts(project: OverviewProject): Array<{ k: string; v: string }> {
   const git = project.git.data;
   return [
     { k: 'HEAD', v: git.headSha === undefined ? '—' : abbreviateSha(git.headSha).slice(0, 7) },
+    // The observation is a bounded recent window, never a repo total: label it so.
+    { k: 'Commits', v: `${String(git.recentCommitCount)} recent` },
     {
       k: 'State',
       v: git.clean ? 'clean' : `${String(git.untrackedCount)} untracked`,

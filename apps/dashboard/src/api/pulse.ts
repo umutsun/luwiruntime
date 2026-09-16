@@ -112,6 +112,9 @@ async function loadGitResource(
               clean: result.data.clean,
               untrackedCount: result.data.untrackedCount,
               tagCount: result.data.tags.length,
+              // The observer captures only a bounded recent window (git log -n),
+              // never a true total, so this is "recent observed", not the count.
+              recentCommitCount: result.data.recentCommits.length,
               observedAt: result.data.observedAt,
             },
           },
