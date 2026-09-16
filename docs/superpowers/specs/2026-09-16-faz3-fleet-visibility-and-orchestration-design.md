@@ -27,10 +27,11 @@ distinguishing **name** (`session.title`, the native GUI chat title) is shown **
 
 **Design (Option B).** Add a **third label line** — the session name — under the existing agent-name
 and status lines, so agent + status stay visible and the name is added, not swapped.
+
 - Model (`apps/dashboard/src/overview/model.ts`, `layoutRadial` session branch): expose the name on
   the `RadialNode` (e.g. a `title` field) = `truncate(session.title ?? \`Session <abbrevId>\`, ~18
   chars, ellipsis)`. Truncate model-side (precedent: `snippet`, `abbreviateId`) — a fixed char cap is
-  what protects phone width and neighbour collisions. Keep `hint` (hover) carrying the **full**
+what protects phone width and neighbour collisions. Keep `hint` (hover) carrying the **full**
   untruncated name so nothing is lost when truncated.
 - View (`apps/dashboard/src/overview/radial-view.tsx`): render the new line as
   `<span className="radial__label-title">`.
@@ -38,10 +39,10 @@ and status lines, so agent + status stay visible and the name is added, not swap
   `color: var(--text-muted)`, `font-size: var(--font-size-2xs)` (or the existing clamp), spacing via
   `--space-*`; no raw px/hex/opaque colour (tokens.test.ts) and the new className must have a matching
   selector (class-coverage.test.ts). Inherits light/dark for free via tokens.
-**Guards/risks.** New className ⇒ class-coverage + tokens guards apply (satisfied by the tokenised
-rule above). Long titles **must** be truncated or they overflow `nowrap` and overlap neighbours
-(the original reason for hover-only). Comments stay vendor-generic (product-independence guard). No
-protocol/Redis/daemon change — pure client-side derivation.
+  **Guards/risks.** New className ⇒ class-coverage + tokens guards apply (satisfied by the tokenised
+  rule above). Long titles **must** be truncated or they overflow `nowrap` and overlap neighbours
+  (the original reason for hover-only). Comments stay vendor-generic (product-independence guard). No
+  protocol/Redis/daemon change — pure client-side derivation.
 
 **Tests.** `overview/model.test.ts`: a session node exposes the truncated title + a long title gets
 the ellipsis; hover `hint` keeps the full name. `styles/class-coverage.test.ts` + `tokens.test.ts`
@@ -54,18 +55,19 @@ pass with the new rule.
 **Design (dashboard-only, no new data).** The overview already loads the bounded `messages` list.
 Add one pure helper beside `rateOf` in `model.ts` folding the ~100 most-recent messages into three
 **honest, derivable facts**:
+
 1. **Answered rate** — `state==='responded' && response.status==='answered'` over all terminal
    messages. (`partially_answered` counted separately, not as answered.)
 2. **Response latency (p50)** — median `respondedAt − createdAt` over answered messages
    (reuse `formatDuration`).
 3. **Fail/timeout rate** — share of terminal messages in `failed|timed_out|rejected` (the honest
    proxy for re-dispatch; named for what it is, never "re-dispatch").
-Default UI: **repurpose the existing events tile** (key `events` → a delivery tile, route
-`#/messages`); `events/min` survives on the Radial centre disc, so activity isn't lost. Sub-text
-states the window ("recent N exchanges") so it never overclaims. Empty runtime → `—`/"no exchanges".
-**Framing boundary.** Never an aggregate "quality score" or releaseReadiness/lifecycleStage naming
-(§21 + product-independence.test.ts forbid it) — these are observed delivery facts. Reuse the `Stat`
-shape ⇒ no new className/token ⇒ class-coverage/tokens guards untouched.
+   Default UI: **repurpose the existing events tile** (key `events` → a delivery tile, route
+   `#/messages`); `events/min` survives on the Radial centre disc, so activity isn't lost. Sub-text
+   states the window ("recent N exchanges") so it never overclaims. Empty runtime → `—`/"no exchanges".
+   **Framing boundary.** Never an aggregate "quality score" or releaseReadiness/lifecycleStage naming
+   (§21 + product-independence.test.ts forbid it) — these are observed delivery facts. Reuse the `Stat`
+   shape ⇒ no new className/token ⇒ class-coverage/tokens guards untouched.
 
 **Deferred (need new instrumentation, NOT in Faz 3):** true re-dispatch rate (the `idempotent` flag
 is never persisted on the record; no attempt/retryOf field) and a real test-result signal (workers
@@ -84,6 +86,7 @@ on `apps/dashboard/src/overview/model.ts` first, keep diffs tight, and re-run th
 
 **Design.** One `flow.mjs` in `~/.luwi/managed-agents/albanoosh/` (repo-external, beside `send.mjs`),
 chaining primitives that already work, using the persistent coordinator as message source:
+
 - **Stage 1 — implement.** `message ask --target-agent <implementer>`, poll `message await`/`get`
   (30 s cap → re-poll to the message `deadlineAt`) until terminal. **Advance gate:** state
   `responded` **and** `response.status==='answered'` (a genuine `answered` means the child's own MCP
@@ -98,7 +101,7 @@ chaining primitives that already work, using the persistent coordinator as messa
   decides. Re-dispatch is explicit + bounded (fresh idempotency key), never silent.
 
 **Hard gates (must stay human / must not be built).** Merge + push always human (§13; albanoosh
-codex worker's sandbox even denies network so it *cannot* push — don't engineer around it). No
+codex worker's sandbox even denies network so it _cannot_ push — don't engineer around it). No
 terminal injection (§3). Advisory leases are observation, not proof of isolation. **No daemon-side
 flow state / auto-advance / scheduler** (that would cross §21 — out of scope, needs its own ADR).
 
