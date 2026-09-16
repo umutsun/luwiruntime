@@ -60,6 +60,10 @@ import {
   leaseRenewRequestSchema,
   lifecycleStopResponseSchema,
   workLeaseSchema,
+  coordinatorClaimRequestSchema,
+  coordinatorReleaseRequestSchema,
+  coordinatorSchema,
+  coordinatorViewSchema,
   messageCollectionResponseSchema,
   messageCreateRequestSchema,
   messageCreateResponseSchema,
@@ -143,6 +147,7 @@ import {
   type KnowledgeDocument,
 } from './graphify-knowledge.js';
 import type { LeaseService } from './lease-service.js';
+import type { CoordinatorService } from './coordinator-service.js';
 import type { MessageService } from './message-service.js';
 import type { IntelligenceService } from './intelligence-service.js';
 import type { ProjectService } from './project-service.js';
@@ -171,6 +176,7 @@ export type BuildDaemonOptions = {
     sessions: SessionService;
     messages?: MessageService;
     leases?: LeaseService;
+    coordinator?: CoordinatorService;
     controlPlane?: ControlPlaneService;
     configControl?: ConfigControlService;
     intelligence?: IntelligenceService;
@@ -1119,6 +1125,41 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       app.get('/api/v1/leases/:leaseId', async (request) => {
         const { leaseId } = parseRequestInput(leaseParamsSchema, request.params);
         return workLeaseSchema.parse(await withCurrentRead(() => leases.get(leaseId)));
+      });
+    }
+
+    if (services.coordinator !== undefined) {
+      const coordinator = services.coordinator;
+
+      /**
+       * The per-project coordinator role (ADR 0035). Claim is single-holder: a
+       * live holder refuses with 409 COORDINATOR_CONFLICT naming it, a terminal
+       * holder is taken over, and the same session re-claiming is idempotent.
+       */
+      app.post('/api/v1/projects/:projectId/coordinator', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(coordinatorClaimRequestSchema, request.body);
+        const claimed = await withMutation(() =>
+          coordinator.claim({ projectId, sessionId: body.sessionId }),
+        );
+        return reply
+          .code(201)
+          .header('Location', `/api/v1/projects/${projectId}/coordinator`)
+          .send(coordinatorSchema.parse(claimed));
+      });
+
+      // Holder-only: the body names the session so a coordinator another session
+      // can evict is not a single holder.
+      app.delete('/api/v1/projects/:projectId/coordinator', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(coordinatorReleaseRequestSchema, request.body);
+        await withMutation(() => coordinator.release({ projectId, sessionId: body.sessionId }));
+        return reply.code(204).send();
+      });
+
+      app.get('/api/v1/projects/:projectId/coordinator', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        return coordinatorViewSchema.parse(await withCurrentRead(() => coordinator.get(projectId)));
       });
     }
 

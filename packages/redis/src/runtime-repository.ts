@@ -799,7 +799,7 @@ function parseDisconnectResult(value: unknown): DisconnectExpiredSessionResult {
   );
 }
 
-function hashRecord(reply: unknown, entity: string): Record<string, unknown> | null {
+export function hashRecord(reply: unknown, entity: string): Record<string, unknown> | null {
   if (Array.isArray(reply)) {
     if (reply.length === 0) {
       return null;

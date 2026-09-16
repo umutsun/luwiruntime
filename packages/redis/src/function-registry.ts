@@ -32,6 +32,8 @@ export type RedisFunctionRegistry = {
     leaseRenew: string;
     leaseRelease: string;
     leaseExpire: string;
+    coordinatorClaim: string;
+    coordinatorRelease: string;
     controlUpsert: string;
     controlDelete: string;
     controlPlanTransition: string;
@@ -67,6 +69,8 @@ const productionFunctions = {
   leaseRenew: 'luwi_lease_renew_v1',
   leaseRelease: 'luwi_lease_release_v1',
   leaseExpire: 'luwi_lease_expire_v1',
+  coordinatorClaim: 'luwi_coordinator_claim_v1',
+  coordinatorRelease: 'luwi_coordinator_release_v1',
   controlUpsert: 'luwi_control_upsert_v1',
   controlDelete: 'luwi_control_delete_v1',
   controlPlanTransition: 'luwi_control_plan_transition_v1',

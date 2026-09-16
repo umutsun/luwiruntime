@@ -23,6 +23,12 @@ export type {
   NativeDeclarationObservation,
   NativeOpenLinkObservation,
 } from './native-session-policy.js';
+export { COORDINATOR_CLAIM_MAX_ATTEMPTS, evaluateCoordinatorClaim } from './coordinator-policy.js';
+export type {
+  CoordinatorClaimDecision,
+  CoordinatorClaimObservation,
+  CoordinatorHolderObservation,
+} from './coordinator-policy.js';
 export {
   createSessionBootstrap,
   DEFAULT_HEARTBEAT_INTERVAL_MS,

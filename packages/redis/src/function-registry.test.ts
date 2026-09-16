@@ -25,6 +25,8 @@ const productionFunctionNames = [
   'luwi_lease_renew_v1',
   'luwi_lease_release_v1',
   'luwi_lease_expire_v1',
+  'luwi_coordinator_claim_v1',
+  'luwi_coordinator_release_v1',
   'luwi_control_upsert_v1',
   'luwi_control_delete_v1',
   'luwi_control_plan_transition_v1',

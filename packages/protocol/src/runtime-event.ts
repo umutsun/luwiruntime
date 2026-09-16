@@ -37,6 +37,14 @@ export const runtimeEventTypeSchema = z.enum([
    * that a collision was prevented rather than merely not observed.
    */
   'lease.denied',
+  /**
+   * The single per-project coordinator role (ADR 0035) was claimed (a fresh
+   * grant or a take-over from a terminal holder) or released. Identity only:
+   * who coordinates, never any work state. A refused claim (a live holder
+   * already held it) writes nothing, following the native-binding precedent.
+   */
+  'coordinator.claimed',
+  'coordinator.released',
   'agent.definition.registered',
   'agent.definition.updated',
   'agent.definition.disabled',

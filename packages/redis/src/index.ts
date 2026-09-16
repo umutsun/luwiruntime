@@ -87,6 +87,12 @@ export type {
   LeaseRepository,
   LeaseTransitionResult,
 } from './lease-repository.js';
+export { createCoordinatorRepository } from './coordinator-repository.js';
+export type {
+  ClaimCoordinatorResult,
+  CoordinatorRepository,
+  ReleaseCoordinatorResult,
+} from './coordinator-repository.js';
 export { claimSessionInbox, ensureSessionInboxGroup } from './session-inbox.js';
 export type { ClaimSessionInboxInput } from './session-inbox.js';
 export { runMessageRetention } from './message-retention.js';

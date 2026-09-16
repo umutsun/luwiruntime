@@ -11,6 +11,7 @@ import {
   createFunctionRegistry,
   createManagedRedisConnection,
   createLeaseRepository,
+  createCoordinatorRepository,
   createMessageRepository,
   createControlPlaneRepository,
   createIntelligenceRepository,
@@ -72,6 +73,7 @@ import { createConfigControlService } from './config-control-service.js';
 import { clearStaleConfigFileLocks } from './config-file-engine.js';
 import { createControlPlaneService } from './control-plane-service.js';
 import { createLeaseService } from './lease-service.js';
+import { createCoordinatorService } from './coordinator-service.js';
 import { createMessageService } from './message-service.js';
 import { createIntelligenceService, type IntelligenceService } from './intelligence-service.js';
 import { createGitObserver } from './git-observer.js';
@@ -559,6 +561,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     keys,
     functions: registry,
   });
+  const coordinatorRepository = createCoordinatorRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
   const controlPlaneRepository = createControlPlaneRepository({
     client: connections.command,
     keys,
@@ -797,6 +804,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   });
   const leaseService = createLeaseService({
     repository: leaseRepository,
+    sessions: sessionService,
+    workspaceId: config.workspaceId,
+  });
+  const coordinatorService = createCoordinatorService({
+    repository: coordinatorRepository,
     sessions: sessionService,
     workspaceId: config.workspaceId,
   });
@@ -1193,6 +1205,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         sessions: sessionService,
         messages: messageService,
         leases: leaseService,
+        coordinator: coordinatorService,
         controlPlane: controlPlaneService,
         configControl: configControlService,
         intelligence: intelligenceService,

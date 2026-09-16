@@ -42,6 +42,8 @@ export interface RedisKeys {
   lease(leaseId: string): string;
   /** Held leases for one project, scored by expiry. The conflict check reads only this. */
   projectLeases(projectId: string): string;
+  /** The single per-project coordinator role (ADR 0035). One key ⇒ one holder. */
+  projectCoordinator(projectId: string): string;
   sessionLeases(sessionId: string): string;
   sessionPresence(sessionId: string): string;
   message(messageId: string): string;
@@ -169,6 +171,7 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     agentSessions: (agentId) => `${prefix}:index:agent:${keyPart(agentId)}:sessions`,
     lease: (leaseId) => `${prefix}:lease:${keyPart(leaseId)}`,
     projectLeases: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:leases`,
+    projectCoordinator: (projectId) => `${prefix}:project:${keyPart(projectId)}:coordinator`,
     sessionLeases: (sessionId) => `${prefix}:index:session:${keyPart(sessionId)}:leases`,
     sessionPresence: (sessionId) => `${prefix}:presence:session:${keyPart(sessionId)}`,
     nativeSessionBinding: (bindingId) => `${prefix}:native-session:${keyPart(bindingId)}`,

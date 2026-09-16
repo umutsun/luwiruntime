@@ -190,6 +190,18 @@ export type {
   WorkLease,
 } from './lease.js';
 export {
+  coordinatorClaimRequestSchema,
+  coordinatorReleaseRequestSchema,
+  coordinatorSchema,
+  coordinatorViewSchema,
+} from './coordinator.js';
+export type {
+  Coordinator,
+  CoordinatorClaimRequest,
+  CoordinatorReleaseRequest,
+  CoordinatorView,
+} from './coordinator.js';
+export {
   MCP_MAX_COLLECTION_ITEMS,
   mcpAcknowledgeMessageInputSchema,
   mcpAcquireLeaseInputSchema,
