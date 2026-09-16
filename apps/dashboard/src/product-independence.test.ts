@@ -34,12 +34,13 @@ describe('dashboard product independence', () => {
     expect(dependencies).not.toMatch(/(?:goose|acp|redis|claude|codex|gemini|kimi)/i);
   });
 
-  it('issues mutation requests from the three approved mutation modules and nowhere else', () => {
+  it('issues mutation requests from the four approved mutation modules and nowhere else', () => {
     const files = productionSources(sourceRoot);
     const mutationModules = [
       join(sourceRoot, 'api', 'config-mutations.ts'),
       join(sourceRoot, 'api', 'message-mutations.ts'),
       join(sourceRoot, 'api', 'project-mutations.ts'),
+      join(sourceRoot, 'api', 'coordinator-mutations.ts'),
     ];
     for (const module of mutationModules) {
       expect(files, 'each allowlisted module must exist, or this test passes vacuously').toContain(
@@ -48,9 +49,9 @@ describe('dashboard product independence', () => {
     }
 
     // Dashboard mutations are restricted to the approved configuration plan
-    // chain, bounded message creation, and project registration and settings
-    // (ADR 0033). A request reaching the daemon from anywhere else is still a
-    // defect.
+    // chain, bounded message creation, project registration and settings
+    // (ADR 0033), and coordinator role assignment (ADR 0035). A request reaching
+    // the daemon from anywhere else is still a defect.
     const elsewhere = files
       .filter((path) => !mutationModules.includes(path))
       .map((path) => readFileSync(path, 'utf8'))

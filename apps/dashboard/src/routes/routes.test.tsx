@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
@@ -229,6 +229,94 @@ describe('SessionsView', () => {
     render(<SessionsView snapshot={snapshot} />);
 
     expect(screen.queryByRole('button', { name: /ask session/i })).toBeNull();
+  });
+
+  it('makes an online session the coordinator and re-reads the snapshot', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    const claim = vi
+      .fn()
+      .mockResolvedValue({ state: 'ok', httpStatus: 201, data: { sessionId: 's1' } });
+    const onCoordinatorMutated = vi.fn();
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        coordinatorMutations={{ claim, release: vi.fn() }}
+        onCoordinatorMutated={onCoordinatorMutated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make session s1 the coordinator' }));
+    await waitFor(() => expect(claim).toHaveBeenCalledWith('p1', 's1'));
+    await waitFor(() => expect(onCoordinatorMutated).toHaveBeenCalledOnce());
+  });
+
+  it('badges the live holder and offers Release rather than Make', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: { state: 'ready', data: [session('s-holder')] },
+        coordinator: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            entries: [
+              {
+                projectId: 'p1',
+                coordinator: { state: 'ready', data: { sessionId: 's-holder', live: true } },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        coordinatorMutations={{ claim: vi.fn(), release: vi.fn() }}
+        onCoordinatorMutated={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText('Coordinator')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Release the coordinator role from session s-holder' }),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Make session .* the coordinator/i })).toBeNull();
+  });
+
+  it('shows the daemon conflict message when a claim is refused', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    const claim = vi.fn().mockResolvedValue({
+      state: 'failed',
+      reason: 'http',
+      httpStatus: 409,
+      code: 'COORDINATOR_CONFLICT',
+      message: 'Project p1 is already coordinated by session s2.',
+    });
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        coordinatorMutations={{ claim, release: vi.fn() }}
+        onCoordinatorMutated={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make session s1 the coordinator' }));
+    expect(
+      await screen.findByText('Project p1 is already coordinated by session s2.'),
+    ).toBeTruthy();
+  });
+
+  it('renders no coordinator action when capability is absent', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    expect(screen.queryByRole('button', { name: /coordinator/i })).toBeNull();
   });
 
   it('shows a relative start time and keeps the absolute value accessible', () => {

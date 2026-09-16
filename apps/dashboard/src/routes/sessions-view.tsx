@@ -1,5 +1,6 @@
 import { useState } from 'react';
 
+import type { CoordinatorMutations } from '../api/coordinator-mutations.js';
 import type { MessageMutations } from '../api/message-mutations.js';
 import { formatRelativeTime } from '../components/format.js';
 import { IdBadge } from '../components/id-badge.js';
@@ -66,12 +67,18 @@ export function SessionsView({
   onOpenSession,
   messageMutations,
   onMessageCreated,
+  coordinatorMutations,
+  onCoordinatorMutated,
   now = systemNow,
 }: {
   snapshot: PulseSnapshot;
   onOpenSession?: (session: SessionRow, opener: HTMLElement) => void;
   messageMutations?: MessageMutations;
   onMessageCreated?: (correlationId: string) => void;
+  /** Absent keeps the sessions route free of coordinator assignment (ADR 0035). */
+  coordinatorMutations?: CoordinatorMutations;
+  /** Called after a claim/release so the snapshot (and its badge) can be re-read. */
+  onCoordinatorMutated?: () => void;
   now?: () => Date;
 }) {
   const [statusFilter, setStatusFilter] = useState('');
@@ -81,6 +88,42 @@ export function SessionsView({
     direction: 'descending',
   });
   const [askTarget, setAskTarget] = useState<SessionRow>();
+  const [coordinatorBusy, setCoordinatorBusy] = useState<string>();
+  const [coordinatorNote, setCoordinatorNote] = useState<{
+    tone: 'ok' | 'danger';
+    message: string;
+  }>();
+  const coordinatorEnabled =
+    coordinatorMutations !== undefined && onCoordinatorMutated !== undefined;
+  const isCoordinator = (row: SessionRow): boolean => {
+    const held = snapshot.coordinatorByProject[row.projectId];
+    return held !== undefined && held.live && held.sessionId === row.id;
+  };
+  const runCoordinator = async (row: SessionRow, action: 'claim' | 'release'): Promise<void> => {
+    if (coordinatorMutations === undefined || onCoordinatorMutated === undefined) return;
+    setCoordinatorBusy(row.id);
+    setCoordinatorNote(undefined);
+    const result =
+      action === 'claim'
+        ? await coordinatorMutations.claim(row.projectId, row.id)
+        : await coordinatorMutations.release(row.projectId, row.id);
+    setCoordinatorBusy(undefined);
+    if (result.state === 'ok') {
+      setCoordinatorNote({
+        tone: 'ok',
+        message: action === 'claim' ? 'Coordinator assigned.' : 'Coordinator released.',
+      });
+      onCoordinatorMutated();
+      return;
+    }
+    setCoordinatorNote({
+      tone: 'danger',
+      message:
+        result.state === 'failed' && result.reason === 'http'
+          ? result.message
+          : 'The coordinator update could not be completed.',
+    });
+  };
   const resource =
     snapshot.sessionsState === 'ready'
       ? ({ state: 'ready', data: snapshot.sessions } as const)
@@ -194,6 +237,9 @@ export function SessionsView({
                         <tr key={row.id}>
                           <td>
                             <IdBadge id={row.id} label="session" />
+                            {isCoordinator(row) ? (
+                              <StatusChip tone="success">Coordinator</StatusChip>
+                            ) : null}
                           </td>
                           <td>
                             <IdBadge id={row.agentId} label="agent" />
@@ -214,6 +260,30 @@ export function SessionsView({
                           </td>
                           <td>
                             <div className="row-actions">
+                              {coordinatorEnabled && isCoordinator(row) ? (
+                                <button
+                                  className="coordinator-button"
+                                  type="button"
+                                  disabled={coordinatorBusy === row.id}
+                                  onClick={() => void runCoordinator(row, 'release')}
+                                  aria-label={`Release the coordinator role from session ${row.id}`}
+                                >
+                                  Release role
+                                </button>
+                              ) : null}
+                              {coordinatorEnabled &&
+                              !isCoordinator(row) &&
+                              row.presence === 'online' ? (
+                                <button
+                                  className="coordinator-button"
+                                  type="button"
+                                  disabled={coordinatorBusy === row.id}
+                                  onClick={() => void runCoordinator(row, 'claim')}
+                                  aria-label={`Make session ${row.id} the coordinator`}
+                                >
+                                  Make coordinator
+                                </button>
+                              ) : null}
                               {messageMutations === undefined ||
                               onMessageCreated === undefined ||
                               row.presence !== 'online' ||
@@ -249,6 +319,18 @@ export function SessionsView({
                     </tbody>
                   </TableWrap>
                 </div>
+              )}
+              {coordinatorNote === undefined ? null : (
+                <p
+                  className={
+                    coordinatorNote.tone === 'ok'
+                      ? 'coordinator-note coordinator-note--ok'
+                      : 'coordinator-note coordinator-note--danger'
+                  }
+                  role="status"
+                >
+                  {coordinatorNote.message}
+                </p>
               )}
             </>
           );

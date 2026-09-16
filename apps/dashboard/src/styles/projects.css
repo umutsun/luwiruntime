@@ -640,6 +640,26 @@ tr[data-selected='true'] {
   color: var(--selection);
 }
 
+/* Assigns or releases the per-project coordinator role (ADR 0035); like Ask it
+   stays attached to the session row and only writes coordination-plane identity. */
+.coordinator-button {
+  border-color: var(--selection-strong);
+  color: var(--selection-strong);
+}
+
+.coordinator-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-xs);
+}
+
+.coordinator-note--ok {
+  color: var(--success);
+}
+
+.coordinator-note--danger {
+  color: var(--danger);
+}
+
 .ask-dialog {
   width: min(38rem, 100%);
 }

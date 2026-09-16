@@ -6,6 +6,10 @@ import { createRoot } from 'react-dom/client';
 import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
 import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
+import {
+  createCoordinatorMutations,
+  type CoordinatorMutations,
+} from './api/coordinator-mutations.js';
 import { createMessageMutations, type MessageMutations } from './api/message-mutations.js';
 import { createProjectMutations, type ProjectMutations } from './api/project-mutations.js';
 import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
@@ -113,6 +117,7 @@ const ACTIVITY_RENDER_THROTTLE_MS = 1_000;
 const configMutations: ConfigMutations = createConfigMutations();
 const messageMutations: MessageMutations = createMessageMutations();
 const projectMutations: ProjectMutations = createProjectMutations();
+const coordinatorMutations: CoordinatorMutations = createCoordinatorMutations();
 
 /**
  * Bound once so the Graph explorer's load effect has a stable dependency; a new
@@ -558,6 +563,8 @@ function DashboardRoute() {
       onConfigMutated={onConfigMutated}
       projectMutations={projectMutations}
       onProjectMutated={retry}
+      coordinatorMutations={coordinatorMutations}
+      onCoordinatorMutated={retry}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
       leaseResources={leaseResources}

@@ -101,7 +101,8 @@ describe('loadPulseInput', () => {
       nowMs: vi.fn().mockReturnValueOnce(100).mockReturnValueOnce(124),
     });
 
-    expect(get).toHaveBeenCalledTimes(10);
+    // 9 base reads + one git fan-out + one coordinator fan-out for the 1 project.
+    expect(get).toHaveBeenCalledTimes(11);
     expect(input.measuredLatencyMs).toBe(24);
     expect(input.projects).toEqual({
       state: 'ready',
@@ -180,6 +181,20 @@ describe('loadPulseInput', () => {
           metadata: {},
         }),
       ],
+      [
+        '/api/v1/projects/p1/coordinator',
+        ready({
+          coordinator: {
+            projectId: 'p1',
+            sessionId: 'session-a',
+            agentId: 'agent-a',
+            claimId: 'claim-1',
+            claimedAt: '2026-08-05T07:30:00.000Z',
+            version: 1,
+          },
+          live: true,
+        }),
+      ],
     ]);
     const get = vi.fn(async (path: string) => responses.get(path) ?? { state: 'unavailable' });
 
@@ -191,6 +206,18 @@ describe('loadPulseInput', () => {
     expect(input.runtime).toMatchObject({
       state: 'ready',
       data: { workspaceId: 'local', runtimeState: 'ready', port: 4782 },
+    });
+    expect(input.coordinator).toMatchObject({
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [
+          {
+            projectId: 'p1',
+            coordinator: { state: 'ready', data: { sessionId: 'session-a', live: true } },
+          },
+        ],
+      },
     });
     expect(input.git).toMatchObject({
       state: 'ready',

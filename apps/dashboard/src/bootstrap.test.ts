@@ -152,6 +152,7 @@ describe('resourcesOf', () => {
       'activity',
       'agents',
       'context',
+      'coordinator',
       'findings',
       'git',
       'health',

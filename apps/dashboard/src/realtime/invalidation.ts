@@ -9,6 +9,7 @@ export const PULSE_RESOURCE_KEYS = [
   'findings',
   'runtime',
   'git',
+  'coordinator',
 ] as const;
 
 export type PulseResourceKey = (typeof PULSE_RESOURCE_KEYS)[number];
@@ -20,6 +21,10 @@ export function resourcesForEvent(eventType: string): PulseResourceKey[] {
   }
   if (eventType.startsWith('project.')) return ['projects', 'git'];
   if (eventType.startsWith('git.')) return ['git'];
+  // A coordinator claim/release is the only event that moves the role record; a
+  // session heartbeat does not, so session.* stays sessions-only (the realtime
+  // schema does not decode coordinator.* yet, so this is ready, not yet live).
+  if (eventType.startsWith('coordinator.')) return ['coordinator'];
   if (eventType.startsWith('session.')) return ['sessions'];
   if (eventType.startsWith('usage.')) return ['usage'];
   if (eventType.startsWith('context.')) return ['context'];

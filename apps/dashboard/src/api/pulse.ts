@@ -1,6 +1,7 @@
 import {
   agentDefinitionCollectionSchema,
   contextContributionCollectionSchema,
+  coordinatorViewSchema,
   gitObservationSchema,
   healthResponseSchema,
   optimizationFindingCollectionSchema,
@@ -12,6 +13,8 @@ import { z } from 'zod';
 
 import type {
   Availability,
+  PulseCoordinatorEntry,
+  PulseCoordinatorResource,
   PulseGitEntry,
   PulseGitResource,
   PulseInput,
@@ -75,6 +78,7 @@ const pulseResourceKeys: PulseResourceKey[] = [
   'findings',
   'runtime',
   'git',
+  'coordinator',
 ];
 
 /**
@@ -125,6 +129,47 @@ async function loadGitResource(
       if (result.httpStatus === 404)
         return { projectId: project.id, git: { state: 'not-observed' } };
       return { projectId: project.id, git: { state: 'unavailable' } };
+    }),
+  );
+  return {
+    state: 'ready',
+    data: { truncated: projects.data.length > GIT_FANOUT_MAX, entries },
+  };
+}
+
+/**
+ * One `GET /projects/:id/coordinator` per project (same bounded fan-out as git),
+ * so the sessions table can badge the holder and offer Make/Release without a
+ * per-row read. The view always answers 200 (`{coordinator, live}`), so there is
+ * no not-observed state — a failed read is `unavailable`.
+ */
+async function loadCoordinatorResource(
+  client: DaemonClient,
+  projects: Availability<PulseProject[]>,
+  options: { signal?: AbortSignal },
+): Promise<Availability<PulseCoordinatorResource>> {
+  if (projects.state !== 'ready') return { state: 'unavailable' };
+  const capped = projects.data.slice(0, GIT_FANOUT_MAX);
+  const entries = await Promise.all(
+    capped.map(async (project): Promise<PulseCoordinatorEntry> => {
+      const result = await client.get(
+        `/api/v1/projects/${encodeURIComponent(project.id)}/coordinator`,
+        coordinatorViewSchema,
+        options,
+      );
+      if (result.state === 'ready') {
+        return {
+          projectId: project.id,
+          coordinator: {
+            state: 'ready',
+            data: {
+              sessionId: result.data.coordinator?.sessionId ?? null,
+              live: result.data.live,
+            },
+          },
+        };
+      }
+      return { projectId: project.id, coordinator: { state: 'unavailable' } };
     }),
   );
   return {
@@ -292,7 +337,8 @@ export async function loadPulseResources(
         );
         break;
       case 'git':
-        // Depends on the project list; resolved after the batch below.
+      case 'coordinator':
+        // Depend on the project list; resolved after the batch below.
         break;
       case 'findings':
         requests.push(
@@ -325,9 +371,9 @@ export async function loadPulseResources(
   const entries = await Promise.all(requests);
   const resources = Object.fromEntries(entries) as Partial<PulseResources>;
 
-  if (requested.has('git')) {
-    // The fan-out needs the project list. Reuse the one from this batch when
-    // it was requested; a git-only invalidation fetches it fresh.
+  if (requested.has('git') || requested.has('coordinator')) {
+    // Both fan-outs need the project list. Reuse the one from this batch when it
+    // was requested; a git/coordinator-only invalidation fetches it fresh once.
     const projects: Availability<PulseProject[]> =
       resources.projects ??
       (await client
@@ -343,7 +389,10 @@ export async function loadPulseResources(
             })),
           ),
         ));
-    resources.git = await loadGitResource(client, projects, options);
+    if (requested.has('git')) resources.git = await loadGitResource(client, projects, options);
+    if (requested.has('coordinator')) {
+      resources.coordinator = await loadCoordinatorResource(client, projects, options);
+    }
   }
 
   return resources;
@@ -373,5 +422,6 @@ export async function loadPulseInput(
     findings: resources.findings ?? { state: 'unavailable' },
     runtime: resources.runtime ?? { state: 'unavailable' },
     git: resources.git ?? { state: 'unavailable' },
+    coordinator: resources.coordinator ?? { state: 'unavailable' },
   };
 }

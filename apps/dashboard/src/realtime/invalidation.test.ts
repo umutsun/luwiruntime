@@ -67,6 +67,7 @@ describe('realtime snapshot invalidation', () => {
       'findings',
       'runtime',
       'git',
+      'coordinator',
     ]);
   });
 
@@ -112,6 +113,7 @@ describe('realtime snapshot invalidation', () => {
       findings: { state: 'ready', data: [] },
       runtime: { state: 'unavailable' },
       git: { state: 'unavailable' },
+      coordinator: { state: 'unavailable' },
     };
     const onChange = vi.fn();
     const refreshController = createPulseRefreshController({

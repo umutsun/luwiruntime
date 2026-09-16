@@ -31,6 +31,12 @@ export {
 } from './intelligence.js';
 export { leaseCollectionSchema } from './lease.js';
 export {
+  coordinatorClaimRequestSchema,
+  coordinatorReleaseRequestSchema,
+  coordinatorSchema,
+  coordinatorViewSchema,
+} from './coordinator.js';
+export {
   MESSAGE_DEFAULT_TIMEOUT_MS,
   MESSAGE_MAX_CONTENT_BYTES,
   MESSAGE_MAX_SUBJECT_BYTES,

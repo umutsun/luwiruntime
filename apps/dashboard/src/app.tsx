@@ -7,6 +7,7 @@ import type { ConfigMutations } from './api/config-mutations.js';
 import type { ConfigResources } from './api/config-scope.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
 import type { IntelligenceResources } from './api/intelligence-scope.js';
+import type { CoordinatorMutations } from './api/coordinator-mutations.js';
 import type { KnowledgeGraph } from './api/knowledge-scope.js';
 import type { LeaseResources } from './api/lease-scope.js';
 import type { MessageMutations } from './api/message-mutations.js';
@@ -235,6 +236,8 @@ export function DashboardApp({
   onConfigMutated,
   projectMutations,
   onProjectMutated,
+  coordinatorMutations,
+  onCoordinatorMutated,
   agentPairResources = {},
   agentPairLoading = false,
   leaseResources = {},
@@ -279,6 +282,10 @@ export function DashboardApp({
   projectMutations?: ProjectMutations | undefined;
   /** Called after a project was registered or changed, so the snapshot can be re-read. */
   onProjectMutated?: (() => void) | undefined;
+  /** Absent keeps the sessions route free of coordinator assignment (ADR 0035). */
+  coordinatorMutations?: CoordinatorMutations | undefined;
+  /** Called after a coordinator claim/release, so the snapshot can be re-read. */
+  onCoordinatorMutated?: (() => void) | undefined;
   agentPairResources?: Partial<AgentPairResources>;
   /** The pair-scoped reads have not returned yet. */
   agentPairLoading?: boolean;
@@ -568,6 +575,8 @@ export function DashboardApp({
             onMessageCreated={(correlationId) => {
               window.location.hash = routeHref({ name: 'messages', correlationId });
             }}
+            {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
+            {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
             onOpenSession={(session) => openInspector({ kind: 'session', sessionId: session.id })}
           />
         );
