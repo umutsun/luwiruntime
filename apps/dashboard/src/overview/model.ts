@@ -386,11 +386,23 @@ function deliveryQualityOf(messages: readonly AgentMessage[]): {
       : ` · p50 ${p50 < 120_000 ? `${String(Math.round(p50 / 1000))}s` : formatDuration(p50)}`;
   // Failure as a SHARE of terminal exchanges, not a bare count — a count reads the same at any fleet
   // size. The value tile already carries the answered %, so the sub drops that (kept it visible) and
-  // states the three complementary facts that must survive 1366×768: failure rate, p50, window.
+  // states the complementary facts that must survive 1366×768: failure rate, p50, the two facts
+  // Faz 3.2 deferred until something produced them — exchanges declared as a re-dispatch of an
+  // earlier one (`retryOf`) and answers that carry test or build evidence — and the window.
   const failPct = Math.round((failed.length / terminal.length) * 100);
+  const redispatched = terminal.filter((message) => message.retryOf !== undefined).length;
+  const verified = answered.filter((message) =>
+    (message.response?.evidenceTypes ?? []).some(
+      (type) => type === 'test_result' || type === 'build_result',
+    ),
+  ).length;
+  const verifiedText =
+    answered.length === 0
+      ? 'verified —'
+      : `verified ${String(Math.round((verified / answered.length) * 100))}%`;
   return {
     value: `${String(Math.round((answered.length / terminal.length) * 100))}%`,
-    sub: `${String(failPct)}% failed/timed out${latency} · recent ${String(terminal.length)}`,
+    sub: `${String(failPct)}% failed/timed out${latency} · ${String(redispatched)} re-dispatched · ${verifiedText} · recent ${String(terminal.length)}`,
     fraction: answered.length / terminal.length,
   };
 }

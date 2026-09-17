@@ -995,6 +995,8 @@ describe('LUWI CLI', () => {
         'Status?',
         '--idempotency-key',
         'retry-1',
+        '--retry-of',
+        'correlation-0',
         '--wait-ms',
         '25',
       ],
@@ -1019,6 +1021,9 @@ describe('LUWI CLI', () => {
     expect(requests[0]?.init?.headers).toMatchObject({
       'content-type': 'application/json',
       'idempotency-key': 'retry-1',
+    });
+    expect(JSON.parse(String(requests[0]?.init?.body))).toMatchObject({
+      retryOf: 'correlation-0',
     });
     expect(requests[1]?.url).toContain('/api/v1/messages/correlation-1/wait?waitMs=25');
     expect(JSON.parse(output)).toMatchObject({ state: 'responded' });

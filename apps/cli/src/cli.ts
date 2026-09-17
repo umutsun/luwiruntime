@@ -2784,6 +2784,10 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--evidence <types>', 'Comma-separated evidence requirements')
     .option('--timeout-ms <milliseconds>', 'Message deadline')
     .option('--idempotency-key <key>', 'Retry idempotency key')
+    .option(
+      '--retry-of <correlationId>',
+      'Record this ask as a re-dispatch of an earlier, terminal exchange',
+    )
     .option('--wait-ms <milliseconds>', 'Wait up to 30000 ms for terminal state', '0')
     .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
     .action(
@@ -2797,6 +2801,7 @@ export function createCli(dependencies: CliDependencies): Command {
         evidence?: string;
         timeoutMs?: string;
         idempotencyKey?: string;
+        retryOf?: string;
         waitMs: string;
         url: string;
       }) => {
@@ -2817,6 +2822,7 @@ export function createCli(dependencies: CliDependencies): Command {
               content: options.content,
               evidenceRequirements: parseEvidenceRequirements(options.evidence),
               ...(options.timeoutMs === undefined ? {} : { timeoutMs: Number(options.timeoutMs) }),
+              ...(options.retryOf === undefined ? {} : { retryOf: options.retryOf }),
             },
             options.idempotencyKey === undefined
               ? {}

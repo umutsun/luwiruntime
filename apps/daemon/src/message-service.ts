@@ -307,6 +307,35 @@ export function createMessageService(options: MessageServiceOptions): MessageSer
       }
 
       const sourceSession = await requireSource(options.sessions, request.sourceSessionId);
+      // A declared re-dispatch (read/decide before the Function): the exchange it
+      // re-asks must exist, belong to the same project, and be over. The link is
+      // then recorded as a fact; the runtime never re-dispatches on its own.
+      if (request.retryOf !== undefined) {
+        const previous = await options.repository
+          .getMessage(request.retryOf)
+          .catch((error: unknown) => repositoryError(error));
+        if (previous === null) {
+          throw new ApplicationError(
+            'RETRY_OF_NOT_FOUND',
+            'The exchange named by retryOf was not found.',
+            404,
+          );
+        }
+        if (previous.projectId !== sourceSession.projectId) {
+          throw new ApplicationError(
+            'RETRY_OF_PROJECT_MISMATCH',
+            'The exchange named by retryOf belongs to another project.',
+            409,
+          );
+        }
+        if (!terminalStates.has(previous.state)) {
+          throw new ApplicationError(
+            'RETRY_OF_NOT_TERMINAL',
+            'The exchange named by retryOf has not ended; a re-dispatch needs a terminal one.',
+            409,
+          );
+        }
+      }
       const selection = selectMessageTarget({
         sourceSession,
         sessions: await options.sessions.list(),
@@ -350,6 +379,7 @@ export function createMessageService(options: MessageServiceOptions): MessageSer
             timeoutMs: request.timeoutMs,
             requestFingerprint,
             ...(idempotencyKeyHash === undefined ? {} : { idempotencyKeyHash }),
+            ...(request.retryOf === undefined ? {} : { retryOf: request.retryOf }),
           },
           workspaceId: options.workspaceId,
           eventId: createId(),

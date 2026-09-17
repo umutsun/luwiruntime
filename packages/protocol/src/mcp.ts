@@ -203,6 +203,7 @@ export const mcpAskAgentInputSchema = z
       .max(MESSAGE_MAX_TIMEOUT_MS)
       .default(MESSAGE_DEFAULT_TIMEOUT_MS),
     idempotencyKey: z.string().min(1).max(128).optional(),
+    retryOf: identifierSchema.optional(),
     waitMs: z.number().int().min(0).max(MESSAGE_MAX_WAIT_MS).default(0),
   })
   .superRefine((value, context) => {

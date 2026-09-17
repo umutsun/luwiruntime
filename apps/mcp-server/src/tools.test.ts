@@ -157,9 +157,10 @@ describe('MCP tool handlers', () => {
       targetAgentId: 'gemini-sim',
       kind: 'question',
       content: 'Status?',
+      retryOf: 'correlation-0',
     });
     expect(daemon.askAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceSessionId: 'source' }),
+      expect.objectContaining({ sourceSessionId: 'source', retryOf: 'correlation-0' }),
       undefined,
     );
     await expect(

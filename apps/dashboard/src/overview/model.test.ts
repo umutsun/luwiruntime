@@ -461,6 +461,7 @@ describe('buildOverview', () => {
         status: 'answered',
         answer: 'Done — all 14 checks pass on the branch.',
         evidenceCount: 1,
+        evidenceTypes: ['session_state'],
         verifiedAt: minutesAgo(1),
       },
     };
@@ -538,15 +539,28 @@ describe('buildOverview', () => {
       updatedAt: '2026-07-29T12:00:30.000Z',
       deadlineAt: '2026-07-29T12:02:00.000Z',
     };
-    const answered = (id: string, respondedAt: string): AgentMessage => ({
+    const answered = (
+      id: string,
+      respondedAt: string,
+      evidenceTypes: string[] = [],
+      retryOf?: string,
+    ): AgentMessage => ({
       ...base,
       id,
+      ...(retryOf === undefined ? {} : { retryOf }),
       state: 'responded',
       respondedAt,
-      response: { status: 'answered', answer: 'ok', evidenceCount: 0, verifiedAt: respondedAt },
+      response: {
+        status: 'answered',
+        answer: 'ok',
+        evidenceCount: evidenceTypes.length,
+        evidenceTypes,
+        verifiedAt: respondedAt,
+      },
     });
     const messages: AgentMessage[] = [
-      answered('m1', '2026-07-29T12:00:30.000Z'), // 30s
+      // Re-asked after an earlier exchange, and answered with a test result attached.
+      answered('m1', '2026-07-29T12:00:30.000Z', ['test_result', 'file_reference'], 'c0'), // 30s
       answered('m2', '2026-07-29T12:01:30.000Z'), // 90s
       { ...base, id: 'm3', state: 'failed' },
       { ...base, id: 'm4', state: 'timed_out' },
@@ -560,6 +574,7 @@ describe('buildOverview', () => {
           status: 'partially_answered',
           answer: 'part',
           evidenceCount: 0,
+          evidenceTypes: [],
           verifiedAt: '2026-07-29T12:00:30.000Z',
         },
       },
@@ -571,6 +586,10 @@ describe('buildOverview', () => {
     // Failure as a SHARE of terminal, not a bare count: 3 of 6 = 50% (failed + timed_out + rejected).
     expect(delivery?.sub).toContain('50% failed/timed out');
     expect(delivery?.sub).toContain('recent 6');
+    // The two facts Faz 3.2 deferred: exchanges declared as a re-dispatch (m1), and answered
+    // exchanges carrying test or build evidence (m1 of the 2 answered) — facts, never a score.
+    expect(delivery?.sub).toContain('1 re-dispatched');
+    expect(delivery?.sub).toContain('verified 50%');
     // True median of 30s and 90s is 60s, not the lower-middle 30s.
     expect(delivery?.sub).toMatch(/p50 60s/u);
     expect(delivery?.route).toBe('#/messages');

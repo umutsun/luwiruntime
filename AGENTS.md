@@ -1291,7 +1291,10 @@ binding — configuration the daemon records and the external flow script decide
 uniqueness rule and the coordinator deliberately excluded — and a fifth allowlisted dashboard write
 module, `api/capability-mutations.ts`, over the capability endpoints that already existed (enable,
 assign, unassign, scan). No new key, event type, Function or endpoint; LUWI still writes no
-`SKILL.md`.
+`SKILL.md`. ADR 0037 then put `retryOf` on the message record (a declared re-dispatch link the
+daemon validates and records, never acts on) and moved `luwi_v1` to v13 for the record-shape
+change; the Delivery tile states re-dispatched and evidence-backed exchanges as facts, with the
+repository-external flow script as the only producer.
 
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers

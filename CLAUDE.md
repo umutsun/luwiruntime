@@ -116,7 +116,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (34 registered Functions since F3's `luwi_project_unregister_v1` — the library version is still 12, so a daemon started before a new Function needs one restart to load it; the daemon restarted 2026-09-17 after F3 holds all 34) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (34 registered Functions since F3's `luwi_project_unregister_v1`; library **v13** since ADR 0037 put `retryOf` on the message record — a new Function alone reloads without a bump, a record-shape change moves the version, and either way a daemon started before it needs one restart) is already loaded on the server.
 
 ## Tools and shells
 
@@ -193,7 +193,7 @@ time-bounded link per LUWI session. Identity carries no presence, project or age
 refused rather than evicted; a conflict writes nothing; missing evidence is
 `NATIVE_BINDING_INCONSISTENT`. Policy is a pure `@luwi/runtime` function and Lua only validates a
 CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no inbox stream.
-`luwi_v1` is at **v12** (B1 moved it; see below).
+`luwi_v1` is at **v13** (B1 moved it to 12, ADR 0037 to 13; see below).
 
 ADR 0023 then approved the next item in the sequence — **native transcript ingestion** — and
 specified it as B0 / B1 / B2. **B0, B1 and B2 are all built.**
@@ -555,6 +555,28 @@ bounded shape as git and the coordinator; `project.agent.*` invalidates it), the
 `flowRolesByProject` (enabled bindings with at least one role, by project then agent), the sessions
 table chips a row with its agent's roles beside the Coordinator badge, and the drill-down states
 `Flow roles` on a project and `Flow role` on a session beside the coordinator fact.
+
+**ADR 0037 (2026-09-17) built the two Delivery facts Faz 3.2 deferred.** The message record gained
+`retryOf` (the correlation id of the exchange this one re-asks): the daemon checks it exists, is
+the source's project and is terminal (`RETRY_OF_NOT_FOUND` / `RETRY_OF_PROJECT_MISMATCH` /
+`RETRY_OF_NOT_TERMINAL`), `message_request` HSETs it and carries it in the `message.requested`
+payload, the projection returns it, the fingerprint includes it **only when present** (the §7
+review caught `retryOf: null` in the canonical object — that changes every pre-deploy fingerprint,
+so an idempotent replay straddling the restart would answer `IDEMPOTENCY_KEY_CONFLICT` against its
+own message; a golden fingerprint test now pins the old shape); **`luwi_v1` moved to v13** because
+a stored record's shape changed (the registry's rule — a new Function alone never moves it). `luwi
+message ask --retry-of`, `luwi_ask_agent` `retryOf`. The dashboard's message read keeps
+`evidenceTypes`, and the Delivery tile's sub-line states `N re-dispatched` and `verified X%`
+(answered exchanges carrying `test_result`/`build_result` evidence) — facts, never a score. The
+producer is `flow.mjs`: a re-run after a receipt that did not pass declares `--retry-of`
+(`redispatch.mjs`), and the verify prompt asks for `test_result` evidence through
+`luwi_respond_to_message`. **Three traps while building it:** the repository's `parseStoredMessage`
+whitelists optional string fields (`subject`, `acknowledgedAt`, …) — a new optional field must be
+added there or `getMessage` silently drops it while the Function's own return carries it; an
+integration run started while `prettier --write` or `tsc -b` was still touching a source can
+transform a stale module (a "missing field" that a re-run does not reproduce); and the message
+integration fixtures share one idempotency-key namespace across tests, so a new test must pick
+hashes no later test reuses (`'d'.repeat(64)` was taken) or the later test reads `existing`.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.

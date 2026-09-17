@@ -426,6 +426,15 @@ same drawer's Skills panel now enables or disables a capability package (not an 
 rescans the native skill directories, all through the existing capability endpoints. LUWI never
 writes a `SKILL.md`.
 
+**Re-dispatch links and evidence (ADR 0037):** a message may declare `retryOf`, the correlation id
+of an earlier exchange it re-asks (`luwi message ask --retry-of <id>`, `luwi_ask_agent` `retryOf`);
+the daemon refuses a link to a missing, foreign or still-running exchange and records the rest as a
+fact. The overview's Delivery tile states how many recent exchanges were re-dispatched and what
+share of answered ones carry `test_result` or `build_result` evidence, and `#/messages` lists the
+evidence types a response attached. Nothing re-dispatches on its own and nothing validates the
+evidence; the repository-external flow script declares the link and asks its verifier to attach
+what it ran.
+
 ## Architecture and security
 
 Redis is the only runtime datastore. It is the operational database, durable event bus,

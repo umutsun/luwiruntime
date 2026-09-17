@@ -276,6 +276,7 @@ export function createMcpToolHandlers(
           content: parsed.content,
           evidenceRequirements: parsed.evidenceRequirements,
           timeoutMs: parsed.timeoutMs,
+          ...(parsed.retryOf === undefined ? {} : { retryOf: parsed.retryOf }),
         },
         parsed.idempotencyKey,
       );

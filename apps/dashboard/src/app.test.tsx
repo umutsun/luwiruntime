@@ -133,6 +133,7 @@ const routedMessage: AgentMessage = {
     status: 'answered',
     answer: 'Only one drawer may mount.',
     evidenceCount: 0,
+    evidenceTypes: [],
     verifiedAt: '2026-08-05T07:00:01.000Z',
   },
 };

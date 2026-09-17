@@ -141,6 +141,58 @@ describe('message service', () => {
     );
   });
 
+  it('records a declared re-dispatch, and refuses one that names a missing, foreign or unfinished exchange', async () => {
+    const previous: AgentMessage = { ...message, correlationId: 'previous', state: 'timed_out' };
+    const createMessage = vi.fn(async () => ({
+      status: 'created' as const,
+      message,
+      event: {
+        id: 'event-1',
+        version: 1 as const,
+        type: 'message.requested' as const,
+        occurredAt: now,
+        workspaceId: 'local',
+        projectId: 'project-1',
+        payload: {},
+      },
+      globalStreamId: '1-0',
+      projectStreamId: '1-0',
+      inboxStreamId: '1-0',
+    }));
+    const serviceWith = (found: AgentMessage | null) =>
+      createMessageService({
+        repository: repository({ createMessage, getMessage: async () => found }),
+        sessions: sessionService(),
+        workspaceId: 'local',
+        createId: () => 'generated',
+      });
+    const reask: MessageCreateRequest = { ...request, retryOf: 'previous' };
+
+    await serviceWith(previous).ask(reask);
+    expect(createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.objectContaining({ retryOf: 'previous' }) }),
+    );
+    // The link changes the fingerprint: the same words sent fresh are a different request.
+    expect(createMessageRequestFingerprint(reask)).not.toBe(
+      createMessageRequestFingerprint(request),
+    );
+
+    await expect(serviceWith(null).ask(reask)).rejects.toMatchObject({
+      code: 'RETRY_OF_NOT_FOUND',
+      statusCode: 404,
+    });
+    await expect(
+      serviceWith({ ...previous, projectId: 'project-2' }).ask(reask),
+    ).rejects.toMatchObject({ code: 'RETRY_OF_PROJECT_MISMATCH', statusCode: 409 });
+    await expect(
+      serviceWith({ ...previous, state: 'processing' }).ask(reask),
+    ).rejects.toMatchObject({
+      code: 'RETRY_OF_NOT_TERMINAL',
+      statusCode: 409,
+    });
+    expect(createMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects offline sources, unavailable targets, and cross-project direct targets', async () => {
     const offlineSource = { ...source, presence: 'offline' as const };
     const crossProject = { ...target, projectId: 'project-2' };

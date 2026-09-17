@@ -33,6 +33,7 @@ export type CreateMessageInput = {
     timeoutMs: number;
     requestFingerprint: string;
     idempotencyKeyHash?: string;
+    retryOf?: string;
   };
   workspaceId: string;
   eventId: string;
@@ -201,7 +202,13 @@ function parseStoredMessage(reply: unknown): AgentMessage | null {
     updatedAt: record.updatedAt,
     deadlineAt: record.deadlineAt,
   };
-  for (const field of ['subject', 'acknowledgedAt', 'processingAt', 'respondedAt'] as const) {
+  for (const field of [
+    'subject',
+    'retryOf',
+    'acknowledgedAt',
+    'processingAt',
+    'respondedAt',
+  ] as const) {
     if (typeof record[field] === 'string') {
       candidate[field] = record[field];
     }

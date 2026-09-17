@@ -920,12 +920,17 @@ describe('SpawnCommandRunner', () => {
     ],
   ])(
     'terminates a Windows .cmd fixture that exceeds the %s bound (requires Windows)',
+    // The same worst case as the direct-executable limit tests above, plus a
+    // cmd.exe hop: under a saturated suite run the cold start alone can pass
+    // vitest's 5 s default, and the runner's own default timeout can fire before
+    // the limit breach is what ends the run. Both bounds are hang guards only.
+    { timeout: 30_000 },
     async (_stream, script, failure) => {
       const directory = await mkdtemp(join(tmpdir(), 'luwi-adapter-command-output-'));
       temporaryDirectories.push(directory);
       const fixture = join(directory, `noisy-${String(_stream)}.cmd`);
       await writeFile(fixture, `@echo off\r\n"${process.execPath}" -e "${script}"\r\n`, 'utf8');
-      const runner = new SpawnCommandRunner();
+      const runner = new SpawnCommandRunner({ timeoutMs: 10_000 });
 
       const result = await runner.run(fixture, ['--version']);
 

@@ -314,7 +314,12 @@ export function MessagesView({
                 </div>
                 <div>
                   <dt>Evidence items</dt>
-                  <dd>{selected.response.evidenceCount}</dd>
+                  <dd>
+                    {selected.response.evidenceCount}
+                    {selected.response.evidenceTypes.length === 0
+                      ? ''
+                      : ` · ${selected.response.evidenceTypes.join(', ')}`}
+                  </dd>
                 </div>
                 <div>
                   <dt>Verified</dt>

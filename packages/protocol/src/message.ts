@@ -101,6 +101,12 @@ const messageBaseFields = {
     .min(1)
     .max(MESSAGE_MAX_TIMEOUT_MS)
     .default(MESSAGE_DEFAULT_TIMEOUT_MS),
+  /**
+   * The correlation id of the message this one re-asks (a re-dispatch after a
+   * previous exchange ended without a usable answer). Declared by the caller,
+   * recorded as a fact; the runtime never re-dispatches on its own.
+   */
+  retryOf: identifierSchema.optional(),
 } as const;
 
 export const messageCreateRequestSchema = z
@@ -132,6 +138,7 @@ export const agentMessageSchema = z.strictObject({
   subject: z.string().min(1).optional(),
   content: z.string().min(1),
   evidenceRequirements: z.array(evidenceTypeSchema).max(MESSAGE_MAX_EVIDENCE_ITEMS).optional(),
+  retryOf: identifierSchema.optional(),
   state: messageStateSchema,
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
