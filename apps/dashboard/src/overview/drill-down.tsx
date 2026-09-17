@@ -7,7 +7,7 @@ import type { Focus, OverviewSession, PanelLink, PanelModel } from './model.js';
 /**
  * Role facts show their value as chips, not bold text. The session's "Flow role"
  * is one agent's roles joined by " + "; the project's "Flow roles" is one clause
- * per agent joined by " · " ("albanoosh: implementer · codex: verifier").
+ * per agent joined by " · " ("agent-a: implementer · agent-b: verifier").
  */
 function roleChips(key: string, value: string): string[] | undefined {
   if ((key !== 'Flow role' && key !== 'Flow roles') || value === 'none') return undefined;
