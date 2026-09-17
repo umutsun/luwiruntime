@@ -19,6 +19,7 @@ import type { RuntimeResources } from './api/runtime-resources.js';
 import type { ProjectDiscoveryResult } from './api/project-discovery.js';
 import type { SessionUsage } from './api/session-usage.js';
 import { BrandMark } from './components/brand-mark.js';
+import { ConfirmDialog } from './components/confirm-dialog.js';
 import { DetailDrawer } from './components/detail-drawer.js';
 import { ProjectDiscoveryPanel } from './components/project-discovery-panel.js';
 import { ProjectForm } from './components/project-form.js';
@@ -328,6 +329,11 @@ export function DashboardApp({
   const [registering, setRegistering] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<string>();
+  // The unregister gate (F3): which project the confirm is open for, whether
+  // the call is in flight, and the daemon's refusal in its own words.
+  const [unregistering, setUnregistering] = useState<string>();
+  const [unregisterBusy, setUnregisterBusy] = useState(false);
+  const [unregisterError, setUnregisterError] = useState<string>();
   // Leaving the in-place form returns focus to the control that opened it, so
   // a keyboard reader is not dropped on the body behind the drawer.
   const editButton = useRef<HTMLButtonElement>(null);
@@ -999,7 +1005,70 @@ export function DashboardApp({
               >
                 Edit project
               </button>
+              <button
+                type="button"
+                className="link-button"
+                aria-label={`Unregister project ${detailProject.name}`}
+                onClick={() => {
+                  setUnregisterError(undefined);
+                  setUnregistering(detail.projectId);
+                }}
+              >
+                Unregister…
+              </button>
             </p>
+          )}
+          {projectMutations === undefined ||
+          detailProject === undefined ||
+          unregistering !== detail.projectId ? null : (
+            <ConfirmDialog
+              title="Unregister project"
+              confirmLabel="Unregister"
+              busy={unregisterBusy}
+              onCancel={() => setUnregistering(undefined)}
+              onConfirm={() => {
+                void (async () => {
+                  setUnregisterBusy(true);
+                  setUnregisterError(undefined);
+                  const result = await projectMutations.remove(detail.projectId);
+                  setUnregisterBusy(false);
+                  if (result.state === 'ok') {
+                    setUnregistering(undefined);
+                    onProjectMutated?.();
+                    changeFocus(RUNTIME_FOCUS);
+                    window.location.hash = routeHref({ name: 'projects' });
+                    return;
+                  }
+                  // The daemon names what blocks it; the scalar details ride along.
+                  const details =
+                    result.reason === 'http' && result.details !== undefined
+                      ? ` (${Object.entries(result.details)
+                          .map(([key, value]) => `${key}: ${String(value)}`)
+                          .join(', ')})`
+                      : '';
+                  setUnregisterError(
+                    result.reason === 'http' || result.reason === 'input'
+                      ? `${result.message}${details}`
+                      : result.reason === 'transport'
+                        ? 'The daemon could not be reached. Check runtime status and try again.'
+                        : 'The daemon returned an invalid response. The project was not unregistered.',
+                  );
+                })();
+              }}
+            >
+              <p>
+                LUWI forgets <strong>{detailProject.name}</strong> and the evidence it collected —
+                sessions, leases, messages, usage, git observations, packages, findings. Nothing on
+                disk changes: the project's files and its <code>.luwi</code> directory stay exactly
+                as they are. The daemon refuses while a live session, a held lease, a live
+                coordinator or a message in flight still points at the project.
+              </p>
+              {unregisterError === undefined ? null : (
+                <p className="outcome outcome--bad" role="alert">
+                  {unregisterError}
+                </p>
+              )}
+            </ConfirmDialog>
           )}
           <ProjectDetail
             snapshot={snapshot}

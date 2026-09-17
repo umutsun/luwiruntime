@@ -235,6 +235,37 @@ async function request<Output>(
   return parser.parse(body);
 }
 
+/** A request whose success is `204` with no body; anything else is the daemon's named error. */
+async function noContentRequest(
+  dependencies: CliDependencies,
+  base: string,
+  path: string,
+  init?: FetchInitLike,
+): Promise<void> {
+  const response = await dependencies.fetch(endpoint(base, path), init);
+  if (response.status === 204) return;
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  const parsed = publicErrorResponseSchema.safeParse(body);
+  if (parsed.success) {
+    throw new ApplicationError(
+      parsed.data.error.code,
+      parsed.data.error.message,
+      response.status,
+      parsed.data.error.details,
+    );
+  }
+  throw new ApplicationError(
+    'DAEMON_REQUEST_FAILED',
+    `Daemon request failed with status ${response.status}`,
+    response.status,
+  );
+}
+
 async function boundedRequest<Output>(
   dependencies: CliDependencies,
   base: string,
@@ -2031,6 +2062,31 @@ export function createCli(dependencies: CliDependencies): Command {
           projectResponseSchema,
         ),
       );
+    });
+  projects
+    .command('unregister <projectId>')
+    .description(
+      'Forget a registered project and the evidence LUWI collected about it; its files and .luwi stay',
+    )
+    .option('--yes', 'Confirm the unregister')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (projectId: string, options: { yes?: boolean; url: string }) => {
+      const path = `/api/v1/projects/${encodeURIComponent(projectId)}`;
+      const project = await request(dependencies, options.url, path, projectResponseSchema);
+      if (options.yes !== true) {
+        // The `reset` precedent: show what would go, and stop.
+        printJson(dependencies, { project, keeps: ['files', '.luwi'], confirmWith: '--yes' });
+        throw new ApplicationError(
+          'CLI_CONFIRMATION_REQUIRED',
+          'Re-run with --yes to unregister this project. Its files and .luwi directory are never touched.',
+          400,
+        );
+      }
+      await noContentRequest(dependencies, options.url, path, {
+        method: 'DELETE',
+        headers: { accept: 'application/json' },
+      });
+      printJson(dependencies, { unregistered: projectId });
     });
 
   const agents = registerControlPlaneCli(program, projects, dependencies);

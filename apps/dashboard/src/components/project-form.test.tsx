@@ -26,6 +26,7 @@ function mutations(result: ProjectMutationResult): ProjectMutations & {
   return {
     register: vi.fn().mockResolvedValue(result),
     update: vi.fn().mockResolvedValue(result),
+    remove: vi.fn(),
   };
 }
 
@@ -132,6 +133,7 @@ describe('ProjectForm', () => {
         .fn()
         .mockReturnValue(new Promise<ProjectMutationResult>((done) => (resolve = done))),
       update: vi.fn(),
+      remove: vi.fn(),
     };
     render(
       <ProjectForm

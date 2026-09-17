@@ -21,6 +21,42 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe('project mutations', () => {
+  it("unregisters a project through DELETE and reads a refusal in the daemon's words", async () => {
+    const gone = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    await expect(
+      createProjectMutations(gone as unknown as typeof fetch).remove('project-1'),
+    ).resolves.toEqual({ state: 'ok', httpStatus: 204 });
+    const [path, init] = gone.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe('/api/v1/projects/project-1');
+    expect(init.method).toBe('DELETE');
+    expect(init.body).toBeUndefined();
+
+    const busy = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+            message: 'The project still has sessions that are not terminal.',
+            details: { count: 1, sessions: 's-1' },
+          },
+        },
+        409,
+      ),
+    );
+    await expect(
+      createProjectMutations(busy as unknown as typeof fetch).remove('project-1'),
+    ).resolves.toMatchObject({
+      state: 'failed',
+      reason: 'http',
+      httpStatus: 409,
+      code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+      details: { count: 1, sessions: 's-1' },
+    });
+    await expect(
+      createProjectMutations(busy as unknown as typeof fetch).remove(' '),
+    ).resolves.toMatchObject({ state: 'failed', reason: 'input' });
+  });
+
   it('registers a project with the bounded JSON body the daemon expects', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(project, 201));
     const mutations = createProjectMutations(fetchImpl as unknown as typeof fetch);

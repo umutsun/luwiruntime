@@ -333,7 +333,8 @@ function day(timestamp: string): string {
   return timestamp.slice(0, 10);
 }
 
-function sourceEventIdentity(value: string): string {
+/** The source-event index key part; shared with the project purge so it removes the same key ingest wrote. */
+export function sourceEventIdentity(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
 

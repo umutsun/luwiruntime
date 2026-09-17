@@ -400,6 +400,21 @@ daemon, the heartbeat and inbox-claim routes log at `warn`, so a healthy poll no
 lines per request into `daemon.log`, and `LUWI_GRAPHIFY_OUTPUT_PATH` names where graphify's
 `graph.json` is read inside each project — relative, and kept inside the project.
 
+**Unregistering a project:** `DELETE /api/v1/projects/:projectId`, `luwi project unregister <id>
+--yes`, and "Unregister…" in the dashboard's project drawer make the registry forget a project and
+the evidence LUWI collected about it — sessions, leases, messages, usage and its project- and
+session-scoped counters, git observations and commits, attributions, file-change observations,
+packages, technologies, context contributions, findings and proposals, the project's bindings and
+capabilities, and the coordinator role — while the project's files and its `.luwi` directory stay
+exactly as they are. The daemon refuses, naming what blocks it, while a session is not terminal, a
+lease is held, a coordinator is live or a message is in flight; there is no force. The canonical
+manifest is untracked first, so a restart cannot re-register the project; the leaves go in
+re-runnable batches that read every blocker before writing anything; and one Function ends it
+atomically, refusing if a session registered in between, and appends `project.unregistered` to the
+global stream only. The operational graph heals at its next rebuild; native bindings, released
+lease records and the agent- and workspace-scoped counters are left alone; and the folder can be
+registered again at once.
+
 ## Architecture and security
 
 Redis is the only runtime datastore. It is the operational database, durable event bus,

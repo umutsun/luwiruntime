@@ -1278,8 +1278,14 @@ logged the heartbeat and inbox-claim routes at warn, made graphify's output path
 (`LUWI_GRAPHIFY_OUTPUT_PATH`, relative and inside the project), and added
 `GET /api/v1/projects/discover?root=` — one directory level, read-only, the CLI's discovery moved to
 `@luwi/runtime` so daemon and CLI share it — behind a "Scan a folder" flow that registers each ticked
-directory through the existing `POST /projects`. Nothing there deletes a project or writes outside
-the four allowlisted dashboard modules.
+directory through the existing `POST /projects`. Nothing there writes outside the four allowlisted
+dashboard modules. F3 then added `DELETE /api/v1/projects/:projectId` (`luwi project unregister
+--yes`, "Unregister…" in the project drawer): unregister only, never a file; refused with the
+blocker named while a session is not terminal, a lease is held, a coordinator is live or a message
+is in flight; the canonical manifest is untracked before Redis so a restart cannot re-register the
+project; the leaves are purged in re-runnable batches by `createProjectPurge`; and
+`luwi_project_unregister_v1` ends it atomically — refusing while the project's session set still has
+a member — appending `project.unregistered` to the global stream only (library version still 12).
 
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers

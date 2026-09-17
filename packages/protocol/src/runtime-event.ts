@@ -9,6 +9,7 @@ export const runtimeEventTypeSchema = z.enum([
   'runtime.stopping',
   'project.registered',
   'project.updated',
+  'project.unregistered',
   'session.registered',
   'session.heartbeat',
   'session.status.changed',

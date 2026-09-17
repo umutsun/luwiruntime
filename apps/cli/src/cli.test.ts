@@ -250,6 +250,81 @@ describe('LUWI CLI', () => {
     );
   });
 
+  it('unregisters a project only with --yes, through DELETE, and relays the daemon refusal', async () => {
+    const project = {
+      id: 'project-1',
+      name: 'Alpha',
+      localPath: 'C:/work/alpha',
+      canonicalPath: 'C:/work/alpha',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    };
+    const calls: Array<{ url: string; method: string | undefined }> = [];
+    const fetch = (
+      answerDelete: () => { ok: boolean; status: number; json: () => Promise<unknown> },
+    ) =>
+      (async (url: string, init?: FetchInitLike) => {
+        calls.push({ url, method: init?.method });
+        return init?.method === 'DELETE' ? answerDelete() : response(project);
+      }) as CliDependencies['fetch'];
+    const noContent = () => ({
+      ok: true,
+      status: 204,
+      json: async () => {
+        throw new Error('no body');
+      },
+    });
+
+    let printed = '';
+    await expect(
+      runCli(['project', 'unregister', 'project-1'], {
+        fetch: fetch(noContent),
+        stdout: {
+          write: (text) => {
+            printed += text;
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'CLI_CONFIRMATION_REQUIRED' });
+    expect(JSON.parse(printed)).toMatchObject({ project, confirmWith: '--yes' });
+    expect(calls.map(({ method }) => method)).toEqual([undefined]);
+
+    printed = '';
+    await runCli(['project', 'unregister', 'project-1', '--yes'], {
+      fetch: fetch(noContent),
+      stdout: {
+        write: (text) => {
+          printed += text;
+        },
+      },
+    });
+    expect(calls.at(-1)).toEqual({
+      url: 'http://127.0.0.1:4782/api/v1/projects/project-1',
+      method: 'DELETE',
+    });
+    expect(JSON.parse(printed)).toEqual({ unregistered: 'project-1' });
+
+    await expect(
+      runCli(['project', 'unregister', 'project-1', '--yes'], {
+        fetch: fetch(() => ({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: {
+              code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+              message: 'The project still has sessions that are not terminal.',
+              details: { count: 1, sessions: 's-1' },
+            },
+          }),
+        })),
+        stdout: { write: () => undefined },
+      }),
+    ).rejects.toMatchObject({
+      code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+      details: { count: 1, sessions: 's-1' },
+    });
+  });
+
   it('sends AgentDefinition mutations only through the daemon HTTP API', async () => {
     let requestedUrl = '';
     let requestedInit: unknown;

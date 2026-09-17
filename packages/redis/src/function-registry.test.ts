@@ -5,6 +5,7 @@ import { buildFunctionLibrary, createFunctionRegistry } from './index.js';
 const productionFunctionNames = [
   'luwi_project_register_v1',
   'luwi_project_update_v1',
+  'luwi_project_unregister_v1',
   'luwi_session_register_v1',
   'luwi_session_heartbeat_v1',
   'luwi_session_status_v1',

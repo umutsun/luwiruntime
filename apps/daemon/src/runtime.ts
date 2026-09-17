@@ -15,6 +15,7 @@ import {
   createMessageRepository,
   createControlPlaneRepository,
   createIntelligenceRepository,
+  createProjectPurge,
   createRedisKeys,
   createRuntimeRepository,
   ensureRealtimeStreamGroup,
@@ -81,6 +82,7 @@ import { readGraphifyKnowledge } from './graphify-knowledge.js';
 import { createGraphifyObserver, GRAPHIFY_OUTPUT_RELATIVE_PATH } from './graphify-observer.js';
 import { createHostResourcesReader } from './host-resources.js';
 import { createProjectService } from './project-service.js';
+import { createProjectUnregisterService } from './project-unregister-service.js';
 import { createRealtimeRelay } from './realtime-relay.js';
 import { createSessionService, isVersionConflict } from './session-service.js';
 import {
@@ -812,6 +814,23 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     sessions: sessionService,
     workspaceId: config.workspaceId,
   });
+  const projectUnregisterService = createProjectUnregisterService({
+    repository,
+    leases: leaseRepository,
+    messages: messageRepository,
+    coordinator: coordinatorRepository,
+    purge: createProjectPurge({ client: connections.command, keys }),
+    canonicalStore,
+    // A session close schedules a background git/package scan for its project
+    // (`refreshProject`); one still running would write evidence after the
+    // project is gone, where no re-run can reach it. Wait it out, bounded.
+    awaitQuiescence: async (projectId) => {
+      for (let waited = 0; waited < 10_000 && projectRefreshes.has(projectId); waited += 100) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    },
+    workspaceId: config.workspaceId,
+  });
   const coordinatorService = createCoordinatorService({
     repository: coordinatorRepository,
     sessions: sessionService,
@@ -1217,6 +1236,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         messages: messageService,
         leases: leaseService,
         coordinator: coordinatorService,
+        projectUnregister: projectUnregisterService,
         controlPlane: controlPlaneService,
         configControl: configControlService,
         intelligence: intelligenceService,

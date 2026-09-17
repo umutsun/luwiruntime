@@ -118,6 +118,11 @@ export const SESSION_INBOX_CONSUMER_GROUP = 'luwi-session-inbox-v1';
 
 const safeKeyPartPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
+/** Whether an identifier read back from Redis could ever have named a key this module built. */
+export function isSafeKeyPart(value: string): boolean {
+  return safeKeyPartPattern.test(value);
+}
+
 function keyPart(value: string): string {
   if (!safeKeyPartPattern.test(value)) {
     throw new Error('Unsafe Redis key identifier');

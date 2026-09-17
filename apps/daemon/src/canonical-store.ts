@@ -64,6 +64,8 @@ export type CanonicalControlPlaneState = {
 export interface CanonicalStore {
   readonly globalRoot: string;
   trackProject(project: Project): Promise<void>;
+  /** The mirror of `trackProject`: a project unregistered from the runtime must leave the manifest too, or the next start re-registers it. Idempotent. */
+  untrackProject(projectId: string): Promise<void>;
   loadTrackedProjects(): Promise<Project[]>;
   loadControlPlaneState(): Promise<CanonicalControlPlaneState>;
   writeAgent(agent: AgentDefinition): Promise<CanonicalManifest<AgentDefinition>>;
@@ -422,6 +424,13 @@ export function createCanonicalStore(options: CanonicalStoreOptions): CanonicalS
       await writeManifest(rootManifestPath, 'luwi-root', 'global', {
         projects: projects.sort((left, right) => left.id.localeCompare(right.id)),
       });
+    },
+
+    async untrackProject(projectId) {
+      const projects = await readTrackedProjects();
+      const remaining = projects.filter(({ id }) => id !== projectId);
+      if (remaining.length === projects.length) return;
+      await writeManifest(rootManifestPath, 'luwi-root', 'global', { projects: remaining });
     },
 
     async loadControlPlaneState() {

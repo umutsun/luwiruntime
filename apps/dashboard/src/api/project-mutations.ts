@@ -44,6 +44,24 @@ export type ProjectMutationResult =
   | { state: 'failed'; reason: 'transport' }
   | { state: 'failed'; reason: 'invalid'; httpStatus: number };
 
+/**
+ * The outcome of an unregister (F3). `204` carries no record; a `409` carries
+ * the daemon's reason and its scalar `details` (which sessions, leases or
+ * messages still block it), shown to the reader as they are.
+ */
+export type ProjectRemoveResult =
+  | { state: 'ok'; httpStatus: 204 }
+  | {
+      state: 'failed';
+      reason: 'input' | 'http';
+      code: string;
+      message: string;
+      httpStatus?: number;
+      details?: Record<string, unknown>;
+    }
+  | { state: 'failed'; reason: 'transport' }
+  | { state: 'failed'; reason: 'invalid'; httpStatus: number };
+
 const inputFailure: ProjectMutationResult = {
   state: 'failed',
   reason: 'input',
@@ -118,6 +136,51 @@ export function createProjectMutations(fetchImpl: typeof fetch = fetch) {
       });
       if (!request.success || projectId.trim() === '') return inputFailure;
       return send(`/api/v1/projects/${encodeURIComponent(projectId)}`, 'PATCH', request.data);
+    },
+
+    /**
+     * Unregister (F3): the registry forgets the project and the evidence LUWI
+     * collected about it; nothing on disk changes. The daemon answers `204`, or
+     * a named `409` while anything live still points at the project.
+     */
+    async remove(projectId: string): Promise<ProjectRemoveResult> {
+      if (projectId.trim() === '') {
+        return {
+          state: 'failed',
+          reason: 'input',
+          code: 'REQUEST_VALIDATION_FAILED',
+          message: 'A project id is required.',
+        };
+      }
+      let response: Response;
+      try {
+        response = await fetchImpl(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+          method: 'DELETE',
+          headers: { accept: 'application/json' },
+        });
+      } catch {
+        return { state: 'failed', reason: 'transport' };
+      }
+      if (response.status === 204) return { state: 'ok', httpStatus: 204 };
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        return { state: 'failed', reason: 'invalid', httpStatus: response.status };
+      }
+      const error = publicErrorResponseSchema.safeParse(value);
+      return error.success
+        ? {
+            state: 'failed',
+            reason: 'http',
+            httpStatus: response.status,
+            code: error.data.error.code,
+            message: error.data.error.message,
+            ...(error.data.error.details === undefined
+              ? {}
+              : { details: error.data.error.details }),
+          }
+        : { state: 'failed', reason: 'invalid', httpStatus: response.status };
     },
   };
 }

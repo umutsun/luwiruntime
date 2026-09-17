@@ -154,6 +154,7 @@ import type { CoordinatorService } from './coordinator-service.js';
 import type { MessageService } from './message-service.js';
 import type { IntelligenceService } from './intelligence-service.js';
 import type { ProjectService } from './project-service.js';
+import type { ProjectUnregisterService } from './project-unregister-service.js';
 import type { SessionService } from './session-service.js';
 import {
   type WebSocketHub,
@@ -181,6 +182,8 @@ export type BuildDaemonOptions = {
     messages?: MessageService;
     leases?: LeaseService;
     coordinator?: CoordinatorService;
+    /** Absent leaves the registry without a DELETE route (F3). */
+    projectUnregister?: ProjectUnregisterService;
     controlPlane?: ControlPlaneService;
     configControl?: ConfigControlService;
     intelligence?: IntelligenceService;
@@ -592,6 +595,17 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       const project = await withMutation(() => services.projects.update(projectId, body));
       return projectResponseSchema.parse(project);
     });
+    // Unregister only (F3): the registry and the evidence LUWI collected go; the
+    // project's files and its .luwi directory stay. Refused, with what blocks
+    // it named, while anything live still points at the project.
+    const projectUnregister = services.projectUnregister;
+    if (projectUnregister !== undefined) {
+      app.delete('/api/v1/projects/:projectId', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        await withMutation(() => projectUnregister.remove(projectId));
+        return reply.code(204).send();
+      });
+    }
     app.get('/api/v1/projects/:projectId/sessions', async (request) => {
       const { projectId } = parseRequestInput(projectParamsSchema, request.params);
       if ((await withCurrentRead(() => services.projects.get(projectId))) === null) {

@@ -226,6 +226,53 @@ describe('Phase 1 HTTP routes', () => {
     );
   });
 
+  it('unregisters a project through DELETE, answering 204, 404 and the named 409', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const remove = vi.fn(async (projectId: string) => {
+      if (projectId === 'missing') {
+        throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
+      }
+      if (projectId === 'busy') {
+        throw new ApplicationError(
+          'PROJECT_HAS_ACTIVE_SESSIONS',
+          'The project still has sessions that are not terminal.',
+          409,
+          { count: 1, sessions: 'session-1' },
+        );
+      }
+    });
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services(),
+        listEvents: async (): Promise<RealtimeEventMessage[]> => [],
+        projectUnregister: { remove },
+      },
+    });
+
+    const gone = await app.inject({ method: 'DELETE', url: '/api/v1/projects/project-1' });
+    expect(gone.statusCode).toBe(204);
+    expect(gone.body).toBe('');
+    expect(remove).toHaveBeenCalledWith('project-1');
+    expect(
+      (await app.inject({ method: 'DELETE', url: '/api/v1/projects/missing' })).statusCode,
+    ).toBe(404);
+    const busy = await app.inject({ method: 'DELETE', url: '/api/v1/projects/busy' });
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json()).toEqual({
+      error: {
+        code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+        message: 'The project still has sessions that are not terminal.',
+        details: { count: 1, sessions: 'session-1' },
+      },
+    });
+  });
+
   it('edits a project through PATCH and refuses a body that names the path or nothing at all', async () => {
     const readiness = createRuntimeReadiness('recovering');
     readiness.transitionTo('ready');

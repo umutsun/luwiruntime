@@ -116,7 +116,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (33 registered Functions since ADR 0035 — the library version is still 12, so a daemon started before a new Function needs one restart to load it) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (34 registered Functions since F3's `luwi_project_unregister_v1` — the library version is still 12, so a daemon started before a new Function needs one restart to load it; the daemon started 2026-09-17 holds 33) is already loaded on the server.
 
 ## Tools and shells
 
@@ -505,6 +505,33 @@ and inbox-claim routes log at `warn` (the in-run driver of the 979 MB `daemon.lo
 folder picker; each ticked folder registered through the existing `project-mutations.register`, so
 no fifth write module). Until that restart the live daemon answers the discover route with 404 and
 the panel shows the daemon's words.
+
+**F3 (2026-09-17) added project unregister** — `DELETE /api/v1/projects/:projectId`, `luwi project
+unregister <id> --yes`, "Unregister…" in the project drawer behind a `ConfirmDialog`; spec at
+`docs/superpowers/specs/2026-09-17-project-unregister-design.md`. Unregister only: the files and
+`.luwi` stay. `project-unregister-service.ts` refuses (409, scalar `details`) while a session is not
+terminal, a lease is held, a coordinator is live or a message is in flight — **no force** — then
+untracks the manifest first (`canonicalStore.untrackProject`; the opposite order lets a restart
+re-register the project under a new id), purges the leaves through `packages/redis/src/project-purge.ts`
+(plain commands, re-runnable, every key from `redis-keys.ts`), and ends with
+`luwi_project_unregister_v1` (7 declared keys; refuses `raced` while the project's session set has a
+member; appends `project.unregistered` to the global stream only). Three traps measured while
+building it: `ApplicationError.details` admits scalars only — blocker id lists travel as one
+comma-separated string; a one-pass purge that checked each session as it went deleted the first
+terminal session before refusing on the second (the db15 zero-residue test caught it) — every
+family now reads all its blockers before writing anything; and the usage metric counters are
+**not** all aggregate — `metrics:project:<id>:…` and `metrics:session:<id>:…` (all-time and per
+`day:`) carry the id in the key and go with the project, while agent- and workspace-scoped ones
+stay. Released lease records were never indexed by project and stay (a retention concern).
+The §7 review then added four guards: message hashes are **field-based** (`message_request` HSETs
+them; a `json` read is always null), so the purge reads them with `HMGET` and refuses on a
+non-terminal `state`; a blocker the purge meets after the untrack re-tracks the manifest and
+answers the same 409 (not a 500 with the project silently untracked); the service waits, bounded
+(10 s), for the background project refresh a session close schedules, so no scan writes evidence
+after the project is gone; and an index member that fails `isSafeKeyPart` is removed from its index
+and counted (`unsafeMembersDropped`) rather than interpolated into a key. Only `luwi_v1` stays
+loaded on this server: integration runs load a per-run `luwi_test_run_<id>_v1` library and delete
+it at teardown, so the live daemon keeps the Function set it started with.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.
