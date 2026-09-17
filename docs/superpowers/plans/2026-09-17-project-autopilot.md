@@ -54,13 +54,13 @@ nowhere in this tree, and the only known LuwiBot fact is the dashboard's WebSock
 
 ### Task 0.2: Decide the coordinator run shape (owner gate G1)
 
-- [ ] If Task 0.1 found a headless one-shot: the coordinator runs as `luwi session bridge native
-  hermes -- <its permission args>` — one headless run per inbox item (response or notice), ADR 0031's
-      proven shape, crash-safe, permissions on the command line. `hermes` joins `NativeAgentName` with
-      its argv shape measured, not guessed.
-- [ ] Otherwise: the coordinator runs long-lived, bound through a session file (`session attach
-  --session-out` or an equivalent hook), and its own loop polls `luwi_inbox_next` (block ≤ 30 s) plus
-      its own scheduler as the periodic wake.
+- [ ] If Task 0.1 found a headless one-shot: the coordinator runs as
+      `luwi session bridge native hermes -- <its permission args>` — one headless run per inbox item
+      (response or notice), ADR 0031's proven shape, crash-safe, permissions on the command line.
+      `hermes` joins `NativeAgentName` with its argv shape measured, not guessed.
+- [ ] Otherwise: the coordinator runs long-lived, bound through a session file
+      (`session attach --session-out` or an equivalent hook), and its own loop polls
+      `luwi_inbox_next` (block ≤ 30 s) plus its own scheduler as the periodic wake.
 - [ ] Record the decision in the measurement spec and in ADR 0035's Consequences before Phase 1.
 
 ### Task 0.3: Owner gates recorded in ADR 0035
@@ -107,8 +107,9 @@ or `autopilot`, the ticker shows it, and the coordinator's inbox receives a `not
 - [ ] `packages/runtime/src/message-routing.ts`: factor the candidate ranking into
       `rankAgentSessions({ sessions, projectId, agentId })`; `selectMessageTarget` calls it. Test: order
       identical to today for every existing case (the PM-session tests stay byte-identical).
-- [ ] `packages/runtime/src/message-policy.ts`: `coordinatorInstructionRefused({ policy, sourceAgentId,
-  kind, origin })` — `true` only for `instruction` from the coordinator with `origin !== 'task'`.
+- [ ] `packages/runtime/src/message-policy.ts`:
+      `coordinatorInstructionRefused({ policy, sourceAgentId, kind, origin })` — `true` only for
+      `instruction` from the coordinator with `origin !== 'task'`.
 
 ### Task 1.3: Redis (read §7 first; `redis-invariants` before completing)
 
