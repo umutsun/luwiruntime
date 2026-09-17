@@ -857,6 +857,15 @@ describe('flow layout', () => {
     expect(layout.statuses.find((node) => node.key === 'status:blocked')?.dim).toBe(true);
     expect(layout.agents.find((node) => node.key === 'agent:a2')?.dim).toBe(true);
   });
+
+  it('tallies a project card by tone, severity-first, and leaves a quiet project empty', () => {
+    const layout = layoutFlow(overview(), RUNTIME_FOCUS);
+    expect(layout.projects.find((node) => node.key === 'project:p1')?.tones).toEqual([
+      { tone: 'blocked', count: 1 },
+      { tone: 'working', count: 1 },
+    ]);
+    expect(layout.projects.find((node) => node.key === 'project:p3')?.tones).toEqual([]);
+  });
 });
 
 describe('status focus drill-down', () => {

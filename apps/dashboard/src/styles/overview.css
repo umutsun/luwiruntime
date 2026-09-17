@@ -645,6 +645,38 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Project card body: name over a tone breakdown, using the tall node's height. */
+.flow-node__pbody {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1h);
+  overflow: hidden;
+}
+.flow-node__tones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2h);
+}
+.flow-node__tone {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.flow-node__tone-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone-fill);
+}
+.flow-node__tone-word {
+  opacity: 0.7;
+}
 .flow-node__spark {
   display: flex;
   height: 14px;

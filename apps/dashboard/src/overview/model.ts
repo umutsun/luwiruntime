@@ -1397,6 +1397,8 @@ export type FlowNode = {
   quiet: boolean;
   tone?: Tone;
   buckets?: number[];
+  /** Project node only: its active sessions counted by tone, severity-first. */
+  tones?: Array<{ tone: Tone; count: number }>;
 };
 
 export type FlowRibbon = {
@@ -1422,6 +1424,18 @@ function bezier(x1: number, y1: number, x2: number, y2: number): string {
   const mid = (x1 + x2) / 2;
   const f = (value: number) => value.toFixed(1);
   return `M${f(x1)} ${f(y1)} C${f(mid)} ${f(y1)} ${f(mid)} ${f(y2)} ${f(x2)} ${f(y2)}`;
+}
+
+/** Severity-first so a project's blocked and working sessions read before its idle ones. */
+const FLOW_TONE_ORDER: readonly Tone[] = ['blocked', 'working', 'waiting', 'quiet', 'done'];
+/** A project's active sessions counted by tone, dropping the empty tones. */
+function flowToneTally(sessions: readonly OverviewSession[]): Array<{ tone: Tone; count: number }> {
+  const counts = new Map<Tone, number>();
+  for (const session of sessions) counts.set(session.tone, (counts.get(session.tone) ?? 0) + 1);
+  return FLOW_TONE_ORDER.filter((tone) => counts.has(tone)).map((tone) => ({
+    tone,
+    count: counts.get(tone) ?? 0,
+  }));
 }
 
 export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
@@ -1498,6 +1512,7 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
       dim: anySelection && !selected && !project.sessions.some(related),
       quiet: project.sessions.length === 0,
       buckets: project.buckets,
+      tones: flowToneTally(project.sessions),
     };
   });
 
