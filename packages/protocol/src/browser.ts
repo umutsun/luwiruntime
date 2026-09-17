@@ -47,6 +47,7 @@ export {
 } from './message.js';
 export {
   projectCollectionResponseSchema,
+  projectDiscoveryResponseSchema,
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectUpdateRequestSchema,

@@ -14,6 +14,7 @@ import { createMessageMutations, type MessageMutations } from './api/message-mut
 import { createProjectMutations, type ProjectMutations } from './api/project-mutations.js';
 import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
 import { loadRuntimeResources } from './api/runtime-resources.js';
+import { loadProjectDiscovery } from './api/project-discovery.js';
 import { loadSessionUsage } from './api/session-usage.js';
 import {
   intelligenceResourceKeys,
@@ -572,6 +573,7 @@ function DashboardRoute() {
       loadResources={fetchResources}
       loadSessionUsage={fetchSessionUsage}
       loadKnowledge={fetchKnowledge}
+      loadProjectDiscovery={loadProjectDiscovery}
       onRetry={retry}
       onActivityStateChange={(next) => {
         activityRef.current = next;

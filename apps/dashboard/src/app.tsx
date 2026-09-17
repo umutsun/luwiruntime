@@ -16,9 +16,11 @@ import type { ProjectMutations } from './api/project-mutations.js';
 import type { ProjectScopeResources } from './api/project-scope.js';
 import type { PulseFreshness } from './api/refresh-state.js';
 import type { RuntimeResources } from './api/runtime-resources.js';
+import type { ProjectDiscoveryResult } from './api/project-discovery.js';
 import type { SessionUsage } from './api/session-usage.js';
 import { BrandMark } from './components/brand-mark.js';
 import { DetailDrawer } from './components/detail-drawer.js';
+import { ProjectDiscoveryPanel } from './components/project-discovery-panel.js';
 import { ProjectForm } from './components/project-form.js';
 import type { ResourceState } from './components/panel.js';
 import { THEME_OPTIONS, useTheme, type ThemeChoice } from './components/use-theme.js';
@@ -247,6 +249,7 @@ export function DashboardApp({
   loadResources,
   loadSessionUsage,
   loadKnowledge,
+  loadProjectDiscovery,
   onRetry,
   onActivityStateChange,
   now = wallClock,
@@ -308,6 +311,11 @@ export function DashboardApp({
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<KnowledgeGraph>>;
+  /** Lists one directory level under a root for "Scan a folder"; absent hides that menu item. */
+  loadProjectDiscovery?: (
+    root: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ProjectDiscoveryResult>;
   onRetry: () => void;
   onActivityStateChange?: (state: ActivityState) => void;
   /** Injectable clock, so tests can pin the header clock and every age. */
@@ -318,6 +326,7 @@ export function DashboardApp({
   const [focus, setFocus] = useState<Focus>(() => focusOfRoute(parseRoute(window.location.hash)));
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<string>();
   // Leaving the in-place form returns focus to the control that opened it, so
   // a keyboard reader is not dropped on the body behind the drawer.
@@ -828,6 +837,19 @@ export function DashboardApp({
                     <span className="menu__glyph">+</span>
                     <span className="menu__label">Register a project</span>
                   </button>
+                  {loadProjectDiscovery === undefined ? null : (
+                    <button
+                      type="button"
+                      className="menu__item"
+                      onClick={() => {
+                        setProjectMenuOpen(false);
+                        setDiscovering(true);
+                      }}
+                    >
+                      <span className="menu__glyph">/</span>
+                      <span className="menu__label">Scan a folder…</span>
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -919,6 +941,26 @@ export function DashboardApp({
               onProjectMutated?.();
               // A project just registered is what the reader wants to look at next.
               changeFocus({ kind: 'project', id: project.id });
+            }}
+          />
+        </DetailDrawer>
+      ) : discovering && projectMutations !== undefined && loadProjectDiscovery !== undefined ? (
+        <DetailDrawer
+          eyebrow="Projects"
+          title="Scan a folder"
+          onClose={() => setDiscovering(false)}
+        >
+          <ProjectDiscoveryPanel
+            load={loadProjectDiscovery}
+            mutations={projectMutations}
+            onCancel={() => setDiscovering(false)}
+            onRegistered={(ids) => {
+              if (ids.length === 0) return;
+              onProjectMutated?.();
+              // The panel stays open so each row's outcome is readable; the
+              // focus follows the first project just registered.
+              const first = ids[0];
+              if (first !== undefined) changeFocus({ kind: 'project', id: first });
             }}
           />
         </DetailDrawer>

@@ -155,6 +155,77 @@ describe('Phase 1 HTTP routes', () => {
     ).toEqual({ sessions: [session] });
   });
 
+  it('discovers one directory level under a root, read-only, marking what is registered', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const seen: unknown[] = [];
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services(),
+        listEvents: async (): Promise<RealtimeEventMessage[]> => [],
+      },
+      projectDiscovery: {
+        createPlan: async (input) => {
+          seen.push(input);
+          const under = (name: string) => `${input.root}/${name}`;
+          return {
+            root: input.root,
+            selected: [
+              {
+                directoryName: 'luwi',
+                displayName: 'LUWI Runtime',
+                localPath: under('luwi'),
+                canonicalPath: under('luwi'),
+                existingProjectId: 'project-1',
+              },
+              {
+                directoryName: 'new-app',
+                displayName: 'new-app',
+                localPath: under('new-app'),
+                canonicalPath: under('new-app'),
+              },
+            ],
+            excluded: [],
+            invalid: [
+              {
+                directoryName: 'link',
+                displayName: 'link',
+                localPath: under('link'),
+                canonicalPath: '/elsewhere/link',
+                reason: 'outside_root',
+              },
+            ],
+          };
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/projects/discover?root=C:/workspace',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      root: 'C:/workspace',
+      candidates: [
+        expect.objectContaining({ directoryName: 'luwi', existingProjectId: 'project-1' }),
+        expect.objectContaining({ directoryName: 'new-app' }),
+        expect.objectContaining({ directoryName: 'link', reason: 'outside_root' }),
+      ],
+      truncated: false,
+    });
+    // The runtime's discovery decides; the route only names the root and the registry.
+    expect(seen[0]).toMatchObject({ root: 'C:/workspace', excludes: [], names: {} });
+    expect((await app.inject({ method: 'GET', url: '/api/v1/projects/discover' })).statusCode).toBe(
+      400,
+    );
+  });
+
   it('edits a project through PATCH and refuses a body that names the path or nothing at all', async () => {
     const readiness = createRuntimeReadiness('recovering');
     readiness.transitionTo('ready');

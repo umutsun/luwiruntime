@@ -45,7 +45,11 @@ import {
 } from '@luwi/adapters';
 import {
   ApplicationError,
+  createProjectDiscoveryService,
   createSessionBootstrap,
+  type ProjectCandidate,
+  type ProjectDiscoveryPlan,
+  type ProjectDiscoveryService,
   type SessionBootstrapChange,
 } from '@luwi/runtime';
 import { Command } from 'commander';
@@ -85,13 +89,6 @@ import {
   type LifecycleStatus,
   type RuntimeResetResult,
 } from './lifecycle.js';
-import {
-  createProjectDiscoveryService,
-  type ProjectCandidate,
-  type ProjectDiscoveryPlan,
-  type ProjectDiscoveryService,
-} from './project-discovery.js';
-
 export type FetchInitLike = {
   method?: string;
   headers?: Record<string, string>;

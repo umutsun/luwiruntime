@@ -6,6 +6,15 @@ export { createRuntimeState, getRuntimeUptimeMs } from './runtime-state.js';
 export type { CreateRuntimeStateInput, RuntimeState } from './runtime-state.js';
 export { canonicalizeProjectPath, canonicalizeWorkingDirectory } from './project-path.js';
 export type { CanonicalPath, PathDependencies } from './project-path.js';
+export { createProjectDiscoveryService } from './project-discovery.js';
+export type {
+  ProjectCandidate,
+  ProjectDiscoveryEntry,
+  ProjectDiscoveryFileSystem,
+  ProjectDiscoveryPlan,
+  ProjectDiscoveryService,
+  ProjectDiscoveryServiceOptions,
+} from './project-discovery.js';
 export { evaluateSessionStatusTransition } from './session-status.js';
 export type { SessionStatusTransitionResult } from './session-status.js';
 export {

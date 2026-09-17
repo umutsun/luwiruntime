@@ -14,6 +14,8 @@ export type {
 } from './runtime-event.js';
 export {
   projectCollectionResponseSchema,
+  projectDiscoveryCandidateSchema,
+  projectDiscoveryResponseSchema,
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectSchema,
@@ -23,6 +25,8 @@ export {
 export type {
   Project,
   ProjectCollectionResponse,
+  ProjectDiscoveryCandidate,
+  ProjectDiscoveryResponse,
   ProjectRegistrationRequest,
   ProjectUpdateRequest,
 } from './project.js';

@@ -1,7 +1,17 @@
 import type { Project } from '@luwi/protocol';
-import { ApplicationError } from '@luwi/runtime';
 import { readdir, realpath } from 'node:fs/promises';
 import * as nodePath from 'node:path';
+
+import { ApplicationError } from './application-error.js';
+
+/**
+ * One-level project discovery: the directories directly under a root, each
+ * canonicalised, kept inside the root, and matched against the registered
+ * projects. Shared by the CLI's `project discover` and the daemon's
+ * `GET /api/v1/projects/discover` (the dashboard's "Scan a folder"), which is
+ * why it lives here rather than in either app. It reads directory names and
+ * nothing else — no file inside a candidate is opened.
+ */
 
 export type ProjectDiscoveryEntry = {
   name: string;
@@ -134,7 +144,16 @@ export function createProjectDiscoveryService(
         );
       }
       const { exclusions, displayNames } = validateOptions(input.excludes, input.names, platform);
-      const root = await fileSystem.canonicalize(input.root);
+      let root: string;
+      try {
+        root = await fileSystem.canonicalize(input.root);
+      } catch {
+        throw new ApplicationError(
+          'PROJECT_DISCOVERY_ROOT_INVALID',
+          'The project discovery root could not be read.',
+          400,
+        );
+      }
       const existingByPath = new Map(
         input.existingProjects.map((project) => [pathKey(project.canonicalPath), project]),
       );

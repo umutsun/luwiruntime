@@ -79,6 +79,7 @@ import {
   sessionNativeRefResponseSchema,
   type HealthResponse,
   projectCollectionResponseSchema,
+  projectDiscoveryResponseSchema,
   projectRegistrationRequestSchema,
   projectUpdateRequestSchema,
   projectResponseSchema,
@@ -127,10 +128,12 @@ import {
 import { RedisRepositoryError, type RedisGateway } from '@luwi/redis';
 import {
   ApplicationError,
+  createProjectDiscoveryService,
   createRuntimeLifecycleEvent,
   createRuntimeState,
   getRuntimeUptimeMs,
   toPublicError,
+  type ProjectDiscoveryService,
   type RuntimeReadiness,
 } from '@luwi/runtime';
 import websocketPlugin from '@fastify/websocket';
@@ -196,6 +199,8 @@ export type BuildDaemonOptions = {
   resources?: () => Promise<RuntimeResourcesResponse>;
   /** Filesystem read of graphify's output; defaults to `readGraphifyKnowledge` so tests can stub it. */
   readKnowledgeGraph?: (localPath: string) => Promise<KnowledgeDocument | null>;
+  /** One-level directory discovery for `GET /projects/discover`; defaults to the runtime's, so tests can stub it. */
+  projectDiscovery?: ProjectDiscoveryService;
   lifecycle?: {
     token: string;
     requestStop: () => Promise<void>;
@@ -482,6 +487,30 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         .code(201)
         .header('Location', `/api/v1/projects/${project.id}`)
         .send(projectResponseSchema.parse(project));
+    });
+    // One directory level under a root the loopback caller names, read-only —
+    // the dashboard's "Scan a folder" and the CLI's `project discover` share
+    // the runtime's discovery. Registration stays `POST /projects`, one per
+    // candidate, so nothing here writes.
+    const MAX_DISCOVERY_CANDIDATES = 500;
+    const discoveryQuerySchema = z.strictObject({ root: z.string().trim().min(1).max(4096) });
+    const projectDiscovery = options.projectDiscovery ?? createProjectDiscoveryService();
+    app.get('/api/v1/projects/discover', async (request) => {
+      const { root } = parseRequestInput(discoveryQuerySchema, request.query);
+      const plan = await withCurrentRead(async () =>
+        projectDiscovery.createPlan({
+          root,
+          excludes: [],
+          names: {},
+          existingProjects: await services.projects.list(),
+        }),
+      );
+      const candidates = [...plan.selected, ...plan.invalid];
+      return projectDiscoveryResponseSchema.parse({
+        root: plan.root,
+        candidates: candidates.slice(0, MAX_DISCOVERY_CANDIDATES),
+        truncated: candidates.length > MAX_DISCOVERY_CANDIDATES,
+      });
     });
     app.get('/api/v1/projects/:projectId', async (request) => {
       const { projectId } = parseRequestInput(projectParamsSchema, request.params);
