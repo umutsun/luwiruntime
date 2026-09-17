@@ -576,7 +576,12 @@ added there or `getMessage` silently drops it while the Function's own return ca
 integration run started while `prettier --write` or `tsc -b` was still touching a source can
 transform a stale module (a "missing field" that a re-run does not reproduce); and the message
 integration fixtures share one idempotency-key namespace across tests, so a new test must pick
-hashes no later test reuses (`'d'.repeat(64)` was taken) or the later test reads `existing`.
+hashes no later test reuses (`'d'.repeat(64)` was taken) or the later test reads `existing`. **And
+one found by the deploy check:** `POST /api/v1/messages` parsed its body with a raw
+`schema.parse`, so every malformed ask (blank source, unknown kind, blank `retryOf`) answered
+`500 INTERNAL_ERROR` — an agent reads that as "daemon down". A route body goes through
+`parseRequestInput` (→ `400 REQUEST_VALIDATION_FAILED`), never a raw parse; `app-phase2.test.ts`
+pins it.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.
