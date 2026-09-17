@@ -30,6 +30,9 @@ export {
   usageSummarySchema,
 } from './intelligence.js';
 export { leaseCollectionSchema } from './lease.js';
+export { autopilotCollectionSchema, autopilotRecordSchema } from './autopilot.js';
+export { goalCollectionSchema, goalSchema } from './goal.js';
+export { taskCollectionSchema, taskSchema } from './task.js';
 export {
   MESSAGE_DEFAULT_TIMEOUT_MS,
   MESSAGE_MAX_CONTENT_BYTES,

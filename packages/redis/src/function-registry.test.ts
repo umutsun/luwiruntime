@@ -33,6 +33,11 @@ const productionFunctionNames = [
   'luwi_graph_rebuild_transition_v1',
   'luwi_intelligence_batch_transition_v1',
   'luwi_graph_projection_failure_v1',
+  'luwi_autopilot_put_v1',
+  'luwi_goal_write_v1',
+  'luwi_task_write_v1',
+  'luwi_task_dispatch_v1',
+  'luwi_inbox_notice_v1',
   'luwi_function_version_v1',
 ];
 
@@ -41,7 +46,7 @@ describe('Redis Function registry', () => {
     const registry = createFunctionRegistry();
 
     expect(registry.libraryName).toBe('luwi_v1');
-    expect(registry.version).toBe(12);
+    expect(registry.version).toBe(13);
     expect(Object.values(registry.functions)).toEqual(productionFunctionNames);
   });
 

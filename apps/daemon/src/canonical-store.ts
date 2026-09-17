@@ -12,6 +12,7 @@ import {
   projectSchema,
   projectAgentBindingSchema,
   type AgentDefinition,
+  type AutopilotPolicy,
   type CapabilityBinding,
   type CapabilityPackage,
   type CapabilityProfile,
@@ -70,6 +71,10 @@ export interface CanonicalStore {
   readAgent(agentId: string): Promise<AgentDefinition | null>;
   renderAgent(agent: AgentDefinition): Promise<{ path: string; content: string }>;
   readProjectAgentDefaults(projectRoot: string, agentId: string): Promise<Record<string, unknown>>;
+  /** The `data.autopilot` block of the project manifest, unvalidated; `undefined` when absent. */
+  readProjectAutopilotPolicy(projectRoot: string): Promise<unknown | undefined>;
+  /** Writes `data.autopilot`, keeping the manifest's other blocks (ADR 0035). */
+  writeProjectAutopilotPolicy(project: Project, policy: AutopilotPolicy): Promise<void>;
   renderProjectAgentDefaults(
     project: Project,
     agentId: string,
@@ -590,6 +595,56 @@ export function createCanonicalStore(options: CanonicalStoreOptions): CanonicalS
         );
       }
       return structuredClone(settings);
+    },
+    async readProjectAutopilotPolicy(projectRoot) {
+      const path = join(projectRoot, '.luwi', 'manifest.json');
+      const value = await readJson(path);
+      if (value === undefined) return undefined;
+      if (
+        !isRecord(value) ||
+        value['schemaVersion'] !== 1 ||
+        value['id'] !== 'project-manifest' ||
+        !isRecord(value['data']) ||
+        typeof value['contentHash'] !== 'string' ||
+        hash(value['data']) !== value['contentHash']
+      ) {
+        throw new ApplicationError(
+          'CONFIG_RECONCILIATION_REQUIRED',
+          'The project LUWI manifest failed validation.',
+          503,
+          { path },
+        );
+      }
+      return value['data']['autopilot'];
+    },
+    async writeProjectAutopilotPolicy(project, policy) {
+      const path = join(project.canonicalPath, '.luwi', 'manifest.json');
+      const current = await readJson(path);
+      let data: Record<string, unknown> = {
+        projectId: project.id,
+        canonicalPath: project.canonicalPath,
+        agentDefaults: {},
+      };
+      if (current !== undefined) {
+        if (
+          !isRecord(current) ||
+          current['schemaVersion'] !== 1 ||
+          current['id'] !== 'project-manifest' ||
+          !isRecord(current['data']) ||
+          typeof current['contentHash'] !== 'string' ||
+          hash(current['data']) !== current['contentHash']
+        ) {
+          throw new ApplicationError(
+            'CONFIG_RECONCILIATION_REQUIRED',
+            'The project LUWI manifest failed validation.',
+            503,
+            { path },
+          );
+        }
+        data = structuredClone(current['data']);
+      }
+      data['autopilot'] = structuredClone(policy);
+      await atomicJson(path, await createManifest(path, 'project-manifest', 'project', data));
     },
     async renderProjectAgentDefaults(project, agentId, settings) {
       const path = join(project.canonicalPath, '.luwi', 'manifest.json');

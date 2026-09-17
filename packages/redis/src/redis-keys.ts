@@ -110,6 +110,21 @@ export interface RedisKeys {
   nativeSessionLink(linkId: string): string;
   nativeSessionLinks(bindingId: string): string;
   sessionNativeBinding(sessionId: string): string;
+  /** Per-project autopilot record (ADR 0035): mode, policy, version. */
+  projectAutopilot(projectId: string): string;
+  /** Every project holding an autopilot record, for the list and the sweep. */
+  readonly autopilotProjects: string;
+  goal(goalId: string): string;
+  projectGoals(projectId: string): string;
+  /** Goals with a retrospective, scored by when it was written. */
+  projectRetrospectives(projectId: string): string;
+  task(taskId: string): string;
+  projectTasks(projectId: string): string;
+  /** In-flight tasks of one project: the dispatch overlap scan reads only this. */
+  projectTasksActive(projectId: string): string;
+  /** Dispatch instants for the hourly window. */
+  projectTaskDispatches(projectId: string): string;
+  goalTasks(goalId: string): string;
 }
 
 export const SESSION_INBOX_CONSUMER_GROUP = 'luwi-session-inbox-v1';
@@ -160,6 +175,7 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     optimizationProposalsIndex: `${prefix}:index:optimization:proposals`,
     optimizationEvaluationsIndex: `${prefix}:index:optimization:evaluations`,
     intelligenceEarliestObservation: `${prefix}:intelligence:earliest-observation`,
+    autopilotProjects: `${prefix}:index:autopilot:projects`,
     projectEvents: (projectId) => `${prefix}:events:project:${keyPart(projectId)}`,
     project: (projectId) => `${prefix}:project:${keyPart(projectId)}`,
     session: (sessionId) => `${prefix}:session:${keyPart(sessionId)}`,
@@ -175,6 +191,17 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     nativeSessionLink: (linkId) => `${prefix}:native-session-link:${keyPart(linkId)}`,
     nativeSessionLinks: (bindingId) => `${prefix}:index:native-session:${keyPart(bindingId)}:links`,
     sessionNativeBinding: (sessionId) => `${prefix}:index:session:${keyPart(sessionId)}:native`,
+    projectAutopilot: (projectId) => `${prefix}:project:${keyPart(projectId)}:autopilot`,
+    goal: (goalId) => `${prefix}:goal:${keyPart(goalId)}`,
+    projectGoals: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:goals`,
+    projectRetrospectives: (projectId) =>
+      `${prefix}:index:project:${keyPart(projectId)}:retrospectives`,
+    task: (taskId) => `${prefix}:task:${keyPart(taskId)}`,
+    projectTasks: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:tasks`,
+    projectTasksActive: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:tasks:active`,
+    projectTaskDispatches: (projectId) =>
+      `${prefix}:index:project:${keyPart(projectId)}:tasks:dispatches`,
+    goalTasks: (goalId) => `${prefix}:index:goal:${keyPart(goalId)}:tasks`,
     message: (messageId) => `${prefix}:message:${keyPart(messageId)}`,
     messageCorrelation: (correlationId) =>
       `${prefix}:index:message:correlation:${keyPart(correlationId)}`,

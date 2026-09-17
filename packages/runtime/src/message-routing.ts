@@ -43,32 +43,21 @@ function isDispatchWorker(session: SessionView): boolean {
   return session.metadata['bridge'] === 'native-headless';
 }
 
-export function selectMessageTarget(input: SelectMessageTargetInput): MessageTargetSelection {
-  if (input.targetSessionId !== undefined) {
-    const target = input.sessions.find((candidate) => candidate.id === input.targetSessionId);
-    if (target === undefined || !isAvailable(target)) {
-      return { status: 'unavailable', selector: input.targetSessionId };
-    }
-    if (target.projectId !== input.sourceSession.projectId) {
-      return { status: 'project_mismatch', targetSessionId: target.id };
-    }
-    return {
-      status: 'selected',
-      session: target,
-      reason: `direct target session ${target.id}`,
-    };
-  }
-
-  const targetAgentId = input.targetAgentId;
-  if (targetAgentId === undefined) {
-    return { status: 'unavailable', selector: '' };
-  }
-
-  const candidates = input.sessions
+/**
+ * The agent's selectable sessions in a project, best first. Shared by message
+ * routing and by the autopilot notice path (ADR 0035), which needs the same
+ * order without a source session.
+ */
+export function rankAgentSessions(input: {
+  sessions: readonly SessionView[];
+  projectId: string;
+  agentId: AgentId;
+}): SessionView[] {
+  return input.sessions
     .filter(
       (candidate) =>
-        candidate.agentId === targetAgentId &&
-        candidate.projectId === input.sourceSession.projectId &&
+        candidate.agentId === input.agentId &&
+        candidate.projectId === input.projectId &&
         isAvailable(candidate) &&
         // ponytail: 'starting' means no inbox reader has confirmed readiness yet, so
         // auto-routing to it guarantees a message.timed_out. A worker becomes selectable
@@ -94,6 +83,34 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
       }
       return left.id.localeCompare(right.id);
     });
+}
+
+export function selectMessageTarget(input: SelectMessageTargetInput): MessageTargetSelection {
+  if (input.targetSessionId !== undefined) {
+    const target = input.sessions.find((candidate) => candidate.id === input.targetSessionId);
+    if (target === undefined || !isAvailable(target)) {
+      return { status: 'unavailable', selector: input.targetSessionId };
+    }
+    if (target.projectId !== input.sourceSession.projectId) {
+      return { status: 'project_mismatch', targetSessionId: target.id };
+    }
+    return {
+      status: 'selected',
+      session: target,
+      reason: `direct target session ${target.id}`,
+    };
+  }
+
+  const targetAgentId = input.targetAgentId;
+  if (targetAgentId === undefined) {
+    return { status: 'unavailable', selector: '' };
+  }
+
+  const candidates = rankAgentSessions({
+    sessions: input.sessions,
+    projectId: input.sourceSession.projectId,
+    agentId: targetAgentId,
+  });
 
   const selected = candidates[0];
   if (selected === undefined) {
