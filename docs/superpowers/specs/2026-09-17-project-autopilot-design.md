@@ -81,7 +81,9 @@ worker (session bridge native) ◀───┘   ordinary `instruction` in its i
 
 Three loopback links, never merged: the dashboard talks to LuwiBot over its own WebSocket as today
 (`luwibot-chat.tsx`, unchanged), LuwiBot talks to the daemon as a bound session, and the dashboard
-talks to the daemon. The daemon never calls LuwiBot and LuwiBot never receives Redis credentials (§4).
+talks to the daemon. The daemon never calls LuwiBot and LuwiBot never receives Redis credentials (§4). The coordinator's loop — how it plans, verifies,
+adapts, escalates and remembers — is `2026-09-17-autopilot-orchestrator-design.md`; this document is
+the substrate that loop runs on.
 
 ## Autopilot record
 
@@ -200,20 +202,20 @@ Inputs: mode, policy, the task, the in-flight tasks (state, match paths, agent),
 inside the last hour, dependency states, live leases in the project, the worker agent's available
 sessions. Output, in this order of precedence:
 
-| Result                       | When                                                                                       |
-| ---------------------------- | ------------------------------------------------------------------------------------------ |
-| `denied: mode_off`           | mode is `off`                                                                              |
-| `denied: task_state`         | task is not `ready` or `approved`                                                          |
-| `denied: worker_not_allowed` | `agentId` absent, the coordinator itself, or not in the effective worker list              |
-| `denied: dependency_unmet`   | any `dependsOn` task is not `done`                                                         |
-| `gated: supervised`          | mode `supervised` and task not `approved`                                                  |
-| `gated: protected_path`      | mode `autopilot`, task not `approved`, and a task path overlaps a protected path           |
-| `denied: in_flight_limit`    | in-flight count ≥ `maxInFlight`                                                            |
-| `denied: rate_limit`         | dispatches in the last hour ≥ `maxDispatchesPerHour`                                       |
-| `denied: path_overlap`       | a task path overlaps an in-flight task's path (`leasePathsConflict` on match forms)        |
-| `denied: lease_overlap`      | a task path overlaps a lease held by a session other than a worker session of `agentId`    |
-| `denied: worker_unavailable` | no online, non-`starting` session of `agentId` in the project (`selectMessageTarget` rule) |
-| `dispatch`                   | otherwise                                                                                  |
+| Result                       | When                                                                                                                                                                                                      |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `denied: mode_off`           | mode is `off`                                                                                                                                                                                             |
+| `denied: task_state`         | task is not `ready` or `approved`                                                                                                                                                                         |
+| `denied: worker_not_allowed` | `agentId` absent, the coordinator itself, or not in the effective worker list                                                                                                                             |
+| `denied: dependency_unmet`   | any `dependsOn` task is not `done`                                                                                                                                                                        |
+| `gated: supervised`          | mode `supervised` and task not `approved` (plan approval approves every task of the plan revision in one transition; a rework or replan task is gated until its revision is approved — orchestrator spec) |
+| `gated: protected_path`      | mode `autopilot`, task not `approved`, and a task path overlaps a protected path                                                                                                                          |
+| `denied: in_flight_limit`    | in-flight count ≥ `maxInFlight`                                                                                                                                                                           |
+| `denied: rate_limit`         | dispatches in the last hour ≥ `maxDispatchesPerHour`                                                                                                                                                      |
+| `denied: path_overlap`       | a task path overlaps an in-flight task's path (`leasePathsConflict` on match forms)                                                                                                                       |
+| `denied: lease_overlap`      | a task path overlaps a lease held by a session other than a worker session of `agentId`                                                                                                                   |
+| `denied: worker_unavailable` | no online, non-`starting` session of `agentId` in the project (`selectMessageTarget` rule)                                                                                                                |
+| `dispatch`                   | otherwise                                                                                                                                                                                                 |
 
 A task with **no declared paths is treated as the whole project** (match form `''`, which prefixes
 everything): it gates on any protected path in `autopilot` and overlaps every in-flight task. An
@@ -526,12 +528,13 @@ autopilot`. Selecting `off` needs no dialog (it narrows), and the row then shows
 | Question                                                                 | Why it matters                                                                                                                                   |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | How is LuwiBot run, and is it a Hermes-based agent?                      | Names the coordinator's runtime and its docs.                                                                                                    |
-| Does it have a headless one-shot invocation (prompt in, exit when done)? | If yes, `session bridge native hermes` is the coordinator's run shape (ADR 0031, proven). If no, it runs long-lived and polls `luwi_inbox_next`. |
+| Does it have a headless one-shot invocation (prompt in, exit when done)? | If yes, the orchestrator's `native` brain adapter can run `hermes` headless per judgment; if no, judgments go over the WebSocket (`luwibot-ws`). |
 | Does it speak MCP as a client, and how is a server configured?           | It must bind `luwi-runtime` with `LUWI_SESSION_ID`/`LUWI_SESSION_FILE`.                                                                          |
 | Does it have its own scheduler?                                          | A long-lived coordinator needs a periodic wake even with an empty inbox.                                                                         |
 | What is its permission model for tools?                                  | The coordinator must be able to call the four write tools unattended.                                                                            |
 | Does it expose a stable conversation id?                                 | Whether a native reference can be declared for usage attribution (ADR 0022).                                                                     |
 | Size of real `instruction` messages today                                | Confirms the 32 KiB brief bound and the 30 000-byte headless prompt cap.                                                                         |
 
-The answers pick the run shape and decide whether `hermes` joins `NativeAgentName`; they do not
-change the runtime contract above.
+The answers pick the brain adapter and decide whether `hermes` joins `NativeAgentName`; they do not
+change the runtime contract above. The orchestrator loop itself is LUWI's — see
+`2026-09-17-autopilot-orchestrator-design.md`, which adds its own measurements.

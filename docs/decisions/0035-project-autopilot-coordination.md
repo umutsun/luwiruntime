@@ -1,4 +1,4 @@
-# ADR 0035: Per-project autopilot, a coordinator session, and a bounded task domain
+# ADR 0035: Per-project autopilot — a coordinator session, a bounded task domain, and a LUWI-owned orchestrator loop
 
 Status: Proposed  
 Date: 2026-09-17
@@ -45,6 +45,11 @@ Four facts measured from the tree shape the decision:
   drift, and the existing `ConfirmDialog` and `DetailDrawer` give the switch a place to live without a
   new page (the owner's 2026-09-15 direction: no separate pages).
 
+The owner's read of the first draft (2026-09-17) was that the orchestrator itself — how the
+coordinator plans, judges a result, recovers, remembers and knows when to ask — was thin, and asked for
+"a more agentic structure". The second half of this decision answers that; its design is
+`docs/superpowers/specs/2026-09-17-autopilot-orchestrator-design.md`.
+
 ## Decision
 
 ### Autopilot is a per-project mode the operator sets, and it is never canonical
@@ -57,9 +62,11 @@ would make the switch a fiction. The mode is deliberately **not** written to any
 a checked-out `.luwi/` directory or a restored manifest can never turn autopilot on, and `luwi reset`
 leaves every project `off`.
 
-`supervised` means the coordinator plans and proposes, and every dispatch waits for the operator's
-approval. `autopilot` means the coordinator dispatches on its own within the policy's budget, and only
-a task touching a protected path waits for approval.
+`supervised` means the orchestrator plans and proposes, and the operator approves each plan, replan
+and rework — approving a plan approves its tasks in one transition, and a task added later is gated
+until its revision is approved. `autopilot` means the orchestrator plans, dispatches, verifies, reworks
+and replans on its own within the goal's and the policy's budgets. In every mode a task touching a
+protected path waits for approval at dispatch.
 
 ### The policy is filesystem-canonical, like every other declaration of who may do what
 
@@ -85,6 +92,57 @@ The daemon runs **no loop that decides work**. Every `instruction` message still
 author. The one timer this decision adds is a reconciliation sweep on the existing retention cadence
 that finishes a dispatch interrupted by a crash and closes a task whose message went terminal while
 the inline path was not there to see it.
+
+### The orchestrator is a LUWI-owned agentic loop, and the brain is pluggable
+
+ADR 0031 already settled the shape: the runtime owns a deterministic loop around a model, and the
+model owns only the work inside one bounded call. The orchestrator is that shape one level up.
+`luwi session bridge orchestrator --project <id> --brain <luwibot-ws|claude|codex|gemini|hermes>` is
+a CLI bridge — the daemon still runs no planner — that registers the coordinator session, wakes on
+its inbox and a tick, and runs one cycle: perceive the goals, tasks, sessions and leases; compute the
+next actions with a pure `planCycle`; apply them through the same gated daemon routes the coordinator
+tools use. The brain is asked **judgments** — `plan`, `review`, `replan`, `summarize` — as bounded,
+schema-validated questions over a context LUWI assembles and caps. An invalid answer is sent back
+once with the refusals and then escalates; a decision under the goal's `minConfidence` is never
+applied; the prompt's hash and the decision are recorded, never the prompt. The brain never acts and
+never holds a pen: every repository change is a worker's. LuwiBot's existing WebSocket is one
+adapter, a headless native run is the other; the loop, its budgets and its tests are the same for
+both.
+
+### Goals are the unit of autonomy, with budgets and one escalation at a time
+
+A goal is an objective with acceptance criteria and a budget — `maxTasks`, `maxReworksPerTask`,
+`maxReplans`, `maxWallClockMs`, `minConfidence`, lowered but never raised by a session — and a
+versioned plan of tasks. It moves `proposed → planning → (plan_review) → running → verifying →
+achieved`, or parks `blocked` with exactly one concrete question the operator answers, or ends
+`failed` or `abandoned`. Tasks belong to goals; a goal is what `supervised` approves and what
+`autopilot` runs. The operator creates goals from the drawer or the CLI, and any bound session — the
+LuwiBot chat included — may create one through `luwi_create_goal`; only the operator approves,
+answers or abandons.
+
+### Verification is deterministic first, an independent reviewer second, the brain last
+
+A completed task is checked by the runtime before anyone is asked an opinion: required evidence
+present; a `git_commit` that exists in the Git observation and is attributed to the worker; the
+files the worker changed (ADR 0023 B2) inside its declared paths; leases taken; a test claim present.
+When the policy names a `reviewer`, a read-only review task goes to a different agent than the author
+— the dormant `projectRole.readOnlyReviewer` finally consumed — and its answer is evidence. Only then
+is the brain asked `review`. A worker that wrote outside its declared paths is never accepted
+automatically; that is always an escalation.
+
+### Memory is a bounded retrospective in the open
+
+When a goal ends the brain is asked to summarize, and the result — at most 8 KiB, at most 20 per
+project — is stored on the goal and fed into the next plan's context. That is the whole memory the
+runtime provides: explicit, capped, readable in the drawer, rebuildable from events. Hermes may keep
+its own; the runtime neither reads it nor depends on it.
+
+### Autonomy is a ladder; `proactive` is its own gate
+
+`off`, `supervised`, `autopilot` are decided here. A fourth level, `proactive`, in which goals may
+also come from an allowlist of LUWI's own signals — optimization findings, config drift, recurring
+verification failures — capped by `maxOpenSignalGoals` and always starting `proposed`, is designed
+alongside but approved separately (plan gate G9).
 
 ### Tasks are a bounded, event-derived coordination record — the first since leases
 
@@ -127,12 +185,13 @@ evidence; the runtime never converts a `failed` into a retry.
 
 ### Surfaces
 
-| Surface   | What it does                                                                                                                                                                                                             |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| HTTP      | `GET/PUT …/projects/:id/autopilot[/policy]`, `POST …/autopilot/mode`, `POST …/autopilot/kick`, `GET …/projects/:id/tasks`, `POST …/tasks`, `GET/PATCH …/tasks/:id`, `POST …/tasks/:id/dispatch\|approve\|reject\|cancel` |
-| MCP       | `luwi_get_autopilot`, `luwi_list_tasks`, `luwi_get_task` (reads); `luwi_create_task`, `luwi_update_task`, `luwi_dispatch_task`, `luwi_cancel_task` (coordinator-only writes); `luwi_inbox_next` learns the `notice` item |
-| CLI       | `luwi autopilot show\|policy\|mode\|kick`, `luwi task list\|show\|create\|dispatch\|approve\|reject\|cancel`                                                                                                             |
-| Dashboard | An **Autopilot** section in the project drawer: mode control behind a confirmation, coordinator presence, policy summary, the task board with approve/reject/cancel/wake; an autopilot badge on the overview             |
+| Surface      | What it does                                                                                                                                                                                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| HTTP         | `GET/PUT …/projects/:id/autopilot[/policy]`, `POST …/autopilot/mode`, `POST …/autopilot/kick`, `GET …/projects/:id/tasks`, `POST …/tasks`, `GET/PATCH …/tasks/:id`, `POST …/tasks/:id/dispatch\|approve\|reject\|cancel`                                                                   |
+| MCP          | `luwi_get_autopilot`, `luwi_list_tasks`, `luwi_get_task` (reads); `luwi_create_task`, `luwi_update_task`, `luwi_dispatch_task`, `luwi_cancel_task` (coordinator-only writes); `luwi_inbox_next` learns the `notice` item                                                                   |
+| CLI          | `luwi autopilot show\|policy\|mode\|kick`, `luwi task list\|show\|create\|dispatch\|approve\|reject\|cancel`                                                                                                                                                                               |
+| Dashboard    | An **Autopilot** section in the project drawer: mode control behind a confirmation, coordinator presence, policy summary, the task board with approve/reject/cancel/wake, the goals with their plan, verification verdicts and the escalation question; an autopilot badge on the overview |
+| Orchestrator | `luwi session bridge orchestrator --project <id> --brain <…>` runs the loop; `luwi autopilot up` starts it with the policy's worker bridges; `luwi goal list\|show\|create\|approve-plan\|answer\|abandon`; `luwi_list_goals`, `luwi_get_goal`, `luwi_create_goal`                         |
 
 Every MCP write takes the actor from the bound session and never from input (ADR 0020); a session
 that is not the project's coordinator gets `AUTOPILOT_NOT_COORDINATOR`. Mode and policy are control
@@ -143,7 +202,11 @@ sets the mode and policy, and it still sends no instruction of its own.
 ### What is not done
 
 No daemon-side scheduler, planner or model call; the runtime does not know what the next task should
-be. No retries or re-dispatch — a failed task stays failed and the coordinator may create another. No
+be. No blind retries — a failed task stays failed; the orchestrator may create one bounded rework from
+review feedback, and a rework past its limit escalates. The orchestrator never edits, tests or commits,
+and LUWI never runs the project's test command — that would cross the never-execute boundary the
+adapters and scanners keep, and is a separate ADR if wanted. No goal self-generation before the
+`proactive` level. No
 worker-created tasks. No cross-project tasks. No `eligibleWork` label routing yet: the coordinator
 names the worker. No branch or worktree per task (the `projectRole` fields `writableBranch` and
 `worktreePath` need Git mutation, still excluded by §21). No GitHub, pull-request or merge step. No
@@ -155,14 +218,18 @@ Two rejected alternatives deserve naming. **Messages as the task record** was re
 message has no pre-dispatch state, no gate and no dependency, so nothing could be approved before it
 was sent. **A coordinator-only plan** (LuwiBot keeps the backlog in its own memory) was rejected
 because the dashboard could not show what an unattended mode intends to do, and §2 already assigns
-tasks to Redis.
+tasks to Redis. **Hermes owning the loop** with LUWI as a bare substrate was rejected as the default
+for the same reason plus two: the loop would be untestable and its budgets unenforceable. It stays
+available — the `luwibot-ws` adapter puts Hermes at every judgment — and plan gate G7 records the
+owner's choice.
 
 ## Consequences
 
-`luwi_v1` moves to **v13**: two new record kinds (the autopilot record and the task) and seven new
-Functions. A daemon started before this change must be restarted once. `AGENTS.md` §7 gains the
-declared keys, §8 the twelve event types, §21 the approval; the MCP count becomes 43 tools, 28 reads
-and 15 writes.
+`luwi_v1` moves to **v13** with the substrate: two new record kinds (the autopilot record and the
+task) and seven new Functions; the orchestrator adds the goal record and three more Functions, moving
+the version once more if it lands in a later phase. A daemon started before either change must be
+restarted once. `AGENTS.md` §7 gains the declared keys, §8 twelve substrate and thirteen orchestrator
+event types, §21 the approval; the MCP count becomes 46 tools, 30 reads and 16 writes.
 
 An operator can switch a project to `supervised`, watch the coordinator propose tasks, approve one,
 and see a bridge worker complete it — then switch to `autopilot` and let the loop run within a stated
@@ -174,8 +241,10 @@ The costs are stated. Autopilot on with no coordinator online is a visible state
 nothing, not an error the runtime hides. A coordinator that rotates mid-dispatch leaves the response
 in the dead session's inbox; the sweep and the coordinator's re-read on wake recover it. Dependency
 and lease checks are read-then-act; only the budget and in-flight overlap are atomic. Every task is a
-fresh headless worker run paid in tokens, with the memory limits ADR 0031 already states. The
-coordinator's own loop shape — one headless run per notice, or a long-lived process polling its inbox —
-is LuwiBot's to choose and Phase 0 of the plan to measure; the runtime's contract is the same for both.
+fresh headless worker run paid in tokens, with the memory limits ADR 0031 already states. The orchestrator's loop is LUWI's and runs as a CLI bridge; only the brain is chosen at the command
+line, and Phase 0 measures whether LuwiBot's WebSocket or a headless run serves it better. An
+orchestrator bridge that is not running is the same visible absence as a missing coordinator. Every
+judgment is a paid model call bounded by context size, wall time and a per-project hourly cap; a
+goal's cost is its tasks' worker runs plus its judgments, both counted on the goal.
 The record shape and its bounds (200 active tasks per project, 32 KiB brief, 32 paths, 8 dependencies)
 are compile-time constants with tests, so widening any of them is a reviewable change.

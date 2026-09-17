@@ -10,9 +10,13 @@
 **Goal:** One operator-held switch per project — `off`, `supervised`, `autopilot` — under which a
 coordinator session (LuwiBot) records tasks, dispatches them to bridge workers as ordinary
 `instruction` messages within a declared budget, and is woken by results, approvals and mode changes;
-visible and gateable in the project drawer; honest about what the runtime cannot enforce.
+visible and gateable in the project drawer; honest about what the runtime cannot enforce. On top of
+it, an orchestrator that is a LUWI-owned agentic loop with a pluggable brain — goals, judgments,
+verification, bounded rework, escalation, memory (Phases 4–5).
 
-**Spec:** `docs/superpowers/specs/2026-09-17-project-autopilot-design.md` · **ADR:** 0035 (Proposed)
+**Spec:** `docs/superpowers/specs/2026-09-17-project-autopilot-design.md` (substrate) ·
+`docs/superpowers/specs/2026-09-17-autopilot-orchestrator-design.md` (orchestrator) · **ADR:** 0035
+(Proposed)
 
 **Constraints:** `AGENTS.md` is binding — §3 (no terminal injection), §5 (no task package), §7 (read
 before touching Functions; declared keys; no policy in Lua; no trimming in transition Functions), §12
@@ -51,6 +55,11 @@ nowhere in this tree, and the only known LuwiBot fact is the dashboard's WebSock
       reference could be declared (ADR 0022)? If not, say so — the coordinator then registers unbound.
 - [ ] Real message sizes: `luwi message list --project <id>` for every project; record the largest
       `instruction` content in bytes against the 32 KiB brief bound and the 30 000-byte headless cap.
+- [ ] The LuwiBot WebSocket as a brain: send one ≥ 64 KiB `{ message }` asking for a fixed JSON shape,
+      ten times; record acceptance, JSON validity, latency and any server-side conversation state
+      between sockets. This decides G8.
+- [ ] A headless judgment with read-only tools only: can `hermes` (or `claude`) answer a `plan`-shaped
+      question with no write tool available? Record the argv that proves it (orchestrator invariant 1).
 
 ### Task 0.2: Decide the coordinator run shape (owner gate G1)
 
@@ -65,18 +74,21 @@ nowhere in this tree, and the only known LuwiBot fact is the dashboard's WebSock
 
 ### Task 0.3: Owner gates recorded in ADR 0035
 
-| Gate | Question                                                                                               | Default in this plan                              |
-| ---- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
-| G1   | Coordinator run shape (Task 0.2)                                                                       | bridge-per-item if a headless one-shot exists     |
-| G2   | `luwi_v1` → v13 in Phase 2 (two record kinds, seven Functions; one daemon restart)                     | yes                                               |
-| G3   | The `notice` inbox item in Phase 1 (a protocol change every inbox consumer re-validates)               | yes — without it "enable" does nothing observable |
-| G4   | Policy canonical in `.luwi/manifest.json`; mode Redis-only and never canonical                         | yes                                               |
-| G5   | A fourth dashboard write module, `api/autopilot-mutations.ts`                                          | yes                                               |
-| G6   | `supervised` gates every dispatch; `autopilot` gates only protected paths; empty paths = whole project | yes                                               |
+| Gate | Question                                                                                                                                   | Default in this plan                                                                         |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| G1   | Coordinator run shape (Task 0.2)                                                                                                           | bridge-per-item if a headless one-shot exists                                                |
+| G2   | `luwi_v1` → v13 in Phase 2 (two record kinds, seven Functions; one daemon restart)                                                         | yes                                                                                          |
+| G3   | The `notice` inbox item in Phase 1 (a protocol change every inbox consumer re-validates)                                                   | yes — without it "enable" does nothing observable                                            |
+| G4   | Policy canonical in `.luwi/manifest.json`; mode Redis-only and never canonical                                                             | yes                                                                                          |
+| G5   | A fourth dashboard write module, `api/autopilot-mutations.ts`                                                                              | yes                                                                                          |
+| G6   | `supervised` approves plans, replans and reworks (bulk task approval); `autopilot` gates only protected paths; empty paths = whole project | yes                                                                                          |
+| G7   | Loop ownership: a LUWI-owned orchestrator bridge with a pluggable brain, or Hermes owning the loop with LUWI as substrate                  | LUWI-owned — testable, budgeted, visible; Hermes at every judgment through `luwibot-ws`      |
+| G8   | Default brain adapter                                                                                                                      | `luwibot-ws` if Phase 0 shows reliable JSON over the socket; else headless `hermes`/`claude` |
+| G9   | `proactive` level (goals from allowlisted LUWI signals)                                                                                    | its own gate at Phase 5 entry; not before                                                    |
 
 - [ ] Ask the owner; set ADR 0035 to `Accepted` with the answers, or stop here.
 
-**Exit:** the measurement spec exists with commands and numbers; G1–G6 answered; ADR 0035 `Accepted`.
+**Exit:** the measurement spec exists with commands and numbers; G1–G9 answered; ADR 0035 `Accepted`.
 No code changed.
 
 ---
@@ -337,16 +349,114 @@ Memurai; the bridge pin test is green; `/verify` green.
 
 ---
 
+## Phase 4 — The orchestrator: goals, judgments, verification, escalation, memory
+
+Vertical slice: a real, small goal runs end to end — plan → dispatch → worker → deterministic checks →
+review task → `review` judgment → achieved — first in `supervised`, then in `autopilot`. Spec:
+`2026-09-17-autopilot-orchestrator-design.md`.
+
+### Task 4.1: Protocol
+
+- [ ] `packages/protocol/src/goal.ts`: goal, budget, escalation, retrospective schemas and bounds;
+      `orchestrator.ts`: judgment request/decision schemas (`plan`, `review`, `replan`, `summarize`),
+      context caps, `verification` record; task gains `goalId`, `reworkOf?`, `doneCriteria?`,
+      `verification?`; policy gains `reviewer?`, `goalDefaults`, `memory.retrospectives`,
+      `maxJudgmentsPerHour`, `maxConcurrentGoals`, `workerLaunch?`. Thirteen event types.
+
+### Task 4.2: Runtime (pure)
+
+- [ ] `planCycle(state) → actions`, table-driven over every goal/task state; never more than one
+      judgment per goal per cycle.
+- [ ] `assembleJudgmentContext` with a test per cap; `validateJudgment` with the one-repair-round rule
+      and the policy checks (worker, paths, budget, cycles); `verifyTaskOutcome` per check;
+      `escalationFor(reason)`; budget arithmetic.
+
+### Task 4.3: Redis (§7; `redis-invariants`)
+
+- [ ] Keys `goal:{id}`, `index:project:{id}:goals`, `index:goal:{id}:tasks`,
+      `index:project:{id}:retrospectives` (capped 20 by the retention sweep, never in-Function).
+- [ ] `luwi_goal_create_v1`, `luwi_goal_transition_v1` (CAS; every edge in the lifecycle),
+      `luwi_goal_plan_put_v1` (records the accepted task-id list, bumps `planVersion`; tasks are created
+      first through `task_create`; reconciliation cancels `ready` tasks no recorded plan names).
+      Version moves once if this lands after v13.
+- [ ] Integration tests: each Function's success and refusal with no partial write; plan-put CAS;
+      orphan-task reconciliation; retrospective cap.
+
+### Task 4.4: Daemon
+
+- [ ] `goal-service.ts`: create (operator, session or signal), plan put/approve/reject, transition,
+      answer, abandon; `plan_approved` and `goal_answered` notices; the reconciliation sweep extended
+      to goals (wall-clock budget → `blocked`).
+- [ ] Routes from the orchestrator spec; operator-only approve/answer/abandon; coordinator-only plan
+      and transition; tests.
+
+### Task 4.5: Brain adapters and the bridge (`@luwi/cli`)
+
+- [ ] `brain-adapter.ts`: `luwibot-ws` (one `{ message }` per judgment over the existing WebSocket,
+      timeout, no history) and `native` (one headless run through the ADR 0031 executor with the
+      operator's `--` args). Tests with a fake socket and a fake executor.
+- [ ] `orchestrator-bridge.ts`: bootstrap-owned session, claim + tick loop, `perceive`, `planCycle`,
+      action executor, one report line per action, `off` idling, signal handling; the whole cycle
+      tested against a scripted fake brain and a fake daemon (plan → dispatch → response → verify →
+      review task → accept → achieved; rework then escalate; low confidence; invalid twice; restart
+      resumes from the store).
+- [ ] `luwi session bridge orchestrator` and `luwi autopilot up` (starts the orchestrator and the
+      policy's `workerLaunch` bridges with their exact arguments).
+
+### Task 4.6: CLI and MCP
+
+- [ ] `luwi goal list|show|create|approve-plan|answer|abandon`; tests.
+- [ ] `luwi_list_goals`, `luwi_get_goal`, `luwi_create_goal` (any bound session; this is how the
+      LuwiBot chat turns "add a goal" into a goal); nothing that approves, answers or abandons.
+      `CLAUDE.md` counts: 46 tools, 30 reads, 16 writes.
+
+### Task 4.7: Dashboard
+
+- [ ] Goal card in the Autopilot section: state chip, `n/m tasks`, budget used, the plan as an ordered
+      list with verification verdicts, the escalation question with an answer box, Approve plan /
+      Reject plan / Abandon; the retrospective under an achieved goal; open-goal count on the tile chip.
+      Reads in `autopilot-scope.ts` (invalidated on `goal.*`), writes in `autopilot-mutations.ts`.
+      Tests against a fake gateway; class/token guards.
+
+### Task 4.8: Seed, docs, live proof
+
+- [ ] Seed: one goal per state that matters — `plan_review` with a three-task plan, `running` with one
+      verified task, `blocked` with an escalation, `achieved` with a retrospective.
+- [ ] Docs: §7, §8, §21, README, CLAUDE.md, overview.md; `docs/guides/autopilot-orchestrator.md`
+      replaces the coordinator guide (what the brain is asked, what it is never allowed to do).
+- [ ] Live: one real project, LuwiBot as `luwibot-ws` brain (or the G8 alternative), a `claude-code`
+      author bridge and a `codex` reviewer bridge; one small goal in `supervised`, then one in
+      `autopilot` with `maxInFlight 1`; every judgment, verdict, denial and escalation in the ticker;
+      a measured report (wall time, judgments, tokens where attributed) that corrects the spec where
+      reality disagrees.
+
+**Exit:** a goal achieved unattended within budget on a real project; every invariant in the
+orchestrator spec has a test; `/verify` green.
+
+---
+
+## Phase 5 — `proactive` goals and memory tuning (gate G9)
+
+- [ ] Ask the owner at entry; do not start silently.
+- [ ] Policy `signalSources` allowlist (optimization findings, config drift, recurring verification
+      failures) and `maxOpenSignalGoals`; a `proactive` mode value; each generated goal starts
+      `proposed` with `createdBy.kind: 'signal'` and the signal reference.
+- [ ] Retrospective count and context caps re-tuned from Phase 4's measurements.
+- [ ] Live: one signal-generated goal, approved by the operator, achieved.
+
+---
+
 ## Deferred, with reasons (recorded, not dropped)
 
-| Item                                         | Reason                                                                                              |
-| -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Retries / re-dispatch                        | A retry hides a failure the coordinator should decide about; a new task is the honest retry.        |
-| Worker-created tasks                         | Lets a worker widen its own work; the worker answers with evidence, the coordinator decides.        |
-| `eligibleWork` label routing                 | Needs a task taxonomy nothing produces yet; the coordinator names the worker.                       |
-| Branch / worktree per task                   | Git mutation, excluded by §21; `writableBranch`/`worktreePath` stay unconsumed.                     |
-| GitHub, PR, merge                            | §21 GitHub integration is out of scope.                                                             |
-| Token budget per project                     | Attribution is partial for gemini/antigravity workers; a budget that cannot be measured is fiction. |
-| Cross-project tasks                          | Messages are same-project by ADR 0006; a task follows its message.                                  |
-| Daemon-side planning                         | The runtime must not become the brain (§1, §3, the CLI-first boundary).                             |
-| Notifications to the operator (push, e-mail) | Outside the loopback boundary (§4); the drawer and ticker are the surface.                          |
+| Item                                         | Reason                                                                                                                                    |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Blind retries                                | A rework is one bounded, review-driven follow-up per task (Phase 4); re-running the same brief without a verdict hides the failure.       |
+| LUWI running the project's test command      | Crosses the never-execute boundary the adapters and scanners keep; a separate ADR with an owned-process runner if wanted.                 |
+| Worker-created tasks                         | Lets a worker widen its own work; the worker answers with evidence, the coordinator decides.                                              |
+| `eligibleWork` label routing                 | Needs a task taxonomy nothing produces yet; the coordinator names the worker.                                                             |
+| Branch / worktree per task                   | Git mutation, excluded by §21; `writableBranch`/`worktreePath` stay unconsumed.                                                           |
+| GitHub, PR, merge                            | §21 GitHub integration is out of scope.                                                                                                   |
+| Token budget per project                     | Attribution is partial for gemini/antigravity workers; a budget that cannot be measured is fiction.                                       |
+| Cross-project tasks                          | Messages are same-project by ADR 0006; a task follows its message.                                                                        |
+| Daemon-side planning                         | The runtime must not become the brain (§1, §3, the CLI-first boundary); the orchestrator loop is a CLI bridge and the brain is pluggable. |
+| Notifications to the operator (push, e-mail) | Outside the loopback boundary (§4); the drawer and ticker are the surface.                                                                |
