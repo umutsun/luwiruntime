@@ -508,11 +508,11 @@ describe('buildOverview', () => {
     const failed = input();
     failed.sessions = { state: 'unavailable' };
     failed.usage = { state: 'unavailable' };
-    failed.context = { state: 'unavailable' };
+    failed.git = { state: 'unavailable' };
     failed.projects = { state: 'unavailable' };
     failed.activity = { state: 'unavailable' };
     const model = buildOverview(buildPulseSnapshot(failed), [], NOW);
-    for (const key of ['sessions', 'projects', 'tokens', 'context']) {
+    for (const key of ['sessions', 'projects', 'tokens', 'commits']) {
       const stat = model.stats.find((candidate) => candidate.key === key);
       expect(stat?.value, key).toBe('—');
       expect(stat?.unavailable, key).toBe(true);
@@ -614,21 +614,25 @@ describe('buildOverview', () => {
     const sessions = overview().stats.find((stat) => stat.key === 'sessions');
     expect(sessions?.value).toBe('3');
     expect(sessions?.sub).toBe('1 thinking · 1 waiting for input · 1 blocked');
-    const context = overview().stats.find((stat) => stat.key === 'context');
-    expect(context?.value).toBe('2');
-    expect(context?.sub).toBe('1 invoked · 1 loaded, never invoked');
+    // Commits replaced the always-empty Context tile: p1's Git fan-out observed 7
+    // recent commits, p2 is not-observed, p3 has no Git entry.
+    const commits = overview().stats.find((stat) => stat.key === 'commits');
+    expect(commits?.value).toBe('7');
+    expect(commits?.sub).toBe('1 of 1 projects · observed window');
+    expect(commits?.route).toBe('#/projects');
   });
 
-  it('says the context tile is unreported when the fleet observed none, not a broken 0', () => {
-    // A successful read with no contributions at all (the pilot's steady state:
-    // agents report context loading through MCP and turn-based GUIs never do).
-    const empty = input();
-    empty.context = { state: 'ready', data: [] };
-    const model = buildOverview(buildPulseSnapshot(empty), [], NOW);
-    const context = model.stats.find((stat) => stat.key === 'context');
-    expect(context?.value).toBe('0');
-    expect(context?.unavailable).toBe(false);
-    expect(context?.sub).toBe('no context reported by the fleet');
+  it('reads the commits tile as none when nothing was observed in the window', () => {
+    const quiet = input();
+    quiet.git = {
+      state: 'ready',
+      data: { truncated: false, entries: [{ projectId: 'p1', git: { state: 'not-observed' } }] },
+    };
+    const model = buildOverview(buildPulseSnapshot(quiet), [], NOW);
+    const commits = model.stats.find((stat) => stat.key === 'commits');
+    expect(commits?.value).toBe('0');
+    expect(commits?.unavailable).toBe(false);
+    expect(commits?.sub).toBe('no repositories scanned');
   });
 
   it('gives no Redis verdict without a daemon answer', () => {

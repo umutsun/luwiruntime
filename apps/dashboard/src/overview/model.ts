@@ -736,19 +736,21 @@ function statsOf(
     .map((row) => `${row.label.toLowerCase()} ${formatTokens(row.totalTokens ?? 0)}`);
   const usageUnavailable = snapshot.usageState === 'unavailable';
 
-  const contextUnavailable = snapshot.contextState === 'unavailable';
-  const { assigned, effective, loaded, invoked, unknown } = snapshot.context;
-  // The read succeeded but the fleet reported no context at all — agents report
-  // skill loading through MCP and turn-based GUIs never do, so this is honest
-  // absence, not a fault. Say so plainly instead of "0 invoked · 0 loaded", which
-  // reads as broken.
-  const contextEmpty =
-    !contextUnavailable &&
-    assigned === 0 &&
-    effective === 0 &&
-    loaded === 0 &&
-    invoked === 0 &&
-    unknown === 0;
+  // Fleet output: recent commits the per-project Git fan-out observed. This
+  // replaced the Context tile, which read empty for every fleet — agents report
+  // context loading through MCP and turn-based GUIs never do. Commits are always
+  // there and answer "what is the fleet shipping". `recentCommitCount` is the
+  // observed window (git log -n), not a repository total, so the sub says so and
+  // the value is never presented as an all-time count.
+  const gitUnavailable = snapshot.gitState === 'unavailable';
+  const observedRepos = snapshot.repositoryFacts.filter((fact) => fact.git.state === 'ready');
+  const recentCommits = observedRepos.reduce(
+    (sum, fact) => sum + (fact.git.state === 'ready' ? fact.git.data.recentCommitCount : 0),
+    0,
+  );
+  const reposWithCommits = observedRepos.filter(
+    (fact) => fact.git.state === 'ready' && fact.git.data.recentCommitCount > 0,
+  ).length;
 
   return [
     {
@@ -802,17 +804,19 @@ function statsOf(
       route: '#/usage',
     },
     {
-      key: 'context',
-      label: 'Context loaded',
-      value: contextUnavailable ? '—' : String(loaded),
-      sub: contextUnavailable
-        ? 'context unavailable'
-        : contextEmpty
-          ? 'no context reported by the fleet'
-          : `${String(invoked)} invoked · ${String(snapshot.contextInsights.loadedNotInvoked)} loaded, never invoked`,
-      unavailable: contextUnavailable,
-      fraction: loaded === 0 ? 0 : invoked / loaded,
-      route: '#/context',
+      key: 'commits',
+      label: 'Commits · recent',
+      value: gitUnavailable ? '—' : String(recentCommits),
+      sub: gitUnavailable
+        ? 'git unavailable'
+        : observedRepos.length === 0
+          ? 'no repositories scanned'
+          : recentCommits === 0
+            ? 'none in the observed window'
+            : `${String(reposWithCommits)} of ${String(observedRepos.length)} projects · observed window`,
+      unavailable: gitUnavailable,
+      fraction: observedRepos.length === 0 ? 0 : reposWithCommits / observedRepos.length,
+      route: '#/projects',
     },
   ];
 }
