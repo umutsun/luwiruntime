@@ -105,8 +105,8 @@ describe('SessionsView', () => {
   });
 
   it('lists every observed session without status/presence/client filter controls', () => {
-    // The filter row was removed on the owner's read (a cleaner drawer); the
-    // table still carries the Status and Presence columns, just no filters.
+    // The filter row was removed on the owner's read (a cleaner drawer); status
+    // and presence now share one State column, and there are no filter controls.
     const snapshot = buildPulseSnapshot(
       baseInput({
         sessions: {

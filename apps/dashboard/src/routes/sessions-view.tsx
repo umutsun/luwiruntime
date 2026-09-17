@@ -18,6 +18,19 @@ const systemNow = (): Date => new Date();
 
 const clientKindLabels = { cli: 'CLI', gui: 'GUI', ide: 'IDE', bridge: 'Bridge' } as const;
 
+/**
+ * The human line for a session: what it reported it was doing, or the native
+ * GUI chat title. A row led only by an opaque id said nothing about the session;
+ * this gives it a subject when one was observed, and nothing (not a fake) when
+ * it was not.
+ */
+function sessionTitle(row: SessionRow) {
+  const raw =
+    row.taskSummary ?? (typeof row.metadata?.['title'] === 'string' ? row.metadata['title'] : '');
+  const label = raw.trim();
+  return label === '' ? null : <small title={label}>{label}</small>;
+}
+
 function compareRows(left: SessionRow, right: SessionRow, key: SortKey): number {
   if (key === 'agent') return left.agentId.localeCompare(right.agentId);
   if (key === 'status') return left.statusLabel.localeCompare(right.statusLabel);
@@ -184,12 +197,11 @@ export function SessionsView({
                       <SortHeader label="Agent" sortKey="agent" active={sort} onSort={toggleSort} />
                       <th scope="col">Project</th>
                       <SortHeader
-                        label="Status"
+                        label="State"
                         sortKey="status"
                         active={sort}
                         onSort={toggleSort}
                       />
-                      <th scope="col">Presence</th>
                       <SortHeader
                         label="Started"
                         sortKey="started"
@@ -206,6 +218,7 @@ export function SessionsView({
                       <tr key={row.id}>
                         <td>
                           <IdBadge id={row.id} label="session" />
+                          {sessionTitle(row)}
                           {isCoordinator(row) ? (
                             <StatusChip tone="success">Coordinator</StatusChip>
                           ) : null}
@@ -225,8 +238,10 @@ export function SessionsView({
                         <td>
                           {row.projectName === 'Unavailable' ? <Unavailable /> : row.projectName}
                         </td>
-                        <td>{row.statusLabel}</td>
+                        {/* Status and presence merged into one State cell: two
+                            columns for "idle" + "online" was needless width. */}
                         <td>
+                          {row.statusLabel}
                           <StatusChip tone={row.presence === 'online' ? 'success' : 'unknown'}>
                             {row.presence === 'online' ? 'Online' : 'Offline'}
                           </StatusChip>
