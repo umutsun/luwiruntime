@@ -66,6 +66,7 @@ import {
   mcpRespondToMessageInputSchema,
   mcpRequestOptimizationAnalysisInputSchema,
   mcpRequestOptimizationAnalysisOutputSchema,
+  LUWI_RUNTIME_VERSION,
 } from '@luwi/protocol';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ZodError } from 'zod';
@@ -142,7 +143,7 @@ async function toolResult<T extends object>(
 export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
   const server = new McpServer({
     name: 'luwi-runtime',
-    version: '0.1.0',
+    version: LUWI_RUNTIME_VERSION,
   });
 
   server.registerTool(

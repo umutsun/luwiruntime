@@ -260,7 +260,7 @@ describe('Pulse snapshot mapping', () => {
         state: 'ready',
         data: {
           workspaceId: 'local',
-          version: '0.1.0',
+          version: '0.2.0',
           protocolVersion: 1,
           runtimeState: 'ready',
           runtimeInstanceId: 'r1',

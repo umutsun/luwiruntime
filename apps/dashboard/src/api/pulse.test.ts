@@ -18,7 +18,7 @@ describe('loadPulseInput', () => {
         ready({
           status: 'ok',
           runtimeState: 'ready',
-          version: '0.1.0',
+          version: '0.2.0',
           uptimeMs: 120_000,
           timestamp: '2026-08-05T08:00:00.000Z',
           redis: { connected: true, status: 'connected', latencyMs: 2 },
@@ -130,7 +130,7 @@ describe('loadPulseInput', () => {
       [
         '/api/v1/runtime',
         ready({
-          version: '0.1.0',
+          version: '0.2.0',
           protocolVersion: 1,
           runtimeState: 'ready',
           runtimeInstanceId: 'r1',

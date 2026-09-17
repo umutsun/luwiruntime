@@ -125,7 +125,7 @@ describe('LUWI daemon HTTP API', () => {
     expect(response.json()).toEqual({
       status: 'ok',
       runtimeState: 'ready',
-      version: '0.1.0',
+      version: '0.2.0',
       uptimeMs: 2500,
       redis: {
         connected: true,
@@ -247,7 +247,7 @@ describe('LUWI daemon HTTP API', () => {
     expect(response.json()).toEqual({
       status: 'degraded',
       runtimeState: 'degraded',
-      version: '0.1.0',
+      version: '0.2.0',
       uptimeMs: 2500,
       redis: {
         connected: false,
@@ -281,7 +281,7 @@ describe('LUWI daemon HTTP API', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      version: '0.1.0',
+      version: '0.2.0',
       protocolVersion: 1,
       runtimeState: 'ready',
       runtimeInstanceId: 'runtime-1',

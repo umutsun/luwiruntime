@@ -25,7 +25,7 @@ const lifecycleToken = '6ccfd2c0-e424-4a21-91db-30dc72092a01';
 const runtimeInstanceId = 'f2e95fa4-f12d-4a42-92bb-fba0bb5f938b';
 
 const runtime = {
-  version: '0.1.0',
+  version: '0.2.0',
   protocolVersion: 1,
   runtimeState: 'ready',
   runtimeInstanceId,

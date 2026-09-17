@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const runtimeResponse = {
-  version: '0.1.0',
+  version: '0.2.0',
   protocolVersion: 1,
   runtimeState: 'ready',
   runtimeInstanceId: 'runtime-1',
