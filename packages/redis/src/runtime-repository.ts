@@ -1414,9 +1414,22 @@ export function createRuntimeRepository(options: {
         );
         sessionIds = [...new Set(projectSessionIds.flat())];
       }
-      const sessions = (
-        await Promise.all(sessionIds.map(async (sessionId) => this.getSession(sessionId)))
-      ).filter((session): session is SessionView => session !== null);
+      // A bulk listing tolerates one unreadable record; it must not let it abort
+      // the whole snapshot. A session id sits in the project set while its hash
+      // is being written (registration) or removed (close/reap), so the
+      // SMEMBERS→HGETALL window can catch a partial or vanished hash and
+      // `getSession` throws `REDIS_DATA_INVALID`. Dropping that one id keeps the
+      // healthy fleet visible and is race-consistent — a session mid-transition
+      // is correctly absent from the snapshot. The single-lookup `getSession`
+      // stays strict: a caller that named one session must hear the truth about
+      // it, not a silent null. (Measured live: one such record failed retention,
+      // native-title resolution and the reaper alike through this one path.)
+      const settled = await Promise.allSettled(
+        sessionIds.map(async (sessionId) => this.getSession(sessionId)),
+      );
+      const sessions = settled.flatMap((result) =>
+        result.status === 'fulfilled' && result.value !== null ? [result.value] : [],
+      );
       return sessions.sort(
         (left, right) =>
           left.startedAt.localeCompare(right.startedAt) || left.id.localeCompare(right.id),

@@ -583,6 +583,18 @@ one found by the deploy check:** `POST /api/v1/messages` parsed its body with a 
 `parseRequestInput` (→ `400 REQUEST_VALIDATION_FAILED`), never a raw parse; `app-phase2.test.ts`
 pins it.
 
+**A bulk read must not let one poison record abort the batch (2026-09-17, live-measured).** The
+pilot's daemon logged `Redis contains an invalid session projection` — thrown by `getSession` —
+which then failed `listSessions`, and through it the retention sweep, native-title resolution, the
+starting-session reaper and the message-target list, because `listSessions` assembled with
+`Promise.all(getSession)`: one rejected read rejects the whole batch. No record was permanently
+corrupt (a db0 sweep of all 2595 indexed sessions found zero); the record was caught mid-lifecycle
+in the `SMEMBERS`→`HGETALL` window (a session being registered or closed sits in the project set
+while its hash is partial or gone). `listSessions` now uses `Promise.allSettled` and drops a
+rejected or null read; the single-lookup `getSession(id)` stays strict, because a caller that named
+one session must hear the truth about it, not a silent null. The rule generalises: a bulk listing
+tolerates one unreadable member and stays race-consistent; a targeted read does not.
+
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.
 

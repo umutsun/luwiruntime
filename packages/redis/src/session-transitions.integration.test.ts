@@ -171,5 +171,22 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       });
       await expect(repository.listSessions('project-1')).resolves.toHaveLength(2);
     });
+
+    it('lists the healthy sessions past one unreadable record, but a targeted read stays strict', async () => {
+      // The SMEMBERS→HGETALL window can catch a session hash mid-lifecycle. An
+      // unknown field breaks the strict projection the same way a partial write
+      // would; the id stays in the project set. The bulk listing must skip it
+      // and keep the rest, while getSession on that id still surfaces the fault.
+      await commandClient.sendCommand(['HSET', keys.session('session-2'), 'unexpected', 'x']);
+
+      await expect(repository.getSession('session-2')).rejects.toMatchObject({
+        code: 'REDIS_DATA_INVALID',
+      });
+      const listed = await repository.listSessions('project-1');
+      expect(listed.map((session) => session.id)).toEqual(['session-1']);
+
+      await commandClient.sendCommand(['HDEL', keys.session('session-2'), 'unexpected']);
+      await expect(repository.listSessions('project-1')).resolves.toHaveLength(2);
+    });
   },
 );
