@@ -128,6 +128,7 @@ describe('message service', () => {
     await expect(service.ask(request, ' retry-1 ')).resolves.toMatchObject({
       message: { correlationId: 'correlation-1' },
       selectedTargetSessionId: 'target',
+      delivery: 'deferred',
       idempotent: false,
     });
     expect(createMessage).toHaveBeenCalledWith(
@@ -138,6 +139,58 @@ describe('message service', () => {
         }),
       }),
     );
+  });
+
+  it('records a declared re-dispatch, and refuses one that names a missing, foreign or unfinished exchange', async () => {
+    const previous: AgentMessage = { ...message, correlationId: 'previous', state: 'timed_out' };
+    const createMessage = vi.fn(async () => ({
+      status: 'created' as const,
+      message,
+      event: {
+        id: 'event-1',
+        version: 1 as const,
+        type: 'message.requested' as const,
+        occurredAt: now,
+        workspaceId: 'local',
+        projectId: 'project-1',
+        payload: {},
+      },
+      globalStreamId: '1-0',
+      projectStreamId: '1-0',
+      inboxStreamId: '1-0',
+    }));
+    const serviceWith = (found: AgentMessage | null) =>
+      createMessageService({
+        repository: repository({ createMessage, getMessage: async () => found }),
+        sessions: sessionService(),
+        workspaceId: 'local',
+        createId: () => 'generated',
+      });
+    const reask: MessageCreateRequest = { ...request, retryOf: 'previous' };
+
+    await serviceWith(previous).ask(reask);
+    expect(createMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.objectContaining({ retryOf: 'previous' }) }),
+    );
+    // The link changes the fingerprint: the same words sent fresh are a different request.
+    expect(createMessageRequestFingerprint(reask)).not.toBe(
+      createMessageRequestFingerprint(request),
+    );
+
+    await expect(serviceWith(null).ask(reask)).rejects.toMatchObject({
+      code: 'RETRY_OF_NOT_FOUND',
+      statusCode: 404,
+    });
+    await expect(
+      serviceWith({ ...previous, projectId: 'project-2' }).ask(reask),
+    ).rejects.toMatchObject({ code: 'RETRY_OF_PROJECT_MISMATCH', statusCode: 409 });
+    await expect(
+      serviceWith({ ...previous, state: 'processing' }).ask(reask),
+    ).rejects.toMatchObject({
+      code: 'RETRY_OF_NOT_TERMINAL',
+      statusCode: 409,
+    });
+    expect(createMessage).toHaveBeenCalledTimes(1);
   });
 
   it('rejects offline sources, unavailable targets, and cross-project direct targets', async () => {
@@ -176,6 +229,67 @@ describe('message service', () => {
     await expect(service.ask(request, 'retry-1')).resolves.toMatchObject({
       message: { state: 'responded' },
       selectedTargetSessionId: 'target',
+      delivery: 'deferred',
+      idempotent: true,
+    });
+  });
+
+  it('reclassifies an idempotent replay as live when the original target is a live bridge worker', async () => {
+    // Regression: the idempotent path must re-derive delivery from the current target, not hardcode
+    // 'deferred'. A replay of an ask to a live bridge worker must stay 'live' so the caller still
+    // waits for (and recovers) the reply.
+    const fingerprint = createMessageRequestFingerprint(request);
+    const service = createMessageService({
+      repository: repository({
+        findIdempotentMessage: async () => ({
+          message: { ...message, state: 'responded' },
+          requestFingerprint: fingerprint,
+        }),
+      }),
+      sessions: sessionService([source, { ...target, metadata: { bridge: 'native-headless' } }]),
+      workspaceId: 'local',
+    });
+
+    await expect(service.ask(request, 'retry-1')).resolves.toMatchObject({
+      selectedTargetSessionId: 'target',
+      delivery: 'live',
+      idempotent: true,
+    });
+  });
+
+  it('replays an offline bridge worker as deferred, not a false live-reader timeout', async () => {
+    // Regression: the bridge flag is RETAINED after the reader exits, so a replay whose target now
+    // carries `metadata.bridge` but is offline/terminal must degrade to `deferred`. Before the
+    // reader-liveness fix this re-derived `live`, and the caller waited for a reply no live reader
+    // would give — the exact false timeout the delivery signal exists to prevent.
+    const fingerprint = createMessageRequestFingerprint(request);
+    const service = createMessageService({
+      repository: repository({
+        findIdempotentMessage: async () => ({
+          message: { ...message, state: 'responded' },
+          requestFingerprint: fingerprint,
+        }),
+      }),
+      sessions: sessionService([
+        source,
+        {
+          ...target,
+          metadata: { bridge: 'native-headless' },
+          presence: 'offline',
+          status: 'disconnected',
+        },
+      ]),
+      workspaceId: 'local',
+    });
+
+    // Idempotent: the replay answers `deferred` every time it re-derives the retained record.
+    await expect(service.ask(request, 'retry-1')).resolves.toMatchObject({
+      selectedTargetSessionId: 'target',
+      delivery: 'deferred',
+      idempotent: true,
+    });
+    await expect(service.ask(request, 'retry-1')).resolves.toMatchObject({
+      delivery: 'deferred',
       idempotent: true,
     });
   });

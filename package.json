@@ -1,6 +1,6 @@
 {
   "name": "luwi-runtime",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Local-first runtime and coordination foundation for coding agents",
   "type": "module",

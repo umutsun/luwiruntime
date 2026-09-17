@@ -60,6 +60,10 @@ import {
   leaseRenewRequestSchema,
   lifecycleStopResponseSchema,
   workLeaseSchema,
+  coordinatorClaimRequestSchema,
+  coordinatorReleaseRequestSchema,
+  coordinatorSchema,
+  coordinatorViewSchema,
   messageCollectionResponseSchema,
   messageCreateRequestSchema,
   messageCreateResponseSchema,
@@ -75,6 +79,7 @@ import {
   sessionNativeRefResponseSchema,
   type HealthResponse,
   projectCollectionResponseSchema,
+  projectDiscoveryResponseSchema,
   projectRegistrationRequestSchema,
   projectUpdateRequestSchema,
   projectResponseSchema,
@@ -123,10 +128,12 @@ import {
 import { RedisRepositoryError, type RedisGateway } from '@luwi/redis';
 import {
   ApplicationError,
+  createProjectDiscoveryService,
   createRuntimeLifecycleEvent,
   createRuntimeState,
   getRuntimeUptimeMs,
   toPublicError,
+  type ProjectDiscoveryService,
   type RuntimeReadiness,
 } from '@luwi/runtime';
 import websocketPlugin from '@fastify/websocket';
@@ -143,9 +150,11 @@ import {
   type KnowledgeDocument,
 } from './graphify-knowledge.js';
 import type { LeaseService } from './lease-service.js';
+import type { CoordinatorService } from './coordinator-service.js';
 import type { MessageService } from './message-service.js';
 import type { IntelligenceService } from './intelligence-service.js';
 import type { ProjectService } from './project-service.js';
+import type { ProjectUnregisterService } from './project-unregister-service.js';
 import type { SessionService } from './session-service.js';
 import {
   type WebSocketHub,
@@ -159,7 +168,8 @@ export type DaemonApp = FastifyInstance;
 export type BuildDaemonOptions = {
   config: DaemonConfig;
   redis: RedisGateway;
-  logger?: boolean | { level: string };
+  /** `stream` lets a test read the lines the daemon would have logged. */
+  logger?: boolean | { level: string; stream?: { write: (line: string) => void } };
   now?: () => Date;
   startedAt?: Date;
   runtimeInstanceId?: string;
@@ -171,6 +181,9 @@ export type BuildDaemonOptions = {
     sessions: SessionService;
     messages?: MessageService;
     leases?: LeaseService;
+    coordinator?: CoordinatorService;
+    /** Absent leaves the registry without a DELETE route (F3). */
+    projectUnregister?: ProjectUnregisterService;
     controlPlane?: ControlPlaneService;
     configControl?: ConfigControlService;
     intelligence?: IntelligenceService;
@@ -189,6 +202,8 @@ export type BuildDaemonOptions = {
   resources?: () => Promise<RuntimeResourcesResponse>;
   /** Filesystem read of graphify's output; defaults to `readGraphifyKnowledge` so tests can stub it. */
   readKnowledgeGraph?: (localPath: string) => Promise<KnowledgeDocument | null>;
+  /** One-level directory discovery for `GET /projects/discover`; defaults to the runtime's, so tests can stub it. */
+  projectDiscovery?: ProjectDiscoveryService;
   lifecycle?: {
     token: string;
     requestStop: () => Promise<void>;
@@ -258,14 +273,8 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
     });
 
   app.setErrorHandler((error, request, reply) => {
-    app.log.error(
-      {
-        err: error,
-        requestId: request.id,
-      },
-      'Request failed',
-    );
     if (error instanceof RedisRepositoryError && error.code === 'REDIS_UNAVAILABLE') {
+      app.log.error({ err: error, requestId: request.id }, 'Request failed');
       options.onRedisUnavailable?.(error);
       return reply.code(503).send({
         error: {
@@ -275,6 +284,15 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       });
     }
     const publicError = toPublicError(error);
+    // A 4xx is an expected client outcome — a 404 for a project with no Git
+    // observation, a 409 for a stale message transition, a 400 for a malformed
+    // body — not a server fault. Logging every one at `error` buried the real
+    // failures and was a driver of the multi-hundred-MB daemon.log; reserve
+    // `error` for 5xx and record client errors at `warn`.
+    app.log[publicError.statusCode >= 500 ? 'error' : 'warn'](
+      { err: error, requestId: request.id, statusCode: publicError.statusCode },
+      'Request failed',
+    );
     const existingProjectId = publicError.body.error.details?.existingProjectId;
     if (
       publicError.body.error.code === 'PROJECT_ALREADY_REGISTERED' &&
@@ -476,6 +494,30 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         .header('Location', `/api/v1/projects/${project.id}`)
         .send(projectResponseSchema.parse(project));
     });
+    // One directory level under a root the loopback caller names, read-only —
+    // the dashboard's "Scan a folder" and the CLI's `project discover` share
+    // the runtime's discovery. Registration stays `POST /projects`, one per
+    // candidate, so nothing here writes.
+    const MAX_DISCOVERY_CANDIDATES = 500;
+    const discoveryQuerySchema = z.strictObject({ root: z.string().trim().min(1).max(4096) });
+    const projectDiscovery = options.projectDiscovery ?? createProjectDiscoveryService();
+    app.get('/api/v1/projects/discover', async (request) => {
+      const { root } = parseRequestInput(discoveryQuerySchema, request.query);
+      const plan = await withCurrentRead(async () =>
+        projectDiscovery.createPlan({
+          root,
+          excludes: [],
+          names: {},
+          existingProjects: await services.projects.list(),
+        }),
+      );
+      const candidates = [...plan.selected, ...plan.invalid];
+      return projectDiscoveryResponseSchema.parse({
+        root: plan.root,
+        candidates: candidates.slice(0, MAX_DISCOVERY_CANDIDATES),
+        truncated: candidates.length > MAX_DISCOVERY_CANDIDATES,
+      });
+    });
     app.get('/api/v1/projects/:projectId', async (request) => {
       const { projectId } = parseRequestInput(projectParamsSchema, request.params);
       const project = await withCurrentRead(() => services.projects.get(projectId));
@@ -528,7 +570,11 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         native: await services.sessions.getNativeRef(sessionId),
       });
     });
-    app.post('/api/v1/sessions/:sessionId/heartbeat', async (request) => {
+    // Every live session heartbeats every few seconds and every bridge long-polls
+    // its inbox; at info Fastify wrote two lines per request and the daemon log
+    // grew by hundreds of megabytes a day. These two routes log at warn — a
+    // failure still surfaces, a healthy poll does not.
+    app.post('/api/v1/sessions/:sessionId/heartbeat', { logLevel: 'warn' }, async (request) => {
       const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
       const body = parseRequestInput(heartbeatRequestSchema, request.body ?? {});
       return withMutation(() => services.sessions.heartbeat(sessionId, body));
@@ -552,6 +598,17 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       const project = await withMutation(() => services.projects.update(projectId, body));
       return projectResponseSchema.parse(project);
     });
+    // Unregister only (F3): the registry and the evidence LUWI collected go; the
+    // project's files and its .luwi directory stay. Refused, with what blocks
+    // it named, while anything live still points at the project.
+    const projectUnregister = services.projectUnregister;
+    if (projectUnregister !== undefined) {
+      app.delete('/api/v1/projects/:projectId', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        await withMutation(() => projectUnregister.remove(projectId));
+        return reply.code(204).send();
+      });
+    }
     app.get('/api/v1/projects/:projectId/sessions', async (request) => {
       const { projectId } = parseRequestInput(projectParamsSchema, request.params);
       if ((await withCurrentRead(() => services.projects.get(projectId))) === null) {
@@ -950,7 +1007,10 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
             400,
           );
         }
-        const body = messageCreateRequestSchema.parse({ ...rawBody, timeoutMs });
+        // Through parseRequestInput, not a raw parse: a raw ZodError here answered
+        // every malformed ask as 500 INTERNAL_ERROR, which an agent read as the
+        // daemon being down rather than its own request being wrong.
+        const body = parseRequestInput(messageCreateRequestSchema, { ...rawBody, timeoutMs });
         const idempotencyHeader = request.headers['idempotency-key'];
         if (idempotencyHeader !== undefined && typeof idempotencyHeader !== 'string') {
           throw new ApplicationError(
@@ -1040,7 +1100,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           );
         });
       }
-      app.post('/api/v1/sessions/:sessionId/inbox/claim', async (request) => {
+      app.post('/api/v1/sessions/:sessionId/inbox/claim', { logLevel: 'warn' }, async (request) => {
         const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
         const rawBody = isRecord(request.body) ? request.body : {};
         const body = inboxClaimRequestSchema.parse({
@@ -1119,6 +1179,45 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       app.get('/api/v1/leases/:leaseId', async (request) => {
         const { leaseId } = parseRequestInput(leaseParamsSchema, request.params);
         return workLeaseSchema.parse(await withCurrentRead(() => leases.get(leaseId)));
+      });
+    }
+
+    if (services.coordinator !== undefined) {
+      const coordinator = services.coordinator;
+
+      /**
+       * The per-project coordinator role (ADR 0035). Claim is single-holder: a
+       * live holder refuses with 409 COORDINATOR_CONFLICT naming it, a terminal
+       * holder is taken over, and the same session re-claiming is idempotent.
+       */
+      app.post('/api/v1/projects/:projectId/coordinator', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(coordinatorClaimRequestSchema, request.body);
+        const claimed = await withMutation(() =>
+          coordinator.claim({
+            projectId,
+            sessionId: body.sessionId,
+            ...(body.takeover === undefined ? {} : { takeover: body.takeover }),
+          }),
+        );
+        return reply
+          .code(201)
+          .header('Location', `/api/v1/projects/${projectId}/coordinator`)
+          .send(coordinatorSchema.parse(claimed));
+      });
+
+      // Holder-only: the body names the session so a coordinator another session
+      // can evict is not a single holder.
+      app.delete('/api/v1/projects/:projectId/coordinator', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(coordinatorReleaseRequestSchema, request.body);
+        await withMutation(() => coordinator.release({ projectId, sessionId: body.sessionId }));
+        return reply.code(204).send();
+      });
+
+      app.get('/api/v1/projects/:projectId/coordinator', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        return coordinatorViewSchema.parse(await withCurrentRead(() => coordinator.get(projectId)));
       });
     }
 

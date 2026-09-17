@@ -18,7 +18,7 @@ describe('loadPulseInput', () => {
         ready({
           status: 'ok',
           runtimeState: 'ready',
-          version: '0.1.0',
+          version: '0.2.0',
           uptimeMs: 120_000,
           timestamp: '2026-08-05T08:00:00.000Z',
           redis: { connected: true, status: 'connected', latencyMs: 2 },
@@ -60,8 +60,18 @@ describe('loadPulseInput', () => {
       [
         '/api/v1/usage/summary?limit=1000',
         ready({
-          recordCount: 1,
-          sources: [{ source: 'agent-exact', recordCount: 1, totalTokens: 50 }],
+          recordCount: 3,
+          sources: [
+            { source: 'agent-exact', recordCount: 1, totalTokens: 50 },
+            // Transcript-derived: input + output present, no pre-summed total.
+            {
+              source: 'adapter-extracted',
+              recordCount: 2,
+              inputTokens: 400,
+              outputTokens: 100,
+              cacheReadInputTokens: 9_000_000,
+            },
+          ],
         }),
       ],
       [
@@ -101,7 +111,8 @@ describe('loadPulseInput', () => {
       nowMs: vi.fn().mockReturnValueOnce(100).mockReturnValueOnce(124),
     });
 
-    expect(get).toHaveBeenCalledTimes(10);
+    // 9 base reads + git, coordinator and bindings fan-outs for the 1 project.
+    expect(get).toHaveBeenCalledTimes(12);
     expect(input.measuredLatencyMs).toBe(24);
     expect(input.projects).toEqual({
       state: 'ready',
@@ -117,6 +128,13 @@ describe('loadPulseInput', () => {
     });
     expect(input.sessions.state === 'ready' && input.sessions.data[0]?.presence).toBe('online');
     expect(input.usage.state === 'ready' && input.usage.data[0]?.source).toBe('agent-exact');
+    // A transcript-derived source with no pre-summed total gets one from
+    // input + output (fresh), never folding in the 9M cache-read tokens.
+    expect(input.usage.state === 'ready' && input.usage.data[1]).toEqual({
+      source: 'adapter-extracted',
+      recordCount: 2,
+      totalTokens: 500,
+    });
     expect(input.activity.state === 'ready' && input.activity.data[0]).toMatchObject({
       streamId: '1785918000000-0',
       type: 'future.adapter.observed',
@@ -129,7 +147,7 @@ describe('loadPulseInput', () => {
       [
         '/api/v1/runtime',
         ready({
-          version: '0.1.0',
+          version: '0.2.0',
           protocolVersion: 1,
           runtimeState: 'ready',
           runtimeInstanceId: 'r1',
@@ -158,8 +176,71 @@ describe('loadPulseInput', () => {
           branches: ['main'],
           tags: ['v1'],
           worktrees: [],
+          recentCommits: [
+            {
+              sha: 'a'.repeat(40),
+              parentShas: [],
+              committedAt: '2026-08-05T07:00:00.000Z',
+              changedPaths: [],
+              trailers: {},
+              merge: false,
+            },
+            {
+              sha: 'b'.repeat(40),
+              parentShas: [],
+              committedAt: '2026-08-05T06:00:00.000Z',
+              changedPaths: [],
+              trailers: {},
+              merge: false,
+            },
+          ],
           observedAt: '2026-08-05T08:00:00.000Z',
           metadata: {},
+        }),
+      ],
+      [
+        '/api/v1/projects/p1/agents',
+        ready({
+          bindings: [
+            {
+              id: 'b1',
+              projectId: 'p1',
+              agentId: 'agent-a',
+              enabled: true,
+              role: 'backend',
+              flowRoles: ['implementer'],
+              profileIds: [],
+              capabilityBindingIds: [],
+              overrides: {},
+              createdAt: '2026-08-05T07:00:00.000Z',
+              updatedAt: '2026-08-05T07:00:00.000Z',
+            },
+            {
+              id: 'b2',
+              projectId: 'p1',
+              agentId: 'agent-b',
+              enabled: true,
+              profileIds: [],
+              capabilityBindingIds: [],
+              overrides: {},
+              createdAt: '2026-08-05T07:00:00.000Z',
+              updatedAt: '2026-08-05T07:00:00.000Z',
+            },
+          ],
+        }),
+      ],
+      [
+        '/api/v1/projects/p1/coordinator',
+        ready({
+          coordinator: {
+            projectId: 'p1',
+            sessionId: 'session-a',
+            agentId: 'agent-a',
+            claimId: 'claim-1',
+            claimedAt: '2026-08-05T07:30:00.000Z',
+            version: 1,
+          },
+          live: true,
         }),
       ],
     ]);
@@ -174,6 +255,38 @@ describe('loadPulseInput', () => {
       state: 'ready',
       data: { workspaceId: 'local', runtimeState: 'ready', port: 4782 },
     });
+    expect(input.coordinator).toMatchObject({
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [
+          {
+            projectId: 'p1',
+            coordinator: { state: 'ready', data: { sessionId: 'session-a', live: true } },
+          },
+        ],
+      },
+    });
+    // The bindings fan-out keeps only what the overview states; an absent
+    // `flowRoles` reads as none, not as a failed read.
+    expect(input.bindings).toEqual({
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [
+          {
+            projectId: 'p1',
+            bindings: {
+              state: 'ready',
+              data: [
+                { agentId: 'agent-a', enabled: true, flowRoles: ['implementer'] },
+                { agentId: 'agent-b', enabled: true, flowRoles: [] },
+              ],
+            },
+          },
+        ],
+      },
+    });
     expect(input.git).toMatchObject({
       state: 'ready',
       data: {
@@ -183,7 +296,13 @@ describe('loadPulseInput', () => {
             projectId: 'p1',
             git: {
               state: 'ready',
-              data: { branch: 'main', untrackedCount: 3, clean: false, tagCount: 1 },
+              data: {
+                branch: 'main',
+                untrackedCount: 3,
+                clean: false,
+                tagCount: 1,
+                recentCommitCount: 2,
+              },
             },
           },
         ],

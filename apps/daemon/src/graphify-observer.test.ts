@@ -93,6 +93,23 @@ describe('graphify observer', () => {
     ).resolves.toBeNull();
   });
 
+  it('reads graphify output from an overridden relative path, and only there', async () => {
+    await writeSource('src/a.ts');
+    await mkdir(join(root, 'kg'), { recursive: true });
+    await writeFile(
+      join(root, 'kg', 'graph.json'),
+      JSON.stringify({ nodes: [node('a', 'src/a.ts')], links: [] }),
+      'utf8',
+    );
+
+    const overridden = await createGraphifyObserver({
+      outputRelativePath: 'kg/graph.json',
+    }).observe({ localPath: root });
+    expect(overridden?.files.map((file) => file.relativePath)).toEqual(['src/a.ts']);
+    // The default location is not consulted once the override names another.
+    await expect(createGraphifyObserver().observe({ localPath: root })).resolves.toBeNull();
+  });
+
   it('joins nodes on source_file, because graphify writes no file node', async () => {
     await writeSource('src/a.ts', 'src/b.ts');
     await writeGraph({

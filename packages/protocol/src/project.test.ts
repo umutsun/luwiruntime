@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   projectCollectionResponseSchema,
+  projectDiscoveryResponseSchema,
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectSchema,
@@ -20,6 +21,33 @@ const project = {
 };
 
 describe('project protocol', () => {
+  it('validates a discovery response and refuses a reason it does not know', () => {
+    const candidate = {
+      directoryName: 'luwi',
+      displayName: 'LUWI Runtime',
+      localPath: 'C:/workspace/luwi',
+      canonicalPath: 'C:/workspace/luwi',
+    };
+    expect(
+      projectDiscoveryResponseSchema.parse({
+        root: 'C:/workspace',
+        candidates: [
+          candidate,
+          { ...candidate, directoryName: 'old', existingProjectId: 'project-1' },
+          { ...candidate, directoryName: 'link', reason: 'outside_root' },
+        ],
+        truncated: false,
+      }).candidates,
+    ).toHaveLength(3);
+    expect(() =>
+      projectDiscoveryResponseSchema.parse({
+        root: 'C:/workspace',
+        candidates: [{ ...candidate, reason: 'because' }],
+        truncated: false,
+      }),
+    ).toThrow();
+  });
+
   it('validates a project registration request', () => {
     expect(
       projectRegistrationRequestSchema.parse({

@@ -1,7 +1,25 @@
 import { abbreviateId, formatRelativeTime } from '../components/format.js';
 import { CopyIdButton } from '../components/id-badge.js';
+import { StatusChip } from '../components/status-chip.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
-import type { Focus, OverviewSession, PanelModel } from './model.js';
+import type { Focus, OverviewSession, PanelLink, PanelModel } from './model.js';
+
+/**
+ * Role facts show their value as chips, not bold text. The session's "Flow role"
+ * is one agent's roles joined by " + "; the project's "Flow roles" is one clause
+ * per agent joined by " · " ("agent-a: implementer · agent-b: verifier").
+ */
+function roleChips(key: string, value: string): string[] | undefined {
+  if ((key !== 'Flow role' && key !== 'Flow roles') || value === 'none') return undefined;
+  return value.includes(' · ') ? value.split(' · ') : value.split(' + ');
+}
+
+/** Long facts (a coordinator name, the per-agent flow roles) get the full width. */
+function isWideFact(key: string): boolean {
+  return key === 'Coordinator' || key === 'Flow role' || key === 'Flow roles';
+}
+
+export type CoordinatorLink = Extract<PanelLink, { kind: 'coordinator' }>;
 
 /**
  * The docked drill-down: one panel shape, four subjects.
@@ -59,11 +77,17 @@ export function DrillDown({
   nowMs,
   onFocus,
   onInspect,
+  onCoordinator,
+  coordinatorNote,
 }: {
   panel: PanelModel;
   nowMs: number;
   onFocus: (focus: Focus) => void;
   onInspect: (selection: InspectorSelection) => void;
+  /** Absent hides the coordinator switch (ADR 0035): a shell without the mutation shows no control. */
+  onCoordinator?: (link: CoordinatorLink) => void;
+  /** The outcome of the last claim or release, shown until the focus moves. */
+  coordinatorNote?: string;
 }) {
   const max = panel.trend.buckets.reduce((high, value) => Math.max(high, value), 0);
   return (
@@ -101,13 +125,26 @@ export function DrillDown({
         {panel.facts.map((fact, index) => (
           <div
             key={fact.k}
-            className="drill__fact"
+            className={`drill__fact${isWideFact(fact.k) ? ' drill__fact--wide' : ''}`}
             style={{ animationDelay: `${String(0.05 + index * 0.05)}s` }}
           >
             <span className="drill__fact-k">{fact.k}</span>
-            <span className="drill__fact-v" title={fact.detail ?? fact.v}>
-              {fact.v}
-            </span>
+            {(() => {
+              const chips = roleChips(fact.k, fact.v);
+              return chips === undefined ? (
+                <span className="drill__fact-v" title={fact.detail ?? fact.v}>
+                  {fact.v}
+                </span>
+              ) : (
+                <span className="drill__fact-roles">
+                  {chips.map((role) => (
+                    <StatusChip key={role} tone="info">
+                      {role}
+                    </StatusChip>
+                  ))}
+                </span>
+              );
+            })()}
           </div>
         ))}
       </div>
@@ -159,12 +196,30 @@ export function DrillDown({
         )}
       </div>
 
+      {coordinatorNote === undefined ? null : (
+        <p className="drill__empty" role="status">
+          {coordinatorNote}
+        </p>
+      )}
+
       <div className="drill__links">
         {panel.links.map((link) =>
           link.kind === 'route' ? (
             <a key={link.label} className="drill__link" href={link.href}>
               {link.label} ›
             </a>
+          ) : link.kind === 'coordinator' ? (
+            onCoordinator === undefined ? null : (
+              <button
+                key={link.label}
+                type="button"
+                className="drill__link"
+                aria-label={`${link.label} for session ${link.sessionId}`}
+                onClick={() => onCoordinator(link)}
+              >
+                {link.label} ›
+              </button>
+            )
           ) : link.kind === 'inspect-project' ? (
             <button
               key={link.label}

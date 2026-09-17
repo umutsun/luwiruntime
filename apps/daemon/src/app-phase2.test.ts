@@ -89,6 +89,7 @@ function messageService(): MessageService {
       selectedTargetSessionId: 'target',
       selectedTargetAgentId: 'gemini-sim',
       selectionReason: 'selected target',
+      delivery: 'live' as const,
       idempotent: false,
     })),
     get: vi.fn(async () => message),
@@ -111,6 +112,41 @@ describe('Phase 2 HTTP routes', () => {
 
   afterEach(async () => {
     await app?.close();
+  });
+
+  it('answers a malformed ask with 400 REQUEST_VALIDATION_FAILED, never 500', async () => {
+    // A raw schema parse here used to surface as INTERNAL_ERROR, which an agent
+    // read as the daemon being down rather than its own request being wrong
+    // (measured live on 2026-09-17 with a blank `retryOf`, a blank source and
+    // a bogus kind alike).
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const messages = messageService();
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: { ...phase1Services(), messages, listEvents: async () => [] },
+    });
+
+    for (const payload of [
+      { sourceSessionId: 'source', targetAgentId: 'gemini-sim', kind: 'bogus', content: 'x' },
+      { sourceSessionId: '', targetAgentId: 'gemini-sim', kind: 'question', content: 'x' },
+      {
+        sourceSessionId: 'source',
+        targetAgentId: 'gemini-sim',
+        kind: 'question',
+        content: 'x',
+        retryOf: '',
+      },
+    ]) {
+      const response = await app.inject({ method: 'POST', url: '/api/v1/messages', payload });
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: 'REQUEST_VALIDATION_FAILED' } });
+    }
+    expect(messages.ask).not.toHaveBeenCalled();
   });
 
   it('creates, lists, gets, and bounded-waits for messages', async () => {
@@ -246,6 +282,50 @@ describe('Phase 2 HTTP routes', () => {
       'target',
       expect.objectContaining({ bridgeInstanceId: 'bridge-1' }),
     );
+  });
+
+  it('logs a heartbeat and an inbox claim only at warn, so a healthy poll writes nothing', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const lines: Record<string, unknown>[] = [];
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: {
+        level: 'info',
+        stream: {
+          write: (line: string) => {
+            lines.push(JSON.parse(line) as Record<string, unknown>);
+          },
+        },
+      },
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...phase1Services(),
+        messages: messageService(),
+        listEvents: async () => [],
+      },
+    });
+
+    await app.inject({ method: 'GET', url: '/api/v1/messages' });
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/target/heartbeat',
+      payload: {},
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/target/inbox/claim',
+      payload: { bridgeInstanceId: 'bridge-1', limit: 10, blockMs: 0, minIdleMs: 0 },
+    });
+
+    const incoming = lines
+      .filter((line) => line['msg'] === 'incoming request')
+      .map((line) => (line['req'] as { url: string }).url);
+    // An ordinary read still logs its request; the two polling routes do not.
+    expect(incoming).toEqual(['/api/v1/messages']);
+    expect(lines.filter((line) => line['msg'] === 'request completed')).toHaveLength(1);
   });
 
   it('rejects Phase 2 mutations while the runtime is draining', async () => {

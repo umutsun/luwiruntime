@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import type { CoordinatorMutations } from '../api/coordinator-mutations.js';
 import type { KnowledgeGraph } from '../api/knowledge-scope.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
@@ -8,7 +9,7 @@ import type { InspectorSelection } from '../inspectors/inspector-panel.js';
 import type { PulseSnapshot } from '../pulse/model.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 import { BoardView } from './board-view.js';
-import { DrillDown } from './drill-down.js';
+import { DrillDown, type CoordinatorLink } from './drill-down.js';
 import { FlowView } from './flow-view.js';
 import { KnowledgeInspector, KnowledgeView, type KnowledgeState } from './knowledge-view.js';
 import {
@@ -47,10 +48,13 @@ export function Overview({
   realtime,
   hiddenProjects = 0,
   messages = [],
+  messagesUnavailable = false,
   onFocus,
   onInspect,
   loadSessionUsage,
   loadKnowledge,
+  coordinatorMutations,
+  onCoordinatorMutated,
 }: {
   snapshot: PulseSnapshot;
   events: readonly DashboardEvent[];
@@ -65,6 +69,7 @@ export function Overview({
   hiddenProjects?: number;
   /** The bounded message list, so the stream can show what each exchange answered. */
   messages?: readonly AgentMessage[];
+  messagesUnavailable?: boolean;
   onFocus: (focus: Focus) => void;
   onInspect: (selection: InspectorSelection) => void;
   /** Reads a focused session's usage (model, tokens); absent leaves those facts as dashes. */
@@ -77,10 +82,13 @@ export function Overview({
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<KnowledgeGraph>>;
+  /** Both present wires the drill-down's coordinator switch (ADR 0035); either absent hides it. */
+  coordinatorMutations?: CoordinatorMutations;
+  onCoordinatorMutated?: () => void;
 }) {
   const overview = useMemo(
-    () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages),
-    [snapshot, events, nowMs, hiddenProjects, messages],
+    () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable),
+    [snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable],
   );
   const resolved = resolveFocus(overview, focus);
   const focusedSessionId = resolved.kind === 'session' ? resolved.id : undefined;
@@ -112,6 +120,38 @@ export function Overview({
       panelFor(overview, resolved, realtime, sessionUsage === undefined ? {} : { sessionUsage }),
     [overview, resolved, realtime, sessionUsage],
   );
+  // The coordinator switch (ADR 0035), from the session panel the owner drills
+  // into. One request at a time; the outcome is stated in words and cleared
+  // when the focus moves, and a success re-reads the snapshot so the fact and
+  // the badge follow the daemon rather than the click.
+  const [coordinatorNote, setCoordinatorNote] = useState<string>();
+  const [coordinatorBusy, setCoordinatorBusy] = useState(false);
+  useEffect(() => {
+    setCoordinatorNote(undefined);
+  }, [focusedSessionId]);
+  const coordinatorEnabled =
+    coordinatorMutations !== undefined && onCoordinatorMutated !== undefined;
+  const runCoordinator = async (link: CoordinatorLink): Promise<void> => {
+    if (coordinatorMutations === undefined || onCoordinatorMutated === undefined) return;
+    if (coordinatorBusy) return;
+    setCoordinatorBusy(true);
+    setCoordinatorNote(undefined);
+    const result =
+      link.action === 'claim'
+        ? await coordinatorMutations.claim(link.projectId, link.sessionId)
+        : await coordinatorMutations.release(link.projectId, link.sessionId);
+    setCoordinatorBusy(false);
+    if (result.state === 'ok') {
+      setCoordinatorNote(
+        link.action === 'claim' ? 'Coordinator assigned.' : 'Coordinator released.',
+      );
+      onCoordinatorMutated();
+      return;
+    }
+    setCoordinatorNote(
+      result.reason === 'http' ? result.message : 'The coordinator update could not be completed.',
+    );
+  };
   // Each hero tile opens its own detail drawer over the overview, the owner's
   // opener for the folded routes.
   const openStat = (stat: { route: string }) => {
@@ -190,7 +230,20 @@ export function Overview({
           onSelectNode={setKnowledgeNode}
         />
       ) : (
-        <DrillDown panel={panel} nowMs={nowMs} onFocus={onFocus} onInspect={onInspect} />
+        <DrillDown
+          panel={panel}
+          nowMs={nowMs}
+          onFocus={onFocus}
+          onInspect={onInspect}
+          {...(coordinatorEnabled
+            ? {
+                onCoordinator: (link: CoordinatorLink) => {
+                  void runCoordinator(link);
+                },
+              }
+            : {})}
+          {...(coordinatorNote === undefined ? {} : { coordinatorNote })}
+        />
       )}
     </div>
   );

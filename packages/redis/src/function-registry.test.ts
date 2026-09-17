@@ -5,6 +5,7 @@ import { buildFunctionLibrary, createFunctionRegistry } from './index.js';
 const productionFunctionNames = [
   'luwi_project_register_v1',
   'luwi_project_update_v1',
+  'luwi_project_unregister_v1',
   'luwi_session_register_v1',
   'luwi_session_heartbeat_v1',
   'luwi_session_status_v1',
@@ -25,6 +26,8 @@ const productionFunctionNames = [
   'luwi_lease_renew_v1',
   'luwi_lease_release_v1',
   'luwi_lease_expire_v1',
+  'luwi_coordinator_claim_v1',
+  'luwi_coordinator_release_v1',
   'luwi_control_upsert_v1',
   'luwi_control_delete_v1',
   'luwi_control_plan_transition_v1',
@@ -41,7 +44,7 @@ describe('Redis Function registry', () => {
     const registry = createFunctionRegistry();
 
     expect(registry.libraryName).toBe('luwi_v1');
-    expect(registry.version).toBe(12);
+    expect(registry.version).toBe(13);
     expect(Object.values(registry.functions)).toEqual(productionFunctionNames);
   });
 

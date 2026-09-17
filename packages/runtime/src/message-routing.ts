@@ -1,4 +1,4 @@
-import type { AgentId, SessionView } from '@luwi/protocol';
+import type { AgentId, MessageDelivery, SessionView } from '@luwi/protocol';
 
 const statusRank: Readonly<Record<SessionView['status'], number>> = {
   idle: 0,
@@ -13,7 +13,7 @@ const statusRank: Readonly<Record<SessionView['status'], number>> = {
 };
 
 export type MessageTargetSelection =
-  | { status: 'selected'; session: SessionView; reason: string }
+  | { status: 'selected'; session: SessionView; reason: string; delivery: MessageDelivery }
   | { status: 'project_mismatch'; targetSessionId: string }
   | { status: 'unavailable'; selector: string };
 
@@ -43,6 +43,24 @@ function isDispatchWorker(session: SessionView): boolean {
   return session.metadata['bridge'] === 'native-headless';
 }
 
+// A LIVE bridge session runs a continuous inbox-claim loop, so it answers within a claim block:
+// `live`. Two conditions must BOTH hold. (1) It carries a non-empty `metadata.bridge` — the
+// native-headless fleet worker, the DeepSeek ACP bridge, or any future bridge; this is deliberately
+// BROADER than `isDispatchWorker` (native-headless only), which governs routing PREFERENCE, not
+// reader liveness. (2) It is still available — online and non-terminal. The bridge flag alone is
+// insufficient: it is retained on the record after the bridge exits, so an offline, `completed`, or
+// `disconnected` session still carries it. `deliveryForSession` is also called OUTSIDE the
+// `selectMessageTarget` availability gate — the daemon re-derives delivery when an idempotent
+// re-ask replays against the retained target — so classifying a dead bridge session `live` there
+// resurrects the exact false-timeout this signal exists to prevent. Anything not a live bridge
+// reader (an interactive GUI, or a bridge whose reader is gone) is `deferred`: the message waits in
+// the durable inbox until a reader claims it (ADR 0006 turn-based-GUI gap).
+export function deliveryForSession(session: SessionView): MessageDelivery {
+  const bridge = session.metadata['bridge'];
+  const isBridge = typeof bridge === 'string' && bridge.length > 0;
+  return isBridge && isAvailable(session) ? 'live' : 'deferred';
+}
+
 export function selectMessageTarget(input: SelectMessageTargetInput): MessageTargetSelection {
   if (input.targetSessionId !== undefined) {
     const target = input.sessions.find((candidate) => candidate.id === input.targetSessionId);
@@ -56,6 +74,7 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
       status: 'selected',
       session: target,
       reason: `direct target session ${target.id}`,
+      delivery: deliveryForSession(target),
     };
   }
 
@@ -103,5 +122,6 @@ export function selectMessageTarget(input: SelectMessageTargetInput): MessageTar
     status: 'selected',
     session: selected,
     reason: `selected agent ${targetAgentId} session ${selected.id} by status, heartbeat, and session ID`,
+    delivery: deliveryForSession(selected),
   };
 }

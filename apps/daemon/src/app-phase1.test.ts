@@ -155,6 +155,124 @@ describe('Phase 1 HTTP routes', () => {
     ).toEqual({ sessions: [session] });
   });
 
+  it('discovers one directory level under a root, read-only, marking what is registered', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const seen: unknown[] = [];
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services(),
+        listEvents: async (): Promise<RealtimeEventMessage[]> => [],
+      },
+      projectDiscovery: {
+        createPlan: async (input) => {
+          seen.push(input);
+          const under = (name: string) => `${input.root}/${name}`;
+          return {
+            root: input.root,
+            selected: [
+              {
+                directoryName: 'luwi',
+                displayName: 'LUWI Runtime',
+                localPath: under('luwi'),
+                canonicalPath: under('luwi'),
+                existingProjectId: 'project-1',
+              },
+              {
+                directoryName: 'new-app',
+                displayName: 'new-app',
+                localPath: under('new-app'),
+                canonicalPath: under('new-app'),
+              },
+            ],
+            excluded: [],
+            invalid: [
+              {
+                directoryName: 'link',
+                displayName: 'link',
+                localPath: under('link'),
+                canonicalPath: '/elsewhere/link',
+                reason: 'outside_root',
+              },
+            ],
+          };
+        },
+      },
+    });
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/projects/discover?root=C:/workspace',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      root: 'C:/workspace',
+      candidates: [
+        expect.objectContaining({ directoryName: 'luwi', existingProjectId: 'project-1' }),
+        expect.objectContaining({ directoryName: 'new-app' }),
+        expect.objectContaining({ directoryName: 'link', reason: 'outside_root' }),
+      ],
+      truncated: false,
+    });
+    // The runtime's discovery decides; the route only names the root and the registry.
+    expect(seen[0]).toMatchObject({ root: 'C:/workspace', excludes: [], names: {} });
+    expect((await app.inject({ method: 'GET', url: '/api/v1/projects/discover' })).statusCode).toBe(
+      400,
+    );
+  });
+
+  it('unregisters a project through DELETE, answering 204, 404 and the named 409', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const remove = vi.fn(async (projectId: string) => {
+      if (projectId === 'missing') {
+        throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
+      }
+      if (projectId === 'busy') {
+        throw new ApplicationError(
+          'PROJECT_HAS_ACTIVE_SESSIONS',
+          'The project still has sessions that are not terminal.',
+          409,
+          { count: 1, sessions: 'session-1' },
+        );
+      }
+    });
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services(),
+        listEvents: async (): Promise<RealtimeEventMessage[]> => [],
+        projectUnregister: { remove },
+      },
+    });
+
+    const gone = await app.inject({ method: 'DELETE', url: '/api/v1/projects/project-1' });
+    expect(gone.statusCode).toBe(204);
+    expect(gone.body).toBe('');
+    expect(remove).toHaveBeenCalledWith('project-1');
+    expect(
+      (await app.inject({ method: 'DELETE', url: '/api/v1/projects/missing' })).statusCode,
+    ).toBe(404);
+    const busy = await app.inject({ method: 'DELETE', url: '/api/v1/projects/busy' });
+    expect(busy.statusCode).toBe(409);
+    expect(busy.json()).toEqual({
+      error: {
+        code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+        message: 'The project still has sessions that are not terminal.',
+        details: { count: 1, sessions: 'session-1' },
+      },
+    });
+  });
+
   it('edits a project through PATCH and refuses a body that names the path or nothing at all', async () => {
     const readiness = createRuntimeReadiness('recovering');
     readiness.transitionTo('ready');
@@ -408,6 +526,50 @@ describe('Phase 1 HTTP routes', () => {
     const unavailableRead = await app.inject({ method: 'GET', url: '/api/v1/projects' });
     expect(unavailableRead.statusCode).toBe(503);
     expect(unavailableRead.json()).toMatchObject({ error: { code: 'RUNTIME_NOT_READY' } });
+  });
+
+  it('logs a client error at warn and a server fault at error, so daemon.log records real failures', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const lines: Array<{ level: number; msg: string; statusCode?: number }> = [];
+    const stream = {
+      write: (chunk: string) => {
+        try {
+          const entry = JSON.parse(chunk) as { level: number; msg: string; statusCode?: number };
+          if (entry.msg === 'Request failed') lines.push(entry);
+        } catch {
+          // pino may emit a non-JSON line on init; ignore it.
+        }
+      },
+    };
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      // Capture what would be written; level 'warn' keeps both warn (40) and error (50).
+      logger: { level: 'warn', stream },
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services({
+          projectList: async () => {
+            throw new Error('boom');
+          },
+        }),
+        listEvents: async (): Promise<RealtimeEventMessage[]> => [],
+      },
+    });
+
+    // A malformed query is a 400 — a client error, logged at warn.
+    expect((await app.inject({ method: 'GET', url: '/api/v1/events?limit=0' })).statusCode).toBe(
+      400,
+    );
+    // An unexpected throw is a 500 — a real server fault, logged at error.
+    expect((await app.inject({ method: 'GET', url: '/api/v1/projects' })).statusCode).toBe(500);
+
+    const client = lines.find((entry) => entry.statusCode === 400);
+    const server = lines.find((entry) => entry.statusCode === 500);
+    expect(client?.level).toBe(40);
+    expect(server?.level).toBe(50);
   });
 
   it('returns event history in ascending Stream order after query validation', async () => {

@@ -66,6 +66,7 @@ import {
   mcpRespondToMessageInputSchema,
   mcpRequestOptimizationAnalysisInputSchema,
   mcpRequestOptimizationAnalysisOutputSchema,
+  LUWI_RUNTIME_VERSION,
 } from '@luwi/protocol';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ZodError } from 'zod';
@@ -142,7 +143,7 @@ async function toolResult<T extends object>(
 export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
   const server = new McpServer({
     name: 'luwi-runtime',
-    version: '0.1.0',
+    version: LUWI_RUNTIME_VERSION,
   });
 
   server.registerTool(
@@ -560,18 +561,22 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
   server.registerTool(
     'luwi_ask_agent',
     {
-      description: 'Persist a request to an online session in the bound project.',
+      description:
+        'Persist a request to a session in the bound project. `delivery` reports how the reply comes back: `live` when the target continuously reads its inbox (a bridge worker), or `deferred` when it is a turn-based GUI that only reads on its next turn. A deferred ask returns immediately without waiting — collect the reply later with luwi_await_response rather than treating the absence of an immediate answer as a timeout.',
       inputSchema: mcpAskAgentInputSchema,
       outputSchema: mcpAskAgentOutputSchema,
     },
     (input) =>
       toolResult(
         mcpAskAgentOutputSchema,
-        ({ correlationId, selectedTargetSessionId, state, idempotent, response }) => {
-          const base = `Message ${correlationId} is ${state}; selected target ${selectedTargetSessionId}${
+        ({ correlationId, selectedTargetSessionId, delivery, state, idempotent, response }) => {
+          const base = `Message ${correlationId} is ${state}; selected target ${selectedTargetSessionId} (${delivery} delivery)${
             idempotent ? ' (idempotent retry)' : ''
           }.`;
-          return response ? `${base}\nResponse (${response.status}): ${response.answer}` : base;
+          if (response) return `${base}\nResponse (${response.status}): ${response.answer}`;
+          return delivery === 'deferred'
+            ? `${base}\nDeferred: the target reads its inbox on its next turn — call luwi_await_response to collect the reply.`
+            : base;
         },
         () => handlers.askAgent(input),
         MAX_MESSAGE_SUMMARY_CHARACTERS,

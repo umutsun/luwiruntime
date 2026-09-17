@@ -25,6 +25,7 @@ const created = {
   selectedTargetSessionId: 'target-1',
   selectedTargetAgentId: 'agent-target',
   selectionReason: 'explicit target session',
+  delivery: 'live',
   idempotent: false,
 };
 

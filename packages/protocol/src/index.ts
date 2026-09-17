@@ -14,6 +14,8 @@ export type {
 } from './runtime-event.js';
 export {
   projectCollectionResponseSchema,
+  projectDiscoveryCandidateSchema,
+  projectDiscoveryResponseSchema,
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectSchema,
@@ -23,6 +25,8 @@ export {
 export type {
   Project,
   ProjectCollectionResponse,
+  ProjectDiscoveryCandidate,
+  ProjectDiscoveryResponse,
   ProjectRegistrationRequest,
   ProjectUpdateRequest,
 } from './project.js';
@@ -131,6 +135,7 @@ export {
   messageCollectionResponseSchema,
   messageCreateRequestSchema,
   messageCreateResponseSchema,
+  messageDeliverySchema,
   messageErrorCodeSchema,
   messageKindSchema,
   messageListQuerySchema,
@@ -152,6 +157,7 @@ export type {
   MessageCollectionResponse,
   MessageCreateRequest,
   MessageCreateResponse,
+  MessageDelivery,
   MessageErrorCode,
   MessageKind,
   MessageListQuery,
@@ -187,6 +193,18 @@ export type {
   NormalizedLeasePath,
   WorkLease,
 } from './lease.js';
+export {
+  coordinatorClaimRequestSchema,
+  coordinatorReleaseRequestSchema,
+  coordinatorSchema,
+  coordinatorViewSchema,
+} from './coordinator.js';
+export type {
+  Coordinator,
+  CoordinatorClaimRequest,
+  CoordinatorReleaseRequest,
+  CoordinatorView,
+} from './coordinator.js';
 export {
   MCP_MAX_COLLECTION_ITEMS,
   mcpAcknowledgeMessageInputSchema,
@@ -317,6 +335,7 @@ export {
   detectedAgentInstallationSchema,
   effectiveAgentConfigurationSchema,
   effectiveConfigConflictSchema,
+  flowRoleSchema,
   nativeCapabilitySupportSchema,
   managementModeSchema,
   nativeConfigFileInspectionSchema,
@@ -359,6 +378,7 @@ export type {
   ControlPlaneErrorCode,
   DetectedAgentInstallation,
   EffectiveAgentConfiguration,
+  FlowRole,
   ManagementMode,
   NativeConfigInspection,
   ProjectAgentBinding,

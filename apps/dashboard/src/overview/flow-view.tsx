@@ -18,6 +18,15 @@ import {
  */
 const pct = (value: number, of: number): string => `${((value / of) * 100).toFixed(3)}%`;
 
+/** One plain word per tone, so a project card's tone tally reads at a glance. */
+const TONE_WORD: Record<string, string> = {
+  working: 'working',
+  waiting: 'waiting',
+  blocked: 'blocked',
+  quiet: 'idle',
+  done: 'done',
+};
+
 function nodeStyle(node: FlowNode) {
   return {
     left: pct(node.x, FLOW_WIDTH),
@@ -114,7 +123,20 @@ export function FlowView({
               onClick={() => toggle(node)}
             >
               <span className="flow-node__init">{node.initials}</span>
-              <span className="flow-node__name">{node.label}</span>
+              <span className="flow-node__pbody">
+                <span className="flow-node__name">{node.label}</span>
+                {node.tones && node.tones.length > 0 ? (
+                  <span className="flow-node__tones" aria-hidden="true">
+                    {node.tones.map((entry) => (
+                      <span key={entry.tone} className={`flow-node__tone tone--${entry.tone}`}>
+                        <span className="flow-node__tone-dot" />
+                        {entry.count}
+                        <span className="flow-node__tone-word">{TONE_WORD[entry.tone]}</span>
+                      </span>
+                    ))}
+                  </span>
+                ) : null}
+              </span>
               {node.buckets !== undefined && node.buckets.length > 0 ? (
                 <span className="flow-node__spark" aria-hidden="true">
                   {node.buckets.map((value, barIndex, all) => {
@@ -135,14 +157,18 @@ export function FlowView({
             </button>
           ))}
           {layout.statuses.map((node, index) => (
-            <div
+            <button
               key={node.key}
+              type="button"
               className={`${nodeClass(node, 'flow-node--status')} tone--${node.tone ?? 'quiet'}`}
               style={{ ...nodeStyle(node), animationDelay: `${String(0.5 + index * 0.08)}s` }}
+              aria-pressed={node.selected}
+              aria-label={`Focus status ${node.label}`}
+              onClick={() => toggle(node)}
             >
               <span className="flow-node__status">{node.label}</span>
               <span className="flow-node__count">{node.count}</span>
-            </div>
+            </button>
           ))}
         </div>
         <p className="flow__note" aria-hidden="true">

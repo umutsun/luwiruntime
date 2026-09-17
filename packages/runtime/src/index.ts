@@ -6,6 +6,15 @@ export { createRuntimeState, getRuntimeUptimeMs } from './runtime-state.js';
 export type { CreateRuntimeStateInput, RuntimeState } from './runtime-state.js';
 export { canonicalizeProjectPath, canonicalizeWorkingDirectory } from './project-path.js';
 export type { CanonicalPath, PathDependencies } from './project-path.js';
+export { createProjectDiscoveryService } from './project-discovery.js';
+export type {
+  ProjectCandidate,
+  ProjectDiscoveryEntry,
+  ProjectDiscoveryFileSystem,
+  ProjectDiscoveryPlan,
+  ProjectDiscoveryService,
+  ProjectDiscoveryServiceOptions,
+} from './project-discovery.js';
 export { evaluateSessionStatusTransition } from './session-status.js';
 export type { SessionStatusTransitionResult } from './session-status.js';
 export {
@@ -23,6 +32,12 @@ export type {
   NativeDeclarationObservation,
   NativeOpenLinkObservation,
 } from './native-session-policy.js';
+export { COORDINATOR_CLAIM_MAX_ATTEMPTS, evaluateCoordinatorClaim } from './coordinator-policy.js';
+export type {
+  CoordinatorClaimDecision,
+  CoordinatorClaimObservation,
+  CoordinatorHolderObservation,
+} from './coordinator-policy.js';
 export {
   createSessionBootstrap,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -60,7 +75,7 @@ export type {
 } from './starting-session-reaper.js';
 export { evaluateMessageTransition } from './message-state.js';
 export type { MessageTransitionResult } from './message-state.js';
-export { selectMessageTarget } from './message-routing.js';
+export { selectMessageTarget, deliveryForSession } from './message-routing.js';
 export type { MessageTargetSelection, SelectMessageTargetInput } from './message-routing.js';
 export {
   createMessageRequestFingerprint,

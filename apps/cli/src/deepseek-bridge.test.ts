@@ -105,6 +105,7 @@ function daemon(log: string[], inbox: InboxClaimResponse = { items: [] }) {
     }),
     claimInbox: vi.fn(async () => inbox),
     getMessage: vi.fn(async () => current),
+    listLeases: vi.fn(async () => ({ leases: [], truncated: false })),
     transitionMessage: vi.fn(async (action) => {
       current = message(action === 'acknowledge' ? 'acknowledged' : 'processing');
       log.push(`daemon:${action}`);

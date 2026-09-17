@@ -1,7 +1,10 @@
 export {
   agentDefinitionCollectionSchema,
+  capabilityBindingSchema,
   capabilityCollectionSchema,
+  capabilityPackageSchema,
   capabilityProfileCollectionSchema,
+  capabilityScanResponseSchema,
   configDriftCollectionSchema,
   configOperationReceiptSchema,
   configPlanApprovalResponseSchema,
@@ -11,7 +14,10 @@ export {
   contextFootprintSchema,
   contextSourceCollectionSchema,
   effectiveAgentConfigurationSchema,
+  flowRoleSchema,
   projectAgentBindingCollectionSchema,
+  projectAgentBindingPatchRequestSchema,
+  projectAgentBindingSchema,
 } from './control-plane.js';
 export {
   attributionCollectionSchema,
@@ -31,6 +37,12 @@ export {
 } from './intelligence.js';
 export { leaseCollectionSchema } from './lease.js';
 export {
+  coordinatorClaimRequestSchema,
+  coordinatorReleaseRequestSchema,
+  coordinatorSchema,
+  coordinatorViewSchema,
+} from './coordinator.js';
+export {
   MESSAGE_DEFAULT_TIMEOUT_MS,
   MESSAGE_MAX_CONTENT_BYTES,
   MESSAGE_MAX_SUBJECT_BYTES,
@@ -41,6 +53,7 @@ export {
 } from './message.js';
 export {
   projectCollectionResponseSchema,
+  projectDiscoveryResponseSchema,
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectUpdateRequestSchema,

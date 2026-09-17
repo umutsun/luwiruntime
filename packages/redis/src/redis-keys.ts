@@ -42,6 +42,8 @@ export interface RedisKeys {
   lease(leaseId: string): string;
   /** Held leases for one project, scored by expiry. The conflict check reads only this. */
   projectLeases(projectId: string): string;
+  /** The single per-project coordinator role (ADR 0035). One key ⇒ one holder. */
+  projectCoordinator(projectId: string): string;
   sessionLeases(sessionId: string): string;
   sessionPresence(sessionId: string): string;
   message(messageId: string): string;
@@ -116,6 +118,11 @@ export const SESSION_INBOX_CONSUMER_GROUP = 'luwi-session-inbox-v1';
 
 const safeKeyPartPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/;
 
+/** Whether an identifier read back from Redis could ever have named a key this module built. */
+export function isSafeKeyPart(value: string): boolean {
+  return safeKeyPartPattern.test(value);
+}
+
 function keyPart(value: string): string {
   if (!safeKeyPartPattern.test(value)) {
     throw new Error('Unsafe Redis key identifier');
@@ -169,6 +176,7 @@ export function createRedisKeys(namespace = 'luwi:v1'): RedisKeys {
     agentSessions: (agentId) => `${prefix}:index:agent:${keyPart(agentId)}:sessions`,
     lease: (leaseId) => `${prefix}:lease:${keyPart(leaseId)}`,
     projectLeases: (projectId) => `${prefix}:index:project:${keyPart(projectId)}:leases`,
+    projectCoordinator: (projectId) => `${prefix}:project:${keyPart(projectId)}:coordinator`,
     sessionLeases: (sessionId) => `${prefix}:index:session:${keyPart(sessionId)}:leases`,
     sessionPresence: (sessionId) => `${prefix}:presence:session:${keyPart(sessionId)}`,
     nativeSessionBinding: (bindingId) => `${prefix}:native-session:${keyPart(bindingId)}`,

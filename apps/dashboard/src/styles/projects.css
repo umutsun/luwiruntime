@@ -41,6 +41,13 @@
   padding: var(--panel-pad-y) var(--panel-pad-x) var(--space-3);
 }
 
+/* A prominent link to the repository home, above the git key-values. */
+.repo-link {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
 .link-button {
   display: block;
   padding: 0;
@@ -635,9 +642,42 @@ tr[data-selected='true'] {
   min-width: 48rem;
 }
 
-.ask-button {
-  border-color: var(--selection);
-  color: var(--selection);
+/* One consistent, quiet button for every session-row action (Make/Release
+   coordinator, Ask, Inspect, Take over). Before this they each set only a
+   colour and fell back to the browser's grey 3D default (outset border, grey
+   fill) — the mismatched look the owner flagged. A single ghost button ties
+   the row together and stays out of the way. */
+.row-action {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+}
+.row-action:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.row-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.coordinator-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-xs);
+}
+
+.coordinator-note--ok {
+  color: var(--success);
+}
+
+.coordinator-note--danger {
+  color: var(--danger);
 }
 
 .ask-dialog {
@@ -719,7 +759,9 @@ tr[data-selected='true'] {
    labelled fields, the path shown as identity. */
 .project-edit {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: var(--space-2);
   margin: 0 0 var(--space-3);
 }
 .project-form {

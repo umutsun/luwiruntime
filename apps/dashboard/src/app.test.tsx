@@ -133,6 +133,7 @@ const routedMessage: AgentMessage = {
     status: 'answered',
     answer: 'Only one drawer may mount.',
     evidenceCount: 0,
+    evidenceTypes: [],
     verifiedAt: '2026-08-05T07:00:01.000Z',
   },
 };
@@ -584,9 +585,9 @@ describe('detail routes', () => {
 
   it('navigates to a folded route from its hero stat tile', () => {
     shell(snapshot());
-    // Each hero tile opens its own detail drawer; the Events tile is Activity.
-    fireEvent.click(screen.getByRole('button', { name: 'Open Events / min' }));
-    expect(window.location.hash).toBe('#/activity');
+    // Each hero tile opens its own detail drawer; the Delivery tile is Messages.
+    fireEvent.click(screen.getByRole('button', { name: 'Open Delivery' }));
+    expect(window.location.hash).toBe('#/messages');
   });
 
   /**
@@ -814,6 +815,8 @@ describe('project settings', () => {
   const api = () => ({
     register: vi.fn().mockResolvedValue({ state: 'ok', httpStatus: 201, data: registered }),
     update: vi.fn().mockResolvedValue({ state: 'ok', httpStatus: 200, data: registered }),
+    remove: vi.fn().mockResolvedValue({ state: 'ok', httpStatus: 204 }),
+    updateAgentBinding: vi.fn(),
   });
 
   it('offers registration from the PROJECTS menu only when it can write, and re-reads after', async () => {
@@ -837,6 +840,38 @@ describe('project settings', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     // The project just registered is the focus the re-read will land on.
     expect(window.location.hash).toBe('#/pulse/p3');
+  });
+
+  it('unregisters a project behind a confirm, showing the daemon refusal in its words', async () => {
+    window.location.hash = '#/pulse/p1/detail';
+    const mutations = api();
+    mutations.remove.mockResolvedValueOnce({
+      state: 'failed',
+      reason: 'http',
+      httpStatus: 409,
+      code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+      message: 'The project still has sessions that are not terminal.',
+      details: { count: 1, sessions: 's-1' },
+    });
+    const onProjectMutated = vi.fn();
+    shell(twoProjects(), { projectMutations: mutations, onProjectMutated });
+
+    const drawer = screen.getByRole('dialog', { name: 'Project detail' });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Unregister project Alpha' }));
+    const confirm = screen.getByRole('dialog', { name: 'Unregister project' });
+    expect(within(confirm).getByText(/files and its/)).toBeTruthy();
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Unregister' }));
+    expect((await within(confirm).findByRole('alert')).textContent).toBe(
+      'The project still has sessions that are not terminal. (count: 1, sessions: s-1)',
+    );
+    expect(onProjectMutated).not.toHaveBeenCalled();
+
+    // The second confirm succeeds: the drawer closes onto the registry.
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Unregister' }));
+    await waitFor(() => expect(onProjectMutated).toHaveBeenCalledTimes(1));
+    expect(mutations.remove).toHaveBeenCalledWith('p1');
+    expect(screen.queryByRole('dialog', { name: 'Unregister project' })).toBeNull();
+    expect(window.location.hash).toBe('#/projects');
   });
 
   it('edits a project in place inside its detail drawer, over the overview', async () => {

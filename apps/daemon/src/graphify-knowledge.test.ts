@@ -29,6 +29,25 @@ describe('readGraphifyKnowledge', () => {
     }
   });
 
+  it('reads an overridden relative output path, and only that one', async () => {
+    const root = await projectWith(undefined);
+    await mkdir(join(root, 'kg'), { recursive: true });
+    await writeFile(
+      join(root, 'kg', 'graph.json'),
+      JSON.stringify({ nodes: [{ id: 'a', source_file: 'src/a.ts' }], links: [] }),
+    );
+    try {
+      const doc = await readGraphifyKnowledge({
+        localPath: root,
+        outputRelativePath: 'kg/graph.json',
+      });
+      expect(doc?.nodes.map((n) => n.id)).toEqual(['a']);
+      expect(await readGraphifyKnowledge({ localPath: root })).toBeNull();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('reads nodes, links and provenance from graph.json', async () => {
     const root = await projectWith(
       JSON.stringify({

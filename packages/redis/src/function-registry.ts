@@ -1,17 +1,20 @@
 export type RedisFunctionRegistry = {
   libraryName: string;
   /**
-   * 12 since B1. The version moves only when a **record shape** changes, which
+   * 13 since the re-dispatch link: the stored message record gained an
+   * optional `retryOf`, and the projection returns it. Before that 12 since
+   * B1. The version moves only when a **record shape** changes, which
    * is why B0 stayed at 11 despite adding `native_declare`: `isCompatible`
    * hashes the source and compares the function-name list, so a new function
    * already forces a reload on its own. B1 adds `cacheCreationInputTokens` and
    * `cacheReadInputTokens` to the stored usage record, and that is a shape
    * change, so the version moves with it.
    */
-  version: 12;
+  version: 13;
   functions: {
     projectRegister: string;
     projectUpdate: string;
+    projectUnregister: string;
     sessionRegister: string;
     sessionHeartbeat: string;
     sessionStatus: string;
@@ -32,6 +35,8 @@ export type RedisFunctionRegistry = {
     leaseRenew: string;
     leaseRelease: string;
     leaseExpire: string;
+    coordinatorClaim: string;
+    coordinatorRelease: string;
     controlUpsert: string;
     controlDelete: string;
     controlPlanTransition: string;
@@ -47,6 +52,7 @@ export type RedisFunctionRegistry = {
 const productionFunctions = {
   projectRegister: 'luwi_project_register_v1',
   projectUpdate: 'luwi_project_update_v1',
+  projectUnregister: 'luwi_project_unregister_v1',
   sessionRegister: 'luwi_session_register_v1',
   sessionHeartbeat: 'luwi_session_heartbeat_v1',
   sessionStatus: 'luwi_session_status_v1',
@@ -67,6 +73,8 @@ const productionFunctions = {
   leaseRenew: 'luwi_lease_renew_v1',
   leaseRelease: 'luwi_lease_release_v1',
   leaseExpire: 'luwi_lease_expire_v1',
+  coordinatorClaim: 'luwi_coordinator_claim_v1',
+  coordinatorRelease: 'luwi_coordinator_release_v1',
   controlUpsert: 'luwi_control_upsert_v1',
   controlDelete: 'luwi_control_delete_v1',
   controlPlanTransition: 'luwi_control_plan_transition_v1',
@@ -82,7 +90,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
   if (testSuffix === undefined) {
     return {
       libraryName: 'luwi_v1',
-      version: 12,
+      version: 13,
       functions: { ...productionFunctions },
     };
   }
@@ -93,7 +101,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
 
   return {
     libraryName: `luwi_test_${testSuffix}_v1`,
-    version: 12,
+    version: 13,
     functions: Object.fromEntries(
       Object.entries(productionFunctions).map(([key, value]) => [key, `${value}_${testSuffix}`]),
     ) as RedisFunctionRegistry['functions'],

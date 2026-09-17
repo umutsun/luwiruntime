@@ -101,6 +101,12 @@ const messageBaseFields = {
     .min(1)
     .max(MESSAGE_MAX_TIMEOUT_MS)
     .default(MESSAGE_DEFAULT_TIMEOUT_MS),
+  /**
+   * The correlation id of the message this one re-asks (a re-dispatch after a
+   * previous exchange ended without a usable answer). Declared by the caller,
+   * recorded as a fact; the runtime never re-dispatches on its own.
+   */
+  retryOf: identifierSchema.optional(),
 } as const;
 
 export const messageCreateRequestSchema = z
@@ -132,6 +138,7 @@ export const agentMessageSchema = z.strictObject({
   subject: z.string().min(1).optional(),
   content: z.string().min(1),
   evidenceRequirements: z.array(evidenceTypeSchema).max(MESSAGE_MAX_EVIDENCE_ITEMS).optional(),
+  retryOf: identifierSchema.optional(),
   state: messageStateSchema,
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
@@ -142,11 +149,22 @@ export const agentMessageSchema = z.strictObject({
   response: agentMessageResponseSchema.optional(),
 });
 
+/**
+ * How the selected target will actually receive the message (ADR 0006 / turn-based-GUI gap):
+ * `live` — the target continuously claims its inbox (a native-bridge worker), so a prompt reply is
+ * expected; `deferred` — the target is a turn-based reader (an interactive GUI) whose inbox is only
+ * claimed during its own turn, so the durable message waits until that next turn rather than being
+ * answered now. It lets a caller stop presenting a deferred delivery as a live-reader timeout.
+ */
+export const messageDeliverySchema = z.enum(['live', 'deferred']);
+export type MessageDelivery = z.infer<typeof messageDeliverySchema>;
+
 export const messageCreateResponseSchema = z.strictObject({
   message: agentMessageSchema,
   selectedTargetSessionId: identifierSchema,
   selectedTargetAgentId: agentIdSchema,
   selectionReason: z.string().min(1).max(1024),
+  delivery: messageDeliverySchema,
   idempotent: z.boolean(),
 });
 

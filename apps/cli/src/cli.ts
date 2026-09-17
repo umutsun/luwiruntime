@@ -45,7 +45,11 @@ import {
 } from '@luwi/adapters';
 import {
   ApplicationError,
+  createProjectDiscoveryService,
   createSessionBootstrap,
+  type ProjectCandidate,
+  type ProjectDiscoveryPlan,
+  type ProjectDiscoveryService,
   type SessionBootstrapChange,
 } from '@luwi/runtime';
 import { Command } from 'commander';
@@ -85,13 +89,6 @@ import {
   type LifecycleStatus,
   type RuntimeResetResult,
 } from './lifecycle.js';
-import {
-  createProjectDiscoveryService,
-  type ProjectCandidate,
-  type ProjectDiscoveryPlan,
-  type ProjectDiscoveryService,
-} from './project-discovery.js';
-
 export type FetchInitLike = {
   method?: string;
   headers?: Record<string, string>;
@@ -238,6 +235,37 @@ async function request<Output>(
   return parser.parse(body);
 }
 
+/** A request whose success is `204` with no body; anything else is the daemon's named error. */
+async function noContentRequest(
+  dependencies: CliDependencies,
+  base: string,
+  path: string,
+  init?: FetchInitLike,
+): Promise<void> {
+  const response = await dependencies.fetch(endpoint(base, path), init);
+  if (response.status === 204) return;
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  const parsed = publicErrorResponseSchema.safeParse(body);
+  if (parsed.success) {
+    throw new ApplicationError(
+      parsed.data.error.code,
+      parsed.data.error.message,
+      response.status,
+      parsed.data.error.details,
+    );
+  }
+  throw new ApplicationError(
+    'DAEMON_REQUEST_FAILED',
+    `Daemon request failed with status ${response.status}`,
+    response.status,
+  );
+}
+
 async function boundedRequest<Output>(
   dependencies: CliDependencies,
   base: string,
@@ -311,6 +339,22 @@ function positiveIntegerOption(
     );
   }
   return parsed;
+}
+
+// Client shapes a session can declare at attach, kept in step with the
+// dashboard's own list. Free-form metadata, no protocol schema — a launcher hook
+// stamps its kind so the dashboard tells a GUI/IDE attach from a CLI worker
+// without guessing from a title.
+const CLIENT_KINDS = ['cli', 'gui', 'ide', 'bridge'] as const;
+function clientKindOption(value: string): (typeof CLIENT_KINDS)[number] {
+  if ((CLIENT_KINDS as readonly string[]).includes(value)) {
+    return value as (typeof CLIENT_KINDS)[number];
+  }
+  throw new ApplicationError(
+    'CLI_OPTION_INVALID',
+    `--client must be one of ${CLIENT_KINDS.join(', ')}.`,
+    400,
+  );
 }
 
 function safeErrorCode(error: unknown): string {
@@ -1046,6 +1090,13 @@ function createBridgeDaemonClient(
         `/api/v1/messages/${encodeURIComponent(correlationId)}`,
         messageResponseSchema,
       ),
+    listLeases: async (projectId) =>
+      request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/leases?projectId=${encodeURIComponent(projectId)}&limit=200`,
+        leaseCollectionSchema,
+      ),
     transitionMessage: async (action, sessionId, correlationId) =>
       request(
         dependencies,
@@ -1484,6 +1535,7 @@ async function runNativeBridge(
     agentId: context.agentId,
     workingDirectory,
     metadata: {
+      client: 'bridge',
       bridge: 'native-headless',
       provider: provider.name,
       ...(options.model === undefined ? {} : { model: options.model }),
@@ -1629,6 +1681,7 @@ async function runNativeBridge(
     executor,
     currentSessionId: () => bootstrap.sessionId,
     agentId: context.agentId,
+    projectId: context.projectId,
     bridgeInstanceId: options.bridgeInstance,
     claimLimit: options.limit,
     claimBlockMs: options.blockMs,
@@ -1764,6 +1817,8 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
                 projectId: context.projectId,
                 agentId: context.agentId,
                 workingDirectory,
+                // A headless CLI worker wrapping a native agent (`agent run`).
+                metadata: { client: 'cli' },
                 heartbeatIntervalMs: heartbeatMs,
                 leaseRenewIntervalMs: leaseRenewMs,
                 leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, connectTimeoutMs),
@@ -2008,6 +2063,31 @@ export function createCli(dependencies: CliDependencies): Command {
         ),
       );
     });
+  projects
+    .command('unregister <projectId>')
+    .description(
+      'Forget a registered project and the evidence LUWI collected about it; its files and .luwi stay',
+    )
+    .option('--yes', 'Confirm the unregister')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (projectId: string, options: { yes?: boolean; url: string }) => {
+      const path = `/api/v1/projects/${encodeURIComponent(projectId)}`;
+      const project = await request(dependencies, options.url, path, projectResponseSchema);
+      if (options.yes !== true) {
+        // The `reset` precedent: show what would go, and stop.
+        printJson(dependencies, { project, keeps: ['files', '.luwi'], confirmWith: '--yes' });
+        throw new ApplicationError(
+          'CLI_CONFIRMATION_REQUIRED',
+          'Re-run with --yes to unregister this project. Its files and .luwi directory are never touched.',
+          400,
+        );
+      }
+      await noContentRequest(dependencies, options.url, path, {
+        method: 'DELETE',
+        headers: { accept: 'application/json' },
+      });
+      printJson(dependencies, { unregistered: projectId });
+    });
 
   const agents = registerControlPlaneCli(program, projects, dependencies);
   registerAgentRunCli(agents, dependencies);
@@ -2177,6 +2257,10 @@ export function createCli(dependencies: CliDependencies): Command {
     )
     .option('--model <model>', 'Model the agent runs, recorded as session metadata')
     .option(
+      '--client <kind>',
+      `How the session reached the runtime (${CLIENT_KINDS.join('|')}); a launcher hook stamps its kind`,
+    )
+    .option(
       '--native-adapter <adapterId>',
       'Adapter namespace of a native session reference the launcher already knows',
     )
@@ -2198,6 +2282,7 @@ export function createCli(dependencies: CliDependencies): Command {
         workingDirectory: string;
         agentKind?: string;
         model?: string;
+        client?: string;
         nativeAdapter?: string;
         nativeSession?: string;
         nativeSubagent?: string;
@@ -2290,12 +2375,15 @@ export function createCli(dependencies: CliDependencies): Command {
           },
           dependencies.platform,
         );
+        const metadata: Record<string, string> = {};
+        if (options.model !== undefined) metadata.model = options.model;
+        if (options.client !== undefined) metadata.client = clientKindOption(options.client);
         const request_ = {
           projectId,
           agentId: options.agent ?? kind,
           workingDirectory,
           ...(native === undefined ? {} : { native }),
-          ...(options.model === undefined ? {} : { metadata: { model: options.model } }),
+          ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
         };
 
         if (options.dryRun === true) {
@@ -2696,6 +2784,10 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--evidence <types>', 'Comma-separated evidence requirements')
     .option('--timeout-ms <milliseconds>', 'Message deadline')
     .option('--idempotency-key <key>', 'Retry idempotency key')
+    .option(
+      '--retry-of <correlationId>',
+      'Record this ask as a re-dispatch of an earlier, terminal exchange',
+    )
     .option('--wait-ms <milliseconds>', 'Wait up to 30000 ms for terminal state', '0')
     .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
     .action(
@@ -2709,6 +2801,7 @@ export function createCli(dependencies: CliDependencies): Command {
         evidence?: string;
         timeoutMs?: string;
         idempotencyKey?: string;
+        retryOf?: string;
         waitMs: string;
         url: string;
       }) => {
@@ -2729,6 +2822,7 @@ export function createCli(dependencies: CliDependencies): Command {
               content: options.content,
               evidenceRequirements: parseEvidenceRequirements(options.evidence),
               ...(options.timeoutMs === undefined ? {} : { timeoutMs: Number(options.timeoutMs) }),
+              ...(options.retryOf === undefined ? {} : { retryOf: options.retryOf }),
             },
             options.idempotencyKey === undefined
               ? {}

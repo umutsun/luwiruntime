@@ -32,6 +32,8 @@ export type MessageResponseSummary = {
   answer: string;
   confidence?: number;
   evidenceCount: number;
+  /** The distinct evidence types attached, in the order first attached (`test_result`, …). */
+  evidenceTypes: string[];
   verifiedAt: string;
 };
 
@@ -48,6 +50,8 @@ export type AgentMessage = {
   subject?: string;
   content: string;
   evidenceRequirements: string[];
+  /** The exchange this one re-asks, when the caller declared a re-dispatch. */
+  retryOf?: string;
   state: MessageState;
   createdAt: string;
   updatedAt: string;
@@ -120,6 +124,7 @@ export async function loadMessageScope(
     ...(message.subject === undefined ? {} : { subject: message.subject }),
     content: message.content,
     evidenceRequirements: [...(message.evidenceRequirements ?? [])],
+    ...(message.retryOf === undefined ? {} : { retryOf: message.retryOf }),
     state: message.state,
     createdAt: message.createdAt,
     updatedAt: message.updatedAt,
@@ -136,6 +141,7 @@ export async function loadMessageScope(
               ? {}
               : { confidence: message.response.confidence }),
             evidenceCount: message.response.evidence.length,
+            evidenceTypes: [...new Set(message.response.evidence.map((item) => item.type))],
             verifiedAt: message.response.verifiedAt,
           },
         }),

@@ -7,6 +7,8 @@ import type { ConfigMutations } from './api/config-mutations.js';
 import type { ConfigResources } from './api/config-scope.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
 import type { IntelligenceResources } from './api/intelligence-scope.js';
+import type { CapabilityMutations } from './api/capability-mutations.js';
+import type { CoordinatorMutations } from './api/coordinator-mutations.js';
 import type { KnowledgeGraph } from './api/knowledge-scope.js';
 import type { LeaseResources } from './api/lease-scope.js';
 import type { MessageMutations } from './api/message-mutations.js';
@@ -15,9 +17,12 @@ import type { ProjectMutations } from './api/project-mutations.js';
 import type { ProjectScopeResources } from './api/project-scope.js';
 import type { PulseFreshness } from './api/refresh-state.js';
 import type { RuntimeResources } from './api/runtime-resources.js';
+import type { ProjectDiscoveryResult } from './api/project-discovery.js';
 import type { SessionUsage } from './api/session-usage.js';
 import { BrandMark } from './components/brand-mark.js';
+import { ConfirmDialog } from './components/confirm-dialog.js';
 import { DetailDrawer } from './components/detail-drawer.js';
+import { ProjectDiscoveryPanel } from './components/project-discovery-panel.js';
 import { ProjectForm } from './components/project-form.js';
 import type { ResourceState } from './components/panel.js';
 import { THEME_OPTIONS, useTheme, type ThemeChoice } from './components/use-theme.js';
@@ -30,6 +35,7 @@ import { formatClock, RUNTIME_FOCUS, sessionBadge, toneOf, type Focus } from './
 import { Overview } from './overview/overview.js';
 import { useProjectFilter, visibleProjectIds } from './overview/use-project-filter.js';
 import { useViewChoice, VIEW_CHOICES, VIEW_LABELS } from './overview/use-view-choice.js';
+import { useBuildWatch } from './use-build-watch.js';
 import { ProjectDetail, ProjectsView } from './projects/projects-view.js';
 import { scopePulseSnapshotToProjects, type PulseSnapshot } from './pulse/model.js';
 import {
@@ -235,6 +241,9 @@ export function DashboardApp({
   onConfigMutated,
   projectMutations,
   onProjectMutated,
+  coordinatorMutations,
+  onCoordinatorMutated,
+  capabilityMutations,
   agentPairResources = {},
   agentPairLoading = false,
   leaseResources = {},
@@ -243,6 +252,7 @@ export function DashboardApp({
   loadResources,
   loadSessionUsage,
   loadKnowledge,
+  loadProjectDiscovery,
   onRetry,
   onActivityStateChange,
   now = wallClock,
@@ -279,6 +289,12 @@ export function DashboardApp({
   projectMutations?: ProjectMutations | undefined;
   /** Called after a project was registered or changed, so the snapshot can be re-read. */
   onProjectMutated?: (() => void) | undefined;
+  /** Absent keeps the sessions route free of coordinator assignment (ADR 0035). */
+  coordinatorMutations?: CoordinatorMutations | undefined;
+  /** Called after a coordinator claim/release, so the snapshot can be re-read. */
+  onCoordinatorMutated?: (() => void) | undefined;
+  /** Absent keeps the project drawer's Skills panel read-only (ADR 0036). */
+  capabilityMutations?: CapabilityMutations | undefined;
   agentPairResources?: Partial<AgentPairResources>;
   /** The pair-scoped reads have not returned yet. */
   agentPairLoading?: boolean;
@@ -300,6 +316,11 @@ export function DashboardApp({
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<KnowledgeGraph>>;
+  /** Lists one directory level under a root for "Scan a folder"; absent hides that menu item. */
+  loadProjectDiscovery?: (
+    root: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ProjectDiscoveryResult>;
   onRetry: () => void;
   onActivityStateChange?: (state: ActivityState) => void;
   /** Injectable clock, so tests can pin the header clock and every age. */
@@ -310,7 +331,13 @@ export function DashboardApp({
   const [focus, setFocus] = useState<Focus>(() => focusOfRoute(parseRoute(window.location.hash)));
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<string>();
+  // The unregister gate (F3): which project the confirm is open for, whether
+  // the call is in flight, and the daemon's refusal in its own words.
+  const [unregistering, setUnregistering] = useState<string>();
+  const [unregisterBusy, setUnregisterBusy] = useState(false);
+  const [unregisterError, setUnregisterError] = useState<string>();
   // Leaving the in-place form returns focus to the control that opened it, so
   // a keyboard reader is not dropped on the body behind the drawer.
   const editButton = useRef<HTMLButtonElement>(null);
@@ -437,6 +464,8 @@ export function DashboardApp({
   };
 
   const realtime = realtimeFace(websocketState, following, displayedActivity.pendingCount);
+  // An open tab never learns that a newer build is being served; this does.
+  const staleBuild = useBuildWatch();
   const snapshotTag =
     freshness === 'refreshing'
       ? { word: 'REFRESHING', title: 'Refreshing snapshot' }
@@ -568,6 +597,8 @@ export function DashboardApp({
             onMessageCreated={(correlationId) => {
               window.location.hash = routeHref({ name: 'messages', correlationId });
             }}
+            {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
+            {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
             onOpenSession={(session) => openInspector({ kind: 'session', sessionId: session.id })}
           />
         );
@@ -689,6 +720,17 @@ export function DashboardApp({
             {snapshotTag.word}
           </button>
         )}
+        {staleBuild ? (
+          <button
+            type="button"
+            className="snapshot-tag"
+            aria-label="Reload to the newer dashboard build"
+            title="The daemon serves a newer dashboard build than this tab loaded — reload to get it"
+            onClick={() => window.location.reload()}
+          >
+            NEW BUILD · RELOAD
+          </button>
+        ) : null}
         {invalidEventCount > 0 ? (
           <span className="sr-only" role="status">
             {invalidEventCount} invalid realtime messages ignored
@@ -805,6 +847,19 @@ export function DashboardApp({
                     <span className="menu__glyph">+</span>
                     <span className="menu__label">Register a project</span>
                   </button>
+                  {loadProjectDiscovery === undefined ? null : (
+                    <button
+                      type="button"
+                      className="menu__item"
+                      onClick={() => {
+                        setProjectMenuOpen(false);
+                        setDiscovering(true);
+                      }}
+                    >
+                      <span className="menu__glyph">/</span>
+                      <span className="menu__label">Scan a folder…</span>
+                    </button>
+                  )}
                 </>
               )}
             </div>
@@ -857,10 +912,13 @@ export function DashboardApp({
           {...(messageResources.messages?.state === 'ready'
             ? { messages: messageResources.messages.data.items }
             : {})}
+          messagesUnavailable={messageResources.messages?.state === 'unavailable'}
           onFocus={changeFocus}
           onInspect={openInspector}
           {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
           {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
+          {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
+          {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
         />
       </main>
 
@@ -896,6 +954,26 @@ export function DashboardApp({
             }}
           />
         </DetailDrawer>
+      ) : discovering && projectMutations !== undefined && loadProjectDiscovery !== undefined ? (
+        <DetailDrawer
+          eyebrow="Projects"
+          title="Scan a folder"
+          onClose={() => setDiscovering(false)}
+        >
+          <ProjectDiscoveryPanel
+            load={loadProjectDiscovery}
+            mutations={projectMutations}
+            onCancel={() => setDiscovering(false)}
+            onRegistered={(ids) => {
+              if (ids.length === 0) return;
+              onProjectMutated?.();
+              // The panel stays open so each row's outcome is readable; the
+              // focus follows the first project just registered.
+              const first = ids[0];
+              if (first !== undefined) changeFocus({ kind: 'project', id: first });
+            }}
+          />
+        </DetailDrawer>
       ) : detail !== undefined ? (
         <DetailDrawer
           key={detail.projectId}
@@ -925,13 +1003,76 @@ export function DashboardApp({
               <button
                 ref={editButton}
                 type="button"
-                className="link-button"
+                className="row-action"
                 aria-label={`Edit project ${detailProject.name}`}
                 onClick={() => setEditingProjectId(detail.projectId)}
               >
-                Edit project
+                Edit
+              </button>
+              <button
+                type="button"
+                className="row-action"
+                aria-label={`Unregister project ${detailProject.name}`}
+                onClick={() => {
+                  setUnregisterError(undefined);
+                  setUnregistering(detail.projectId);
+                }}
+              >
+                Unregister…
               </button>
             </p>
+          )}
+          {projectMutations === undefined ||
+          detailProject === undefined ||
+          unregistering !== detail.projectId ? null : (
+            <ConfirmDialog
+              title="Unregister project"
+              confirmLabel="Unregister"
+              busy={unregisterBusy}
+              onCancel={() => setUnregistering(undefined)}
+              onConfirm={() => {
+                void (async () => {
+                  setUnregisterBusy(true);
+                  setUnregisterError(undefined);
+                  const result = await projectMutations.remove(detail.projectId);
+                  setUnregisterBusy(false);
+                  if (result.state === 'ok') {
+                    setUnregistering(undefined);
+                    onProjectMutated?.();
+                    changeFocus(RUNTIME_FOCUS);
+                    window.location.hash = routeHref({ name: 'projects' });
+                    return;
+                  }
+                  // The daemon names what blocks it; the scalar details ride along.
+                  const details =
+                    result.reason === 'http' && result.details !== undefined
+                      ? ` (${Object.entries(result.details)
+                          .map(([key, value]) => `${key}: ${String(value)}`)
+                          .join(', ')})`
+                      : '';
+                  setUnregisterError(
+                    result.reason === 'http' || result.reason === 'input'
+                      ? `${result.message}${details}`
+                      : result.reason === 'transport'
+                        ? 'The daemon could not be reached. Check runtime status and try again.'
+                        : 'The daemon returned an invalid response. The project was not unregistered.',
+                  );
+                })();
+              }}
+            >
+              <p>
+                LUWI forgets <strong>{detailProject.name}</strong> and the evidence it collected —
+                sessions, leases, messages, usage, git observations, packages, findings. Nothing on
+                disk changes: the project's files and its <code>.luwi</code> directory stay exactly
+                as they are. The daemon refuses while a live session, a held lease, a live
+                coordinator or a message in flight still points at the project.
+              </p>
+              {unregisterError === undefined ? null : (
+                <p className="outcome outcome--bad" role="alert">
+                  {unregisterError}
+                </p>
+              )}
+            </ConfirmDialog>
           )}
           <ProjectDetail
             snapshot={snapshot}
@@ -942,6 +1083,9 @@ export function DashboardApp({
             agentPairResources={agentPairResources}
             agentPairLoading={agentPairLoading}
             leaseResources={leaseResources}
+            {...(projectMutations === undefined ? {} : { projectMutations })}
+            {...(capabilityMutations === undefined ? {} : { capabilityMutations })}
+            {...(onProjectMutated === undefined ? {} : { onMutated: onProjectMutated })}
             onSelectAgent={(agentId) => {
               window.location.hash = detailHref(agentId);
             }}

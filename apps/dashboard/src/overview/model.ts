@@ -7,7 +7,12 @@ import {
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
-import type { CountValue, PulseSnapshot, SessionContextEvidence } from '../pulse/model.js';
+import type {
+  ClientKind,
+  CountValue,
+  PulseSnapshot,
+  SessionContextEvidence,
+} from '../pulse/model.js';
 import { bucketRetainedWindow, type RetainedBounds } from '../pulse/retained-window.js';
 import { compareStreamIds } from '../realtime/activity-store.js';
 import type { DashboardEvent } from '../realtime/schema.js';
@@ -130,6 +135,8 @@ export type OverviewSession = {
   model?: string;
   /** The native GUI chat title the desktop app reported, when the attach carried one. */
   title?: string;
+  /** How the session reached the runtime (cli/gui/ide/bridge), for the hover hint. */
+  clientKind: ClientKind;
   context: SessionContextEvidence;
   eventCount: number;
   /**
@@ -271,6 +278,10 @@ export type Overview = {
   sessionsState: 'ready' | 'unavailable';
   activityState: 'ready' | 'unavailable';
   gitTruncated: boolean;
+  /** The per-project coordinator holder (ADR 0035), keyed by project id; a missing key is not read or free. */
+  coordinatorByProject: PulseSnapshot['coordinatorByProject'];
+  /** The flow roles (ADR 0036) by project then agent; a missing key is not read or none. */
+  flowRolesByProject: PulseSnapshot['flowRolesByProject'];
   /** Registered projects the owner's filter keeps off the overview. */
   hiddenProjects: number;
   bounds?: RetainedBounds;
@@ -333,6 +344,81 @@ function rateOf(events: readonly DashboardEvent[]): Rate {
     perMinute,
     label: perMinute >= 10 ? String(Math.round(perMinute)) : perMinute.toFixed(1),
   };
+}
+
+/**
+ * Fleet delivery quality folded from the bounded message list — observed FACTS (answered share,
+ * latency, failed/timed-out share), never an aggregate score or release/lifecycle judgement. The
+ * window is the recent bounded list, stated in the sub so it never reads as all-time.
+ */
+function deliveryQualityOf(messages: readonly AgentMessage[]): {
+  value: string;
+  sub: string;
+  fraction: number;
+} {
+  const terminal = messages.filter(
+    (message) =>
+      message.state === 'responded' ||
+      message.state === 'rejected' ||
+      message.state === 'timed_out' ||
+      message.state === 'failed',
+  );
+  if (terminal.length === 0) return { value: '—', sub: 'no exchanges', fraction: 0 };
+  const answered = terminal.filter(
+    (message) => message.state === 'responded' && message.response?.status === 'answered',
+  );
+  const failed = terminal.filter(
+    (message) =>
+      message.state === 'failed' || message.state === 'timed_out' || message.state === 'rejected',
+  );
+  const latencies = answered
+    .map((message) =>
+      message.respondedAt === undefined
+        ? Number.NaN
+        : Date.parse(message.respondedAt) - Date.parse(message.createdAt),
+    )
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .sort((left, right) => left - right);
+  const p50 = median(latencies);
+  const latency =
+    p50 === undefined
+      ? ''
+      : ` · p50 ${p50 < 120_000 ? `${String(Math.round(p50 / 1000))}s` : formatDuration(p50)}`;
+  // Failure as a SHARE of terminal exchanges, not a bare count — a count reads the same at any fleet
+  // size. The value tile already carries the answered %, so the sub drops that (kept it visible) and
+  // states the complementary facts that must survive 1366×768: failure rate, p50, the two facts
+  // Faz 3.2 deferred until something produced them — exchanges declared as a re-dispatch of an
+  // earlier one (`retryOf`) and answers that carry test or build evidence — and the window.
+  const failPct = Math.round((failed.length / terminal.length) * 100);
+  const redispatched = terminal.filter((message) => message.retryOf !== undefined).length;
+  const verified = answered.filter((message) =>
+    (message.response?.evidenceTypes ?? []).some(
+      (type) => type === 'test_result' || type === 'build_result',
+    ),
+  ).length;
+  const verifiedText =
+    answered.length === 0
+      ? 'verified —'
+      : `verified ${String(Math.round((verified / answered.length) * 100))}%`;
+  return {
+    value: `${String(Math.round((answered.length / terminal.length) * 100))}%`,
+    sub: `${String(failPct)}% failed/timed out${latency} · ${String(redispatched)} re-dispatched · ${verifiedText} · recent ${String(terminal.length)}`,
+    fraction: answered.length / terminal.length,
+  };
+}
+
+/**
+ * A true median: an even-sized sample averages its two middle values (30s & 90s → 60s), never the
+ * lower-middle one. The `?? ` guards satisfy `noUncheckedIndexedAccess`; `mid` is always in range
+ * because an empty sample returns early.
+ */
+function median(sorted: readonly number[]): number | undefined {
+  if (sorted.length === 0) return undefined;
+  const mid = Math.floor(sorted.length / 2);
+  const hi = sorted[mid] ?? 0;
+  if (sorted.length % 2 !== 0) return hi;
+  const lo = sorted[mid - 1] ?? hi;
+  return (lo + hi) / 2;
 }
 
 /** The first present payload string that tells a reader what the event touched. */
@@ -403,6 +489,7 @@ export function buildOverview(
   nowMs: number,
   hiddenProjects = 0,
   messages: readonly AgentMessage[] = [],
+  messagesUnavailable = false,
 ): Overview {
   const events = [...retained].sort((left, right) =>
     compareStreamIds(left.streamId, right.streamId),
@@ -484,6 +571,7 @@ export function buildOverview(
         ...(session.taskSummary === undefined ? {} : { taskSummary: session.taskSummary }),
         ...(typeof model === 'string' ? { model } : {}),
         ...(typeof title === 'string' && title.trim() !== '' ? { title } : {}),
+        clientKind: session.clientKind,
         context: session.context,
         eventCount: eventsBySession.get(session.id)?.length ?? 0,
         live,
@@ -599,13 +687,15 @@ export function buildOverview(
     sessions,
     allSessions,
     rate,
-    stats: statsOf(snapshot, projects, rate),
+    stats: statsOf(snapshot, projects, messages, messagesUnavailable),
     ticker,
     health: healthOf(snapshot),
     projectsState: snapshot.projectCount.state === 'unavailable' ? 'unavailable' : 'ready',
     sessionsState: snapshot.sessionsState,
     activityState: snapshot.activityState,
     gitTruncated: snapshot.gitTruncated,
+    coordinatorByProject: snapshot.coordinatorByProject,
+    flowRolesByProject: snapshot.flowRolesByProject,
     hiddenProjects,
     ...(bounds === undefined ? {} : { bounds }),
     events,
@@ -616,7 +706,13 @@ export function buildOverview(
 // Stats
 // ---------------------------------------------------------------------------
 
-function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rate): Stat[] {
+function statsOf(
+  snapshot: PulseSnapshot,
+  projects: OverviewProject[],
+  messages: readonly AgentMessage[],
+  messagesUnavailable: boolean,
+): Stat[] {
+  const quality = deliveryQualityOf(messages);
   const sessionsUnavailable = snapshot.activeSessionCount.state === 'unavailable';
   const active =
     snapshot.activeSessionCount.state === 'unavailable' ? 0 : snapshot.activeSessionCount.value;
@@ -640,8 +736,21 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
     .map((row) => `${row.label.toLowerCase()} ${formatTokens(row.totalTokens ?? 0)}`);
   const usageUnavailable = snapshot.usageState === 'unavailable';
 
-  const contextUnavailable = snapshot.contextState === 'unavailable';
-  const { loaded, invoked } = snapshot.context;
+  // Fleet output: recent commits the per-project Git fan-out observed. This
+  // replaced the Context tile, which read empty for every fleet — agents report
+  // context loading through MCP and turn-based GUIs never do. Commits are always
+  // there and answer "what is the fleet shipping". `recentCommitCount` is the
+  // observed window (git log -n), not a repository total, so the sub says so and
+  // the value is never presented as an all-time count.
+  const gitUnavailable = snapshot.gitState === 'unavailable';
+  const observedRepos = snapshot.repositoryFacts.filter((fact) => fact.git.state === 'ready');
+  const recentCommits = observedRepos.reduce(
+    (sum, fact) => sum + (fact.git.state === 'ready' ? fact.git.data.recentCommitCount : 0),
+    0,
+  );
+  const reposWithCommits = observedRepos.filter(
+    (fact) => fact.git.state === 'ready' && fact.git.data.recentCommitCount > 0,
+  ).length;
 
   return [
     {
@@ -669,19 +778,15 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
       route: '#/projects',
     },
     {
-      key: 'events',
-      label: 'Events / min',
-      value: snapshot.activityState === 'unavailable' ? '—' : rate.label,
-      sub:
-        snapshot.activityState === 'unavailable'
-          ? 'activity unavailable'
-          : rate.total === 0
-            ? 'no retained events'
-            : `${String(rate.total)} retained over ${rate.spanLabel ?? 'a moment'}`,
-      unavailable: snapshot.activityState === 'unavailable',
-      fraction: rate.latestShare,
-      bars: rate.buckets,
-      route: '#/activity',
+      // Fleet delivery quality replaces raw events/min here (activity is not delivery quality); the
+      // events/min figure still lives on the Radial lens centre disc, so activity is not lost.
+      key: 'delivery',
+      label: 'Delivery',
+      value: messagesUnavailable ? '—' : quality.value,
+      sub: messagesUnavailable ? 'messages unavailable' : quality.sub,
+      unavailable: messagesUnavailable,
+      fraction: messagesUnavailable ? 0 : quality.fraction,
+      route: '#/messages',
     },
     {
       key: 'tokens',
@@ -699,15 +804,19 @@ function statsOf(snapshot: PulseSnapshot, projects: OverviewProject[], rate: Rat
       route: '#/usage',
     },
     {
-      key: 'context',
-      label: 'Context loaded',
-      value: contextUnavailable ? '—' : String(loaded),
-      sub: contextUnavailable
-        ? 'context unavailable'
-        : `${String(invoked)} invoked · ${String(snapshot.contextInsights.loadedNotInvoked)} loaded, never invoked`,
-      unavailable: contextUnavailable,
-      fraction: loaded === 0 ? 0 : invoked / loaded,
-      route: '#/context',
+      key: 'commits',
+      label: 'Commits · recent',
+      value: gitUnavailable ? '—' : String(recentCommits),
+      sub: gitUnavailable
+        ? 'git unavailable'
+        : observedRepos.length === 0
+          ? 'no repositories scanned'
+          : recentCommits === 0
+            ? 'none in the observed window'
+            : `${String(reposWithCommits)} of ${String(observedRepos.length)} projects · observed window`,
+      unavailable: gitUnavailable,
+      fraction: observedRepos.length === 0 ? 0 : reposWithCommits / observedRepos.length,
+      route: '#/projects',
     },
   ];
 }
@@ -720,13 +829,18 @@ export type Focus =
   | { kind: 'runtime' }
   | { kind: 'project'; id: string }
   | { kind: 'agent'; id: string }
-  | { kind: 'session'; id: string };
+  | { kind: 'session'; id: string }
+  /** A Flow status column tile: every session whose status is `value`. */
+  | { kind: 'status'; value: string };
 
 export const RUNTIME_FOCUS: Focus = { kind: 'runtime' };
 
 export function sameFocus(left: Focus, right: Focus): boolean {
   if (left.kind !== right.kind) return false;
-  return left.kind === 'runtime' || right.kind === 'runtime' || left.id === right.id;
+  if (left.kind === 'runtime' || right.kind === 'runtime') return true;
+  if (left.kind === 'status' || right.kind === 'status')
+    return left.kind === 'status' && right.kind === 'status' && left.value === right.value;
+  return left.id === right.id;
 }
 
 /** A focus whose subject vanished from the snapshot falls back to the runtime. */
@@ -736,6 +850,10 @@ export function resolveFocus(overview: Overview, focus: Focus): Focus {
     return overview.projects.some((project) => project.id === focus.id) ? focus : RUNTIME_FOCUS;
   if (focus.kind === 'agent')
     return overview.agents.some((agent) => agent.id === focus.id) ? focus : RUNTIME_FOCUS;
+  if (focus.kind === 'status')
+    return overview.statuses.some((status) => status.status === focus.value)
+      ? focus
+      : RUNTIME_FOCUS;
   return overview.allSessions.some((session) => session.id === focus.id) ? focus : RUNTIME_FOCUS;
 }
 
@@ -756,13 +874,66 @@ export function relatedToFocus(session: OverviewSession, focus: Focus): boolean 
   if (focus.kind === 'runtime') return true;
   if (focus.kind === 'project') return session.projectId === focus.id;
   if (focus.kind === 'agent') return session.agentId === focus.id;
+  if (focus.kind === 'status') return session.status === focus.value;
   return session.id === focus.id;
 }
 
 export type PanelLink =
   | { kind: 'inspect-project'; label: string; id: string; name: string }
   | { kind: 'inspect-session'; label: string; id: string }
-  | { kind: 'route'; label: string; href: string };
+  | { kind: 'route'; label: string; href: string }
+  /** The coordinator switch (ADR 0035): rendered only when the shell wires the mutation. */
+  | {
+      kind: 'coordinator';
+      label: string;
+      action: 'claim' | 'release';
+      projectId: string;
+      sessionId: string;
+    };
+
+/**
+ * Who holds a project's coordinator role (ADR 0035), as a fact the drill-down
+ * can state: the live holder named the way its row is (title, task, else id),
+ * or `none` when the role is free or was never read. A terminal holder is not
+ * live and reads as none — the daemon lets the next claim take it over.
+ */
+export function coordinatorFact(
+  overview: Overview,
+  projectId: string,
+): { holderId?: string; v: string; detail?: string } {
+  const held = overview.coordinatorByProject[projectId];
+  if (held === undefined || !held.live || held.sessionId === null) return { v: 'none' };
+  const holder = overview.allSessions.find((session) => session.id === held.sessionId);
+  const v =
+    holder === undefined
+      ? `Session ${abbreviateId(held.sessionId)}`
+      : (holder.title ?? holder.taskSummary ?? `Session ${abbreviateId(holder.id)}`);
+  return {
+    holderId: held.sessionId,
+    v,
+    ...(holder === undefined ? {} : { detail: `${v} · ${holder.agentName}` }),
+  };
+}
+
+/**
+ * The flow roles (ADR 0036) one agent holds in a project, or `none`: the
+ * binding is configuration, so a session inherits its agent's roles and the
+ * drill-down states them beside the coordinator fact rather than inferring
+ * anything from the session itself.
+ */
+export function flowRoleFact(overview: Overview, projectId: string, agentId: string): string {
+  const roles = overview.flowRolesByProject[projectId]?.[agentId] ?? [];
+  return roles.length === 0 ? 'none' : roles.join(' + ');
+}
+
+/** Every bound agent's flow roles in a project, one clause per agent, or `none`. */
+export function projectFlowRolesFact(overview: Overview, projectId: string): string {
+  const byAgent = overview.flowRolesByProject[projectId] ?? {};
+  const clauses = Object.entries(byAgent)
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([agentId, roles]) => `${agentId}: ${roles.join(' + ')}`);
+  return clauses.length === 0 ? 'none' : clauses.join(' · ');
+}
 
 export type PanelBlock = { title: string; rows: Array<readonly [string, string]> };
 
@@ -848,6 +1019,7 @@ function gitFacts(project: OverviewProject): Array<{ k: string; v: string }> {
     const word = project.git.state === 'not-observed' ? 'not observed' : 'unavailable';
     return [
       { k: 'HEAD', v: word },
+      { k: 'Commits', v: word },
       { k: 'State', v: word },
       { k: 'Tags', v: word },
     ];
@@ -855,6 +1027,8 @@ function gitFacts(project: OverviewProject): Array<{ k: string; v: string }> {
   const git = project.git.data;
   return [
     { k: 'HEAD', v: git.headSha === undefined ? '—' : abbreviateSha(git.headSha).slice(0, 7) },
+    // The observation is a bounded recent window, never a repo total: label it so.
+    { k: 'Commits', v: `${String(git.recentCommitCount)} recent` },
     {
       k: 'State',
       v: git.clean ? 'clean' : `${String(git.untrackedCount)} untracked`,
@@ -965,13 +1139,22 @@ export function panelFor(
       project.git.state === 'ready' && project.git.data.headSha !== undefined
         ? `HEAD ${abbreviateSha(project.git.data.headSha).slice(0, 7)}`
         : 'HEAD not observed';
+    const coordinator = coordinatorFact(overview, project.id);
     return {
       eyebrow: project.eyebrow,
       title: project.name,
       badge: project.badge,
       sub: `${String(project.sessions.length)} active · ${String(project.allSessions.length)} observed · ${sha}`,
       ...(blocked === undefined ? {} : { block: blockedEvidence(blocked, events, nowMs) }),
-      facts: gitFacts(project),
+      facts: [
+        ...gitFacts(project),
+        {
+          k: 'Coordinator',
+          v: coordinator.v,
+          ...(coordinator.detail === undefined ? {} : { detail: coordinator.detail }),
+        },
+        { k: 'Flow roles', v: projectFlowRolesFact(overview, project.id) },
+      ],
       trend: trendOf(
         'Events · retained',
         events.filter((event) => event.projectId === project.id),
@@ -993,11 +1176,9 @@ export function panelFor(
           label: 'Detail',
           href: `#/pulse/${encodeURIComponent(project.id)}/detail`,
         },
-        {
-          kind: 'route',
-          label: 'Knowledge graph',
-          href: `#/knowledge/${encodeURIComponent(project.id)}`,
-        },
+        // Knowledge is a top-level lens now (ADR 0032), so a per-drill-down "Knowledge
+        // graph" link just repeats the header bar — the separate #/knowledge/<id> page was
+        // rejected. Dropped as redundant UI.
       ],
     };
   }
@@ -1025,6 +1206,32 @@ export function panelFor(
     };
   }
 
+  if (focus.kind === 'status') {
+    const node = overview.statuses.find((candidate) => candidate.status === focus.value);
+    if (node === undefined) return panelFor(overview, RUNTIME_FOCUS, realtime);
+    const projectCount = new Set(node.sessions.map((session) => session.projectId)).size;
+    const agentCount = new Set(node.sessions.map((session) => session.agentId)).size;
+    const ids = new Set(node.sessions.map((session) => session.id));
+    return {
+      eyebrow: 'Status',
+      title: node.label.toUpperCase(),
+      badge: { label: String(node.sessions.length), tone: 'ink' },
+      sub: `${String(node.sessions.length)} session${node.sessions.length === 1 ? '' : 's'} · ${String(projectCount)} project${projectCount === 1 ? '' : 's'} · ${String(agentCount)} agent${agentCount === 1 ? '' : 's'}`,
+      facts: [
+        { k: 'Category', v: node.tone },
+        { k: 'Live', v: String(node.sessions.filter((session) => session.live).length) },
+        { k: 'Projects', v: String(projectCount) },
+      ],
+      trend: trendOf(
+        'Events · retained',
+        events.filter((event) => event.sessionId !== undefined && ids.has(event.sessionId)),
+        overview,
+      ),
+      list: { label: 'Sessions', rows: node.sessions, empty: sessionsEmpty(overview) },
+      links: [{ kind: 'route', label: 'Sessions', href: '#/sessions' }],
+    };
+  }
+
   if (focus.kind === 'session') {
     const session = overview.allSessions.find((candidate) => candidate.id === focus.id);
     if (session === undefined) return panelFor(overview, RUNTIME_FOCUS, realtime);
@@ -1043,6 +1250,33 @@ export function panelFor(
         : session.tone === 'done'
           ? 'dim'
           : 'outline';
+    const coordinator = coordinatorFact(overview, session.projectId);
+    const holdsRole = coordinator.holderId === session.id;
+    // The role switch, where the owner looks for it (ADR 0035): release for the
+    // live holder, claim for any other active session — a live holder answers
+    // 409 with its name, so a swap is release then claim. A terminal session
+    // gets no control: it cannot hold the role.
+    const roleLink: PanelLink[] = holdsRole
+      ? [
+          {
+            kind: 'coordinator',
+            label: 'Release role',
+            action: 'release',
+            projectId: session.projectId,
+            sessionId: session.id,
+          },
+        ]
+      : session.active
+        ? [
+            {
+              kind: 'coordinator',
+              label: 'Make coordinator',
+              action: 'claim',
+              projectId: session.projectId,
+              sessionId: session.id,
+            },
+          ]
+        : [];
     return {
       eyebrow: `${session.projectName} · ${session.agentName}`,
       title: session.title ?? session.taskSummary ?? `Session ${abbreviateId(session.id)}`,
@@ -1050,7 +1284,11 @@ export function panelFor(
       sub: `${session.branch ?? 'no branch reported'} · started ${formatRelativeTime(session.startedAt, nowMs)} · heartbeat ${formatRelativeTime(session.lastHeartbeatAt, nowMs)}`,
       ...(session.tone === 'blocked' ? { block: blockedEvidence(session, events, nowMs) } : {}),
       copyId: { label: 'session', id: session.id },
-      facts: sessionFacts(session, context, extras),
+      facts: [
+        ...sessionFacts(session, context, extras),
+        { k: 'Coordinator', v: holdsRole ? 'this session' : coordinator.v },
+        { k: 'Flow role', v: flowRoleFact(overview, session.projectId, session.agentId) },
+      ],
       trend: trendOf(
         'Events · retained',
         events.filter((event) => event.sessionId === session.id),
@@ -1066,7 +1304,7 @@ export function panelFor(
         empty: 'No other sessions in this project',
         selectedId: session.id,
       },
-      links: [{ kind: 'inspect-session', label: 'Inspect', id: session.id }],
+      links: [{ kind: 'inspect-session', label: 'Inspect', id: session.id }, ...roleLink],
     };
   }
 
@@ -1092,9 +1330,11 @@ export function panelFor(
     trend: trendOf('Events · retained', events, overview),
     list: { label: 'Active sessions', rows: overview.sessions, empty: sessionsEmpty(overview) },
     // The runtime-global drawers not already opened by a hero tile. Kept short,
-    // not a menu: the stat strip covers activity/usage/context/sessions/projects.
+    // not a menu: the hero stat strip covers usage/context/sessions/projects, and
+    // Activity lives here now that the Delivery tile took the events tile's slot.
     links: [
       { kind: 'route', label: 'Runtime', href: '#/runtime' },
+      { kind: 'route', label: 'Activity', href: '#/activity' },
       { kind: 'route', label: 'Agents', href: '#/agents' },
       { kind: 'route', label: 'Graph', href: '#/graph' },
       { kind: 'route', label: 'Optimization', href: '#/optimization' },
@@ -1157,6 +1397,8 @@ export type FlowNode = {
   quiet: boolean;
   tone?: Tone;
   buckets?: number[];
+  /** Project node only: its active sessions counted by tone, severity-first. */
+  tones?: Array<{ tone: Tone; count: number }>;
 };
 
 export type FlowRibbon = {
@@ -1182,6 +1424,18 @@ function bezier(x1: number, y1: number, x2: number, y2: number): string {
   const mid = (x1 + x2) / 2;
   const f = (value: number) => value.toFixed(1);
   return `M${f(x1)} ${f(y1)} C${f(mid)} ${f(y1)} ${f(mid)} ${f(y2)} ${f(x2)} ${f(y2)}`;
+}
+
+/** Severity-first so a project's blocked and working sessions read before its idle ones. */
+const FLOW_TONE_ORDER: readonly Tone[] = ['blocked', 'working', 'waiting', 'quiet', 'done'];
+/** A project's active sessions counted by tone, dropping the empty tones. */
+function flowToneTally(sessions: readonly OverviewSession[]): Array<{ tone: Tone; count: number }> {
+  const counts = new Map<Tone, number>();
+  for (const session of sessions) counts.set(session.tone, (counts.get(session.tone) ?? 0) + 1);
+  return FLOW_TONE_ORDER.filter((tone) => counts.has(tone)).map((tone) => ({
+    tone,
+    count: counts.get(tone) ?? 0,
+  }));
 }
 
 export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
@@ -1258,11 +1512,13 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
       dim: anySelection && !selected && !project.sessions.some(related),
       quiet: project.sessions.length === 0,
       buckets: project.buckets,
+      tones: flowToneTally(project.sessions),
     };
   });
 
   const statuses: FlowNode[] = overview.statuses.map((status, index) => {
     const box = statusBoxes[index] ?? { y: 0, h: unit };
+    const selected = focus.kind === 'status' && focus.value === status.status;
     return {
       key: `status:${status.status}`,
       x: FLOW_COLUMNS.statuses.x,
@@ -1273,9 +1529,9 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
       initials: '',
       sub: '',
       count: status.sessions.length,
-      focus: RUNTIME_FOCUS,
-      selected: false,
-      dim: anySelection && !status.sessions.some(related),
+      focus: { kind: 'status', value: status.status },
+      selected,
+      dim: anySelection && !selected && !status.sessions.some(related),
       quiet: false,
       tone: status.tone,
     };
@@ -1354,6 +1610,8 @@ export type RadialNode = {
   kind: 'project' | 'session';
   label: string;
   sub: string;
+  /** The session's own name (GUI chat title), shown as a third visible label line at a glance; '' for a project node. */
+  name: string;
   /** The hover tooltip: names a node the orbit shows only as initials. */
   hint: string;
   initials: string;
@@ -1382,6 +1640,8 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
     kind: 'project' | 'session';
     label: string;
     sub: string;
+    /** The session's own name for the third visible label line; '' for a project node. */
+    name: string;
     /** The hover tooltip: names a node the orbit shows only as initials. */
     hint: string;
     initials: string;
@@ -1397,6 +1657,7 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
           kind: 'project',
           label: candidate.name,
           sub: candidate.badge.label,
+          name: '',
           hint: `${candidate.name} · ${String(candidate.sessions.length)} session${
             candidate.sessions.length === 1 ? '' : 's'
           }`,
@@ -1411,12 +1672,15 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
           // cannot: the native GUI chat title (what the user recognises the session
           // by), when the attach reported one, else the session id so two same-agent
           // nodes are still told apart — never the task subject, a different thing.
+          // The client kind rides along so a bridge worker is told from a GUI attach.
+          const hintName = session.title ?? `Session ${abbreviateId(session.id)}`;
           return {
             key: session.id,
             kind: 'session',
             label: session.agentName,
             sub: (session.branch ?? session.statusLabel).toUpperCase(),
-            hint: session.title ?? `Session ${abbreviateId(session.id)}`,
+            name: snippet(session.title ?? `Session ${abbreviateId(session.id)}`, 18),
+            hint: `${hintName} · ${session.clientKind}`,
             initials: session.initials,
             events: session.eventCount,
             sessions: [session],
@@ -1445,6 +1709,7 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
       kind: item.kind,
       label: item.label,
       sub: item.sub,
+      name: item.name,
       hint: item.hint,
       initials: item.initials,
       x: Number(x.toFixed(1)),

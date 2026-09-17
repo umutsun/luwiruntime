@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { LUWI_RUNTIME_VERSION } from '@luwi/protocol';
 
 import { fileURLToPath } from 'node:url';
 
@@ -32,7 +33,7 @@ async function main(): Promise<void> {
     env: childEnvironment(),
     stderr: 'inherit',
   });
-  const client = new Client({ name: 'luwi-mcp-harness', version: '0.1.0' });
+  const client = new Client({ name: 'luwi-mcp-harness', version: LUWI_RUNTIME_VERSION });
   await client.connect(transport);
   try {
     const toolName = process.argv[2];

@@ -1,4 +1,4 @@
-import type { AgentMessageResponse, EvidenceType, MessageKind } from '@luwi/protocol';
+import type { AgentMessageResponse, EvidenceType, MessageKind, WorkLease } from '@luwi/protocol';
 
 import { boundedAnswer, isTerminalMessageState, type BridgeDaemonClient } from './bridge-daemon.js';
 import type { NativeAgentName } from './agent-runner.js';
@@ -30,6 +30,8 @@ export type NativeBridgeOptions = {
   /** The session the bootstrap currently owns; re-read every poll so a rotation is picked up. */
   currentSessionId: () => string | undefined;
   agentId: string;
+  /** The bridge's project; used to fetch advisory leases held by other agents for prompt context. */
+  projectId: string;
   bridgeInstanceId: string;
   claimLimit: number;
   claimBlockMs: number;
@@ -125,6 +127,36 @@ export function codexMcpBindingArgs(sessionId: string, daemonUrl: string): strin
   ];
 }
 
+/** How many leased paths to name before collapsing the rest into a count; keeps the prompt bounded. */
+const MAX_COORDINATION_LEASES = 15;
+
+/**
+ * Advisory coordination context a headless worker cannot see from its working directory: the
+ * project paths OTHER sessions currently hold a work lease on (ADR 0020). Grounding the worker in
+ * these avoids a blind edit to a file another agent is mid-change on. Returns undefined when nothing
+ * is held by anyone else, so `framePrompt` adds no empty section.
+ */
+export function renderLeaseCoordination(
+  leases: readonly WorkLease[],
+  currentSessionId: string,
+): string | undefined {
+  const held = leases
+    .filter((lease) => lease.state === 'held' && lease.sessionId !== currentSessionId)
+    .sort((left, right) => left.path.localeCompare(right.path));
+  if (held.length === 0) return undefined;
+  const shown = held.slice(0, MAX_COORDINATION_LEASES);
+  const lines = shown.map(
+    (lease) =>
+      `- ${lease.path} — held by agent ${lease.agentId} until ${lease.expiresAt}: ${lease.reason}`,
+  );
+  if (held.length > shown.length) lines.push(`- …and ${held.length - shown.length} more`);
+  return [
+    'Fleet coordination (LUWI, advisory): other agents currently hold work leases on these project',
+    'paths. Avoid editing them, or acquire your own lease and coordinate before you do:',
+    ...lines,
+  ].join('\n');
+}
+
 export function framePrompt(input: {
   correlationId: string;
   kind: MessageKind;
@@ -134,6 +166,7 @@ export function framePrompt(input: {
   agentId: string;
   evidenceRequirements: readonly EvidenceType[];
   content: string;
+  coordination?: string;
 }): string {
   const evidence =
     input.evidenceRequirements.length === 0 ? 'none' : input.evidenceRequirements.join(', ');
@@ -143,6 +176,7 @@ export function framePrompt(input: {
     `through the luwi-runtime MCP tools: call luwi_respond_to_message with correlationId`,
     `"${input.correlationId}" and a status of answered, partially_answered, rejected or failed. If`,
     `those tools are unavailable, print your final answer as plain text. Evidence requested: ${evidence}.`,
+    ...(input.coordination === undefined ? [] : ['', input.coordination]),
     '',
     input.content,
   ].join('\n');
@@ -215,24 +249,40 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
       return;
     }
 
-    const prompt = framePrompt({
-      correlationId,
-      kind: current.kind,
-      sourceAgentId: current.sourceAgentId,
-      ...(current.subject === undefined ? {} : { subject: current.subject }),
-      sessionId: session,
-      agentId: options.agentId,
-      evidenceRequirements: current.evidenceRequirements ?? [],
-      content: payloadContent,
-    });
-    if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_BYTES) {
-      await completeSafely(
+    let coordination: string | undefined;
+    try {
+      const { leases } = await options.daemon.listLeases(options.projectId);
+      coordination = renderLeaseCoordination(leases, session);
+    } catch {
+      // Best-effort: lease context is a bonus for the worker, never a reason to fail the message.
+    }
+    const frame = (withCoordination: boolean): string =>
+      framePrompt({
         correlationId,
-        failure(
-          `The framed message prompt is too long for a headless native run (limit ${MAX_PROMPT_BYTES} bytes).`,
-        ),
-      );
-      return;
+        kind: current.kind,
+        sourceAgentId: current.sourceAgentId,
+        ...(current.subject === undefined ? {} : { subject: current.subject }),
+        sessionId: session,
+        agentId: options.agentId,
+        evidenceRequirements: current.evidenceRequirements ?? [],
+        content: payloadContent,
+        ...(withCoordination && coordination !== undefined ? { coordination } : {}),
+      });
+    // The coordination block is best-effort context and must NEVER fail a message: if it is only the
+    // prepended leases that push the prompt over the cap, drop the block and keep the message. Fail
+    // solely when the message's own framed content exceeds the limit.
+    let prompt = frame(true);
+    if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_BYTES) {
+      prompt = frame(false);
+      if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_BYTES) {
+        await completeSafely(
+          correlationId,
+          failure(
+            `The framed message prompt is too long for a headless native run (limit ${MAX_PROMPT_BYTES} bytes).`,
+          ),
+        );
+        return;
+      }
     }
 
     await options.daemon.setSessionStatus(session, 'tool_running');

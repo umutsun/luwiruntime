@@ -113,11 +113,16 @@ export type ProjectTechnology = {
   evidenceCount: number;
 };
 
+export type FlowRole = 'implementer' | 'verifier';
+
 export type ProjectBinding = {
   id: string;
   agentId: string;
   enabled: boolean;
+  /** The free-text area description the owner bound the agent with. */
   role?: string;
+  /** The flow roles the binding holds (F5); absent means none were set. */
+  flowRoles?: FlowRole[];
   profileCount: number;
   capabilityCount: number;
   updatedAt: string;
@@ -419,6 +424,7 @@ export async function loadProjectScope(
                   agentId: binding.agentId,
                   enabled: binding.enabled,
                   ...(binding.role === undefined ? {} : { role: binding.role }),
+                  ...(binding.flowRoles === undefined ? {} : { flowRoles: binding.flowRoles }),
                   profileCount: binding.profileIds.length,
                   capabilityCount: binding.capabilityBindingIds.length,
                   updatedAt: binding.updatedAt,

@@ -98,6 +98,7 @@ function input(): PulseInput {
                 clean: false,
                 untrackedCount: 3,
                 tagCount: 2,
+                recentCommitCount: 7,
                 observedAt: minutesAgo(1),
               },
             },
@@ -205,6 +206,125 @@ const events = (): DashboardEvent[] => [
 ];
 
 const overview = () => buildOverview(buildPulseSnapshot(input()), events(), NOW);
+
+describe('coordinator role in the drill-down (ADR 0035)', () => {
+  const withHolder = (sessionId: string, live: boolean): PulseInput => ({
+    ...input(),
+    coordinator: {
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [{ projectId: 'p1', coordinator: { state: 'ready', data: { sessionId, live } } }],
+      },
+    },
+  });
+  const model = (source: PulseInput) => buildOverview(buildPulseSnapshot(source), events(), NOW);
+  const coordinatorFactOf = (panel: ReturnType<typeof panelFor>) =>
+    panel.facts.find((fact) => fact.k === 'Coordinator')?.v;
+
+  it('states the live holder on the project panel, named as its row is, and none when free', () => {
+    const held = panelFor(
+      model(withHolder('s-think', true)),
+      { kind: 'project', id: 'p1' },
+      'live',
+    );
+    expect(coordinatorFactOf(held)).toBe('Implement graph generation transition');
+    expect(coordinatorFactOf(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live'))).toBe(
+      'none',
+    );
+  });
+
+  it('offers Release to the holder, Make coordinator to another active session, nothing to a terminal one', () => {
+    const held = model(withHolder('s-think', true));
+    const holder = panelFor(held, { kind: 'session', id: 's-think' }, 'live');
+    expect(coordinatorFactOf(holder)).toBe('this session');
+    expect(holder.links).toContainEqual({
+      kind: 'coordinator',
+      label: 'Release role',
+      action: 'release',
+      projectId: 'p1',
+      sessionId: 's-think',
+    });
+    const other = panelFor(held, { kind: 'session', id: 's-blocked' }, 'live');
+    expect(coordinatorFactOf(other)).toBe('Implement graph generation transition');
+    expect(other.links).toContainEqual({
+      kind: 'coordinator',
+      label: 'Make coordinator',
+      action: 'claim',
+      projectId: 'p1',
+      sessionId: 's-blocked',
+    });
+    const done = panelFor(held, { kind: 'session', id: 's-done' }, 'live');
+    expect(done.links.some((link) => link.kind === 'coordinator')).toBe(false);
+  });
+
+  it('reads a terminal holder as none, so the role is shown as takeable', () => {
+    const panel = panelFor(
+      model(withHolder('s-done', false)),
+      { kind: 'project', id: 'p1' },
+      'live',
+    );
+    expect(coordinatorFactOf(panel)).toBe('none');
+    const other = panelFor(
+      model(withHolder('s-done', false)),
+      { kind: 'session', id: 's-think' },
+      'live',
+    );
+    expect(other.links.some((link) => link.kind === 'coordinator' && link.action === 'claim')).toBe(
+      true,
+    );
+  });
+});
+
+describe('flow roles in the drill-down (ADR 0036)', () => {
+  const withRoles = (): PulseInput => ({
+    ...input(),
+    bindings: {
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [
+          {
+            projectId: 'p1',
+            bindings: {
+              state: 'ready',
+              data: [
+                { agentId: 'a2', enabled: true, flowRoles: ['verifier'] },
+                { agentId: 'a1', enabled: true, flowRoles: ['implementer'] },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  });
+  const model = (source: PulseInput) => buildOverview(buildPulseSnapshot(source), events(), NOW);
+  const factOf = (panel: ReturnType<typeof panelFor>, key: string) =>
+    panel.facts.find((fact) => fact.k === key)?.v;
+
+  it('states every bound agent’s roles on the project panel, sorted by agent, and none when unread', () => {
+    expect(
+      factOf(panelFor(model(withRoles()), { kind: 'project', id: 'p1' }, 'live'), 'Flow roles'),
+    ).toBe('a1: implementer · a2: verifier');
+    expect(factOf(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live'), 'Flow roles')).toBe(
+      'none',
+    );
+  });
+
+  it('gives a session its agent’s role in its own project only', () => {
+    const held = model(withRoles());
+    expect(factOf(panelFor(held, { kind: 'session', id: 's-think' }, 'live'), 'Flow role')).toBe(
+      'implementer',
+    );
+    expect(factOf(panelFor(held, { kind: 'session', id: 's-blocked' }, 'live'), 'Flow role')).toBe(
+      'verifier',
+    );
+    // a1 holds implementer in p1; s-wait is a1's session in p2, where nothing is bound.
+    expect(factOf(panelFor(held, { kind: 'session', id: 's-wait' }, 'live'), 'Flow role')).toBe(
+      'none',
+    );
+  });
+});
 
 describe('tones and badges', () => {
   it('maps the nine statuses to five tones and leaves labels alone', () => {
@@ -341,6 +461,7 @@ describe('buildOverview', () => {
         status: 'answered',
         answer: 'Done — all 14 checks pass on the branch.',
         evidenceCount: 1,
+        evidenceTypes: ['session_state'],
         verifiedAt: minutesAgo(1),
       },
     };
@@ -387,11 +508,11 @@ describe('buildOverview', () => {
     const failed = input();
     failed.sessions = { state: 'unavailable' };
     failed.usage = { state: 'unavailable' };
-    failed.context = { state: 'unavailable' };
+    failed.git = { state: 'unavailable' };
     failed.projects = { state: 'unavailable' };
     failed.activity = { state: 'unavailable' };
     const model = buildOverview(buildPulseSnapshot(failed), [], NOW);
-    for (const key of ['sessions', 'projects', 'tokens', 'context', 'events']) {
+    for (const key of ['sessions', 'projects', 'tokens', 'commits']) {
       const stat = model.stats.find((candidate) => candidate.key === key);
       expect(stat?.value, key).toBe('—');
       expect(stat?.unavailable, key).toBe(true);
@@ -400,13 +521,118 @@ describe('buildOverview', () => {
     expect(model.health.label).toBe('HEALTHY');
   });
 
+  it('derives fleet delivery quality (answered rate, latency, failures) from the message list', () => {
+    const base: AgentMessage = {
+      id: 'm',
+      correlationId: 'c',
+      projectId: 'p1',
+      sourceSessionId: 's',
+      sourceAgentId: 'a',
+      targetSessionId: 't',
+      targetAgentId: 'b',
+      selectionReason: 'r',
+      kind: 'instruction',
+      content: 'x',
+      evidenceRequirements: [],
+      state: 'responded',
+      createdAt: '2026-07-29T12:00:00.000Z',
+      updatedAt: '2026-07-29T12:00:30.000Z',
+      deadlineAt: '2026-07-29T12:02:00.000Z',
+    };
+    const answered = (
+      id: string,
+      respondedAt: string,
+      evidenceTypes: string[] = [],
+      retryOf?: string,
+    ): AgentMessage => ({
+      ...base,
+      id,
+      ...(retryOf === undefined ? {} : { retryOf }),
+      state: 'responded',
+      respondedAt,
+      response: {
+        status: 'answered',
+        answer: 'ok',
+        evidenceCount: evidenceTypes.length,
+        evidenceTypes,
+        verifiedAt: respondedAt,
+      },
+    });
+    const messages: AgentMessage[] = [
+      // Re-asked after an earlier exchange, and answered with a test result attached.
+      answered('m1', '2026-07-29T12:00:30.000Z', ['test_result', 'file_reference'], 'c0'), // 30s
+      answered('m2', '2026-07-29T12:01:30.000Z'), // 90s
+      { ...base, id: 'm3', state: 'failed' },
+      { ...base, id: 'm4', state: 'timed_out' },
+      // Terminal (responded) but NOT answered → counts in the denominator, never as answered.
+      {
+        ...base,
+        id: 'm5',
+        state: 'responded',
+        respondedAt: '2026-07-29T12:00:30.000Z',
+        response: {
+          status: 'partially_answered',
+          answer: 'part',
+          evidenceCount: 0,
+          evidenceTypes: [],
+          verifiedAt: '2026-07-29T12:00:30.000Z',
+        },
+      },
+      { ...base, id: 'm6', state: 'rejected' },
+    ];
+    const model = buildOverview(buildPulseSnapshot(input()), [], NOW, 0, messages);
+    const delivery = model.stats.find((stat) => stat.key === 'delivery');
+    expect(delivery?.value).toBe('33%'); // 2 answered of 6 terminal — partial_answered is NOT answered
+    // Failure as a SHARE of terminal, not a bare count: 3 of 6 = 50% (failed + timed_out + rejected).
+    expect(delivery?.sub).toContain('50% failed/timed out');
+    expect(delivery?.sub).toContain('recent 6');
+    // The two facts Faz 3.2 deferred: exchanges declared as a re-dispatch (m1), and answered
+    // exchanges carrying test or build evidence (m1 of the 2 answered) — facts, never a score.
+    expect(delivery?.sub).toContain('1 re-dispatched');
+    expect(delivery?.sub).toContain('verified 50%');
+    // True median of 30s and 90s is 60s, not the lower-middle 30s.
+    expect(delivery?.sub).toMatch(/p50 60s/u);
+    expect(delivery?.route).toBe('#/messages');
+    expect(delivery?.unavailable).toBe(false);
+  });
+
+  it('shows delivery as unavailable, not "no exchanges", when the messages read failed', () => {
+    const model = buildOverview(buildPulseSnapshot(input()), [], NOW, 0, [], true);
+    const delivery = model.stats.find((stat) => stat.key === 'delivery');
+    expect(delivery?.value).toBe('—');
+    expect(delivery?.sub).toBe('messages unavailable');
+    expect(delivery?.unavailable).toBe(true);
+  });
+
+  it('shows delivery as a dash with no exchanges when the message list is empty', () => {
+    const delivery = overview().stats.find((stat) => stat.key === 'delivery');
+    expect(delivery?.value).toBe('—');
+    expect(delivery?.sub).toBe('no exchanges');
+  });
+
   it('breaks the sessions stat down by real status words', () => {
     const sessions = overview().stats.find((stat) => stat.key === 'sessions');
     expect(sessions?.value).toBe('3');
     expect(sessions?.sub).toBe('1 thinking · 1 waiting for input · 1 blocked');
-    const context = overview().stats.find((stat) => stat.key === 'context');
-    expect(context?.value).toBe('2');
-    expect(context?.sub).toBe('1 invoked · 1 loaded, never invoked');
+    // Commits replaced the always-empty Context tile: p1's Git fan-out observed 7
+    // recent commits, p2 is not-observed, p3 has no Git entry.
+    const commits = overview().stats.find((stat) => stat.key === 'commits');
+    expect(commits?.value).toBe('7');
+    expect(commits?.sub).toBe('1 of 1 projects · observed window');
+    expect(commits?.route).toBe('#/projects');
+  });
+
+  it('reads the commits tile as none when nothing was observed in the window', () => {
+    const quiet = input();
+    quiet.git = {
+      state: 'ready',
+      data: { truncated: false, entries: [{ projectId: 'p1', git: { state: 'not-observed' } }] },
+    };
+    const model = buildOverview(buildPulseSnapshot(quiet), [], NOW);
+    const commits = model.stats.find((stat) => stat.key === 'commits');
+    expect(commits?.value).toBe('0');
+    expect(commits?.unavailable).toBe(false);
+    expect(commits?.sub).toBe('no repositories scanned');
   });
 
   it('gives no Redis verdict without a daemon answer', () => {
@@ -430,6 +656,10 @@ describe('panelFor', () => {
     ]);
     expect(panel.list.rows.map((row) => row.id)).toEqual(['s-wait', 's-blocked', 's-think']);
     expect(panel.block).toBeUndefined();
+    // Activity opens from here now that the Delivery tile took the events tile's hero slot.
+    expect(panel.links.some((link) => link.kind === 'route' && link.href === '#/activity')).toBe(
+      true,
+    );
   });
 
   it('explains a blocked project from the newest lease denial for that session', () => {
@@ -446,10 +676,17 @@ describe('panelFor', () => {
     ]);
     expect(panel.facts).toEqual([
       { k: 'HEAD', v: '31c4f54' },
+      { k: 'Commits', v: '7 recent' },
       { k: 'State', v: '3 untracked' },
       { k: 'Tags', v: '2' },
+      // No coordinator read in this fixture: the role reads as free (ADR 0035).
+      { k: 'Coordinator', v: 'none' },
+      // No bindings read either: no flow roles to state (ADR 0036).
+      { k: 'Flow roles', v: 'none' },
     ]);
-    expect(panel.links.map((link) => link.kind)).toEqual(['inspect-project', 'route', 'route']);
+    // Inspect + Detail only; the redundant Knowledge-graph link was dropped (Knowledge is a lens).
+    expect(panel.links.map((link) => link.kind)).toEqual(['inspect-project', 'route']);
+    expect(panel.links.map((link) => link.label)).toEqual(['Inspect', 'Detail']);
   });
 
   it('says so when a blocked session has no denial in the retained stream', () => {
@@ -472,6 +709,8 @@ describe('panelFor', () => {
       { k: 'Model', v: 'model-x' },
       { k: 'Tokens', v: '\u2014' },
       { k: 'Context', v: '\u2014', detail: 'skills 2 loaded \u00b7 1 invoked' },
+      { k: 'Coordinator', v: 'none' },
+      { k: 'Flow role', v: 'none' },
     ]);
     expect(panel.copyId).toEqual({ label: 'session', id: 's-think' });
     expect(panel.list.rows.map((row) => row.id)).toEqual(['s-blocked', 's-done']);
@@ -530,6 +769,8 @@ describe('panelFor', () => {
         v: '511.6k',
         detail: `latest request sent 511,600 tokens · observed ${formatClock(NOW - 50 * 60_000)} · skills not observed`,
       },
+      { k: 'Coordinator', v: 'none' },
+      { k: 'Flow role', v: 'none' },
     ]);
     const loading = { sessionId: 's-blocked', state: { state: 'loading' as const } };
     expect(
@@ -604,6 +845,45 @@ describe('flow layout', () => {
     expect(layout.agents.find((node) => node.key === 'agent:a2')?.selected).toBe(true);
     expect(layout.projects.find((node) => node.key === 'project:p2')?.dim).toBe(true);
   });
+
+  it('focuses a status tile and lights only the flow that reaches it', () => {
+    const layout = layoutFlow(overview(), { kind: 'status', value: 'thinking' });
+    const thinking = layout.statuses.find((node) => node.key === 'status:thinking');
+    expect(thinking?.selected).toBe(true);
+    expect(thinking?.focus).toEqual({ kind: 'status', value: 'thinking' });
+    expect(thinking?.dim).toBe(false);
+    const lit = layout.ribbons.filter((ribbon) => !ribbon.dim).map((ribbon) => ribbon.sessionId);
+    expect(new Set(lit)).toEqual(new Set(['s-think']));
+    expect(layout.statuses.find((node) => node.key === 'status:blocked')?.dim).toBe(true);
+    expect(layout.agents.find((node) => node.key === 'agent:a2')?.dim).toBe(true);
+  });
+
+  it('tallies a project card by tone, severity-first, and leaves a quiet project empty', () => {
+    const layout = layoutFlow(overview(), RUNTIME_FOCUS);
+    expect(layout.projects.find((node) => node.key === 'project:p1')?.tones).toEqual([
+      { tone: 'blocked', count: 1 },
+      { tone: 'working', count: 1 },
+    ]);
+    expect(layout.projects.find((node) => node.key === 'project:p3')?.tones).toEqual([]);
+  });
+});
+
+describe('status focus drill-down', () => {
+  it('lists the sessions in the focused status', () => {
+    const panel = panelFor(overview(), { kind: 'status', value: 'thinking' }, 'live');
+    expect(panel.eyebrow).toBe('Status');
+    expect(panel.title).toBe('THINKING');
+    expect(panel.badge.label).toBe('1');
+    expect(panel.list.rows.map((row) => row.id)).toEqual(['s-think']);
+    expect(panel.facts.find((fact) => fact.k === 'Category')?.v).toBe('working');
+  });
+
+  it('falls back to the runtime when the status is no longer present', () => {
+    expect(resolveFocus(overview(), { kind: 'status', value: 'nope' })).toEqual(RUNTIME_FOCUS);
+    expect(panelFor(overview(), { kind: 'status', value: 'nope' }, 'live').title).toBe(
+      'Luwi Runtime',
+    );
+  });
 });
 
 describe('radial layout', () => {
@@ -635,9 +915,9 @@ describe('radial layout', () => {
     // No session in the fixture reported a GUI title, so the hint falls back to the
     // session id — never the task subject, which is a different thing.
     const untitled = layoutRadial(overview(), { kind: 'project', id: 'p1' });
-    expect(untitled.nodes[1]?.hint).toBe('Session s-think');
+    expect(untitled.nodes[1]?.hint).toBe('Session s-think · cli');
     expect(untitled.nodes[1]?.hint).not.toContain('Implement graph generation transition');
-    expect(untitled.nodes[0]?.hint).toBe('Session s-blocked');
+    expect(untitled.nodes[0]?.hint).toBe('Session s-blocked · cli');
 
     // When the attach did report a GUI title, that title names the node.
     const base = overview();
@@ -659,7 +939,61 @@ describe('radial layout', () => {
       },
       { kind: 'project', id: 'p1' },
     );
-    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening');
+    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening · cli');
+
+    // The client kind rides the hint, so a bridge worker is told from a GUI attach.
+    const bridged = layoutRadial(
+      {
+        ...base,
+        projects: base.projects.map((project) =>
+          project.id === 'p1'
+            ? {
+                ...project,
+                sessions: project.sessions.map((session) =>
+                  session.id === 's-think'
+                    ? { ...session, clientKind: 'bridge' as const }
+                    : session,
+                ),
+              }
+            : project,
+        ),
+      },
+      { kind: 'project', id: 'p1' },
+    );
+    expect(bridged.nodes[1]?.hint).toBe('Session s-think · bridge');
+  });
+
+  it('shows a session name as a truncated third label line, full name on hover', () => {
+    // No GUI title → the visible name line falls back to the session id (short, untruncated).
+    const untitled = layoutRadial(overview(), { kind: 'project', id: 'p1' });
+    expect(untitled.nodes[1]?.name).toBe('Session s-think');
+    expect(untitled.nodes[1]?.hint).toBe('Session s-think · cli');
+    // A long GUI title is truncated on the visible line but kept whole in the hover hint.
+    const base = overview();
+    const titled = layoutRadial(
+      {
+        ...base,
+        projects: base.projects.map((project) =>
+          project.id === 'p1'
+            ? {
+                ...project,
+                sessions: project.sessions.map((session) =>
+                  session.id === 's-think'
+                    ? { ...session, title: 'Investigate R3-3 hardening e2e failure' }
+                    : session,
+                ),
+              }
+            : project,
+        ),
+      },
+      { kind: 'project', id: 'p1' },
+    );
+    expect(titled.nodes[1]?.name).toMatch(/^Investigate R3-3.*…$/u);
+    expect((titled.nodes[1]?.name ?? '').length).toBeLessThanOrEqual(18);
+    expect(titled.nodes[1]?.hint).toBe('Investigate R3-3 hardening e2e failure · cli');
+    // A project node carries no name line.
+    const projects = layoutRadial(overview(), RUNTIME_FOCUS);
+    expect(projects.nodes[0]?.name).toBe('');
   });
 });
 

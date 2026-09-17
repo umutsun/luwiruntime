@@ -164,6 +164,58 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       ).resolves.not.toBeNull();
     });
 
+    it('stores and projects a declared re-dispatch link, and leaves it absent otherwise', async () => {
+      const linked = await messageRepository.createMessage(
+        request({
+          id: 'message-2',
+          correlationId: 'correlation-2',
+          idempotencyKeyHash: '1'.repeat(64),
+          retryOf: 'correlation-1',
+        }),
+      );
+      expect(linked).toMatchObject({
+        status: 'created',
+        message: { id: 'message-2', retryOf: 'correlation-1' },
+        event: { payload: { retryOf: 'correlation-1' } },
+      });
+      await expect(
+        commandClient.sendCommand(['HGET', keys.message('message-2'), 'retryOf']),
+      ).resolves.toBe('correlation-1');
+      await expect(messageRepository.getMessage('correlation-2')).resolves.toMatchObject({
+        retryOf: 'correlation-1',
+      });
+
+      const plain = await messageRepository.createMessage(
+        request({
+          id: 'message-3',
+          correlationId: 'correlation-3',
+          idempotencyKeyHash: '2'.repeat(64),
+        }),
+      );
+      expect(plain.status).toBe('created');
+      const stored = await messageRepository.getMessage('correlation-3');
+      expect(stored).not.toBeNull();
+      expect(stored).not.toHaveProperty('retryOf');
+      await expect(
+        commandClient.sendCommand(['HEXISTS', keys.message('message-3'), 'retryOf']),
+      ).resolves.toBe(0);
+
+      // A blank link is refused before any write.
+      await expect(
+        messageRepository.createMessage(
+          request({
+            id: 'message-4',
+            correlationId: 'correlation-4',
+            idempotencyKeyHash: '3'.repeat(64),
+            retryOf: '',
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'REDIS_ARGUMENT_INVALID' });
+      await expect(commandClient.sendCommand(['EXISTS', keys.message('message-4')])).resolves.toBe(
+        0,
+      );
+    });
+
     it('returns the original message for a same-payload retry and conflicts on reuse', async () => {
       const globalLength = Number(await commandClient.sendCommand(['XLEN', keys.globalEvents]));
       const inboxLength = Number(

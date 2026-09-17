@@ -99,17 +99,23 @@
   color: var(--text-dim);
 }
 .stat-tile__sub {
-  overflow: hidden;
   min-width: 0;
   color: var(--text-muted);
   font-size: var(--font-size-2xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* Wrap rather than truncate: the delivery tile's sub (failure rate, p50, recent window) must stay
+     fully visible at 1366x768, where nowrap+ellipsis clipped everything past p50. A sub that fits
+     one line still renders on one; only an over-long one wraps. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .stat-tile__bar {
   display: block;
   height: 3px;
-  margin-top: var(--space-1);
+  /* Pin to the tile bottom so every tile's bar sits on one line: the grid
+     stretches all five tiles to the tallest (the delivery tile's sub wraps to
+     two lines), and a fixed top margin would leave the shorter tiles' bars
+     floating higher. The flex `gap` still keeps a minimum space above it. */
+  margin-top: auto;
   overflow: hidden;
   border-radius: 2px;
   background: var(--surface-3);
@@ -126,7 +132,9 @@
   height: 14px;
   align-items: flex-end;
   gap: var(--space-0);
-  margin-top: var(--space-1h);
+  /* Same reason as .stat-tile__bar: align the mini-bars to the tile bottom so a
+     wrapped sub in one tile does not lift the others' bars out of line. */
+  margin-top: auto;
 }
 .stat-tile__mini {
   width: 6px;
@@ -591,7 +599,6 @@
 }
 .flow-node--status {
   justify-content: space-between;
-  cursor: default;
   animation-name: ov-slide;
 }
 .flow-node--on {
@@ -637,6 +644,38 @@
   opacity: 0.65;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* Project card body: name over a tone breakdown, using the tall node's height. */
+.flow-node__pbody {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-1h);
+  overflow: hidden;
+}
+.flow-node__tones {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2h);
+}
+.flow-node__tone {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.flow-node__tone-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tone-fill);
+}
+.flow-node__tone-word {
+  opacity: 0.7;
 }
 .flow-node__spark {
   display: flex;
@@ -890,6 +929,11 @@
   transform: translate(-50%, -50%);
   white-space: nowrap;
 }
+.radial__label-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1h);
+}
 .radial__label-name {
   color: var(--text);
   font-size: clamp(var(--font-size-2xs), 1.7cqw, var(--font-size-xs));
@@ -900,6 +944,10 @@
   font-family: var(--font-mono);
   font-size: var(--font-size-2xs);
   letter-spacing: 0.1em;
+}
+.radial__label-title {
+  color: var(--text-muted);
+  font-size: var(--font-size-2xs);
 }
 .radial__title {
   position: absolute;
@@ -1138,13 +1186,10 @@
     ov-grow 0.9s var(--ease-out) both,
     ov-stripes 1.4s linear infinite;
 }
-.bar--blocked,
-.bar--selected {
+.bar--blocked {
   border-color: var(--ink);
   color: var(--paper);
   background: var(--ink);
-}
-.bar--blocked {
   animation:
     ov-grow 0.9s var(--ease-out) both,
     ov-blink 1.4s ease-in-out infinite;
@@ -1161,6 +1206,14 @@
   border-style: dashed;
   color: var(--text-muted);
   background: var(--stripe);
+}
+/* Selected must win over every tone — done and cluster set their own
+   background, so without coming last a selected done/cluster bar kept paper
+   text on the lane (black-on-black in dark mode). */
+.bar--selected {
+  border-color: var(--ink);
+  color: var(--paper);
+  background: var(--ink);
 }
 .bar__count {
   flex: 0 0 auto;
@@ -1348,7 +1401,9 @@ a.ticker__detail:hover {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  font-size: var(--font-size-2xl);
+  /* The focused subject's name is the drill-down's headline — the owner asked
+     for it larger, so it steps up to the top of the type scale. */
+  font-size: var(--font-size-3xl);
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.1;
@@ -1459,14 +1514,44 @@ a.ticker__detail:hover {
   text-transform: uppercase;
 }
 .drill__fact-v {
-  margin-top: 3px;
-  overflow: hidden;
+  /* Pinned to the tile bottom so every value aligns even when a two-word label
+     (e.g. GOD NODES) wraps and the grid stretches its tile taller — the same fix
+     `.stat-tile__bar` uses for the hero row. */
+  margin-top: auto;
+  padding-top: 3px;
+  /* Wrap instead of truncating: at a third of ~360px the values clipped to
+     "57.4k ou…"/"Albanoo…". They wrap now, so every model, token figure and
+     coordinator name reads in full. */
+  overflow-wrap: anywhere;
   font-size: var(--font-size-base);
   font-weight: 600;
   letter-spacing: -0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+/* Role facts render their value as chips, not bold text. */
+.drill__fact-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: auto;
+  padding-top: 3px;
+}
+/* A long fact (coordinator name, per-agent flow roles) spans the whole row and
+   lays out label-left / value-right, instead of wrapping to a tall skinny column
+   in the 1/3-width grid — that was the "kötü duran" card the owner flagged. */
+.drill__fact--wide {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.drill__fact--wide .drill__fact-v,
+.drill__fact--wide .drill__fact-roles {
+  margin-top: 0;
+  padding-top: 0;
+  text-align: right;
+  justify-content: flex-end;
 }
 .drill__trend {
   padding: var(--space-3h) var(--space-5h) var(--space-1);
@@ -1594,15 +1679,18 @@ a.ticker__detail:hover {
 /* One row of equal, quiet actions at the foot of the panel. */
 .drill__links {
   display: flex;
+  /* Wrap instead of squeezing five links into one row: at ~360px the equal
+     1/5 split cut each label to "Runt…"/"Acti…". They size to content now and
+     flow to a second line when needed, so every link reads in full. */
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: auto;
   padding: var(--space-3) var(--space-5h) var(--space-5h);
 }
 .drill__link {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   padding: var(--space-1h) var(--space-2);
-  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
@@ -1612,7 +1700,6 @@ a.ticker__detail:hover {
   letter-spacing: 0.06em;
   text-align: center;
   text-decoration: none;
-  text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
 }

@@ -201,6 +201,22 @@ describe('daemon configuration', () => {
     expect(() => loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: 'many' })).toThrow();
   });
 
+  it('keeps a graphify output override relative and inside the project', () => {
+    expect(
+      loadDaemonConfig({ LUWI_GRAPHIFY_OUTPUT_PATH: 'kg/graph.json' }).graphifyOutputPath,
+    ).toBe('kg/graph.json');
+    expect(loadDaemonConfig({}).graphifyOutputPath).toBeUndefined();
+    for (const escaping of [
+      '../graph.json',
+      'kg/../../graph.json',
+      '/tmp/graph.json',
+      'C:/graph.json',
+      '\\\\server\\share\\graph.json',
+    ]) {
+      expect(() => loadDaemonConfig({ LUWI_GRAPHIFY_OUTPUT_PATH: escaping })).toThrow(/inside/);
+    }
+  });
+
   it('rejects non-loopback binding', () => {
     expect(() => loadDaemonConfig({ HOST: '0.0.0.0' })).toThrow();
   });

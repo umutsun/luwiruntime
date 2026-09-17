@@ -40,6 +40,23 @@ async function main(): Promise<void> {
     createMcpToolHandlers(client, boundSession, resolveBoundSession, () => revival.revive()),
   );
   await server.connect(new StdioServerTransport());
+
+  // A connected MCP server IS the session's reader. A session still `starting`
+  // (nothing ever called `luwi_join`) is promoted to `idle` on connect, so an
+  // active agent — a GUI/IDE session that never explicitly joins — stops
+  // reading `starting` forever. Guarded to `starting` only, so it never
+  // overrides a bridge child's own `tool_running`; best-effort, because a
+  // failed promotion must not take the server down. A dropped/terminal binding
+  // is not `starting`, so the guard leaves ADR 0034 revival to `luwi_join`.
+  if (boundSession.status === 'starting') {
+    try {
+      await client.setSessionStatus(boundSession.id, 'idle');
+    } catch (error) {
+      if (process.env.LUWI_MCP_DEBUG === '1') {
+        process.stderr.write(`idle-on-connect failed: ${String(error)}\n`);
+      }
+    }
+  }
 }
 
 void main().catch((error: unknown) => {
