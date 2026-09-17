@@ -114,6 +114,41 @@ describe('Phase 2 HTTP routes', () => {
     await app?.close();
   });
 
+  it('answers a malformed ask with 400 REQUEST_VALIDATION_FAILED, never 500', async () => {
+    // A raw schema parse here used to surface as INTERNAL_ERROR, which an agent
+    // read as the daemon being down rather than its own request being wrong
+    // (measured live on 2026-09-17 with a blank `retryOf`, a blank source and
+    // a bogus kind alike).
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const messages = messageService();
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: false,
+      runtimeState: () => readiness.state,
+      readiness,
+      services: { ...phase1Services(), messages, listEvents: async () => [] },
+    });
+
+    for (const payload of [
+      { sourceSessionId: 'source', targetAgentId: 'gemini-sim', kind: 'bogus', content: 'x' },
+      { sourceSessionId: '', targetAgentId: 'gemini-sim', kind: 'question', content: 'x' },
+      {
+        sourceSessionId: 'source',
+        targetAgentId: 'gemini-sim',
+        kind: 'question',
+        content: 'x',
+        retryOf: '',
+      },
+    ]) {
+      const response = await app.inject({ method: 'POST', url: '/api/v1/messages', payload });
+      expect(response.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(response.json()).toMatchObject({ error: { code: 'REQUEST_VALIDATION_FAILED' } });
+    }
+    expect(messages.ask).not.toHaveBeenCalled();
+  });
+
   it('creates, lists, gets, and bounded-waits for messages', async () => {
     const readiness = createRuntimeReadiness('recovering');
     readiness.transitionTo('ready');

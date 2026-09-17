@@ -1004,7 +1004,10 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
             400,
           );
         }
-        const body = messageCreateRequestSchema.parse({ ...rawBody, timeoutMs });
+        // Through parseRequestInput, not a raw parse: a raw ZodError here answered
+        // every malformed ask as 500 INTERNAL_ERROR, which an agent read as the
+        // daemon being down rather than its own request being wrong.
+        const body = parseRequestInput(messageCreateRequestSchema, { ...rawBody, timeoutMs });
         const idempotencyHeader = request.headers['idempotency-key'];
         if (idempotencyHeader !== undefined && typeof idempotencyHeader !== 'string') {
           throw new ApplicationError(
