@@ -68,7 +68,7 @@ realtime Pulse and the Phase 1–4 runtime foundation:
 - non-causal post-change evaluation and project-scoped read-only Phase 4 MCP tools;
 - unit and opt-in Redis integration tests.
 - a loopback-served React/TypeScript dashboard whose front door (ADR 0032, 2026-09-11) is an
-  overview with four switchable lenses — Board, Flow, Radial, Timeline — over one pure model, a
+  overview with five switchable lenses — Board, Flow, Radial, Timeline, Knowledge — over one pure model, a
   docked drill-down for the runtime, a project, an agent or a session, and a stream ticker; the
   twelve detail routes open as drawers over that overview, from the hero stat tiles, the drill-down's
   links and the stream ticker — there is no separate page; every comp claim the runtime
@@ -180,9 +180,10 @@ is shown with no control rather than a button that would fail.
 Two things followed. A `POST` that carries no `Origin` must now declare `application/json`, which a
 browser cannot send cross-site without a preflight the daemon deliberately never answers; `PUT`,
 `PATCH` and `DELETE` are unaffected because a cross-site one of those always preflights.
-State-changing requests remain isolated: `api/config-mutations.ts` owns the configuration chain and
-`api/message-mutations.ts` owns only `POST /api/v1/messages`. The static allowlist admits exactly
-those two modules.
+State-changing requests remain isolated: `api/config-mutations.ts` owns the configuration chain,
+`api/message-mutations.ts` owns only `POST /api/v1/messages`, `api/project-mutations.ts` (ADR 0033)
+registers and edits a project, and `api/coordinator-mutations.ts` (ADR 0035) claims and releases the
+coordinator role. The static allowlist admits exactly those four modules.
 
 ADR 0022 added **native session identity**. A client may declare its vendor-native
 session reference when it registers a LUWI session; the runtime records a stable binding and an
@@ -241,11 +242,11 @@ unified search, GitHub integration, prompt injection, task orchestration, a sema
 graph, memory federation, cloud accounts, and authentication are not implemented. Optimization
 accept/reject/evaluate, graph rebuild, lease release and `config/reconcile` (interrupted-apply
 recovery, run at daemon start) exist on the HTTP API and CLI but are deliberately not dashboard
-mutations. Dashboard writes are the config plan chain, bounded question creation, and project
-registration and settings (ADR 0033: name, remote and default branch; never the path); it does not
-acknowledge, process, answer, retry, cancel, or inject a message. Work leases exist but are
-not renewed automatically, do not notify when a held path frees, and are not correlated with the
-commits made under them.
+mutations. Dashboard writes are the config plan chain, bounded question creation, project
+registration and settings (ADR 0033: name, remote and default branch; never the path), and
+coordinator assignment (ADR 0035); it does not acknowledge, process, answer, retry, cancel, or inject
+a message. Work leases are renewed automatically by their holder (ADR 0026) but do not notify when a
+held path frees and are not correlated with the commits made under them.
 
 ADR 0025 then landed the CLI-first tranche. `luwi doctor|setup|start|status|stop|reset` is the
 recommended golden path; `stop` reaches the daemon through a token-gated `POST /api/v1/runtime/stop`
@@ -359,10 +360,32 @@ messages, capabilities, config, projects, runtime, activity) open as drawers ove
 overview — from the hero stat tiles, the drill-down's links and the stream ticker — and their hashes
 still deep-link and reload; a message, package, profile, plan or snapshot detail opens inline inside its
 drawer rather than as a second one.
-The dashboard writes only its own three mutation surfaces: config plan/approve/apply/rollback,
-message transitions, and project registration and settings (name, remote, and default branch, never
-the path). A reader that never became ready is dropped rather than left as a zombie, and `luwi_join`
-revives a dropped session from its own record so a GUI agent's inbox keeps answering after a restart.
+The dashboard writes only its own four mutation surfaces: config plan/approve/apply/rollback,
+message transitions, project registration and settings (name, remote, and default branch, never
+the path), and coordinator claim and release. A reader that never became ready is dropped rather
+than left as a zombie, and `luwi_join` revives a dropped session from its own record so a GUI agent's
+inbox keeps answering after a restart.
+
+**Fleet coordination (ADR 0035 and the 2026-09-16 tranche):** a project may have **one
+coordinator** — an enforced single-holder role in `luwi:v1:project:{id}:coordinator`, claimed and
+released through two Redis Functions behind `POST`/`DELETE`/`GET
+/api/v1/projects/:projectId/coordinator`. A live holder is refused with `409 COORDINATOR_CONFLICT`
+naming it, a terminal holder is taken over, and a release is holder-only. Each claim carries its own
+nonce, so a takeover decided against a dead holder can never evict a newer live one that happened to
+reuse the same version number. The sessions view assigns and releases the role and badges the live
+holder; that is the fourth and last dashboard write module. The native bridge now prepends the work
+leases **other** sessions hold to each headless worker's prompt, so a worker sees which paths are
+locked before it edits — best-effort, and never a reason to fail a message. Every `ask` states its
+`delivery`: `live` when the target is a bridge (a continuous reader), `deferred` when it is a
+turn-based GUI whose inbox is read only on its next turn — and `luwi_ask_agent` returns at once for
+a deferred target instead of burning its wait into a false timeout. The overview's hero tile reports
+delivery **facts** — answered share, p50 latency, failed-or-timed-out share — never a score. Each
+session also states how it reached the runtime (`cli`, `gui`, `ide` or `bridge`): from an explicit
+marker where the launcher knows it, otherwise derived from the signals the runtime already carries;
+the sessions view shows it as a chip and the radial node carries it in its hover hint. Orchestrating
+an implement → verify chain stays **outside** the repository, in a script that sends independent
+correlated messages as the coordinator and stops before any merge; the daemon still orchestrates
+nothing.
 
 ## Architecture and security
 

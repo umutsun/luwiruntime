@@ -1256,6 +1256,24 @@ output and never runs graphify or builds a graph of its own. This is **not** the
 knowledge graph the prohibition below still forbids: nothing here computes embeddings, similarity, or
 a LUWI-owned semantic index.
 
+**Built after ADR 0034 (2026-09-16).** ADR 0035 added the **per-project coordinator role**: an
+enforced single holder in `luwi:v1:project:{id}:coordinator`, two Functions (`coordinator_claim`,
+`coordinator_release`) with a read/decide/validate CAS on a per-claim `claimId` nonce — a version
+number alone is a reused token after a release and would let a stale takeover evict a newer live
+holder — behind `POST`/`DELETE`/`GET /api/v1/projects/:projectId/coordinator`; a live holder answers
+`409 COORDINATOR_CONFLICT`, a terminal one is taken over, and release is holder-only. The library
+version stays 12 (a new Function reloads on its own), so a daemon started before it needs one
+restart. The sessions view claims and releases it through `api/coordinator-mutations.ts`, the fourth
+allowlisted write module. The same tranche gave the native bridge lease-aware prompts (leases held by
+other sessions are prepended, best-effort, never a reason to fail a message), classified every ask's
+`delivery` as `live` (bridge target) or `deferred` (turn-based GUI) so `luwi_ask_agent` no longer
+blocks on a target that cannot answer before its next turn, reported delivery facts (never a score)
+on the overview, and stamped a session's client kind (`cli`/`gui`/`ide`/`bridge`) in free-form
+metadata with a dashboard-side derive fallback. Task orchestration remains outside the daemon: the
+implement → verify chain is a repository-external script that sends independent correlated messages
+as the coordinator holder and stops before any merge (the ADR 0031 precedent) — nothing here adds a
+daemon-side flow engine, scheduler, or auto-advance.
+
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers
 `POST /api/v1/config/reconcile`), lifecycle/release scoring, task orchestration, a semantic or

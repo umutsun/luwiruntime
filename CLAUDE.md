@@ -72,6 +72,10 @@ History is short and every commit is a large checkpoint:
 | `5f1bd98` | ADR 0023 B0: post-registration native session declaration      |
 | `0411b53` | ADR 0023 B1: transcript reader and usage session attribution   |
 
+The table stops at ADR 0023 B1. The checkpoints since — ADR 0024 through 0035, the overview
+redesign, the Faz 2/3 fleet coordination, the client kind — are in `git log` and summarised under
+**Current implementation status** below and in `README.md`.
+
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
 modules, and the intermediate states never existed. Do not try to reconstruct them.
@@ -112,7 +116,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (30 functions since ADR 0033; a daemon started earlier still holds 29) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (33 registered Functions since ADR 0035 — the library version is still 12, so a daemon started before a new Function needs one restart to load it) is already loaded on the server.
 
 ## Tools and shells
 
@@ -271,10 +275,11 @@ Two consequences to know before touching the daemon or the dashboard:
   `403 REQUEST_ORIGIN_REJECTED`. `PUT`, `PATCH` and `DELETE` are unaffected — a cross-site one of
   those always preflights and the daemon answers no preflight. A test that injects a bodyless POST
   now fails; real callers pass `{}`, which is what makes Fastify's `inject` set the header.
-- **Three dashboard modules may write, and only those:** `api/config-mutations.ts` (ADR 0021),
-  `api/message-mutations.ts` (ADR 0018) and `api/project-mutations.ts` (ADR 0033: register a
-  project, edit its name/remote/default branch — never its path).
-  `product-independence.test.ts` is an allowlist of exactly those three and fails if one goes
+- **Four dashboard modules may write, and only those:** `api/config-mutations.ts` (ADR 0021),
+  `api/message-mutations.ts` (ADR 0018), `api/project-mutations.ts` (ADR 0033: register a
+  project, edit its name/remote/default branch — never its path) and
+  `api/coordinator-mutations.ts` (ADR 0035: claim or release the per-project coordinator role).
+  `product-independence.test.ts` is an allowlist of exactly those four and fails if one goes
   missing, so it cannot pass vacuously. A mutation anywhere else is a test failure by design.
   ADR 0033 also added the first project _update_ transition — `luwi_project_update_v1`, one
   atomic Function for the hash fields and the `project.updated` event, behind
@@ -450,6 +455,28 @@ the dropped record and the MCP server keeps it alive with its own bootstrap (`se
 the session file supersedes the successor. A running `session attach` and a running MCP server
 both keep the code they started with, so a GUI gets the fix only after both restart.
 
+**ADR 0035 (2026-09-16) added the per-project coordinator role, and the same tranche the fleet
+coordination it serves.** One enforced holder per project in `luwi:v1:project:{id}:coordinator`:
+`coordinator_claim`/`coordinator_release` are read/decide/validate CAS Functions like ADR 0022,
+behind `POST`/`DELETE`/`GET /api/v1/projects/:projectId/coordinator` — a live holder answers
+`409 COORDINATOR_CONFLICT`, a terminal holder is taken over, release is holder-only. **Trap both
+reviews caught:** a release `DEL`s the key, so `version` restarts at 1 and is a _reused_ token; the
+takeover CAS therefore asserts a per-claim `claimId` nonce, never the version alone. The library
+version stays 12, so **a daemon started before it must be restarted once** before a claim can
+succeed. The sessions view claims and releases through `api/coordinator-mutations.ts` (the fourth
+write module). The native bridge prepends the leases _other_ sessions hold to each worker prompt
+(best-effort; dropped, never failed, when it would push the prompt past the 30 KB cap). Every ask
+carries `delivery: 'live' | 'deferred'` — `live` only when the target has a non-empty
+`metadata.bridge` **and** is online and non-terminal (a dead bridge once read `live` and produced
+false timeouts); `luwi_ask_agent` returns immediately for a deferred target. Sessions carry a client
+kind (`cli`/`gui`/`ide`/`bridge`): `deriveClientKind` in `pulse/model.ts` honours `metadata.client`,
+else `bridge` → title→`gui` → `cli`; `agent run`, the native bridge and the Antigravity hook stamp
+theirs, while the claude/codex hooks deliberately do not (threading a flag through their
+dry-run→launcher plumbing is not worth the risk to live attribution) and derive `gui` from their
+title. Implement→verify orchestration is a repository-external script (`flow.mjs` in the Albanoosh
+scaffold) that chains correlated messages as the coordinator and stops before any merge — §21 still
+forbids a daemon-side flow engine.
+
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.
 
@@ -460,11 +487,12 @@ There is deliberately **no `.mcp.json`**. `apps/mcp-server/src/main.ts` calls
 unless the daemon is running and `LUWI_SESSION_ID` names a live, non-terminal session. Session IDs
 are runtime identity, not configuration — they go stale on every daemon restart.
 
-The server exposes 36 `luwi_*` tools, and "read-only" was never accurate for all of them: by the
-daemon method each one calls, **25 are reads and 11 write** coordination state — the messaging
-transitions, a bounded optimization analysis request, and since ADR 0020 three of the four
-work-lease tools. Counting the messaging, optimization and lease families whole gives 14, but three
-of their members only read: `luwi_await_response` and `luwi_get_message` are `GET
+The server exposes 37 `luwi_*` tools, and "read-only" was never accurate for all of them: by the
+daemon method each one calls, **25 are reads and 12 write** coordination state — the messaging
+transitions, a bounded optimization analysis request, since ADR 0020 three of the four work-lease
+tools, and since ADR 0034 `luwi_join`, which registers a successor for a dropped session. Counting
+the messaging, optimization and lease families whole plus `luwi_join` gives 15, but three of their
+members only read: `luwi_await_response` and `luwi_get_message` are `GET
 /api/v1/messages/…`, and `luwi_list_leases` is `GET /api/v1/leases`. Control-plane writes (config
 approval/apply, rollback, graph rebuild, Git mutation) are never exposed, per `AGENTS.md` §12.
 
