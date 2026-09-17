@@ -1,7 +1,9 @@
 import { abbreviateId, formatRelativeTime } from '../components/format.js';
 import { CopyIdButton } from '../components/id-badge.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
-import type { Focus, OverviewSession, PanelModel } from './model.js';
+import type { Focus, OverviewSession, PanelLink, PanelModel } from './model.js';
+
+export type CoordinatorLink = Extract<PanelLink, { kind: 'coordinator' }>;
 
 /**
  * The docked drill-down: one panel shape, four subjects.
@@ -59,11 +61,17 @@ export function DrillDown({
   nowMs,
   onFocus,
   onInspect,
+  onCoordinator,
+  coordinatorNote,
 }: {
   panel: PanelModel;
   nowMs: number;
   onFocus: (focus: Focus) => void;
   onInspect: (selection: InspectorSelection) => void;
+  /** Absent hides the coordinator switch (ADR 0035): a shell without the mutation shows no control. */
+  onCoordinator?: (link: CoordinatorLink) => void;
+  /** The outcome of the last claim or release, shown until the focus moves. */
+  coordinatorNote?: string;
 }) {
   const max = panel.trend.buckets.reduce((high, value) => Math.max(high, value), 0);
   return (
@@ -159,12 +167,30 @@ export function DrillDown({
         )}
       </div>
 
+      {coordinatorNote === undefined ? null : (
+        <p className="drill__empty" role="status">
+          {coordinatorNote}
+        </p>
+      )}
+
       <div className="drill__links">
         {panel.links.map((link) =>
           link.kind === 'route' ? (
             <a key={link.label} className="drill__link" href={link.href}>
               {link.label} ›
             </a>
+          ) : link.kind === 'coordinator' ? (
+            onCoordinator === undefined ? null : (
+              <button
+                key={link.label}
+                type="button"
+                className="drill__link"
+                aria-label={`${link.label} for session ${link.sessionId}`}
+                onClick={() => onCoordinator(link)}
+              >
+                {link.label} ›
+              </button>
+            )
           ) : link.kind === 'inspect-project' ? (
             <button
               key={link.label}

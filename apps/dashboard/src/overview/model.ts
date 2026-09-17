@@ -278,6 +278,8 @@ export type Overview = {
   sessionsState: 'ready' | 'unavailable';
   activityState: 'ready' | 'unavailable';
   gitTruncated: boolean;
+  /** The per-project coordinator holder (ADR 0035), keyed by project id; a missing key is not read or free. */
+  coordinatorByProject: PulseSnapshot['coordinatorByProject'];
   /** Registered projects the owner's filter keeps off the overview. */
   hiddenProjects: number;
   bounds?: RetainedBounds;
@@ -678,6 +680,7 @@ export function buildOverview(
     sessionsState: snapshot.sessionsState,
     activityState: snapshot.activityState,
     gitTruncated: snapshot.gitTruncated,
+    coordinatorByProject: snapshot.coordinatorByProject,
     hiddenProjects,
     ...(bounds === undefined ? {} : { bounds }),
     events,
@@ -836,7 +839,39 @@ export function relatedToFocus(session: OverviewSession, focus: Focus): boolean 
 export type PanelLink =
   | { kind: 'inspect-project'; label: string; id: string; name: string }
   | { kind: 'inspect-session'; label: string; id: string }
-  | { kind: 'route'; label: string; href: string };
+  | { kind: 'route'; label: string; href: string }
+  /** The coordinator switch (ADR 0035): rendered only when the shell wires the mutation. */
+  | {
+      kind: 'coordinator';
+      label: string;
+      action: 'claim' | 'release';
+      projectId: string;
+      sessionId: string;
+    };
+
+/**
+ * Who holds a project's coordinator role (ADR 0035), as a fact the drill-down
+ * can state: the live holder named the way its row is (title, task, else id),
+ * or `none` when the role is free or was never read. A terminal holder is not
+ * live and reads as none — the daemon lets the next claim take it over.
+ */
+export function coordinatorFact(
+  overview: Overview,
+  projectId: string,
+): { holderId?: string; v: string; detail?: string } {
+  const held = overview.coordinatorByProject[projectId];
+  if (held === undefined || !held.live || held.sessionId === null) return { v: 'none' };
+  const holder = overview.allSessions.find((session) => session.id === held.sessionId);
+  const v =
+    holder === undefined
+      ? `Session ${abbreviateId(held.sessionId)}`
+      : (holder.title ?? holder.taskSummary ?? `Session ${abbreviateId(holder.id)}`);
+  return {
+    holderId: held.sessionId,
+    v,
+    ...(holder === undefined ? {} : { detail: `${v} · ${holder.agentName}` }),
+  };
+}
 
 export type PanelBlock = { title: string; rows: Array<readonly [string, string]> };
 
@@ -1042,13 +1077,21 @@ export function panelFor(
       project.git.state === 'ready' && project.git.data.headSha !== undefined
         ? `HEAD ${abbreviateSha(project.git.data.headSha).slice(0, 7)}`
         : 'HEAD not observed';
+    const coordinator = coordinatorFact(overview, project.id);
     return {
       eyebrow: project.eyebrow,
       title: project.name,
       badge: project.badge,
       sub: `${String(project.sessions.length)} active · ${String(project.allSessions.length)} observed · ${sha}`,
       ...(blocked === undefined ? {} : { block: blockedEvidence(blocked, events, nowMs) }),
-      facts: gitFacts(project),
+      facts: [
+        ...gitFacts(project),
+        {
+          k: 'Coordinator',
+          v: coordinator.v,
+          ...(coordinator.detail === undefined ? {} : { detail: coordinator.detail }),
+        },
+      ],
       trend: trendOf(
         'Events · retained',
         events.filter((event) => event.projectId === project.id),
@@ -1118,6 +1161,33 @@ export function panelFor(
         : session.tone === 'done'
           ? 'dim'
           : 'outline';
+    const coordinator = coordinatorFact(overview, session.projectId);
+    const holdsRole = coordinator.holderId === session.id;
+    // The role switch, where the owner looks for it (ADR 0035): release for the
+    // live holder, claim for any other active session — a live holder answers
+    // 409 with its name, so a swap is release then claim. A terminal session
+    // gets no control: it cannot hold the role.
+    const roleLink: PanelLink[] = holdsRole
+      ? [
+          {
+            kind: 'coordinator',
+            label: 'Release role',
+            action: 'release',
+            projectId: session.projectId,
+            sessionId: session.id,
+          },
+        ]
+      : session.active
+        ? [
+            {
+              kind: 'coordinator',
+              label: 'Make coordinator',
+              action: 'claim',
+              projectId: session.projectId,
+              sessionId: session.id,
+            },
+          ]
+        : [];
     return {
       eyebrow: `${session.projectName} · ${session.agentName}`,
       title: session.title ?? session.taskSummary ?? `Session ${abbreviateId(session.id)}`,
@@ -1125,7 +1195,10 @@ export function panelFor(
       sub: `${session.branch ?? 'no branch reported'} · started ${formatRelativeTime(session.startedAt, nowMs)} · heartbeat ${formatRelativeTime(session.lastHeartbeatAt, nowMs)}`,
       ...(session.tone === 'blocked' ? { block: blockedEvidence(session, events, nowMs) } : {}),
       copyId: { label: 'session', id: session.id },
-      facts: sessionFacts(session, context, extras),
+      facts: [
+        ...sessionFacts(session, context, extras),
+        { k: 'Coordinator', v: holdsRole ? 'this session' : coordinator.v },
+      ],
       trend: trendOf(
         'Events · retained',
         events.filter((event) => event.sessionId === session.id),
@@ -1141,7 +1214,7 @@ export function panelFor(
         empty: 'No other sessions in this project',
         selectedId: session.id,
       },
-      links: [{ kind: 'inspect-session', label: 'Inspect', id: session.id }],
+      links: [{ kind: 'inspect-session', label: 'Inspect', id: session.id }, ...roleLink],
     };
   }
 

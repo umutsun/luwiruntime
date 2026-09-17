@@ -31,6 +31,7 @@ import { formatClock, RUNTIME_FOCUS, sessionBadge, toneOf, type Focus } from './
 import { Overview } from './overview/overview.js';
 import { useProjectFilter, visibleProjectIds } from './overview/use-project-filter.js';
 import { useViewChoice, VIEW_CHOICES, VIEW_LABELS } from './overview/use-view-choice.js';
+import { useBuildWatch } from './use-build-watch.js';
 import { ProjectDetail, ProjectsView } from './projects/projects-view.js';
 import { scopePulseSnapshotToProjects, type PulseSnapshot } from './pulse/model.js';
 import {
@@ -444,6 +445,8 @@ export function DashboardApp({
   };
 
   const realtime = realtimeFace(websocketState, following, displayedActivity.pendingCount);
+  // An open tab never learns that a newer build is being served; this does.
+  const staleBuild = useBuildWatch();
   const snapshotTag =
     freshness === 'refreshing'
       ? { word: 'REFRESHING', title: 'Refreshing snapshot' }
@@ -698,6 +701,17 @@ export function DashboardApp({
             {snapshotTag.word}
           </button>
         )}
+        {staleBuild ? (
+          <button
+            type="button"
+            className="snapshot-tag"
+            aria-label="Reload to the newer dashboard build"
+            title="The daemon serves a newer dashboard build than this tab loaded — reload to get it"
+            onClick={() => window.location.reload()}
+          >
+            NEW BUILD · RELOAD
+          </button>
+        ) : null}
         {invalidEventCount > 0 ? (
           <span className="sr-only" role="status">
             {invalidEventCount} invalid realtime messages ignored
@@ -871,6 +885,8 @@ export function DashboardApp({
           onInspect={openInspector}
           {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
           {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
+          {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
+          {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
         />
       </main>
 

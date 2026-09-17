@@ -85,6 +85,7 @@ export function SessionsView({
 }) {
   const [statusFilter, setStatusFilter] = useState('');
   const [presenceFilter, setPresenceFilter] = useState('');
+  const [clientFilter, setClientFilter] = useState('');
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({
     key: 'started',
     direction: 'descending',
@@ -133,6 +134,8 @@ export function SessionsView({
   const nowMs = now().getTime();
 
   const statusLabels = [...new Set(snapshot.sessions.map((row) => row.statusLabel))].sort();
+  // Only the kinds actually observed, so the filter never offers an empty choice.
+  const clientKinds = [...new Set(snapshot.sessions.map((row) => row.clientKind))].sort();
   const toggleSort = (key: SortKey) =>
     setSort((previous) => ({
       key,
@@ -161,7 +164,8 @@ export function SessionsView({
           const filtered = rows.filter(
             (row) =>
               (statusFilter === '' || row.statusLabel === statusFilter) &&
-              (presenceFilter === '' || row.presence === presenceFilter),
+              (presenceFilter === '' || row.presence === presenceFilter) &&
+              (clientFilter === '' || row.clientKind === clientFilter),
           );
           const sorted = [...filtered].sort((left, right) => {
             const order = compareRows(left, right, sort.key);
@@ -193,6 +197,20 @@ export function SessionsView({
                     <option value="">All</option>
                     <option value="online">Online</option>
                     <option value="offline">Offline</option>
+                  </select>
+                </label>
+                <label>
+                  Client
+                  <select
+                    value={clientFilter}
+                    onChange={(event) => setClientFilter(event.target.value)}
+                  >
+                    <option value="">All</option>
+                    {clientKinds.map((kind) => (
+                      <option key={kind} value={kind}>
+                        {clientKindLabels[kind]}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 {filtered.length === rows.length ? null : (

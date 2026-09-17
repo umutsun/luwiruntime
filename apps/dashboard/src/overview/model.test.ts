@@ -207,6 +207,75 @@ const events = (): DashboardEvent[] => [
 
 const overview = () => buildOverview(buildPulseSnapshot(input()), events(), NOW);
 
+describe('coordinator role in the drill-down (ADR 0035)', () => {
+  const withHolder = (sessionId: string, live: boolean): PulseInput => ({
+    ...input(),
+    coordinator: {
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [{ projectId: 'p1', coordinator: { state: 'ready', data: { sessionId, live } } }],
+      },
+    },
+  });
+  const model = (source: PulseInput) => buildOverview(buildPulseSnapshot(source), events(), NOW);
+  const coordinatorFactOf = (panel: ReturnType<typeof panelFor>) =>
+    panel.facts.find((fact) => fact.k === 'Coordinator')?.v;
+
+  it('states the live holder on the project panel, named as its row is, and none when free', () => {
+    const held = panelFor(
+      model(withHolder('s-think', true)),
+      { kind: 'project', id: 'p1' },
+      'live',
+    );
+    expect(coordinatorFactOf(held)).toBe('Implement graph generation transition');
+    expect(coordinatorFactOf(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live'))).toBe(
+      'none',
+    );
+  });
+
+  it('offers Release to the holder, Make coordinator to another active session, nothing to a terminal one', () => {
+    const held = model(withHolder('s-think', true));
+    const holder = panelFor(held, { kind: 'session', id: 's-think' }, 'live');
+    expect(coordinatorFactOf(holder)).toBe('this session');
+    expect(holder.links).toContainEqual({
+      kind: 'coordinator',
+      label: 'Release role',
+      action: 'release',
+      projectId: 'p1',
+      sessionId: 's-think',
+    });
+    const other = panelFor(held, { kind: 'session', id: 's-blocked' }, 'live');
+    expect(coordinatorFactOf(other)).toBe('Implement graph generation transition');
+    expect(other.links).toContainEqual({
+      kind: 'coordinator',
+      label: 'Make coordinator',
+      action: 'claim',
+      projectId: 'p1',
+      sessionId: 's-blocked',
+    });
+    const done = panelFor(held, { kind: 'session', id: 's-done' }, 'live');
+    expect(done.links.some((link) => link.kind === 'coordinator')).toBe(false);
+  });
+
+  it('reads a terminal holder as none, so the role is shown as takeable', () => {
+    const panel = panelFor(
+      model(withHolder('s-done', false)),
+      { kind: 'project', id: 'p1' },
+      'live',
+    );
+    expect(coordinatorFactOf(panel)).toBe('none');
+    const other = panelFor(
+      model(withHolder('s-done', false)),
+      { kind: 'session', id: 's-think' },
+      'live',
+    );
+    expect(other.links.some((link) => link.kind === 'coordinator' && link.action === 'claim')).toBe(
+      true,
+    );
+  });
+});
+
 describe('tones and badges', () => {
   it('maps the nine statuses to five tones and leaves labels alone', () => {
     expect(toneOf('thinking')).toBe('working');
@@ -525,6 +594,8 @@ describe('panelFor', () => {
       { k: 'Commits', v: '7 recent' },
       { k: 'State', v: '3 untracked' },
       { k: 'Tags', v: '2' },
+      // No coordinator read in this fixture: the role reads as free (ADR 0035).
+      { k: 'Coordinator', v: 'none' },
     ]);
     // Inspect + Detail only; the redundant Knowledge-graph link was dropped (Knowledge is a lens).
     expect(panel.links.map((link) => link.kind)).toEqual(['inspect-project', 'route']);
@@ -551,6 +622,7 @@ describe('panelFor', () => {
       { k: 'Model', v: 'model-x' },
       { k: 'Tokens', v: '\u2014' },
       { k: 'Context', v: '\u2014', detail: 'skills 2 loaded \u00b7 1 invoked' },
+      { k: 'Coordinator', v: 'none' },
     ]);
     expect(panel.copyId).toEqual({ label: 'session', id: 's-think' });
     expect(panel.list.rows.map((row) => row.id)).toEqual(['s-blocked', 's-done']);
@@ -609,6 +681,7 @@ describe('panelFor', () => {
         v: '511.6k',
         detail: `latest request sent 511,600 tokens · observed ${formatClock(NOW - 50 * 60_000)} · skills not observed`,
       },
+      { k: 'Coordinator', v: 'none' },
     ]);
     const loading = { sessionId: 's-blocked', state: { state: 'loading' as const } };
     expect(
