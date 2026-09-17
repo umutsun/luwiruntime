@@ -1003,15 +1003,15 @@ export function DashboardApp({
               <button
                 ref={editButton}
                 type="button"
-                className="link-button"
+                className="row-action"
                 aria-label={`Edit project ${detailProject.name}`}
                 onClick={() => setEditingProjectId(detail.projectId)}
               >
-                Edit project
+                Edit
               </button>
               <button
                 type="button"
-                className="link-button"
+                className="row-action"
                 aria-label={`Unregister project ${detailProject.name}`}
                 onClick={() => {
                   setUnregisterError(undefined);

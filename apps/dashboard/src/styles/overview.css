@@ -1621,15 +1621,18 @@ a.ticker__detail:hover {
 /* One row of equal, quiet actions at the foot of the panel. */
 .drill__links {
   display: flex;
+  /* Wrap instead of squeezing five links into one row: at ~360px the equal
+     1/5 split cut each label to "Runt…"/"Acti…". They size to content now and
+     flow to a second line when needed, so every link reads in full. */
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin-top: auto;
   padding: var(--space-3) var(--space-5h) var(--space-5h);
 }
 .drill__link {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   padding: var(--space-1h) var(--space-2);
-  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
@@ -1639,7 +1642,6 @@ a.ticker__detail:hover {
   letter-spacing: 0.06em;
   text-align: center;
   text-decoration: none;
-  text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
 }

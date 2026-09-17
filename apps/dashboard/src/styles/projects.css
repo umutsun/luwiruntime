@@ -759,7 +759,9 @@ tr[data-selected='true'] {
    labelled fields, the path shown as identity. */
 .project-edit {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: var(--space-2);
   margin: 0 0 var(--space-3);
 }
 .project-form {
