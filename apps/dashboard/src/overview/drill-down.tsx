@@ -4,10 +4,19 @@ import { StatusChip } from '../components/status-chip.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
 import type { Focus, OverviewSession, PanelLink, PanelModel } from './model.js';
 
-/** The session "Flow role" fact shows its roles as chips, not bold text. */
+/**
+ * Role facts show their value as chips, not bold text. The session's "Flow role"
+ * is one agent's roles joined by " + "; the project's "Flow roles" is one clause
+ * per agent joined by " · " ("albanoosh: implementer · codex: verifier").
+ */
 function roleChips(key: string, value: string): string[] | undefined {
-  if (key !== 'Flow role' || value === 'none') return undefined;
-  return value.split(' + ');
+  if ((key !== 'Flow role' && key !== 'Flow roles') || value === 'none') return undefined;
+  return value.includes(' · ') ? value.split(' · ') : value.split(' + ');
+}
+
+/** Long facts (a coordinator name, the per-agent flow roles) get the full width. */
+function isWideFact(key: string): boolean {
+  return key === 'Coordinator' || key === 'Flow role' || key === 'Flow roles';
 }
 
 export type CoordinatorLink = Extract<PanelLink, { kind: 'coordinator' }>;
@@ -116,7 +125,7 @@ export function DrillDown({
         {panel.facts.map((fact, index) => (
           <div
             key={fact.k}
-            className="drill__fact"
+            className={`drill__fact${isWideFact(fact.k) ? ' drill__fact--wide' : ''}`}
             style={{ animationDelay: `${String(0.05 + index * 0.05)}s` }}
           >
             <span className="drill__fact-k">{fact.k}</span>

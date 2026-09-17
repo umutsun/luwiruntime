@@ -1536,6 +1536,23 @@ a.ticker__detail:hover {
   margin-top: auto;
   padding-top: 3px;
 }
+/* A long fact (coordinator name, per-agent flow roles) spans the whole row and
+   lays out label-left / value-right, instead of wrapping to a tall skinny column
+   in the 1/3-width grid — that was the "kötü duran" card the owner flagged. */
+.drill__fact--wide {
+  grid-column: 1 / -1;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.drill__fact--wide .drill__fact-v,
+.drill__fact--wide .drill__fact-roles {
+  margin-top: 0;
+  padding-top: 0;
+  text-align: right;
+  justify-content: flex-end;
+}
 .drill__trend {
   padding: var(--space-3h) var(--space-5h) var(--space-1);
 }
