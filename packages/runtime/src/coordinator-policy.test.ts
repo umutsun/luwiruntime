@@ -38,4 +38,31 @@ describe('coordinator claim policy', () => {
       ).toEqual({ outcome: 'takeover', expectedVersion: 4, expectedClaimId: 'c-old' });
     }
   });
+
+  it('takes over a still-live holder only on an explicit human takeover (ADR 0035 amendment)', () => {
+    const liveHolder = {
+      holder: {
+        sessionId: 's1',
+        version: 3,
+        claimId: 'c1',
+        sessionStatus: 'tool_running' as const,
+      },
+      sessionId: 's2',
+    };
+    // Without the flag a live holder is still refused.
+    expect(evaluateCoordinatorClaim(liveHolder)).toEqual({
+      outcome: 'conflict',
+      heldBySessionId: 's1',
+    });
+    // With it, the live holder is taken over, still keyed on its version + claimId.
+    expect(evaluateCoordinatorClaim({ ...liveHolder, takeover: true })).toEqual({
+      outcome: 'takeover',
+      expectedVersion: 3,
+      expectedClaimId: 'c1',
+    });
+    // The flag never changes the same-session idempotent path.
+    expect(evaluateCoordinatorClaim({ ...liveHolder, sessionId: 's1', takeover: true })).toEqual({
+      outcome: 'unchanged',
+    });
+  });
 });

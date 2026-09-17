@@ -248,7 +248,8 @@ describe('SessionsView', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: 'Make session s1 the coordinator' }));
-    await waitFor(() => expect(claim).toHaveBeenCalledWith('p1', 's1'));
+    // A plain Make sends no take-over; the live-holder override is a separate explicit gesture.
+    await waitFor(() => expect(claim).toHaveBeenCalledWith('p1', 's1', false));
     await waitFor(() => expect(onCoordinatorMutated).toHaveBeenCalledOnce());
   });
 
@@ -283,6 +284,52 @@ describe('SessionsView', () => {
       screen.getByRole('button', { name: 'Release the coordinator role from session s-holder' }),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Make session .* the coordinator/i })).toBeNull();
+  });
+
+  it('offers an explicit take-over after a live-holder conflict (ADR 0035 amendment)', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: { state: 'ready', data: [session('s-holder'), session('s2')] },
+        coordinator: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            entries: [
+              {
+                projectId: 'p1',
+                coordinator: { state: 'ready', data: { sessionId: 's-holder', live: true } },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const claim = vi
+      .fn()
+      .mockResolvedValueOnce({
+        state: 'failed',
+        reason: 'http',
+        httpStatus: 409,
+        code: 'COORDINATOR_CONFLICT',
+        message: 'Project p1 is already coordinated by session s-holder.',
+      })
+      .mockResolvedValueOnce({ state: 'ok', httpStatus: 201, data: { sessionId: 's2' } });
+    const onCoordinatorMutated = vi.fn();
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        coordinatorMutations={{ claim, release: vi.fn() }}
+        onCoordinatorMutated={onCoordinatorMutated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make session s2 the coordinator' }));
+    // First a plain claim, refused; then a "Take over" appears and forces it.
+    await waitFor(() => expect(claim).toHaveBeenNthCalledWith(1, 'p1', 's2', false));
+    const takeOver = await screen.findByRole('button', { name: 'Take over' });
+    fireEvent.click(takeOver);
+    await waitFor(() => expect(claim).toHaveBeenNthCalledWith(2, 'p1', 's2', true));
+    await waitFor(() => expect(onCoordinatorMutated).toHaveBeenCalledOnce());
   });
 
   it('chips the flow roles the row’s agent holds in its project (ADR 0036)', () => {

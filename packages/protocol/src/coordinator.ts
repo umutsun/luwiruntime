@@ -16,6 +16,15 @@ const timestampSchema = z.iso.datetime({ offset: false });
 
 export const coordinatorClaimRequestSchema = z.strictObject({
   sessionId: identifierSchema,
+  /**
+   * A human-initiated take-over of a still-LIVE different holder (ADR 0035
+   * amendment). Absent/false keeps the automated rule — a live holder is refused
+   * `409 COORDINATOR_CONFLICT` — so two agents racing never evict each other.
+   * `true` is only ever set by an explicit operator gesture (the dashboard's
+   * "Take over" confirmation); it does not weaken the single-holder CAS, which
+   * still keys on the observed holder's `version` and `claimId`.
+   */
+  takeover: z.boolean().optional(),
 });
 export type CoordinatorClaimRequest = z.infer<typeof coordinatorClaimRequestSchema>;
 

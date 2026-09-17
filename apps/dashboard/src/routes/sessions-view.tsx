@@ -95,6 +95,8 @@ export function SessionsView({
   const [coordinatorNote, setCoordinatorNote] = useState<{
     tone: 'ok' | 'danger';
     message: string;
+    /** Set when a claim was refused by a live holder: offers an explicit take-over (ADR 0035). */
+    takeoverRow?: SessionRow;
   }>();
   const coordinatorEnabled =
     coordinatorMutations !== undefined && onCoordinatorMutated !== undefined;
@@ -102,13 +104,17 @@ export function SessionsView({
     const held = snapshot.coordinatorByProject[row.projectId];
     return held !== undefined && held.live && held.sessionId === row.id;
   };
-  const runCoordinator = async (row: SessionRow, action: 'claim' | 'release'): Promise<void> => {
+  const runCoordinator = async (
+    row: SessionRow,
+    action: 'claim' | 'release',
+    takeover = false,
+  ): Promise<void> => {
     if (coordinatorMutations === undefined || onCoordinatorMutated === undefined) return;
     setCoordinatorBusy(row.id);
     setCoordinatorNote(undefined);
     const result =
       action === 'claim'
-        ? await coordinatorMutations.claim(row.projectId, row.id)
+        ? await coordinatorMutations.claim(row.projectId, row.id, takeover)
         : await coordinatorMutations.release(row.projectId, row.id);
     setCoordinatorBusy(undefined);
     if (result.state === 'ok') {
@@ -119,12 +125,21 @@ export function SessionsView({
       onCoordinatorMutated();
       return;
     }
+    // A claim refused by a still-live holder can be forced with an explicit take-over
+    // (ADR 0035 amendment): the second click is the confirmation, never an automated retry.
+    const canTakeOver =
+      action === 'claim' &&
+      !takeover &&
+      result.state === 'failed' &&
+      result.reason === 'http' &&
+      result.code === 'COORDINATOR_CONFLICT';
     setCoordinatorNote({
       tone: 'danger',
       message:
         result.state === 'failed' && result.reason === 'http'
           ? result.message
           : 'The coordinator update could not be completed.',
+      ...(canTakeOver ? { takeoverRow: row } : {}),
     });
   };
   const resource =
@@ -359,6 +374,19 @@ export function SessionsView({
                   role="status"
                 >
                   {coordinatorNote.message}
+                  {coordinatorNote.takeoverRow ? (
+                    <button
+                      className="coordinator-button"
+                      type="button"
+                      disabled={coordinatorBusy !== undefined}
+                      onClick={() => {
+                        const target = coordinatorNote.takeoverRow;
+                        if (target) void runCoordinator(target, 'claim', true);
+                      }}
+                    >
+                      Take over
+                    </button>
+                  ) : null}
                 </p>
               )}
             </>

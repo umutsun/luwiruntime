@@ -1191,7 +1191,11 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         const { projectId } = parseRequestInput(projectParamsSchema, request.params);
         const body = parseRequestInput(coordinatorClaimRequestSchema, request.body);
         const claimed = await withMutation(() =>
-          coordinator.claim({ projectId, sessionId: body.sessionId }),
+          coordinator.claim({
+            projectId,
+            sessionId: body.sessionId,
+            ...(body.takeover === undefined ? {} : { takeover: body.takeover }),
+          }),
         );
         return reply
           .code(201)

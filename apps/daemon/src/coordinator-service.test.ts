@@ -113,6 +113,20 @@ describe('createCoordinatorService claim', () => {
     });
   });
 
+  it('takes over a live different holder on an explicit takeover (ADR 0035 amendment)', async () => {
+    const claimCoordinator = vi.fn().mockResolvedValue({ status: 'claimed', version: 5 });
+    const service = build({
+      repository: { getCoordinator: vi.fn().mockResolvedValue(heldBy), claimCoordinator },
+      sessions: { 'session-a': claimant, 'session-b': { ...claimant, id: 'session-b' } },
+    });
+    const result = await service.claim({ ...claimInput, takeover: true });
+    expect(result.version).toBe(5);
+    // Still keyed on the live holder's observed version + incarnation nonce.
+    expect(claimCoordinator).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedVersion: 4, expectedClaimId: 'claim-b' }),
+    );
+  });
+
   it('takes over from a terminal holder using its version', async () => {
     const claimCoordinator = vi.fn().mockResolvedValue({ status: 'claimed', version: 5 });
     const service = build({

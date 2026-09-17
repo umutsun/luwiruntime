@@ -34,6 +34,14 @@ export type CoordinatorClaimObservation = {
   holder: CoordinatorHolderObservation | undefined;
   /** The LUWI session claiming the coordinator role. */
   sessionId: string;
+  /**
+   * A human-initiated take-over (ADR 0035 amendment): when `true`, a still-LIVE
+   * different holder is taken over instead of refused. Automated callers leave
+   * it unset, so two agents racing still produce one grant and one conflict —
+   * only an explicit operator gesture evicts a live coordinator. The CAS is
+   * unchanged: it keys on the observed holder's `version` and `claimId`.
+   */
+  takeover?: boolean;
 };
 
 export type CoordinatorClaimDecision =
@@ -59,7 +67,7 @@ function isVacant(status: SessionStatus | undefined): boolean {
 export function evaluateCoordinatorClaim(
   observation: CoordinatorClaimObservation,
 ): CoordinatorClaimDecision {
-  const { holder, sessionId } = observation;
+  const { holder, sessionId, takeover } = observation;
 
   if (holder === undefined) {
     return { outcome: 'grant', expectedVersion: 0 };
@@ -69,7 +77,9 @@ export function evaluateCoordinatorClaim(
     return { outcome: 'unchanged' };
   }
 
-  if (!isVacant(holder.sessionStatus)) {
+  // A live different holder is refused — unless a human explicitly asked to take
+  // it over. A terminal/vanished holder is always takeable.
+  if (!isVacant(holder.sessionStatus) && takeover !== true) {
     return { outcome: 'conflict', heldBySessionId: holder.sessionId };
   }
 

@@ -33,7 +33,8 @@ import type { SessionService } from './session-service.js';
  */
 
 export type CoordinatorService = {
-  claim(input: { projectId: string; sessionId: string }): Promise<Coordinator>;
+  /** `takeover` (ADR 0035 amendment) evicts a still-live different holder — an explicit operator gesture only. */
+  claim(input: { projectId: string; sessionId: string; takeover?: boolean }): Promise<Coordinator>;
   release(input: { projectId: string; sessionId: string }): Promise<void>;
   get(projectId: string): Promise<CoordinatorView>;
 };
@@ -117,6 +118,7 @@ export function createCoordinatorService(options: {
                       : await holderStatus(holder.sessionId),
                 },
           sessionId: input.sessionId,
+          ...(input.takeover === undefined ? {} : { takeover: input.takeover }),
         });
 
         if (decision.outcome === 'unchanged') {

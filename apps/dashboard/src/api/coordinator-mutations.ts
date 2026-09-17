@@ -55,6 +55,8 @@ export function createCoordinatorMutations(fetchImpl: typeof fetch = fetch) {
     async claim(
       projectId: string,
       sessionId: string,
+      /** An explicit operator take-over of a still-live holder (ADR 0035 amendment). */
+      takeover = false,
     ): Promise<CoordinatorMutationResult<Coordinator>> {
       if (!idsValid(projectId, sessionId)) {
         return {
@@ -70,7 +72,7 @@ export function createCoordinatorMutations(fetchImpl: typeof fetch = fetch) {
         response = await fetchImpl(coordinatorPath(projectId), {
           method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json' },
-          body: JSON.stringify({ sessionId }),
+          body: JSON.stringify({ sessionId, ...(takeover ? { takeover: true } : {}) }),
         });
       } catch {
         return { state: 'failed', reason: 'transport' };

@@ -133,3 +133,26 @@ dispatches its implement/verify messages as the claimed coordinator.
   liveness is sufficient and matches how the native binding already behaves.
 - **A daemon-side flow/state machine or scheduler.** That is §21 task orchestration — out of scope.
   The sequencing lives in the external `flow.mjs`.
+
+## Amendment 2026-09-17: operator take-over of a live holder
+
+The single-holder rule refuses a live holder rather than evicting it, so two agents racing never
+oust each other. But that also blocks the one thing the dashboard's "Make coordinator" is for — an
+operator deliberately reassigning the role to another session — and on a fleet-managed project the
+manager re-claims the role every tick, so a plain release is undone within seconds and a reassign
+`409`s forever. The rule was meant for automated races, not human intent.
+
+So the claim request gains an optional `takeover` flag. Absent/false keeps the automated rule (a
+live holder is `409 COORDINATOR_CONFLICT`). `true` is set only by an explicit operator gesture — the
+sessions view's "Take over" button, a second click after the conflict, which is itself the
+confirmation. The daemon then treats a live different holder as takeable. **The CAS is unchanged:**
+the policy still returns `takeover` keyed on the observed holder's `version` and `claimId`, so the
+`claimId` ABA guard still holds — an operator take-over evicts exactly the incarnation it observed,
+never a newer one. No `luwi_v1`, Function, or stored-record change; the decision moved in the pure
+policy only, so a daemon restart is enough to pick it up.
+
+Its counterpart lives in the repo-external albanoosh manager: instead of claiming the role every
+tick unconditionally, the manager claims only when the role is vacant or already its own, and yields
+to any other live holder. So an operator's take-over sticks — the manager sees a live human-assigned
+coordinator and does not fight it — while auto-recovery is preserved (a vacated role is re-claimed).
+§3 still holds: the take-over reassigns identity, it stops no process; and §21 is untouched.

@@ -90,6 +90,24 @@ describe('coordinator routes', () => {
     expect(claim).toHaveBeenCalledWith({ projectId: 'project-1', sessionId: 'session-a' });
   });
 
+  it('passes an explicit takeover through to the service (ADR 0035 amendment)', async () => {
+    const claim = vi.fn().mockResolvedValue(coordinator);
+    app = daemon({ claim });
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/projects/project-1/coordinator',
+      payload: { sessionId: 'session-a', takeover: true },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(claim).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      sessionId: 'session-a',
+      takeover: true,
+    });
+  });
+
   it('surfaces a live holder as a 409 conflict', async () => {
     app = daemon({
       claim: vi

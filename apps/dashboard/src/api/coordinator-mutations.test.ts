@@ -34,6 +34,22 @@ describe('coordinator mutations', () => {
     expect(result).toEqual({ state: 'ok', httpStatus: 201, data: coordinator });
   });
 
+  it('sends takeover only when explicitly requested (ADR 0035 amendment)', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(jsonResponse(coordinator, 201));
+    const mutations = createCoordinatorMutations(fetchImpl as unknown as typeof fetch);
+
+    await mutations.claim('project-1', 'session-a', true);
+    const [, withTakeover] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(withTakeover.body as string)).toEqual({
+      sessionId: 'session-a',
+      takeover: true,
+    });
+
+    await mutations.claim('project-1', 'session-a', false);
+    const [, without] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    expect(JSON.parse(without.body as string)).toEqual({ sessionId: 'session-a' });
+  });
+
   it('surfaces a live-holder conflict as the daemon public error code and message', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       jsonResponse(
