@@ -60,8 +60,18 @@ describe('loadPulseInput', () => {
       [
         '/api/v1/usage/summary?limit=1000',
         ready({
-          recordCount: 1,
-          sources: [{ source: 'agent-exact', recordCount: 1, totalTokens: 50 }],
+          recordCount: 3,
+          sources: [
+            { source: 'agent-exact', recordCount: 1, totalTokens: 50 },
+            // Transcript-derived: input + output present, no pre-summed total.
+            {
+              source: 'adapter-extracted',
+              recordCount: 2,
+              inputTokens: 400,
+              outputTokens: 100,
+              cacheReadInputTokens: 9_000_000,
+            },
+          ],
         }),
       ],
       [
@@ -118,6 +128,13 @@ describe('loadPulseInput', () => {
     });
     expect(input.sessions.state === 'ready' && input.sessions.data[0]?.presence).toBe('online');
     expect(input.usage.state === 'ready' && input.usage.data[0]?.source).toBe('agent-exact');
+    // A transcript-derived source with no pre-summed total gets one from
+    // input + output (fresh), never folding in the 9M cache-read tokens.
+    expect(input.usage.state === 'ready' && input.usage.data[1]).toEqual({
+      source: 'adapter-extracted',
+      recordCount: 2,
+      totalTokens: 500,
+    });
     expect(input.activity.state === 'ready' && input.activity.data[0]).toMatchObject({
       streamId: '1785918000000-0',
       type: 'future.adapter.observed',

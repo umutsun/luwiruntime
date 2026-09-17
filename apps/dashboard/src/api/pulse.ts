@@ -323,11 +323,24 @@ export async function loadPulseResources(
             key,
             client.get('/api/v1/usage/summary?limit=1000', usageSummarySchema, options),
             ({ sources }) =>
-              sources.map(({ source, recordCount, totalTokens }) => ({
-                source,
-                recordCount,
-                ...(totalTokens === undefined ? {} : { totalTokens }),
-              })),
+              sources.map(({ source, recordCount, totalTokens, inputTokens, outputTokens }) => {
+                // Transcript-derived usage (adapter-extracted) stores input, output
+                // and cache separately and carries no pre-summed `totalTokens`, so
+                // the tile read empty on the live fleet though 18k records existed.
+                // Derive the headline the same way the protocol defines it —
+                // inputTokens + outputTokens, both fresh — never folding cache in
+                // (cache-read dwarfs real work and is not new tokens).
+                const derived =
+                  totalTokens ??
+                  (inputTokens !== undefined && outputTokens !== undefined
+                    ? inputTokens + outputTokens
+                    : undefined);
+                return {
+                  source,
+                  recordCount,
+                  ...(derived === undefined ? {} : { totalTokens: derived }),
+                };
+              }),
           ),
         );
         break;
