@@ -116,7 +116,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (34 registered Functions since F3's `luwi_project_unregister_v1` — the library version is still 12, so a daemon started before a new Function needs one restart to load it; the daemon started 2026-09-17 holds 33) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (34 registered Functions since F3's `luwi_project_unregister_v1` — the library version is still 12, so a daemon started before a new Function needs one restart to load it; the daemon restarted 2026-09-17 after F3 holds all 34) is already loaded on the server.
 
 ## Tools and shells
 
