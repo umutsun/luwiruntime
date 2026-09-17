@@ -104,7 +104,9 @@ describe('SessionsView', () => {
     expect(screen.queryByText(/no sessions/i)).toBeNull();
   });
 
-  it('filters by status without discarding the total count', () => {
+  it('lists every observed session without status/presence/client filter controls', () => {
+    // The filter row was removed on the owner's read (a cleaner drawer); the
+    // table still carries the Status and Presence columns, just no filters.
     const snapshot = buildPulseSnapshot(
       baseInput({
         sessions: {
@@ -118,39 +120,11 @@ describe('SessionsView', () => {
     );
     render(<SessionsView snapshot={snapshot} />);
 
-    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'completed' } });
-
-    expect(screen.queryByText('s-active')).toBeNull();
+    expect(screen.getByText('s-active')).toBeTruthy();
     expect(screen.getByText('s-done')).toBeTruthy();
-    expect(screen.getByText('1 of 2 shown')).toBeTruthy();
-  });
-
-  it('filters by presence', () => {
-    const snapshot = buildPulseSnapshot(
-      baseInput({
-        sessions: {
-          state: 'ready',
-          data: [session('s-on'), session('s-off', { presence: 'offline' })],
-        },
-      }),
-    );
-    render(<SessionsView snapshot={snapshot} />);
-
-    fireEvent.change(screen.getByLabelText('Presence'), { target: { value: 'offline' } });
-
-    expect(screen.queryByText('s-on')).toBeNull();
-    expect(screen.getByText('s-off')).toBeTruthy();
-  });
-
-  it('reports a filter that matches nothing instead of looking empty', () => {
-    const snapshot = buildPulseSnapshot(
-      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
-    );
-    render(<SessionsView snapshot={snapshot} />);
-
-    fireEvent.change(screen.getByLabelText('Presence'), { target: { value: 'offline' } });
-
-    expect(screen.getByText(/no sessions match/i)).toBeTruthy();
+    expect(screen.queryByLabelText('Status')).toBeNull();
+    expect(screen.queryByLabelText('Presence')).toBeNull();
+    expect(screen.queryByLabelText('Client')).toBeNull();
   });
 
   it('sorts newest first by default and toggles on the started header', () => {

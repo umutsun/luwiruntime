@@ -642,16 +642,29 @@ tr[data-selected='true'] {
   min-width: 48rem;
 }
 
-.ask-button {
-  border-color: var(--selection);
-  color: var(--selection);
+/* One consistent, quiet button for every session-row action (Make/Release
+   coordinator, Ask, Inspect, Take over). Before this they each set only a
+   colour and fell back to the browser's grey 3D default (outset border, grey
+   fill) — the mismatched look the owner flagged. A single ghost button ties
+   the row together and stays out of the way. */
+.row-action {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
 }
-
-/* Assigns or releases the per-project coordinator role (ADR 0035); like Ask it
-   stays attached to the session row and only writes coordination-plane identity. */
-.coordinator-button {
-  border-color: var(--selection-strong);
-  color: var(--selection-strong);
+.row-action:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.row-action:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .coordinator-note {

@@ -619,6 +619,18 @@ describe('buildOverview', () => {
     expect(context?.sub).toBe('1 invoked · 1 loaded, never invoked');
   });
 
+  it('says the context tile is unreported when the fleet observed none, not a broken 0', () => {
+    // A successful read with no contributions at all (the pilot's steady state:
+    // agents report context loading through MCP and turn-based GUIs never do).
+    const empty = input();
+    empty.context = { state: 'ready', data: [] };
+    const model = buildOverview(buildPulseSnapshot(empty), [], NOW);
+    const context = model.stats.find((stat) => stat.key === 'context');
+    expect(context?.value).toBe('0');
+    expect(context?.unavailable).toBe(false);
+    expect(context?.sub).toBe('no context reported by the fleet');
+  });
+
   it('gives no Redis verdict without a daemon answer', () => {
     const offline = input();
     offline.health = { state: 'unavailable' };
@@ -828,6 +840,36 @@ describe('flow layout', () => {
     expect(new Set(dimmed)).toEqual(new Set(['s-wait', 's-think']));
     expect(layout.agents.find((node) => node.key === 'agent:a2')?.selected).toBe(true);
     expect(layout.projects.find((node) => node.key === 'project:p2')?.dim).toBe(true);
+  });
+
+  it('focuses a status tile and lights only the flow that reaches it', () => {
+    const layout = layoutFlow(overview(), { kind: 'status', value: 'thinking' });
+    const thinking = layout.statuses.find((node) => node.key === 'status:thinking');
+    expect(thinking?.selected).toBe(true);
+    expect(thinking?.focus).toEqual({ kind: 'status', value: 'thinking' });
+    expect(thinking?.dim).toBe(false);
+    const lit = layout.ribbons.filter((ribbon) => !ribbon.dim).map((ribbon) => ribbon.sessionId);
+    expect(new Set(lit)).toEqual(new Set(['s-think']));
+    expect(layout.statuses.find((node) => node.key === 'status:blocked')?.dim).toBe(true);
+    expect(layout.agents.find((node) => node.key === 'agent:a2')?.dim).toBe(true);
+  });
+});
+
+describe('status focus drill-down', () => {
+  it('lists the sessions in the focused status', () => {
+    const panel = panelFor(overview(), { kind: 'status', value: 'thinking' }, 'live');
+    expect(panel.eyebrow).toBe('Status');
+    expect(panel.title).toBe('THINKING');
+    expect(panel.badge.label).toBe('1');
+    expect(panel.list.rows.map((row) => row.id)).toEqual(['s-think']);
+    expect(panel.facts.find((fact) => fact.k === 'Category')?.v).toBe('working');
+  });
+
+  it('falls back to the runtime when the status is no longer present', () => {
+    expect(resolveFocus(overview(), { kind: 'status', value: 'nope' })).toEqual(RUNTIME_FOCUS);
+    expect(panelFor(overview(), { kind: 'status', value: 'nope' }, 'live').title).toBe(
+      'Luwi Runtime',
+    );
   });
 });
 

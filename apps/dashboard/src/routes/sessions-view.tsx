@@ -60,9 +60,9 @@ function SortHeader({
  *
  * A session whose project cannot be resolved renders `Unavailable` for the
  * project rather than being hidden: the session was still observed, and
- * dropping it would under-report what the runtime saw. Filtering follows the
- * same rule — the meta line keeps the total, and a filter that matches nothing
- * says so instead of impersonating an empty runtime.
+ * dropping it would under-report what the runtime saw. There are no status,
+ * presence or client filters — the table sorts and the meta line carries the
+ * total; the columns still name each session's status, presence and client.
  */
 export function SessionsView({
   snapshot,
@@ -83,9 +83,6 @@ export function SessionsView({
   onCoordinatorMutated?: () => void;
   now?: () => Date;
 }) {
-  const [statusFilter, setStatusFilter] = useState('');
-  const [presenceFilter, setPresenceFilter] = useState('');
-  const [clientFilter, setClientFilter] = useState('');
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({
     key: 'started',
     direction: 'descending',
@@ -148,9 +145,6 @@ export function SessionsView({
       : ({ state: 'unavailable' } as const);
   const nowMs = now().getTime();
 
-  const statusLabels = [...new Set(snapshot.sessions.map((row) => row.statusLabel))].sort();
-  // Only the kinds actually observed, so the filter never offers an empty choice.
-  const clientKinds = [...new Set(snapshot.sessions.map((row) => row.clientKind))].sort();
   const toggleSort = (key: SortKey) =>
     setSort((previous) => ({
       key,
@@ -176,194 +170,133 @@ export function SessionsView({
         isEmpty={(rows) => rows.length === 0}
       >
         {(rows) => {
-          const filtered = rows.filter(
-            (row) =>
-              (statusFilter === '' || row.statusLabel === statusFilter) &&
-              (presenceFilter === '' || row.presence === presenceFilter) &&
-              (clientFilter === '' || row.clientKind === clientFilter),
-          );
-          const sorted = [...filtered].sort((left, right) => {
+          const sorted = [...rows].sort((left, right) => {
             const order = compareRows(left, right, sort.key);
             return sort.direction === 'ascending' ? order : -order;
           });
           return (
             <>
-              <div className="table-filters" aria-label="Session filters">
-                <label>
-                  Status
-                  <select
-                    value={statusFilter}
-                    onChange={(event) => setStatusFilter(event.target.value)}
-                  >
-                    <option value="">All</option>
-                    {statusLabels.map((label) => (
-                      <option key={label} value={label}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Presence
-                  <select
-                    value={presenceFilter}
-                    onChange={(event) => setPresenceFilter(event.target.value)}
-                  >
-                    <option value="">All</option>
-                    <option value="online">Online</option>
-                    <option value="offline">Offline</option>
-                  </select>
-                </label>
-                <label>
-                  Client
-                  <select
-                    value={clientFilter}
-                    onChange={(event) => setClientFilter(event.target.value)}
-                  >
-                    <option value="">All</option>
-                    {clientKinds.map((kind) => (
-                      <option key={kind} value={kind}>
-                        {clientKindLabels[kind]}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {filtered.length === rows.length ? null : (
-                  <span className="table-filters__count" role="status">
-                    {filtered.length} of {rows.length} shown
-                  </span>
-                )}
-              </div>
-              {sorted.length === 0 ? (
-                <p className="empty-state">No sessions match the current filters</p>
-              ) : (
-                <div className="session-registry">
-                  <TableWrap caption="Observed sessions" tall>
-                    <thead>
-                      <tr>
-                        <th scope="col">Session</th>
-                        <SortHeader
-                          label="Agent"
-                          sortKey="agent"
-                          active={sort}
-                          onSort={toggleSort}
-                        />
-                        <th scope="col">Project</th>
-                        <SortHeader
-                          label="Status"
-                          sortKey="status"
-                          active={sort}
-                          onSort={toggleSort}
-                        />
-                        <th scope="col">Presence</th>
-                        <SortHeader
-                          label="Started"
-                          sortKey="started"
-                          active={sort}
-                          onSort={toggleSort}
-                        />
-                        <th scope="col">
-                          <span className="sr-only">Actions</span>
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sorted.map((row) => (
-                        <tr key={row.id}>
-                          <td>
-                            <IdBadge id={row.id} label="session" />
-                            {isCoordinator(row) ? (
-                              <StatusChip tone="success">Coordinator</StatusChip>
+              <div className="session-registry">
+                <TableWrap caption="Observed sessions" tall>
+                  <thead>
+                    <tr>
+                      <th scope="col">Session</th>
+                      <SortHeader label="Agent" sortKey="agent" active={sort} onSort={toggleSort} />
+                      <th scope="col">Project</th>
+                      <SortHeader
+                        label="Status"
+                        sortKey="status"
+                        active={sort}
+                        onSort={toggleSort}
+                      />
+                      <th scope="col">Presence</th>
+                      <SortHeader
+                        label="Started"
+                        sortKey="started"
+                        active={sort}
+                        onSort={toggleSort}
+                      />
+                      <th scope="col">
+                        <span className="sr-only">Actions</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sorted.map((row) => (
+                      <tr key={row.id}>
+                        <td>
+                          <IdBadge id={row.id} label="session" />
+                          {isCoordinator(row) ? (
+                            <StatusChip tone="success">Coordinator</StatusChip>
+                          ) : null}
+                          {/* The flow roles the row's agent holds in its project (ADR 0036). */}
+                          {(snapshot.flowRolesByProject[row.projectId]?.[row.agentId] ?? []).map(
+                            (role) => (
+                              <StatusChip key={role} tone="info">
+                                {role}
+                              </StatusChip>
+                            ),
+                          )}
+                        </td>
+                        <td>
+                          <IdBadge id={row.agentId} label="agent" />
+                          <StatusChip tone="info">{clientKindLabels[row.clientKind]}</StatusChip>
+                        </td>
+                        <td>
+                          {row.projectName === 'Unavailable' ? <Unavailable /> : row.projectName}
+                        </td>
+                        <td>{row.statusLabel}</td>
+                        <td>
+                          <StatusChip tone={row.presence === 'online' ? 'success' : 'unknown'}>
+                            {row.presence === 'online' ? 'Online' : 'Offline'}
+                          </StatusChip>
+                        </td>
+                        <td>
+                          <time dateTime={row.startedAt} title={row.startedAt}>
+                            {formatRelativeTime(row.startedAt, nowMs)}
+                          </time>
+                        </td>
+                        <td>
+                          <div className="row-actions">
+                            {coordinatorEnabled && isCoordinator(row) ? (
+                              <button
+                                className="row-action"
+                                type="button"
+                                disabled={coordinatorBusy === row.id}
+                                onClick={() => void runCoordinator(row, 'release')}
+                                aria-label={`Release the coordinator role from session ${row.id}`}
+                              >
+                                Release role
+                              </button>
                             ) : null}
-                            {/* The flow roles the row's agent holds in its project (ADR 0036). */}
-                            {(snapshot.flowRolesByProject[row.projectId]?.[row.agentId] ?? []).map(
-                              (role) => (
-                                <StatusChip key={role} tone="info">
-                                  {role}
-                                </StatusChip>
-                              ),
+                            {coordinatorEnabled &&
+                            !isCoordinator(row) &&
+                            row.presence === 'online' ? (
+                              <button
+                                className="row-action"
+                                type="button"
+                                disabled={coordinatorBusy === row.id}
+                                onClick={() => void runCoordinator(row, 'claim')}
+                                aria-label={`Make session ${row.id} the coordinator`}
+                              >
+                                Make coordinator
+                              </button>
+                            ) : null}
+                            {messageMutations === undefined ||
+                            onMessageCreated === undefined ||
+                            row.presence !== 'online' ||
+                            !rows.some(
+                              (source) =>
+                                source.id !== row.id &&
+                                source.projectId === row.projectId &&
+                                source.presence === 'online',
+                            ) ? null : (
+                              <button
+                                className="row-action"
+                                type="button"
+                                onClick={() => setAskTarget(row)}
+                                aria-label={`Ask session ${row.id}`}
+                              >
+                                Ask
+                              </button>
                             )}
-                          </td>
-                          <td>
-                            <IdBadge id={row.agentId} label="agent" />
-                            <StatusChip tone="info">{clientKindLabels[row.clientKind]}</StatusChip>
-                          </td>
-                          <td>
-                            {row.projectName === 'Unavailable' ? <Unavailable /> : row.projectName}
-                          </td>
-                          <td>{row.statusLabel}</td>
-                          <td>
-                            <StatusChip tone={row.presence === 'online' ? 'success' : 'unknown'}>
-                              {row.presence === 'online' ? 'Online' : 'Offline'}
-                            </StatusChip>
-                          </td>
-                          <td>
-                            <time dateTime={row.startedAt} title={row.startedAt}>
-                              {formatRelativeTime(row.startedAt, nowMs)}
-                            </time>
-                          </td>
-                          <td>
-                            <div className="row-actions">
-                              {coordinatorEnabled && isCoordinator(row) ? (
-                                <button
-                                  className="coordinator-button"
-                                  type="button"
-                                  disabled={coordinatorBusy === row.id}
-                                  onClick={() => void runCoordinator(row, 'release')}
-                                  aria-label={`Release the coordinator role from session ${row.id}`}
-                                >
-                                  Release role
-                                </button>
-                              ) : null}
-                              {coordinatorEnabled &&
-                              !isCoordinator(row) &&
-                              row.presence === 'online' ? (
-                                <button
-                                  className="coordinator-button"
-                                  type="button"
-                                  disabled={coordinatorBusy === row.id}
-                                  onClick={() => void runCoordinator(row, 'claim')}
-                                  aria-label={`Make session ${row.id} the coordinator`}
-                                >
-                                  Make coordinator
-                                </button>
-                              ) : null}
-                              {messageMutations === undefined ||
-                              onMessageCreated === undefined ||
-                              row.presence !== 'online' ||
-                              !rows.some(
-                                (source) =>
-                                  source.id !== row.id &&
-                                  source.projectId === row.projectId &&
-                                  source.presence === 'online',
-                              ) ? null : (
-                                <button
-                                  className="ask-button"
-                                  type="button"
-                                  onClick={() => setAskTarget(row)}
-                                  aria-label={`Ask session ${row.id}`}
-                                >
-                                  Ask
-                                </button>
-                              )}
-                              {onOpenSession === undefined ? null : (
-                                <button
-                                  className="inspect-button"
-                                  type="button"
-                                  onClick={(event) => onOpenSession(row, event.currentTarget)}
-                                  aria-label={`Inspect session ${row.id}`}
-                                >
-                                  Inspect
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </TableWrap>
-                </div>
-              )}
+                            {onOpenSession === undefined ? null : (
+                              <button
+                                className="row-action"
+                                type="button"
+                                onClick={(event) => onOpenSession(row, event.currentTarget)}
+                                aria-label={`Inspect session ${row.id}`}
+                              >
+                                Inspect
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </TableWrap>
+              </div>
               {coordinatorNote === undefined ? null : (
                 <p
                   className={
@@ -376,7 +309,7 @@ export function SessionsView({
                   {coordinatorNote.message}
                   {coordinatorNote.takeoverRow ? (
                     <button
-                      className="coordinator-button"
+                      className="row-action"
                       type="button"
                       disabled={coordinatorBusy !== undefined}
                       onClick={() => {

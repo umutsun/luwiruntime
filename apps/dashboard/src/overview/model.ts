@@ -737,7 +737,18 @@ function statsOf(
   const usageUnavailable = snapshot.usageState === 'unavailable';
 
   const contextUnavailable = snapshot.contextState === 'unavailable';
-  const { loaded, invoked } = snapshot.context;
+  const { assigned, effective, loaded, invoked, unknown } = snapshot.context;
+  // The read succeeded but the fleet reported no context at all — agents report
+  // skill loading through MCP and turn-based GUIs never do, so this is honest
+  // absence, not a fault. Say so plainly instead of "0 invoked · 0 loaded", which
+  // reads as broken.
+  const contextEmpty =
+    !contextUnavailable &&
+    assigned === 0 &&
+    effective === 0 &&
+    loaded === 0 &&
+    invoked === 0 &&
+    unknown === 0;
 
   return [
     {
@@ -796,7 +807,9 @@ function statsOf(
       value: contextUnavailable ? '—' : String(loaded),
       sub: contextUnavailable
         ? 'context unavailable'
-        : `${String(invoked)} invoked · ${String(snapshot.contextInsights.loadedNotInvoked)} loaded, never invoked`,
+        : contextEmpty
+          ? 'no context reported by the fleet'
+          : `${String(invoked)} invoked · ${String(snapshot.contextInsights.loadedNotInvoked)} loaded, never invoked`,
       unavailable: contextUnavailable,
       fraction: loaded === 0 ? 0 : invoked / loaded,
       route: '#/context',
@@ -812,13 +825,18 @@ export type Focus =
   | { kind: 'runtime' }
   | { kind: 'project'; id: string }
   | { kind: 'agent'; id: string }
-  | { kind: 'session'; id: string };
+  | { kind: 'session'; id: string }
+  /** A Flow status column tile: every session whose status is `value`. */
+  | { kind: 'status'; value: string };
 
 export const RUNTIME_FOCUS: Focus = { kind: 'runtime' };
 
 export function sameFocus(left: Focus, right: Focus): boolean {
   if (left.kind !== right.kind) return false;
-  return left.kind === 'runtime' || right.kind === 'runtime' || left.id === right.id;
+  if (left.kind === 'runtime' || right.kind === 'runtime') return true;
+  if (left.kind === 'status' || right.kind === 'status')
+    return left.kind === 'status' && right.kind === 'status' && left.value === right.value;
+  return left.id === right.id;
 }
 
 /** A focus whose subject vanished from the snapshot falls back to the runtime. */
@@ -828,6 +846,10 @@ export function resolveFocus(overview: Overview, focus: Focus): Focus {
     return overview.projects.some((project) => project.id === focus.id) ? focus : RUNTIME_FOCUS;
   if (focus.kind === 'agent')
     return overview.agents.some((agent) => agent.id === focus.id) ? focus : RUNTIME_FOCUS;
+  if (focus.kind === 'status')
+    return overview.statuses.some((status) => status.status === focus.value)
+      ? focus
+      : RUNTIME_FOCUS;
   return overview.allSessions.some((session) => session.id === focus.id) ? focus : RUNTIME_FOCUS;
 }
 
@@ -848,6 +870,7 @@ export function relatedToFocus(session: OverviewSession, focus: Focus): boolean 
   if (focus.kind === 'runtime') return true;
   if (focus.kind === 'project') return session.projectId === focus.id;
   if (focus.kind === 'agent') return session.agentId === focus.id;
+  if (focus.kind === 'status') return session.status === focus.value;
   return session.id === focus.id;
 }
 
@@ -1179,6 +1202,32 @@ export function panelFor(
     };
   }
 
+  if (focus.kind === 'status') {
+    const node = overview.statuses.find((candidate) => candidate.status === focus.value);
+    if (node === undefined) return panelFor(overview, RUNTIME_FOCUS, realtime);
+    const projectCount = new Set(node.sessions.map((session) => session.projectId)).size;
+    const agentCount = new Set(node.sessions.map((session) => session.agentId)).size;
+    const ids = new Set(node.sessions.map((session) => session.id));
+    return {
+      eyebrow: 'Status',
+      title: node.label.toUpperCase(),
+      badge: { label: String(node.sessions.length), tone: 'ink' },
+      sub: `${String(node.sessions.length)} session${node.sessions.length === 1 ? '' : 's'} · ${String(projectCount)} project${projectCount === 1 ? '' : 's'} · ${String(agentCount)} agent${agentCount === 1 ? '' : 's'}`,
+      facts: [
+        { k: 'Category', v: node.tone },
+        { k: 'Live', v: String(node.sessions.filter((session) => session.live).length) },
+        { k: 'Projects', v: String(projectCount) },
+      ],
+      trend: trendOf(
+        'Events · retained',
+        events.filter((event) => event.sessionId !== undefined && ids.has(event.sessionId)),
+        overview,
+      ),
+      list: { label: 'Sessions', rows: node.sessions, empty: sessionsEmpty(overview) },
+      links: [{ kind: 'route', label: 'Sessions', href: '#/sessions' }],
+    };
+  }
+
   if (focus.kind === 'session') {
     const session = overview.allSessions.find((candidate) => candidate.id === focus.id);
     if (session === undefined) return panelFor(overview, RUNTIME_FOCUS, realtime);
@@ -1450,6 +1499,7 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
 
   const statuses: FlowNode[] = overview.statuses.map((status, index) => {
     const box = statusBoxes[index] ?? { y: 0, h: unit };
+    const selected = focus.kind === 'status' && focus.value === status.status;
     return {
       key: `status:${status.status}`,
       x: FLOW_COLUMNS.statuses.x,
@@ -1460,9 +1510,9 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
       initials: '',
       sub: '',
       count: status.sessions.length,
-      focus: RUNTIME_FOCUS,
-      selected: false,
-      dim: anySelection && !status.sessions.some(related),
+      focus: { kind: 'status', value: status.status },
+      selected,
+      dim: anySelection && !selected && !status.sessions.some(related),
       quiet: false,
       tone: status.tone,
     };
