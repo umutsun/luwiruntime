@@ -498,7 +498,13 @@ through is the same endpoint the CLI uses, called directly: `POST /api/v1/runtim
 `content-type: application/json`, then `luwi start` with the new dist. And `luwi start` reporting
 `DAEMON_START_TIMEOUT` is not proof the daemon died: the readiness deadline is shorter than a cold
 start with a warm Redis, so check `/health` before retrying (the 0.2.0 daemon was up ten seconds
-after that message). **Prepared, not deployed** (a lifecycle restart is needed): the heartbeat
+after that message). **And the mirror trap (2026-09-17): a `luwi stop` that returns
+`DAEMON_PORT_CONFLICT` may have left the daemon running** — it is a transient lifecycle-lock race
+with the albanoosh manager, and the following `luwi start` then reports the still-running old process
+as "ready". The build is on `dist/` but the live process never reloaded it, and a `200` from a route
+proves nothing. After any restart, confirm the process actually cycled: `GET /api/v1/runtime` and
+check `uptimeMs` is small and `runtimeInstanceId` changed. Re-running `luwi stop` cleared the lock;
+the manager's `ensureDaemon` then brought it back fresh. **Prepared, not deployed** (a lifecycle restart is needed): the heartbeat
 and inbox-claim routes log at `warn` (the in-run driver of the 979 MB `daemon.log`; `buildDaemon`'s
 `logger` option takes a `stream` so a test can read what would have been written),
 `LUWI_GRAPHIFY_OUTPUT_PATH` (relative, no `..`/absolute/drive/UNC, refused at config time), and
