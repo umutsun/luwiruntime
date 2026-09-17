@@ -1272,7 +1272,14 @@ on the overview, and stamped a session's client kind (`cli`/`gui`/`ide`/`bridge`
 metadata with a dashboard-side derive fallback. Task orchestration remains outside the daemon: the
 implement → verify chain is a repository-external script that sends independent correlated messages
 as the coordinator holder and stops before any merge (the ADR 0031 precedent) — nothing here adds a
-daemon-side flow engine, scheduler, or auto-advance.
+daemon-side flow engine, scheduler, or auto-advance. The 2026-09-17 tranche then put the coordinator
+switch in the overview drill-down, gave the dashboard a served-build watch (`NEW BUILD · RELOAD`),
+logged the heartbeat and inbox-claim routes at warn, made graphify's output path configurable
+(`LUWI_GRAPHIFY_OUTPUT_PATH`, relative and inside the project), and added
+`GET /api/v1/projects/discover?root=` — one directory level, read-only, the CLI's discovery moved to
+`@luwi/runtime` so daemon and CLI share it — behind a "Scan a folder" flow that registers each ticked
+directory through the existing `POST /projects`. Nothing there deletes a project or writes outside
+the four allowlisted dashboard modules.
 
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers

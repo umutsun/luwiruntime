@@ -373,7 +373,8 @@ released through two Redis Functions behind `POST`/`DELETE`/`GET
 naming it, a terminal holder is taken over, and a release is holder-only. Each claim carries its own
 nonce, so a takeover decided against a dead holder can never evict a newer live one that happened to
 reuse the same version number. The sessions view assigns and releases the role and badges the live
-holder; that is the fourth and last dashboard write module. The native bridge now prepends the work
+holder, and the overview's session drill-down offers the same switch where the reader is looking;
+that is the fourth and last dashboard write module. The native bridge now prepends the work
 leases **other** sessions hold to each headless worker's prompt, so a worker sees which paths are
 locked before it edits — best-effort, and never a reason to fail a message. Every `ask` states its
 `delivery`: `live` when the target is a bridge (a continuous reader), `deferred` when it is a
@@ -386,6 +387,18 @@ the sessions view shows it as a chip and the radial node carries it in its hover
 an implement → verify chain stays **outside** the repository, in a script that sends independent
 correlated messages as the coordinator and stops before any merge; the daemon still orchestrates
 nothing.
+
+**Registering projects from the dashboard, and two operational knobs:** the `PROJECTS` menu's
+"Scan a folder…" lists one directory level under a typed root through
+`GET /api/v1/projects/discover?root=` — the same one-level discovery the CLI's `project discover`
+uses, now shared from `@luwi/runtime` — marks what is already registered or cannot be registered,
+and registers each ticked folder through the ordinary `POST /projects`, one at a time, so a refusal
+is reported on its own row. There is no folder picker, because a browser cannot read the machine's
+directories. The dashboard also watches the build it is served: an open tab that outlives a
+`pnpm build` shows `NEW BUILD · RELOAD` in its header instead of silently running stale code. On the
+daemon, the heartbeat and inbox-claim routes log at `warn`, so a healthy poll no longer writes two
+lines per request into `daemon.log`, and `LUWI_GRAPHIFY_OUTPUT_PATH` names where graphify's
+`graph.json` is read inside each project — relative, and kept inside the project.
 
 ## Architecture and security
 

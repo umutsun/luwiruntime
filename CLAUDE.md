@@ -477,6 +477,35 @@ title. Implement→verify orchestration is a repository-external script (`flow.m
 scaffold) that chains correlated messages as the coordinator and stops before any merge — §21 still
 forbids a daemon-side flow engine.
 
+**The 2026-09-17 gap-closing tranche, built while a parallel session piloted LUWI on Albanoosh (so
+the live daemon was never restarted).** The coordinator switch now also lives in the overview's
+session drill-down (`Overview.coordinatorByProject`, `coordinatorFact`, a `coordinator` panel link
+the drill-down renders only when the shell wires the mutation). **Stale-tab trap, fixed:** the
+daemon serves `index.html` with `no-store` and hashed assets `immutable`, so a reload always gets the
+current build — but an open tab never learns of one; twice the owner read a stale tab as feedback
+being ignored. `use-build-watch.ts` polls `index.html` (mount, 60 s, tab visible), compares the
+hashed bundle to the running module script, and the header shows `NEW BUILD · RELOAD`. **Version
+bump trap:** `LUWI_RUNTIME_VERSION` (`packages/protocol/src/version.ts`) is a `z.literal` in the
+health/runtime response schemas, so a bumped CLI or dashboard dist _rejects_ an older daemon's
+`/health` — bump, build and restart are one atomic step, and even `tsc -b` from `pnpm typecheck`
+leaks a bump into dist. **Measured on the 0.2.0 deploy:** the freshly built CLI could not even
+_stop_ the old daemon — it read the old `/health`, failed the literal, and reported
+`DAEMON_PORT_CONFLICT` ("occupied by an incompatible listener") for both `stop` and `start`. The way
+through is the same endpoint the CLI uses, called directly: `POST /api/v1/runtime/stop` with
+`x-luwi-lifecycle-token` from `~/.luwi/runtime/daemon-owner.json` (`token` field) and
+`content-type: application/json`, then `luwi start` with the new dist. And `luwi start` reporting
+`DAEMON_START_TIMEOUT` is not proof the daemon died: the readiness deadline is shorter than a cold
+start with a warm Redis, so check `/health` before retrying (the 0.2.0 daemon was up ten seconds
+after that message). **Prepared, not deployed** (a lifecycle restart is needed): the heartbeat
+and inbox-claim routes log at `warn` (the in-run driver of the 979 MB `daemon.log`; `buildDaemon`'s
+`logger` option takes a `stream` so a test can read what would have been written),
+`LUWI_GRAPHIFY_OUTPUT_PATH` (relative, no `..`/absolute/drive/UNC, refused at config time), and
+`GET /api/v1/projects/discover?root=` — one directory level, read-only, the CLI's discovery moved to
+`@luwi/runtime` so both share it — behind the `PROJECTS` menu's "Scan a folder…" (typed root, no
+folder picker; each ticked folder registered through the existing `project-mutations.register`, so
+no fifth write module). Until that restart the live daemon answers the discover route with 404 and
+the panel shows the daemon's words.
+
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.
 
