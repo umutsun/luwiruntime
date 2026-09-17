@@ -111,7 +111,11 @@
 .stat-tile__bar {
   display: block;
   height: 3px;
-  margin-top: var(--space-1);
+  /* Pin to the tile bottom so every tile's bar sits on one line: the grid
+     stretches all five tiles to the tallest (the delivery tile's sub wraps to
+     two lines), and a fixed top margin would leave the shorter tiles' bars
+     floating higher. The flex `gap` still keeps a minimum space above it. */
+  margin-top: auto;
   overflow: hidden;
   border-radius: 2px;
   background: var(--surface-3);
@@ -128,7 +132,9 @@
   height: 14px;
   align-items: flex-end;
   gap: var(--space-0);
-  margin-top: var(--space-1h);
+  /* Same reason as .stat-tile__bar: align the mini-bars to the tile bottom so a
+     wrapped sub in one tile does not lift the others' bars out of line. */
+  margin-top: auto;
 }
 .stat-tile__mini {
   width: 6px;
