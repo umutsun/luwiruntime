@@ -135,14 +135,18 @@ export function FlowView({
             </button>
           ))}
           {layout.statuses.map((node, index) => (
-            <div
+            <button
               key={node.key}
+              type="button"
               className={`${nodeClass(node, 'flow-node--status')} tone--${node.tone ?? 'quiet'}`}
               style={{ ...nodeStyle(node), animationDelay: `${String(0.5 + index * 0.08)}s` }}
+              aria-pressed={node.selected}
+              aria-label={`Focus status ${node.label}`}
+              onClick={() => toggle(node)}
             >
               <span className="flow-node__status">{node.label}</span>
               <span className="flow-node__count">{node.count}</span>
-            </div>
+            </button>
           ))}
         </div>
         <p className="flow__note" aria-hidden="true">

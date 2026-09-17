@@ -1154,13 +1154,10 @@
     ov-grow 0.9s var(--ease-out) both,
     ov-stripes 1.4s linear infinite;
 }
-.bar--blocked,
-.bar--selected {
+.bar--blocked {
   border-color: var(--ink);
   color: var(--paper);
   background: var(--ink);
-}
-.bar--blocked {
   animation:
     ov-grow 0.9s var(--ease-out) both,
     ov-blink 1.4s ease-in-out infinite;
@@ -1177,6 +1174,14 @@
   border-style: dashed;
   color: var(--text-muted);
   background: var(--stripe);
+}
+/* Selected must win over every tone — done and cluster set their own
+   background, so without coming last a selected done/cluster bar kept paper
+   text on the lane (black-on-black in dark mode). */
+.bar--selected {
+  border-color: var(--ink);
+  color: var(--paper);
+  background: var(--ink);
 }
 .bar__count {
   flex: 0 0 auto;
@@ -1477,7 +1482,11 @@ a.ticker__detail:hover {
   text-transform: uppercase;
 }
 .drill__fact-v {
-  margin-top: 3px;
+  /* Pinned to the tile bottom so every value aligns on one line even when a
+     two-word label (e.g. GOD NODES) wraps and the grid stretches its tile
+     taller — the same fix `.stat-tile__bar` uses for the hero row. */
+  margin-top: auto;
+  padding-top: 3px;
   overflow: hidden;
   font-size: var(--font-size-base);
   font-weight: 600;
