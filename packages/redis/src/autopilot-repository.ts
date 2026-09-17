@@ -246,9 +246,10 @@ export function createAutopilotRepository(options: {
       return casResult(reply, 'record', autopilotRecordSchema);
     },
     async queueNotice(input) {
-      const envelope = { ...input.notice, streamId: '0-0' };
-      parseWith(inboxNoticeEnvelopeSchema, envelope, 'notice');
-      const { streamId: _ignored, ...stored } = envelope;
+      // Validated with a placeholder stream id; the stored item carries none —
+      // Redis assigns the real one on XADD.
+      parseWith(inboxNoticeEnvelopeSchema, { ...input.notice, streamId: '0-0' }, 'notice');
+      const stored = input.notice;
       const reply = decodeJsonReply(
         await client.sendCommand([
           'FCALL',

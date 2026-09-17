@@ -5,6 +5,15 @@ import {
   mcpLeaseIdInputSchema,
   mcpListLeasesInputSchema,
   mcpReleaseLeaseInputSchema,
+  mcpGetAutopilotInputSchema,
+  mcpListGoalsInputSchema,
+  mcpGoalIdInputSchema,
+  mcpCreateGoalInputSchema,
+  mcpGoalNoteInputSchema,
+  mcpAnswerGoalInputSchema,
+  mcpAbandonGoalInputSchema,
+  mcpListTasksInputSchema,
+  mcpTaskIdInputSchema,
   mcpAskAgentInputSchema,
   mcpAwaitResponseInputSchema,
   mcpFailMessageInputSchema,
@@ -53,6 +62,16 @@ export type McpToolHandlers = {
   renewLease(input: unknown): Promise<unknown>;
   releaseLease(input: unknown): Promise<unknown>;
   listLeases(input: unknown): Promise<unknown>;
+  getAutopilot(input: unknown): Promise<unknown>;
+  listGoals(input: unknown): Promise<unknown>;
+  getGoal(input: unknown): Promise<unknown>;
+  createGoal(input: unknown): Promise<unknown>;
+  approvePlan(input: unknown): Promise<unknown>;
+  rejectPlan(input: unknown): Promise<unknown>;
+  answerGoal(input: unknown): Promise<unknown>;
+  abandonGoal(input: unknown): Promise<unknown>;
+  listTasks(input: unknown): Promise<unknown>;
+  getTask(input: unknown): Promise<unknown>;
   askAgent(input: unknown): Promise<unknown>;
   awaitResponse(input: unknown): Promise<unknown>;
   getMessage(input: unknown): Promise<unknown>;
@@ -123,6 +142,17 @@ export function createMcpToolHandlers(
   const getBoundMessage = async (correlationId: string): Promise<AgentMessage> => {
     const current = await requireCurrentBound();
     return requireBoundMessage(await client.getMessage(correlationId), current);
+  };
+  const requireBoundGoal = async (goalId: string, current: SessionView) => {
+    const goal = await client.getGoal(goalId);
+    if (goal.projectId !== current.projectId) {
+      throw new McpDaemonError(
+        'BOUND_PROJECT_MISMATCH',
+        'The requested goal is outside the bound LUWI session project.',
+        403,
+      );
+    }
+    return goal;
   };
   const boundBindings = async (snapshot?: SessionView) => {
     const current = snapshot ?? (await requireCurrentBound());
@@ -260,6 +290,85 @@ export function createMcpToolHandlers(
         parsed.mine ? { sessionId: current.id } : { projectId: current.projectId },
         parsed.limit,
       );
+    },
+    /*
+     * Autopilot, goals and tasks (ADR 0035). Reads stay inside the bound
+     * project. Every write names the bound session as its actor: the daemon
+     * decides whether that session may act for the operator (the policy's
+     * operator proxies — the human behind the LuwiBot chat) and refuses
+     * everyone else, so no tool here can approve on its own authority.
+     */
+    async getAutopilot(input) {
+      mcpGetAutopilotInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      return client.getAutopilot(current.projectId);
+    },
+    async listGoals(input) {
+      const parsed = mcpListGoalsInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      return client.listGoals(current.projectId, parsed.state, parsed.limit);
+    },
+    async getGoal(input) {
+      const parsed = mcpGoalIdInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      return requireBoundGoal(parsed.goalId, current);
+    },
+    async createGoal(input) {
+      const parsed = mcpCreateGoalInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      return client.createGoal(current.projectId, {
+        title: parsed.title,
+        objective: parsed.objective,
+        acceptanceCriteria: parsed.acceptanceCriteria,
+        sessionId: current.id,
+        ...(parsed.budget === undefined ? {} : { budget: parsed.budget }),
+      });
+    },
+    async approvePlan(input) {
+      const parsed = mcpGoalNoteInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      await requireBoundGoal(parsed.goalId, current);
+      return client.approvePlan(parsed.goalId, current.id, parsed.note);
+    },
+    async rejectPlan(input) {
+      const parsed = mcpGoalNoteInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      await requireBoundGoal(parsed.goalId, current);
+      return client.rejectPlan(parsed.goalId, current.id, parsed.note);
+    },
+    async answerGoal(input) {
+      const parsed = mcpAnswerGoalInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      await requireBoundGoal(parsed.goalId, current);
+      return client.answerGoal(parsed.goalId, current.id, parsed.text);
+    },
+    async abandonGoal(input) {
+      const parsed = mcpAbandonGoalInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      await requireBoundGoal(parsed.goalId, current);
+      return client.abandonGoal(parsed.goalId, current.id, parsed.reason);
+    },
+    async listTasks(input) {
+      const parsed = mcpListTasksInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      return client.listTasks(current.projectId, {
+        ...(parsed.goalId === undefined ? {} : { goalId: parsed.goalId }),
+        ...(parsed.state === undefined ? {} : { state: parsed.state }),
+        limit: parsed.limit,
+      });
+    },
+    async getTask(input) {
+      const parsed = mcpTaskIdInputSchema.parse(input);
+      const current = await requireCurrentBound();
+      const task = await client.getTask(parsed.taskId);
+      if (task.projectId !== current.projectId) {
+        throw new McpDaemonError(
+          'BOUND_PROJECT_MISMATCH',
+          'The requested task is outside the bound LUWI session project.',
+          403,
+        );
+      }
+      return task;
     },
     async askAgent(input) {
       const parsed = mcpAskAgentInputSchema.parse(input);

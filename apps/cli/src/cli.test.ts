@@ -3268,3 +3268,154 @@ describe('session bridge native', () => {
     expect(recorded?.environment.LUWI_SESSION_ID).toBe('agy-session-1');
   });
 });
+
+describe('autopilot commands (ADR 0035)', () => {
+  const record = {
+    projectId: 'p1',
+    mode: 'off',
+    policy: {
+      coordinatorAgentId: 'luwibot',
+      workerAgentIds: ['claude-code'],
+      operatorProxyAgentIds: [],
+      protectedPaths: [],
+      maxInFlight: 2,
+      maxDispatchesPerHour: 20,
+      defaultTaskTimeoutMs: 1_800_000,
+      maxJudgmentsPerHour: 30,
+      maxConcurrentGoals: 1,
+      goalDefaults: {
+        maxTasks: 12,
+        maxReworksPerTask: 1,
+        maxReplans: 2,
+        maxWallClockMs: 14_400_000,
+        minConfidence: 0.6,
+      },
+      retrospectives: 5,
+    },
+    version: 1,
+    changedAt: '2026-09-17T10:00:00.000Z',
+  };
+
+  it('declares a policy with PUT, mapping the variadic worker and protect options', async () => {
+    let requestedUrl = '';
+    let requestedMethod = '';
+    let requestedBody: unknown;
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url, init) => {
+        requestedUrl = url;
+        requestedMethod = init?.method ?? '';
+        requestedBody = JSON.parse(init?.body ?? '{}');
+        return response(record);
+      },
+      stdout: { write: () => undefined },
+    };
+
+    await runCli(
+      [
+        'autopilot',
+        'policy',
+        '--project',
+        'p1',
+        '--coordinator',
+        'luwibot',
+        '--worker',
+        'claude-code',
+        'codex',
+        '--protect',
+        'AGENTS.md',
+        '--max-in-flight',
+        '3',
+      ],
+      dependencies,
+    );
+
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/projects/p1/autopilot/policy');
+    expect(requestedMethod).toBe('PUT');
+    expect(requestedBody).toEqual({
+      coordinatorAgentId: 'luwibot',
+      workerAgentIds: ['claude-code', 'codex'],
+      operatorProxyAgentIds: [],
+      protectedPaths: ['AGENTS.md'],
+      maxInFlight: 3,
+    });
+  });
+
+  it('refuses an unknown mode before any request, and posts a known one', async () => {
+    let requestedUrl = '';
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url) => {
+        requestedUrl = url;
+        return response({
+          record: { ...record, mode: 'supervised', version: 2 },
+          changed: true,
+          coordinatorNotified: false,
+        });
+      },
+      stdout: { write: () => undefined },
+    };
+    await expect(
+      runCli(['autopilot', 'mode', 'turbo', '--project', 'p1'], dependencies),
+    ).rejects.toMatchObject({
+      code: 'CLI_OPTION_INVALID',
+    });
+    expect(requestedUrl).toBe('');
+    await runCli(['autopilot', 'mode', 'supervised', '--project', 'p1'], dependencies);
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/projects/p1/autopilot/mode');
+  });
+
+  it('creates a goal with its criteria and answers a blocked one', async () => {
+    const bodies: unknown[] = [];
+    const goal = {
+      id: 'g1',
+      projectId: 'p1',
+      title: 'Ship',
+      objective: 'Ship it.',
+      acceptanceCriteria: ['tests pass'],
+      createdBy: { kind: 'operator' },
+      budget: {
+        maxTasks: 12,
+        maxReworksPerTask: 1,
+        maxReplans: 2,
+        maxWallClockMs: 14_400_000,
+        minConfidence: 0.6,
+      },
+      state: 'proposed',
+      planVersion: 0,
+      taskIds: [],
+      usage: { tasks: 0, reworks: 0, replans: 0, judgments: 0, invalidJudgments: 0 },
+      version: 1,
+      createdAt: '2026-09-17T10:00:00.000Z',
+      updatedAt: '2026-09-17T10:00:00.000Z',
+    };
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(init?.body ?? '{}'));
+        return response(goal);
+      },
+      stdout: { write: () => undefined },
+    };
+    await runCli(
+      [
+        'goal',
+        'create',
+        '--project',
+        'p1',
+        '--title',
+        'Ship',
+        '--objective',
+        'Ship it.',
+        '--criterion',
+        'tests pass',
+      ],
+      dependencies,
+    );
+    await runCli(
+      ['goal', 'answer', 'g1', '--text', 'use the other module', '--session', 'chat-1'],
+      dependencies,
+    );
+    expect(bodies).toEqual([
+      { title: 'Ship', objective: 'Ship it.', acceptanceCriteria: ['tests pass'] },
+      { text: 'use the other module', sessionId: 'chat-1' },
+    ]);
+  });
+});

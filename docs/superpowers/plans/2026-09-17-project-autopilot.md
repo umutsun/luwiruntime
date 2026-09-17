@@ -1,6 +1,12 @@
 # Per-Project Autopilot Implementation Plan
 
-> **For agentic workers:** this plan is **not started** — the owner asked for the plan and explicitly
+> **Status 2026-09-17:** the owner's directive the same day accepted ADR 0035 and Phases 1, 2 and
+> the orchestrator core of Phase 4 were built in one tranche (see the ADR's "Built" section). The
+> checkboxes below were not ticked one by one; what remains open is listed in the ADR and in
+> `docs/guides/autopilot.md` under "Not built yet". Phase 0's LuwiBot measurements are still owed
+> before a `hermes` brain provider exists.
+>
+> **For agentic workers:** this plan was **written before the build** — the owner asked for the plan and explicitly
 > not for the work (2026-09-17: "planla, işe başlama"). Nothing below may be executed until ADR 0035
 > moves from `Proposed` to `Accepted` and the owner says so. When it is: REQUIRED SUB-SKILL
 > superpowers:test-driven-development for every task; run the `redis-invariants` agent over every

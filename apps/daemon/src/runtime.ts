@@ -597,17 +597,18 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     onRegistered: (session) => refreshProject(session.projectId, 'session-started'),
     onClosed: (session) => refreshProject(session.projectId, 'session-closed'),
   });
-  // Assigned once the autopilot service exists; the message service's seams
+  // Filled once the autopilot service exists; the message service's seams
   // read it lazily so neither side depends on construction order.
-  let autopilotService: AutopilotService | undefined;
+  const autopilotRef: { current?: AutopilotService } = {};
   const messageService = createMessageService({
     repository: messageRepository,
     sessions: sessionService,
     workspaceId: config.workspaceId,
     runtimeState: () => readiness.state,
-    autopilotPolicy: async (projectId) => (await autopilotService?.get(projectId))?.policy ?? null,
+    autopilotPolicy: async (projectId) =>
+      (await autopilotRef.current?.get(projectId))?.policy ?? null,
     onTerminal: async (message) => {
-      await autopilotService?.completeFromMessage(message);
+      await autopilotRef.current?.completeFromMessage(message);
     },
     idempotencyRetentionMs: setting(config, 'messageIdempotencyRetentionMs'),
     maxContentBytes: setting(config, 'messageMaxContentBytes'),
@@ -820,7 +821,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     sessions: sessionService,
     workspaceId: config.workspaceId,
   });
-  autopilotService = createAutopilotService({
+  const autopilot = createAutopilotService({
     repository: autopilotRepository,
     sessions: sessionService,
     projects: projectService,
@@ -832,7 +833,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     workspaceId: config.workspaceId,
     report: (line) => app?.log.warn(line, 'Autopilot manifest policy refused'),
   });
-  const autopilot = autopilotService;
+  autopilotRef.current = autopilot;
   const leaseExpirySweeper = createLeaseExpirySweeper({
     now: Date.now,
     batchSize: setting(config, 'messageTimeoutBatchSize'),

@@ -1016,6 +1016,10 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
       const session = await requireCoordinator(policy, goal.projectId, request.sessionId);
       const scope = { projectId: goal.projectId, sessionId: session.id, agentId: session.agentId };
       switch (request.transition) {
+        case 'start': {
+          const next = goalMove(goal, { kind: 'start' });
+          return writeGoal(next, goal.version, event('goal.started', scope, { goalId: goal.id }));
+        }
         case 'escalate': {
           const next = goalMove(goal, { kind: 'escalate', escalation: request.escalation });
           return writeGoal(

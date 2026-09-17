@@ -1,6 +1,6 @@
 # ADR 0035: Per-project autopilot — a coordinator session, a bounded task domain, and a LUWI-owned orchestrator loop
 
-Status: Proposed  
+Status: Accepted  
 Date: 2026-09-17
 
 ## Context
@@ -248,3 +248,29 @@ judgment is a paid model call bounded by context size, wall time and a per-proje
 goal's cost is its tasks' worker runs plus its judgments, both counted on the goal.
 The record shape and its bounds (200 active tasks per project, 32 KiB brief, 32 paths, 8 dependencies)
 are compile-time constants with tests, so widening any of them is a reviewable change.
+
+## Built (2026-09-17)
+
+The owner's directive the same day — "let this session solve the multi-worker agent
+orchestration problem" — accepted this decision and it was built in one tranche, verified green
+(format, lint, both typecheck legs, 1 890 unit tests, 113 Redis integration tests against a local
+Redis 7.0, build). What landed:
+
+- **Substrate:** `@luwi/protocol` autopilot, goal, task and judgment schemas, the `notice` inbox
+  item, 27 event types; `@luwi/runtime` state machines, dispatch evaluation, verification, judgment
+  framing and parsing, `planCycle`; `luwi_v1` v13 with `luwi_autopilot_put_v1`, `luwi_goal_write_v1`,
+  `luwi_task_write_v1`, `luwi_task_dispatch_v1`, `luwi_inbox_notice_v1`; the daemon's
+  `autopilot-service`, 21 routes, the message-service seams, manifest projection at owned start
+  and reconciliation on the retention tick.
+- **Orchestrator:** `luwi session bridge orchestrator` with the `luwibot-ws` and native brain
+  adapters, the one-repair-round rule, the confidence gate, three-failure escalation.
+- **Surfaces:** `luwi autopilot|goal|task` commands; ten MCP tools, five of them the operator's
+  through a policy-named proxy session.
+
+**Not built, still new scope:** the dashboard section (the ticker shows the events; goals and tasks
+are read through the CLI and MCP), a `hermes` native brain provider (its CLI is unmeasured),
+`luwi autopilot up`, terminal-task retention, the `proactive` level, `eligibleWork` routing, and the
+transcript-based `scope_exceeded` check. Two measured corrections to the design: the cjson
+re-encoding of empty arrays made the Functions return the stored JSON string rather than a decoded
+table, and the reconciliation rides the retention tick rather than a timer of its own, as native
+link retention already did.

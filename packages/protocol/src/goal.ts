@@ -179,6 +179,7 @@ export const goalAbandonRequestSchema = z.strictObject({
 
 /** The orchestrator's own transitions, taken from the bound coordinator session. */
 export const goalTransitionRequestSchema = z.discriminatedUnion('transition', [
+  z.strictObject({ transition: z.literal('start'), sessionId: identifierSchema }),
   z.strictObject({
     transition: z.literal('escalate'),
     sessionId: identifierSchema,

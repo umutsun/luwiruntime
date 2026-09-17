@@ -551,15 +551,13 @@ describe('goals, plans and dispatch', () => {
       updatedAt: stamp,
     };
     fake.tasks.set(task.id, task);
-    fake
-      .activeOf('project-1')
-      .set(task.id, {
-        taskId: task.id,
-        goalId: goal.id,
-        agentId: 'claude-code',
-        state: 'dispatching',
-        matchPaths: [''],
-      });
+    fake.activeOf('project-1').set(task.id, {
+      taskId: task.id,
+      goalId: goal.id,
+      agentId: 'claude-code',
+      state: 'dispatching',
+      matchPaths: [''],
+    });
     messages.findByIdempotencyKey.mockResolvedValueOnce({
       correlationId: 'corr-repaired',
       targetSessionId: 'worker-1',
