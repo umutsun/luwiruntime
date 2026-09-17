@@ -50,26 +50,34 @@ describe('Antigravity MCP launcher security', () => {
     return result;
   };
 
-  it('keeps diagnostics off by default and never records environment values when opted in', async () => {
-    const launcher = join(scripts, 'antigravity-mcp-launch.mjs');
-    await run(process.execPath, [launcher], { env: environment(), timeout: 5_000 }).catch(
-      () => undefined,
-    );
-    expect(await readdir(scratch)).not.toContain('luwi-antigravity-mcp-launch.diag.json');
+  it(
+    'keeps diagnostics off by default and never records environment values when opted in',
+    // Two real Node launches. Under a saturated full-suite run a cold Node start
+    // alone can pass 5 s, and a launcher killed before it writes its diagnostic
+    // fails the second assertion for a reason that is not the launcher's. The
+    // bounds only guard against a genuine hang; they are not the measurement.
+    { timeout: 60_000 },
+    async () => {
+      const launcher = join(scripts, 'antigravity-mcp-launch.mjs');
+      await run(process.execPath, [launcher], { env: environment(), timeout: 20_000 }).catch(
+        () => undefined,
+      );
+      expect(await readdir(scratch)).not.toContain('luwi-antigravity-mcp-launch.diag.json');
 
-    await run(process.execPath, [launcher], {
-      env: { ...environment(), LUWI_ANTIGRAVITY_DIAGNOSTICS: '1' },
-      timeout: 5_000,
-    }).catch(() => undefined);
-    const diagnostic = JSON.parse(
-      await readFile(join(scratch, 'luwi-antigravity-mcp-launch.diag.json'), 'utf8'),
-    ) as Record<string, unknown>;
-    expect(JSON.stringify(diagnostic)).not.toContain('must-not-appear-in-diagnostics');
-    expect(diagnostic).not.toHaveProperty('env');
-    expect(diagnostic['environmentKeys']).toEqual(
-      expect.arrayContaining(['ANTIGRAVITY_CSRF_TOKEN']),
-    );
-  });
+      await run(process.execPath, [launcher], {
+        env: { ...environment(), LUWI_ANTIGRAVITY_DIAGNOSTICS: '1' },
+        timeout: 20_000,
+      }).catch(() => undefined);
+      const diagnostic = JSON.parse(
+        await readFile(join(scratch, 'luwi-antigravity-mcp-launch.diag.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      expect(JSON.stringify(diagnostic)).not.toContain('must-not-appear-in-diagnostics');
+      expect(diagnostic).not.toHaveProperty('env');
+      expect(diagnostic['environmentKeys']).toEqual(
+        expect.arrayContaining(['ANTIGRAVITY_CSRF_TOKEN']),
+      );
+    },
+  );
 
   it('rejects a non-loopback daemon URL before sending a session identifier', async () => {
     let requests = 0;

@@ -51,6 +51,49 @@ describe('client kind derivation', () => {
   });
 });
 
+describe('flow roles by project (ADR 0036)', () => {
+  it('keeps only enabled bindings that hold a role, keyed by project then agent', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      bindings: {
+        state: 'ready',
+        data: {
+          truncated: false,
+          entries: [
+            {
+              projectId: 'p',
+              bindings: {
+                state: 'ready',
+                data: [
+                  { agentId: 'a', enabled: true, flowRoles: ['implementer'] },
+                  { agentId: 'b', enabled: true, flowRoles: ['verifier', 'implementer'] },
+                  { agentId: 'c', enabled: false, flowRoles: ['verifier'] },
+                  { agentId: 'd', enabled: true, flowRoles: [] },
+                ],
+              },
+            },
+            { projectId: 'q', bindings: { state: 'unavailable' } },
+          ],
+        },
+      },
+    });
+
+    expect(snapshot.flowRolesByProject).toEqual({
+      p: { a: ['implementer'], b: ['verifier', 'implementer'] },
+    });
+    expect(snapshot.bindingsState).toBe('ready');
+    expect(snapshot.partial).toBe(false);
+  });
+
+  it('reads as none when the fan-out was not requested, and partial only when it failed', () => {
+    expect(buildPulseSnapshot(baseInput()).flowRolesByProject).toEqual({});
+    expect(buildPulseSnapshot(baseInput()).partial).toBe(false);
+    expect(buildPulseSnapshot({ ...baseInput(), bindings: { state: 'unavailable' } }).partial).toBe(
+      true,
+    );
+  });
+});
+
 describe('Pulse snapshot mapping', () => {
   it('tags each session with its derived client kind', () => {
     const snapshot = buildPulseSnapshot({

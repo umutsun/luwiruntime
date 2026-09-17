@@ -364,13 +364,17 @@ describe('SpawnCommandRunner', () => {
     // detected quickly, but the Windows owned-tree cleanup that follows spends a
     // PowerShell startup and an `Add-Type` C# compile, which under a saturated
     // suite run exceeds vitest's 5s default. The explicit bound only guards
-    // against a genuine hang.
-    { timeout: 20_000 },
+    // against a genuine hang. The runner's own timeout is generous for the same
+    // reason: the child writes its excess at startup, and a cold Node start on
+    // a saturated machine can pass 1 s — then the runner reported `timeout`
+    // where the limit breach was the real outcome. The limit still ends the
+    // run the moment it is crossed; the timeout is only the hang guard.
+    { timeout: 30_000 },
     async (_stream, script, failure) => {
       let cleanupEvidence: WindowsProcessCleanupResult | undefined;
       const cleaner = new WindowsOwnedProcessTreeCleaner(new NodeWindowsProcessTreeIo(spawn));
       const runner = new SpawnCommandRunner({
-        timeoutMs: 1_000,
+        timeoutMs: 10_000,
         maxStdoutBytes: 1_024,
         maxStderrBytes: 1_024,
         windowsProcessCleanup: async (request) => {

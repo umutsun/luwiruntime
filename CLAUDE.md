@@ -549,7 +549,12 @@ truth), assigns/unassigns to the project or the selected agent, and rescans, all
 fifth allowlisted `api/capability-mutations.ts` over endpoints that already existed on HTTP and the
 CLI. Declined on purpose: LUWI writing a `SKILL.md`, a `.luwi/roles.md`, MCP capability writes. A
 PATCH carrying `flowRoles` is refused by a daemon started before this (strict schema) until it is
-restarted; the capability mutations need no restart.
+restarted; the capability mutations need no restart. The same afternoon the roles reached the
+overview: the pulse gained a `bindings` fan-out (`GET /projects/:id/agents` per project, the same
+bounded shape as git and the coordinator; `project.agent.*` invalidates it), the snapshot carries
+`flowRolesByProject` (enabled bindings with at least one role, by project then agent), the sessions
+table chips a row with its agent's roles beside the Coordinator badge, and the drill-down states
+`Flow roles` on a project and `Flow role` on a session beside the coordinator fact.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.

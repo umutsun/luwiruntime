@@ -285,6 +285,38 @@ describe('SessionsView', () => {
     expect(screen.queryByRole('button', { name: /Make session .* the coordinator/i })).toBeNull();
   });
 
+  it('chips the flow roles the row’s agent holds in its project (ADR 0036)', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [session('s-impl'), session('s-other', { agentId: 'a2', projectId: 'p2' })],
+        },
+        bindings: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            entries: [
+              {
+                projectId: 'p1',
+                bindings: {
+                  state: 'ready',
+                  data: [{ agentId: 'a1', enabled: true, flowRoles: ['implementer', 'verifier'] }],
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    // a1 holds both roles in p1; a2's session in p2 has nothing bound.
+    expect(screen.getByText('implementer')).toBeTruthy();
+    expect(screen.getByText('verifier')).toBeTruthy();
+    expect(screen.getAllByText(/^(implementer|verifier)$/)).toHaveLength(2);
+  });
+
   it('shows the daemon conflict message when a claim is refused', async () => {
     const snapshot = buildPulseSnapshot(
       baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),

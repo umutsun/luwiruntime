@@ -5,6 +5,7 @@ import {
   gitObservationSchema,
   healthResponseSchema,
   optimizationFindingCollectionSchema,
+  projectAgentBindingCollectionSchema,
   projectCollectionResponseSchema,
   runtimeInfoResponseSchema,
   usageSummarySchema,
@@ -13,6 +14,8 @@ import { z } from 'zod';
 
 import type {
   Availability,
+  PulseBindingsEntry,
+  PulseBindingsResource,
   PulseCoordinatorEntry,
   PulseCoordinatorResource,
   PulseGitEntry,
@@ -79,6 +82,7 @@ const pulseResourceKeys: PulseResourceKey[] = [
   'runtime',
   'git',
   'coordinator',
+  'bindings',
 ];
 
 /**
@@ -170,6 +174,48 @@ async function loadCoordinatorResource(
         };
       }
       return { projectId: project.id, coordinator: { state: 'unavailable' } };
+    }),
+  );
+  return {
+    state: 'ready',
+    data: { truncated: projects.data.length > GIT_FANOUT_MAX, entries },
+  };
+}
+
+/**
+ * One `GET /projects/:id/agents` per project (the same bounded fan-out), kept
+ * to what the overview states: which enabled agent holds which flow role (F5,
+ * ADR 0036). The collection always answers 200 for a registered project, so a
+ * failed read is `unavailable`, never an empty list.
+ */
+async function loadBindingsResource(
+  client: DaemonClient,
+  projects: Availability<PulseProject[]>,
+  options: { signal?: AbortSignal },
+): Promise<Availability<PulseBindingsResource>> {
+  if (projects.state !== 'ready') return { state: 'unavailable' };
+  const capped = projects.data.slice(0, GIT_FANOUT_MAX);
+  const entries = await Promise.all(
+    capped.map(async (project): Promise<PulseBindingsEntry> => {
+      const result = await client.get(
+        `/api/v1/projects/${encodeURIComponent(project.id)}/agents`,
+        projectAgentBindingCollectionSchema,
+        options,
+      );
+      if (result.state === 'ready') {
+        return {
+          projectId: project.id,
+          bindings: {
+            state: 'ready',
+            data: result.data.bindings.map((binding) => ({
+              agentId: binding.agentId,
+              enabled: binding.enabled,
+              flowRoles: binding.flowRoles ?? [],
+            })),
+          },
+        };
+      }
+      return { projectId: project.id, bindings: { state: 'unavailable' } };
     }),
   );
   return {
@@ -338,6 +384,7 @@ export async function loadPulseResources(
         break;
       case 'git':
       case 'coordinator':
+      case 'bindings':
         // Depend on the project list; resolved after the batch below.
         break;
       case 'findings':
@@ -371,9 +418,9 @@ export async function loadPulseResources(
   const entries = await Promise.all(requests);
   const resources = Object.fromEntries(entries) as Partial<PulseResources>;
 
-  if (requested.has('git') || requested.has('coordinator')) {
-    // Both fan-outs need the project list. Reuse the one from this batch when it
-    // was requested; a git/coordinator-only invalidation fetches it fresh once.
+  if (requested.has('git') || requested.has('coordinator') || requested.has('bindings')) {
+    // The fan-outs need the project list. Reuse the one from this batch when it
+    // was requested; a fan-out-only invalidation fetches it fresh once.
     const projects: Availability<PulseProject[]> =
       resources.projects ??
       (await client
@@ -392,6 +439,9 @@ export async function loadPulseResources(
     if (requested.has('git')) resources.git = await loadGitResource(client, projects, options);
     if (requested.has('coordinator')) {
       resources.coordinator = await loadCoordinatorResource(client, projects, options);
+    }
+    if (requested.has('bindings')) {
+      resources.bindings = await loadBindingsResource(client, projects, options);
     }
   }
 
@@ -423,5 +473,6 @@ export async function loadPulseInput(
     runtime: resources.runtime ?? { state: 'unavailable' },
     git: resources.git ?? { state: 'unavailable' },
     coordinator: resources.coordinator ?? { state: 'unavailable' },
+    bindings: resources.bindings ?? { state: 'unavailable' },
   };
 }

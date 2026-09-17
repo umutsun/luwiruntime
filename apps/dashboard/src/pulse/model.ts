@@ -120,6 +120,18 @@ export type PulseCoordinatorEntry = {
 };
 export type PulseCoordinatorResource = { truncated: boolean; entries: PulseCoordinatorEntry[] };
 
+/**
+ * The flow roles (F5, ADR 0036) a project's bound agents hold, as the daemon
+ * records them: configuration on the binding, never a session claim. Read per
+ * project with the same bounded fan-out as git and the coordinator, so the
+ * sessions table can chip a row and the drill-down can state who implements
+ * and who verifies without a per-row read.
+ */
+export type PulseFlowRole = 'implementer' | 'verifier';
+export type PulseBinding = { agentId: string; enabled: boolean; flowRoles: PulseFlowRole[] };
+export type PulseBindingsEntry = { projectId: string; bindings: Availability<PulseBinding[]> };
+export type PulseBindingsResource = { truncated: boolean; entries: PulseBindingsEntry[] };
+
 export type PulseRuntimeInfo = {
   workspaceId: string;
   version: string;
@@ -144,9 +156,10 @@ export type PulseResources = {
   runtime: Availability<PulseRuntimeInfo>;
   git: Availability<PulseGitResource>;
   coordinator: Availability<PulseCoordinatorResource>;
+  bindings: Availability<PulseBindingsResource>;
 };
 
-export type PulseInput = Omit<PulseResources, 'runtime' | 'git' | 'coordinator'> & {
+export type PulseInput = Omit<PulseResources, 'runtime' | 'git' | 'coordinator' | 'bindings'> & {
   measuredLatencyMs: number;
   snapshotAt: string;
   /**
@@ -158,6 +171,7 @@ export type PulseInput = Omit<PulseResources, 'runtime' | 'git' | 'coordinator'>
   runtime?: Availability<PulseRuntimeInfo>;
   git?: Availability<PulseGitResource>;
   coordinator?: Availability<PulseCoordinatorResource>;
+  bindings?: Availability<PulseBindingsResource>;
 };
 
 /**
@@ -471,6 +485,21 @@ export function buildPulseSnapshot(input: PulseInput) {
     }
   }
 
+  const bindingsResource = input.bindings ?? { state: 'unavailable' as const };
+  // projectId -> agentId -> the flow roles (F5, ADR 0036) an enabled binding
+  // holds, for the sessions table chips and the drill-down facts. Only ready
+  // entries with at least one role are kept; a missing key reads as none.
+  const flowRolesByProject: Record<string, Record<string, PulseFlowRole[]>> = {};
+  if (bindingsResource.state === 'ready') {
+    for (const entry of bindingsResource.data.entries) {
+      if (entry.bindings.state !== 'ready') continue;
+      for (const binding of entry.bindings.data) {
+        if (!binding.enabled || binding.flowRoles.length === 0) continue;
+        (flowRolesByProject[entry.projectId] ??= {})[binding.agentId] = binding.flowRoles;
+      }
+    }
+  }
+
   const contributions = input.context.state === 'ready' ? input.context.data : [];
   /*
    * The comp's two insight sentences, kept honest: a pair is counted only when
@@ -528,6 +557,8 @@ export function buildPulseSnapshot(input: PulseInput) {
     gitTruncated: gitResource.state === 'ready' ? gitResource.data.truncated : false,
     coordinatorByProject,
     coordinatorState: coordinatorResource.state,
+    flowRolesByProject,
+    bindingsState: bindingsResource.state,
     activityState: input.activity.state,
     activity: input.activity.state === 'ready' ? input.activity.data : [],
     findingCount: countOf(input.findings),
@@ -548,6 +579,7 @@ export function buildPulseSnapshot(input: PulseInput) {
       ...(input.runtime === undefined ? [] : [input.runtime]),
       ...(input.git === undefined ? [] : [input.git]),
       ...(input.coordinator === undefined ? [] : [input.coordinator]),
+      ...(input.bindings === undefined ? [] : [input.bindings]),
     ].some((resource) => resource.state === 'unavailable'),
   };
 }

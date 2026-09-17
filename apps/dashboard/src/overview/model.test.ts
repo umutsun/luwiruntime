@@ -276,6 +276,56 @@ describe('coordinator role in the drill-down (ADR 0035)', () => {
   });
 });
 
+describe('flow roles in the drill-down (ADR 0036)', () => {
+  const withRoles = (): PulseInput => ({
+    ...input(),
+    bindings: {
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [
+          {
+            projectId: 'p1',
+            bindings: {
+              state: 'ready',
+              data: [
+                { agentId: 'a2', enabled: true, flowRoles: ['verifier'] },
+                { agentId: 'a1', enabled: true, flowRoles: ['implementer'] },
+              ],
+            },
+          },
+        ],
+      },
+    },
+  });
+  const model = (source: PulseInput) => buildOverview(buildPulseSnapshot(source), events(), NOW);
+  const factOf = (panel: ReturnType<typeof panelFor>, key: string) =>
+    panel.facts.find((fact) => fact.k === key)?.v;
+
+  it('states every bound agent’s roles on the project panel, sorted by agent, and none when unread', () => {
+    expect(
+      factOf(panelFor(model(withRoles()), { kind: 'project', id: 'p1' }, 'live'), 'Flow roles'),
+    ).toBe('a1: implementer · a2: verifier');
+    expect(factOf(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live'), 'Flow roles')).toBe(
+      'none',
+    );
+  });
+
+  it('gives a session its agent’s role in its own project only', () => {
+    const held = model(withRoles());
+    expect(factOf(panelFor(held, { kind: 'session', id: 's-think' }, 'live'), 'Flow role')).toBe(
+      'implementer',
+    );
+    expect(factOf(panelFor(held, { kind: 'session', id: 's-blocked' }, 'live'), 'Flow role')).toBe(
+      'verifier',
+    );
+    // a1 holds implementer in p1; s-wait is a1's session in p2, where nothing is bound.
+    expect(factOf(panelFor(held, { kind: 'session', id: 's-wait' }, 'live'), 'Flow role')).toBe(
+      'none',
+    );
+  });
+});
+
 describe('tones and badges', () => {
   it('maps the nine statuses to five tones and leaves labels alone', () => {
     expect(toneOf('thinking')).toBe('working');
@@ -596,6 +646,8 @@ describe('panelFor', () => {
       { k: 'Tags', v: '2' },
       // No coordinator read in this fixture: the role reads as free (ADR 0035).
       { k: 'Coordinator', v: 'none' },
+      // No bindings read either: no flow roles to state (ADR 0036).
+      { k: 'Flow roles', v: 'none' },
     ]);
     // Inspect + Detail only; the redundant Knowledge-graph link was dropped (Knowledge is a lens).
     expect(panel.links.map((link) => link.kind)).toEqual(['inspect-project', 'route']);
@@ -623,6 +675,7 @@ describe('panelFor', () => {
       { k: 'Tokens', v: '\u2014' },
       { k: 'Context', v: '\u2014', detail: 'skills 2 loaded \u00b7 1 invoked' },
       { k: 'Coordinator', v: 'none' },
+      { k: 'Flow role', v: 'none' },
     ]);
     expect(panel.copyId).toEqual({ label: 'session', id: 's-think' });
     expect(panel.list.rows.map((row) => row.id)).toEqual(['s-blocked', 's-done']);
@@ -682,6 +735,7 @@ describe('panelFor', () => {
         detail: `latest request sent 511,600 tokens · observed ${formatClock(NOW - 50 * 60_000)} · skills not observed`,
       },
       { k: 'Coordinator', v: 'none' },
+      { k: 'Flow role', v: 'none' },
     ]);
     const loading = { sessionId: 's-blocked', state: { state: 'loading' as const } };
     expect(

@@ -280,6 +280,8 @@ export type Overview = {
   gitTruncated: boolean;
   /** The per-project coordinator holder (ADR 0035), keyed by project id; a missing key is not read or free. */
   coordinatorByProject: PulseSnapshot['coordinatorByProject'];
+  /** The flow roles (ADR 0036) by project then agent; a missing key is not read or none. */
+  flowRolesByProject: PulseSnapshot['flowRolesByProject'];
   /** Registered projects the owner's filter keeps off the overview. */
   hiddenProjects: number;
   bounds?: RetainedBounds;
@@ -681,6 +683,7 @@ export function buildOverview(
     activityState: snapshot.activityState,
     gitTruncated: snapshot.gitTruncated,
     coordinatorByProject: snapshot.coordinatorByProject,
+    flowRolesByProject: snapshot.flowRolesByProject,
     hiddenProjects,
     ...(bounds === undefined ? {} : { bounds }),
     events,
@@ -871,6 +874,26 @@ export function coordinatorFact(
     v,
     ...(holder === undefined ? {} : { detail: `${v} · ${holder.agentName}` }),
   };
+}
+
+/**
+ * The flow roles (ADR 0036) one agent holds in a project, or `none`: the
+ * binding is configuration, so a session inherits its agent's roles and the
+ * drill-down states them beside the coordinator fact rather than inferring
+ * anything from the session itself.
+ */
+export function flowRoleFact(overview: Overview, projectId: string, agentId: string): string {
+  const roles = overview.flowRolesByProject[projectId]?.[agentId] ?? [];
+  return roles.length === 0 ? 'none' : roles.join(' + ');
+}
+
+/** Every bound agent's flow roles in a project, one clause per agent, or `none`. */
+export function projectFlowRolesFact(overview: Overview, projectId: string): string {
+  const byAgent = overview.flowRolesByProject[projectId] ?? {};
+  const clauses = Object.entries(byAgent)
+    .toSorted(([left], [right]) => left.localeCompare(right))
+    .map(([agentId, roles]) => `${agentId}: ${roles.join(' + ')}`);
+  return clauses.length === 0 ? 'none' : clauses.join(' · ');
 }
 
 export type PanelBlock = { title: string; rows: Array<readonly [string, string]> };
@@ -1091,6 +1114,7 @@ export function panelFor(
           v: coordinator.v,
           ...(coordinator.detail === undefined ? {} : { detail: coordinator.detail }),
         },
+        { k: 'Flow roles', v: projectFlowRolesFact(overview, project.id) },
       ],
       trend: trendOf(
         'Events · retained',
@@ -1198,6 +1222,7 @@ export function panelFor(
       facts: [
         ...sessionFacts(session, context, extras),
         { k: 'Coordinator', v: holdsRole ? 'this session' : coordinator.v },
+        { k: 'Flow role', v: flowRoleFact(overview, session.projectId, session.agentId) },
       ],
       trend: trendOf(
         'Events · retained',

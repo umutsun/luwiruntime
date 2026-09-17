@@ -19,6 +19,7 @@ const resources = (): PulseResources => ({
   runtime: { state: 'unavailable' },
   git: { state: 'unavailable' },
   coordinator: { state: 'unavailable' },
+  bindings: { state: 'unavailable' },
 });
 
 describe('Pulse refresh state', () => {

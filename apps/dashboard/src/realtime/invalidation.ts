@@ -10,15 +10,16 @@ export const PULSE_RESOURCE_KEYS = [
   'runtime',
   'git',
   'coordinator',
+  'bindings',
 ] as const;
 
 export type PulseResourceKey = (typeof PULSE_RESOURCE_KEYS)[number];
 
 export function resourcesForEvent(eventType: string): PulseResourceKey[] {
   if (eventType.startsWith('runtime.')) return [...PULSE_RESOURCE_KEYS];
-  if (eventType.startsWith('project.agent.') || eventType.startsWith('agent.definition.')) {
-    return ['agents'];
-  }
+  // A binding change moves the flow roles (ADR 0036) as well as the agent view.
+  if (eventType.startsWith('project.agent.')) return ['agents', 'bindings'];
+  if (eventType.startsWith('agent.definition.')) return ['agents'];
   if (eventType.startsWith('project.')) return ['projects', 'git'];
   if (eventType.startsWith('git.')) return ['git'];
   // A coordinator claim/release is the only event that moves the role record; a

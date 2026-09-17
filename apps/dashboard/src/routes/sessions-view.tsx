@@ -260,6 +260,14 @@ export function SessionsView({
                             {isCoordinator(row) ? (
                               <StatusChip tone="success">Coordinator</StatusChip>
                             ) : null}
+                            {/* The flow roles the row's agent holds in its project (ADR 0036). */}
+                            {(snapshot.flowRolesByProject[row.projectId]?.[row.agentId] ?? []).map(
+                              (role) => (
+                                <StatusChip key={role} tone="info">
+                                  {role}
+                                </StatusChip>
+                              ),
+                            )}
                           </td>
                           <td>
                             <IdBadge id={row.agentId} label="agent" />

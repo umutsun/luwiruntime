@@ -76,5 +76,8 @@ already is — the pair route's effective configuration — so no bindings-list 
 - Declined, and recorded so they are not re-proposed by accident: LUWI writing a `SKILL.md` or any
   file under an agent's native skill directory (the plan chain writes one settings file per adapter
   and stays that way); a `.luwi/roles.md` beside `agent-bindings.json`; daemon-side verifier
-  uniqueness; profile editing and capability writes in the MCP server; a flow-role chip on the
-  sessions view (it would need the bindings on the pulse snapshot).
+  uniqueness; profile editing and capability writes in the MCP server.
+- Built the same day as a follow-up: the pulse reads the bindings per project (the same bounded
+  fan-out as git and the coordinator), so the sessions table chips a row with its agent's flow
+  roles beside the Coordinator badge and the drill-down states them beside the coordinator fact.
+  Reading, not enforcing — the daemon's rule above is unchanged.

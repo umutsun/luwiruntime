@@ -101,8 +101,8 @@ describe('loadPulseInput', () => {
       nowMs: vi.fn().mockReturnValueOnce(100).mockReturnValueOnce(124),
     });
 
-    // 9 base reads + one git fan-out + one coordinator fan-out for the 1 project.
-    expect(get).toHaveBeenCalledTimes(11);
+    // 9 base reads + git, coordinator and bindings fan-outs for the 1 project.
+    expect(get).toHaveBeenCalledTimes(12);
     expect(input.measuredLatencyMs).toBe(24);
     expect(input.projects).toEqual({
       state: 'ready',
@@ -182,6 +182,37 @@ describe('loadPulseInput', () => {
         }),
       ],
       [
+        '/api/v1/projects/p1/agents',
+        ready({
+          bindings: [
+            {
+              id: 'b1',
+              projectId: 'p1',
+              agentId: 'agent-a',
+              enabled: true,
+              role: 'backend',
+              flowRoles: ['implementer'],
+              profileIds: [],
+              capabilityBindingIds: [],
+              overrides: {},
+              createdAt: '2026-08-05T07:00:00.000Z',
+              updatedAt: '2026-08-05T07:00:00.000Z',
+            },
+            {
+              id: 'b2',
+              projectId: 'p1',
+              agentId: 'agent-b',
+              enabled: true,
+              profileIds: [],
+              capabilityBindingIds: [],
+              overrides: {},
+              createdAt: '2026-08-05T07:00:00.000Z',
+              updatedAt: '2026-08-05T07:00:00.000Z',
+            },
+          ],
+        }),
+      ],
+      [
         '/api/v1/projects/p1/coordinator',
         ready({
           coordinator: {
@@ -215,6 +246,26 @@ describe('loadPulseInput', () => {
           {
             projectId: 'p1',
             coordinator: { state: 'ready', data: { sessionId: 'session-a', live: true } },
+          },
+        ],
+      },
+    });
+    // The bindings fan-out keeps only what the overview states; an absent
+    // `flowRoles` reads as none, not as a failed read.
+    expect(input.bindings).toEqual({
+      state: 'ready',
+      data: {
+        truncated: false,
+        entries: [
+          {
+            projectId: 'p1',
+            bindings: {
+              state: 'ready',
+              data: [
+                { agentId: 'agent-a', enabled: true, flowRoles: ['implementer'] },
+                { agentId: 'agent-b', enabled: true, flowRoles: [] },
+              ],
+            },
           },
         ],
       },

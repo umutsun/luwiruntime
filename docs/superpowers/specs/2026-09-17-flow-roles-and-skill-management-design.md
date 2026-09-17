@@ -81,8 +81,10 @@ flowRoles: z.array(flowRoleSchema).max(2).optional(),
 
 ### Not in this increment
 
-A flow-role chip on the sessions view and the radial (it would need the bindings on the pulse
-snapshot); `.luwi/roles.md`; any daemon-side rule about how many verifiers a project may have.
+`.luwi/roles.md`; any daemon-side rule about how many verifiers a project may have. (A flow-role
+chip on the sessions view and the drill-down facts were first left out because they need the
+bindings on the pulse snapshot; they were built the same day as a `bindings` fan-out beside the
+coordinator one.)
 
 ## B. Skill management in the dashboard
 
