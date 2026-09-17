@@ -154,19 +154,40 @@ function WorktreeTable({ worktrees }: { worktrees: ProjectWorktree[] }) {
  * ponytail: emits the GitHub/GitLab web `/commit/<sha>` path; a Bitbucket remote would want
  * `/commits/`. Add that branch only if a Bitbucket remote actually shows up.
  */
-export function commitUrl(remote: string | undefined, sha: string): string | undefined {
+/**
+ * A browsable web URL for a git remote, or undefined when it is not one an owner
+ * can open: an scp-style `git@host:owner/repo` becomes `https://host/owner/repo`,
+ * a trailing `.git` and slash are dropped, and a non-http remote (a local path,
+ * ssh://, unknown) yields nothing rather than a broken link.
+ */
+export function remoteWebUrl(remote: string | undefined): string | undefined {
   if (remote === undefined || remote.trim() === '') return undefined;
   const scp = /^git@([^:]+):(.+)$/.exec(remote.trim());
   const base = (scp ? `https://${scp[1]}/${scp[2]}` : remote.trim())
     .replace(/\.git$/, '')
     .replace(/\/$/, '');
-  if (!/^https?:\/\//.test(base)) return undefined;
-  return `${base}/commit/${encodeURIComponent(sha)}`;
+  return /^https?:\/\//.test(base) ? base : undefined;
+}
+
+export function commitUrl(remote: string | undefined, sha: string): string | undefined {
+  const base = remoteWebUrl(remote);
+  return base === undefined ? undefined : `${base}/commit/${encodeURIComponent(sha)}`;
 }
 
 function RepositoryBody({ git, project }: { git: ProjectGit; project: PulseProject }) {
+  // A clickable link to the repository home, from whichever remote resolves to a
+  // web URL (observed first, then the registered one). Absent for a local-only
+  // or non-http remote — no broken link.
+  const repoUrl = remoteWebUrl(git.remoteUrl ?? project.repositoryUrl);
   return (
     <div className="project-detail__body">
+      {repoUrl === undefined ? null : (
+        <p className="repo-link">
+          <a href={repoUrl} target="_blank" rel="noreferrer">
+            Open repository ↗
+          </a>
+        </p>
+      )}
       <dl className="key-values">
         <div>
           <dt>Branch</dt>
@@ -377,119 +398,143 @@ function AgentPairPanels({
               </div>
             </dl>
 
-            <GroupLabel label="Capabilities" count={config.capabilities.length} />
-            {config.capabilities.length === 0 ? (
-              <p className="empty-state">No capabilities resolved for this pair</p>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <caption className="visually-hidden">Resolved capabilities</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Capability</th>
-                      <th scope="col">Kind</th>
-                      <th scope="col">Scope</th>
-                      <th scope="col">State</th>
-                      <th scope="col">Native support</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {config.capabilities.map((capability) => {
-                      const support = config.nativeCapabilitySupport.find(
-                        (entry) => entry.capabilityId === capability.id,
-                      );
-                      const unsupported = config.unsupportedCapabilities.includes(capability.id);
-                      return (
-                        <tr key={capability.id}>
-                          <td>
-                            {capability.name}
-                            <small title={capability.id}>{capability.id}</small>
-                          </td>
-                          <td>{capability.kind}</td>
-                          <td>{capability.scope}</td>
-                          <td>
-                            <StatusChip tone={capability.enabled ? 'success' : 'unknown'}>
-                              {capability.enabled ? 'Enabled' : 'Disabled'}
-                            </StatusChip>
-                          </td>
-                          <td>
-                            {support === undefined ? (
-                              <span className="unavailable">Not reported</span>
-                            ) : (
-                              <StatusChip
-                                tone={
-                                  support.supportLevel === 'full'
-                                    ? 'success'
-                                    : support.supportLevel === 'unsupported'
-                                      ? 'warning'
-                                      : 'info'
-                                }
-                              >
-                                {support.supportLevel}
+            {/* Each section folds (the effective config ran to four dense tables
+                at once); the panel opens to the summary above and these closed. */}
+            <details className="name-group">
+              <summary className="group-label">
+                <span>Capabilities</span>
+                <span className="group-label__count">{config.capabilities.length}</span>
+              </summary>
+              {config.capabilities.length === 0 ? (
+                <p className="empty-state">No capabilities resolved for this pair</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <caption className="visually-hidden">Resolved capabilities</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Capability</th>
+                        <th scope="col">Kind</th>
+                        <th scope="col">Scope</th>
+                        <th scope="col">State</th>
+                        <th scope="col">Native support</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {config.capabilities.map((capability) => {
+                        const support = config.nativeCapabilitySupport.find(
+                          (entry) => entry.capabilityId === capability.id,
+                        );
+                        const unsupported = config.unsupportedCapabilities.includes(capability.id);
+                        return (
+                          <tr key={capability.id}>
+                            <td>
+                              {capability.name}
+                              <small title={capability.id}>{capability.id}</small>
+                            </td>
+                            <td>{capability.kind}</td>
+                            <td>{capability.scope}</td>
+                            <td>
+                              <StatusChip tone={capability.enabled ? 'success' : 'unknown'}>
+                                {capability.enabled ? 'Enabled' : 'Disabled'}
                               </StatusChip>
+                            </td>
+                            <td>
+                              {support === undefined ? (
+                                <span className="unavailable">Not reported</span>
+                              ) : (
+                                <StatusChip
+                                  tone={
+                                    support.supportLevel === 'full'
+                                      ? 'success'
+                                      : support.supportLevel === 'unsupported'
+                                        ? 'warning'
+                                        : 'info'
+                                  }
+                                >
+                                  {support.supportLevel}
+                                </StatusChip>
+                              )}
+                              {unsupported ? <small>Not usable by this agent</small> : null}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </details>
+
+            <details className="name-group">
+              <summary className="group-label">
+                <span>Profiles</span>
+                <span className="group-label__count">{config.profileIds.length}</span>
+              </summary>
+              {config.profileIds.length === 0 ? (
+                <p className="empty-state">No profiles applied</p>
+              ) : (
+                <ul className="name-list">
+                  {config.profileIds.map((profileId) => (
+                    <li key={profileId}>{profileId}</li>
+                  ))}
+                </ul>
+              )}
+            </details>
+
+            <details className="name-group">
+              <summary className="group-label">
+                <span>Conflicts</span>
+                <span className="group-label__count">{config.conflicts.length}</span>
+              </summary>
+              {config.conflicts.length === 0 ? (
+                <p className="empty-state">No conflicts detected</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <caption className="visually-hidden">Configuration conflicts</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Code</th>
+                        <th scope="col">Detail</th>
+                        <th scope="col">Capability</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {config.conflicts.map((conflict, index) => (
+                        <tr key={`${conflict.code}-${String(index)}`}>
+                          <td>
+                            <code>{conflict.code}</code>
+                          </td>
+                          <td>{conflict.message}</td>
+                          <td>
+                            {conflict.capabilityId ?? (
+                              <span className="unavailable">Not scoped</span>
                             )}
-                            {unsupported ? <small>Not usable by this agent</small> : null}
                           </td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </details>
 
-            <GroupLabel label="Profiles" count={config.profileIds.length} />
-            {config.profileIds.length === 0 ? (
-              <p className="empty-state">No profiles applied</p>
-            ) : (
-              <ul className="name-list">
-                {config.profileIds.map((profileId) => (
-                  <li key={profileId}>{profileId}</li>
-                ))}
-              </ul>
-            )}
-
-            <GroupLabel label="Conflicts" count={config.conflicts.length} />
-            {config.conflicts.length === 0 ? (
-              <p className="empty-state">No conflicts detected</p>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <caption className="visually-hidden">Configuration conflicts</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Code</th>
-                      <th scope="col">Detail</th>
-                      <th scope="col">Capability</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {config.conflicts.map((conflict, index) => (
-                      <tr key={`${conflict.code}-${String(index)}`}>
-                        <td>
-                          <code>{conflict.code}</code>
-                        </td>
-                        <td>{conflict.message}</td>
-                        <td>
-                          {conflict.capabilityId ?? <span className="unavailable">Not scoped</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            <GroupLabel label="Missing dependencies" count={config.missingDependencies.length} />
-            {config.missingDependencies.length === 0 ? (
-              <p className="empty-state">No missing dependencies</p>
-            ) : (
-              <ul className="name-list">
-                {config.missingDependencies.map((dependency) => (
-                  <li key={dependency}>{dependency}</li>
-                ))}
-              </ul>
-            )}
+            <details className="name-group">
+              <summary className="group-label">
+                <span>Missing dependencies</span>
+                <span className="group-label__count">{config.missingDependencies.length}</span>
+              </summary>
+              {config.missingDependencies.length === 0 ? (
+                <p className="empty-state">No missing dependencies</p>
+              ) : (
+                <ul className="name-list">
+                  {config.missingDependencies.map((dependency) => (
+                    <li key={dependency}>{dependency}</li>
+                  ))}
+                </ul>
+              )}
+            </details>
 
             <p className="bounded-note">
               An unresolved configuration is reported, not hidden. It means the runtime could not
@@ -912,6 +957,42 @@ export function ProjectDetail({
         {(git) => <RepositoryBody git={git} project={selected} />}
       </ResourcePanel>
 
+      {/* Sessions sit high, right under the repository: they are the project's
+          live activity and the first thing a reader looks for. Open by default;
+          the evidence cards below start folded. */}
+      <Panel title="Sessions" meta={`${String(projectSessions.length)} recorded`} collapsible>
+        {projectSessions.length === 0 ? (
+          <p className="empty-state">No sessions recorded for this project</p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Session</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Presence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {projectSessions.map((session) => (
+                  <tr key={session.id}>
+                    <td>
+                      <code>{session.id}</code>
+                    </td>
+                    <td>{session.statusLabel}</td>
+                    <td>
+                      <StatusChip tone={session.presence === 'online' ? 'success' : 'unknown'}>
+                        {session.presence === 'online' ? 'Online' : 'Offline'}
+                      </StatusChip>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
       <ResourcePanel<Bounded<ProjectAttribution>>
         title="Commit attribution"
         collapsible
@@ -1099,6 +1180,7 @@ export function ProjectDetail({
             )}
           </>
         }
+        collapsible
         resource={resources.capabilities}
         emptyMessage="No capabilities recorded — a capability scan registers them"
         isEmpty={(value) => value.items.length === 0}
@@ -1192,6 +1274,7 @@ export function ProjectDetail({
       */}
       <ResourcePanel<PulseFinding[]>
         title="Optimization"
+        collapsible
         meta={
           snapshot.findingsState === 'ready'
             ? `${String(projectFindings.length)} for this project`
@@ -1335,44 +1418,6 @@ export function ProjectDetail({
           loading={agentPairLoading}
         />
       )}
-
-      <Panel
-        title="Sessions"
-        meta={`${String(projectSessions.length)} recorded`}
-        collapsible
-        defaultCollapsed
-      >
-        {projectSessions.length === 0 ? (
-          <p className="empty-state">No sessions recorded for this project</p>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Session</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Presence</th>
-                </tr>
-              </thead>
-              <tbody>
-                {projectSessions.map((session) => (
-                  <tr key={session.id}>
-                    <td>
-                      <code>{session.id}</code>
-                    </td>
-                    <td>{session.statusLabel}</td>
-                    <td>
-                      <StatusChip tone={session.presence === 'online' ? 'success' : 'unknown'}>
-                        {session.presence === 'online' ? 'Online' : 'Offline'}
-                      </StatusChip>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
     </div>
   );
 }

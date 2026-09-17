@@ -106,9 +106,11 @@ describe('LeasePanel', () => {
   });
 
   /** A dashboard that could break a lease would be enforcing an advisory hold. */
-  it('offers no control at all, because breaking a lease is not the reader’s to do', () => {
+  it('offers no lease control, because breaking a lease is not the reader’s to do', () => {
     render(view([lease()]));
 
-    expect(screen.queryAllByRole('button')).toEqual([]);
+    // The panel folds now, so its header carries a collapse toggle (named for the
+    // panel); what it must never offer is a control that breaks or releases a lease.
+    expect(screen.queryByRole('button', { name: /break|release|revoke|delete/i })).toBeNull();
   });
 });

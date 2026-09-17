@@ -507,7 +507,9 @@ describe('ProjectsView detail', () => {
   it('lists only the selected project sessions', () => {
     renderView({ selectedProjectId: 'proj-1', resources: readyScope });
 
-    const panel = expand(screen.getByRole('region', { name: /sessions/i }));
+    // Sessions sit high in the drawer and open by default now (the owner's ask),
+    // so the panel is read directly rather than expanded.
+    const panel = screen.getByRole('region', { name: /sessions/i });
     expect(within(panel).getByText('sess-1')).toBeTruthy();
     expect(within(panel).queryByText('sess-2')).toBeNull();
   });
@@ -833,7 +835,11 @@ describe('ProjectDetail writes (ADR 0036)', () => {
     expect(within(agents).getByText('verifier')).toBeTruthy();
     expect(within(agents).queryByRole('button', { name: /role for agent-1$/ })).toBeNull();
     const skills = screen.getByRole('region', { name: /^skills/i });
-    expect(within(skills).queryByRole('button')).toBeNull();
+    // The panel is foldable now, so its header carries a collapse toggle; what
+    // must be absent without capabilityMutations is any mutation control.
+    expect(
+      within(skills).queryByRole('button', { name: /rescan|enable|disable|assign|unassign/i }),
+    ).toBeNull();
   });
 
   it('offers enable, assign and unassign on a skill row for the selected agent, hides enable for an observed package, and shows a refusal in the daemon’s words', async () => {

@@ -599,7 +599,6 @@
 }
 .flow-node--status {
   justify-content: space-between;
-  cursor: default;
   animation-name: ov-slide;
 }
 .flow-node--on {
@@ -1365,7 +1364,9 @@ a.ticker__detail:hover {
   min-width: 0;
   margin: 0;
   overflow: hidden;
-  font-size: var(--font-size-2xl);
+  /* The focused subject's name is the drill-down's headline — the owner asked
+     for it larger, so it steps up to the top of the type scale. */
+  font-size: var(--font-size-3xl);
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.1;

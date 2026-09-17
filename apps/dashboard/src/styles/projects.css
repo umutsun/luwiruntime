@@ -41,6 +41,13 @@
   padding: var(--panel-pad-y) var(--panel-pad-x) var(--space-3);
 }
 
+/* A prominent link to the repository home, above the git key-values. */
+.repo-link {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
 .link-button {
   display: block;
   padding: 0;
