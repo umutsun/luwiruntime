@@ -129,6 +129,18 @@ const environmentSchema = z.object({
     .max(268_435_456)
     .default(16_777_216),
   LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN: z.coerce.number().int().min(1).max(100_000).default(2_000),
+  // Where graphify writes inside a project (ADR 0029). Relative to the project
+  // root and kept inside it: an absolute path or a `..` segment would let one
+  // setting read a file outside every registered project.
+  LUWI_GRAPHIFY_OUTPUT_PATH: z
+    .string()
+    .min(1)
+    .max(1_024)
+    .refine(
+      (value) => !/^([a-zA-Z]:|[\\/])/.test(value) && !value.split(/[\\/]+/).includes('..'),
+      'LUWI_GRAPHIFY_OUTPUT_PATH must be a relative path inside the project.',
+    )
+    .optional(),
   LUWI_USAGE_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
   LUWI_GIT_OBSERVATION_RETENTION_COUNT: z.coerce.number().int().min(1).max(10_000).default(100),
   LUWI_GRAPH_GENERATION_RETENTION_COUNT: z.coerce.number().int().min(2).max(100).default(2),
@@ -199,6 +211,8 @@ export type DaemonConfig = {
   transcriptScanIntervalMs?: number;
   transcriptMaxFileBytes?: number;
   transcriptMaxFilesPerScan?: number;
+  /** Graphify's output, relative to each project root; absent reads `graphify-out/graph.json`. */
+  graphifyOutputPath?: string;
   usageRetentionDays?: number;
   gitObservationRetentionCount?: number;
   graphGenerationRetentionCount?: number;
@@ -336,6 +350,9 @@ export function loadDaemonConfig(
     transcriptScanIntervalMs: parsed.LUWI_TRANSCRIPT_SCAN_INTERVAL_MS,
     transcriptMaxFileBytes: parsed.LUWI_TRANSCRIPT_MAX_FILE_BYTES,
     transcriptMaxFilesPerScan: parsed.LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN,
+    ...(parsed.LUWI_GRAPHIFY_OUTPUT_PATH === undefined
+      ? {}
+      : { graphifyOutputPath: parsed.LUWI_GRAPHIFY_OUTPUT_PATH }),
     usageRetentionDays: parsed.LUWI_USAGE_RETENTION_DAYS,
     gitObservationRetentionCount: parsed.LUWI_GIT_OBSERVATION_RETENTION_COUNT,
     graphGenerationRetentionCount: parsed.LUWI_GRAPH_GENERATION_RETENTION_COUNT,

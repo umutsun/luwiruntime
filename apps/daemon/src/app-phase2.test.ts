@@ -249,6 +249,50 @@ describe('Phase 2 HTTP routes', () => {
     );
   });
 
+  it('logs a heartbeat and an inbox claim only at warn, so a healthy poll writes nothing', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const lines: Record<string, unknown>[] = [];
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      logger: {
+        level: 'info',
+        stream: {
+          write: (line: string) => {
+            lines.push(JSON.parse(line) as Record<string, unknown>);
+          },
+        },
+      },
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...phase1Services(),
+        messages: messageService(),
+        listEvents: async () => [],
+      },
+    });
+
+    await app.inject({ method: 'GET', url: '/api/v1/messages' });
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/target/heartbeat',
+      payload: {},
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/v1/sessions/target/inbox/claim',
+      payload: { bridgeInstanceId: 'bridge-1', limit: 10, blockMs: 0, minIdleMs: 0 },
+    });
+
+    const incoming = lines
+      .filter((line) => line['msg'] === 'incoming request')
+      .map((line) => (line['req'] as { url: string }).url);
+    // An ordinary read still logs its request; the two polling routes do not.
+    expect(incoming).toEqual(['/api/v1/messages']);
+    expect(lines.filter((line) => line['msg'] === 'request completed')).toHaveLength(1);
+  });
+
   it('rejects Phase 2 mutations while the runtime is draining', async () => {
     const readiness = createRuntimeReadiness('recovering');
     readiness.transitionTo('ready');

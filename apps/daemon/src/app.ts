@@ -164,7 +164,8 @@ export type DaemonApp = FastifyInstance;
 export type BuildDaemonOptions = {
   config: DaemonConfig;
   redis: RedisGateway;
-  logger?: boolean | { level: string };
+  /** `stream` lets a test read the lines the daemon would have logged. */
+  logger?: boolean | { level: string; stream?: { write: (line: string) => void } };
   now?: () => Date;
   startedAt?: Date;
   runtimeInstanceId?: string;
@@ -534,7 +535,11 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         native: await services.sessions.getNativeRef(sessionId),
       });
     });
-    app.post('/api/v1/sessions/:sessionId/heartbeat', async (request) => {
+    // Every live session heartbeats every few seconds and every bridge long-polls
+    // its inbox; at info Fastify wrote two lines per request and the daemon log
+    // grew by hundreds of megabytes a day. These two routes log at warn — a
+    // failure still surfaces, a healthy poll does not.
+    app.post('/api/v1/sessions/:sessionId/heartbeat', { logLevel: 'warn' }, async (request) => {
       const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
       const body = parseRequestInput(heartbeatRequestSchema, request.body ?? {});
       return withMutation(() => services.sessions.heartbeat(sessionId, body));
@@ -1046,7 +1051,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           );
         });
       }
-      app.post('/api/v1/sessions/:sessionId/inbox/claim', async (request) => {
+      app.post('/api/v1/sessions/:sessionId/inbox/claim', { logLevel: 'warn' }, async (request) => {
         const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
         const rawBody = isRecord(request.body) ? request.body : {};
         const body = inboxClaimRequestSchema.parse({

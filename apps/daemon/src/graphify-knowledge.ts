@@ -46,6 +46,8 @@ export type KnowledgeDocument = {
 export async function readGraphifyKnowledge(input: {
   localPath: string;
   maximumFileBytes?: number;
+  /** Where graphify writes inside the project; the config's `graphifyOutputPath`, else the default. */
+  outputRelativePath?: string;
 }): Promise<KnowledgeDocument | null> {
   const maximumFileBytes = input.maximumFileBytes ?? MAX_OUTPUT_BYTES;
   let root: string;
@@ -54,7 +56,7 @@ export async function readGraphifyKnowledge(input: {
   } catch {
     return null;
   }
-  const outputPath = resolve(root, GRAPHIFY_OUTPUT_RELATIVE_PATH);
+  const outputPath = resolve(root, input.outputRelativePath ?? GRAPHIFY_OUTPUT_RELATIVE_PATH);
   let output;
   try {
     output = await stat(outputPath);

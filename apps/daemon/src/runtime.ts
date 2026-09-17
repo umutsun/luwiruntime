@@ -77,6 +77,8 @@ import { createCoordinatorService } from './coordinator-service.js';
 import { createMessageService } from './message-service.js';
 import { createIntelligenceService, type IntelligenceService } from './intelligence-service.js';
 import { createGitObserver } from './git-observer.js';
+import { readGraphifyKnowledge } from './graphify-knowledge.js';
+import { createGraphifyObserver, GRAPHIFY_OUTPUT_RELATIVE_PATH } from './graphify-observer.js';
 import { createHostResourcesReader } from './host-resources.js';
 import { createProjectService } from './project-service.js';
 import { createRealtimeRelay } from './realtime-relay.js';
@@ -677,6 +679,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     gitObserver: createGitObserver({
       timeoutMs: setting(config, 'gitCommandTimeoutMs'),
     }),
+    graphifyObserver: createGraphifyObserver({
+      outputRelativePath: config.graphifyOutputPath ?? GRAPHIFY_OUTPUT_RELATIVE_PATH,
+    }),
     optimizationMinimumBaselineSessions: setting(config, 'optimizationMinimumBaselineSessions'),
     optimizationMinimumPostSessions: setting(config, 'optimizationMinimumPostSessions'),
     optimizationMinimumObservationHours: setting(config, 'optimizationMinimumObservationHours'),
@@ -1187,6 +1192,12 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       config,
       redis: new ConnectionHealthGateway(connections.command),
       resources: () => hostResources.read(),
+      // The Knowledge lens reads the same graphify output the rebuild does.
+      readKnowledgeGraph: (localPath) =>
+        readGraphifyKnowledge({
+          localPath,
+          outputRelativePath: config.graphifyOutputPath ?? GRAPHIFY_OUTPUT_RELATIVE_PATH,
+        }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       runtimeInstanceId,
       runtimeState: () => readiness.state,
