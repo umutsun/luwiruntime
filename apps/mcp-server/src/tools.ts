@@ -86,13 +86,21 @@ export type McpToolHandlers = {
 export type BoundSessionResolver = () => Promise<SessionView>;
 
 function requireBoundMessage(message: AgentMessage, bound: SessionView): AgentMessage {
-  if (
-    message.projectId !== bound.projectId ||
-    (message.sourceSessionId !== bound.id && message.targetSessionId !== bound.id)
-  ) {
+  if (message.projectId !== bound.projectId) {
     throw new McpDaemonError(
       'BOUND_PROJECT_MISMATCH',
       'The requested resource is outside the bound LUWI session project.',
+      403,
+    );
+  }
+  // Same project, but the bound session is neither the source nor the target — a
+  // distinct diagnostic from a project mismatch (LRT-P07): the bound session may
+  // read only exchanges it takes part in. Ask the participant for its result;
+  // do not impersonate it. No cross-project data leaks either way.
+  if (message.sourceSessionId !== bound.id && message.targetSessionId !== bound.id) {
+    throw new McpDaemonError(
+      'BOUND_SESSION_NOT_PARTICIPANT',
+      'The bound LUWI session is neither the source nor the target of this message.',
       403,
     );
   }
@@ -157,9 +165,15 @@ export function createMcpToolHandlers(
       const parsed = mcpListSessionsInputSchema.parse(input);
       const current = await requireCurrentBound();
       const result = await client.listProjectSessions(current.projectId);
-      const matching = parsed.online
+      const filtered = parsed.online
         ? result.sessions.filter(({ presence }) => presence === 'online')
         : result.sessions;
+      // Newest heartbeat first, so the cap keeps the CURRENT workers rather than
+      // the oldest historical registrations (LRT-P08: `list_sessions {}` returned
+      // the first 100 September records and truncated the live fleet).
+      const matching = [...filtered].sort(
+        (left, right) => Date.parse(right.lastHeartbeatAt) - Date.parse(left.lastHeartbeatAt),
+      );
       return {
         sessions: matching.slice(0, MCP_MAX_COLLECTION_ITEMS),
         truncated: matching.length > MCP_MAX_COLLECTION_ITEMS,

@@ -1,4 +1,4 @@
-import type { SessionView } from '@luwi/protocol';
+import type { AgentMessage, SessionView } from '@luwi/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMcpToolHandlers, McpDaemonError, type McpDaemonClient } from './index.js';
@@ -211,6 +211,58 @@ describe('MCP tool handlers', () => {
     await expect(tools.getSession({ sessionId: 'other' })).rejects.toMatchObject({
       code: 'BOUND_PROJECT_MISMATCH',
     });
+  });
+
+  it('separates a same-project not-participant read from a project mismatch (LRT-P07)', async () => {
+    const daemon = client();
+    const message = (over: Partial<AgentMessage>): AgentMessage => ({
+      id: 'm',
+      correlationId: 'c',
+      projectId: 'project-1',
+      sourceSessionId: 'someone-else',
+      sourceAgentId: 'a',
+      targetSessionId: 'another',
+      targetAgentId: 'b',
+      selectionReason: 'x',
+      kind: 'question',
+      content: 'q',
+      evidenceRequirements: [],
+      state: 'responded',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deadlineAt: timestamp,
+      ...over,
+    });
+    // Same project, bound 'source' is neither source nor target.
+    daemon.getMessage = vi.fn(async () => message({}));
+    await expect(
+      createMcpToolHandlers(daemon, boundSession).getMessage({ correlationId: 'c' }),
+    ).rejects.toMatchObject({ code: 'BOUND_SESSION_NOT_PARTICIPANT', statusCode: 403 });
+    // A different project is still a project mismatch.
+    daemon.getMessage = vi.fn(async () => message({ projectId: 'project-2' }));
+    await expect(
+      createMcpToolHandlers(daemon, boundSession).getMessage({ correlationId: 'c' }),
+    ).rejects.toMatchObject({ code: 'BOUND_PROJECT_MISMATCH' });
+  });
+
+  it('lists the most recently active sessions first so the cap keeps live workers (LRT-P08)', async () => {
+    const daemon = client();
+    const at = (iso: string, id: string): SessionView => ({
+      ...boundSession,
+      id,
+      lastHeartbeatAt: iso,
+    });
+    daemon.listProjectSessions = vi.fn(async () => ({
+      sessions: [
+        at('2026-07-29T10:00:00.000Z', 'oldest'),
+        at('2026-07-29T13:00:00.000Z', 'newest'),
+        at('2026-07-29T11:00:00.000Z', 'middle'),
+      ],
+    }));
+    const result = (await createMcpToolHandlers(daemon, boundSession).listSessions({})) as {
+      sessions: SessionView[];
+    };
+    expect(result.sessions.map((session) => session.id)).toEqual(['newest', 'middle', 'oldest']);
   });
 
   it('revalidates the bound session before every operation', async () => {
