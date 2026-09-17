@@ -1514,18 +1514,27 @@ a.ticker__detail:hover {
   text-transform: uppercase;
 }
 .drill__fact-v {
-  /* Pinned to the tile bottom so every value aligns on one line even when a
-     two-word label (e.g. GOD NODES) wraps and the grid stretches its tile
-     taller — the same fix `.stat-tile__bar` uses for the hero row. */
+  /* Pinned to the tile bottom so every value aligns even when a two-word label
+     (e.g. GOD NODES) wraps and the grid stretches its tile taller — the same fix
+     `.stat-tile__bar` uses for the hero row. */
   margin-top: auto;
   padding-top: 3px;
-  overflow: hidden;
+  /* Wrap instead of truncating: at a third of ~360px the values clipped to
+     "57.4k ou…"/"Albanoo…". They wrap now, so every model, token figure and
+     coordinator name reads in full. */
+  overflow-wrap: anywhere;
   font-size: var(--font-size-base);
   font-weight: 600;
   letter-spacing: -0.01em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+/* Role facts render their value as chips, not bold text. */
+.drill__fact-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: auto;
+  padding-top: 3px;
 }
 .drill__trend {
   padding: var(--space-3h) var(--space-5h) var(--space-1);

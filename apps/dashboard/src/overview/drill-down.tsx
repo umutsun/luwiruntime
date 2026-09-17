@@ -1,7 +1,14 @@
 import { abbreviateId, formatRelativeTime } from '../components/format.js';
 import { CopyIdButton } from '../components/id-badge.js';
+import { StatusChip } from '../components/status-chip.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
 import type { Focus, OverviewSession, PanelLink, PanelModel } from './model.js';
+
+/** The session "Flow role" fact shows its roles as chips, not bold text. */
+function roleChips(key: string, value: string): string[] | undefined {
+  if (key !== 'Flow role' || value === 'none') return undefined;
+  return value.split(' + ');
+}
 
 export type CoordinatorLink = Extract<PanelLink, { kind: 'coordinator' }>;
 
@@ -113,9 +120,22 @@ export function DrillDown({
             style={{ animationDelay: `${String(0.05 + index * 0.05)}s` }}
           >
             <span className="drill__fact-k">{fact.k}</span>
-            <span className="drill__fact-v" title={fact.detail ?? fact.v}>
-              {fact.v}
-            </span>
+            {(() => {
+              const chips = roleChips(fact.k, fact.v);
+              return chips === undefined ? (
+                <span className="drill__fact-v" title={fact.detail ?? fact.v}>
+                  {fact.v}
+                </span>
+              ) : (
+                <span className="drill__fact-roles">
+                  {chips.map((role) => (
+                    <StatusChip key={role} tone="info">
+                      {role}
+                    </StatusChip>
+                  ))}
+                </span>
+              );
+            })()}
           </div>
         ))}
       </div>
