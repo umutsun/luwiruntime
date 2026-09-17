@@ -273,14 +273,8 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
     });
 
   app.setErrorHandler((error, request, reply) => {
-    app.log.error(
-      {
-        err: error,
-        requestId: request.id,
-      },
-      'Request failed',
-    );
     if (error instanceof RedisRepositoryError && error.code === 'REDIS_UNAVAILABLE') {
+      app.log.error({ err: error, requestId: request.id }, 'Request failed');
       options.onRedisUnavailable?.(error);
       return reply.code(503).send({
         error: {
@@ -290,6 +284,15 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       });
     }
     const publicError = toPublicError(error);
+    // A 4xx is an expected client outcome — a 404 for a project with no Git
+    // observation, a 409 for a stale message transition, a 400 for a malformed
+    // body — not a server fault. Logging every one at `error` buried the real
+    // failures and was a driver of the multi-hundred-MB daemon.log; reserve
+    // `error` for 5xx and record client errors at `warn`.
+    app.log[publicError.statusCode >= 500 ? 'error' : 'warn'](
+      { err: error, requestId: request.id, statusCode: publicError.statusCode },
+      'Request failed',
+    );
     const existingProjectId = publicError.body.error.details?.existingProjectId;
     if (
       publicError.body.error.code === 'PROJECT_ALREADY_REGISTERED' &&

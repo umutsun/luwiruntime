@@ -528,6 +528,50 @@ describe('Phase 1 HTTP routes', () => {
     expect(unavailableRead.json()).toMatchObject({ error: { code: 'RUNTIME_NOT_READY' } });
   });
 
+  it('logs a client error at warn and a server fault at error, so daemon.log records real failures', async () => {
+    const readiness = createRuntimeReadiness('recovering');
+    readiness.transitionTo('ready');
+    const lines: Array<{ level: number; msg: string; statusCode?: number }> = [];
+    const stream = {
+      write: (chunk: string) => {
+        try {
+          const entry = JSON.parse(chunk) as { level: number; msg: string; statusCode?: number };
+          if (entry.msg === 'Request failed') lines.push(entry);
+        } catch {
+          // pino may emit a non-JSON line on init; ignore it.
+        }
+      },
+    };
+    app = buildDaemon({
+      config,
+      redis: new HealthyRedis(),
+      // Capture what would be written; level 'warn' keeps both warn (40) and error (50).
+      logger: { level: 'warn', stream },
+      runtimeState: () => readiness.state,
+      readiness,
+      services: {
+        ...services({
+          projectList: async () => {
+            throw new Error('boom');
+          },
+        }),
+        listEvents: async (): Promise<RealtimeEventMessage[]> => [],
+      },
+    });
+
+    // A malformed query is a 400 — a client error, logged at warn.
+    expect((await app.inject({ method: 'GET', url: '/api/v1/events?limit=0' })).statusCode).toBe(
+      400,
+    );
+    // An unexpected throw is a 500 — a real server fault, logged at error.
+    expect((await app.inject({ method: 'GET', url: '/api/v1/projects' })).statusCode).toBe(500);
+
+    const client = lines.find((entry) => entry.statusCode === 400);
+    const server = lines.find((entry) => entry.statusCode === 500);
+    expect(client?.level).toBe(40);
+    expect(server?.level).toBe(50);
+  });
+
   it('returns event history in ascending Stream order after query validation', async () => {
     const readiness = createRuntimeReadiness('recovering');
     readiness.transitionTo('ready');
