@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { CapabilityMutations } from '../api/capability-mutations.js';
+import type { ProjectMutations } from '../api/project-mutations.js';
 import type { ProjectGit, ProjectScopeResources } from '../api/project-scope.js';
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
 import { ProjectsView, commitUrl } from './projects-view.js';
@@ -758,5 +760,169 @@ describe('ProjectDetail skills and optimization', () => {
     });
     const skills = screen.getByRole('region', { name: /^skills/i });
     expect(within(skills).getByText(/no capabilities recorded/i)).toBeTruthy();
+  });
+});
+
+describe('ProjectDetail writes (ADR 0036)', () => {
+  const ok = <T,>(data: T) => ({ state: 'ok' as const, httpStatus: 200, data });
+  const skill = (id: string, name: string, observed: boolean, enabled: boolean) => ({
+    id,
+    kind: 'skill',
+    name,
+    scope: 'project' as const,
+    source: 'luwi-project',
+    enabled,
+    observed,
+    updatedAt: '2026-09-17T00:00:00.000Z',
+  });
+  const binding = {
+    id: 'bind-1',
+    agentId: 'agent-1',
+    enabled: true,
+    role: 'backend/infra',
+    flowRoles: ['verifier' as const],
+    profileCount: 0,
+    capabilityCount: 0,
+    updatedAt: '2026-09-17T00:00:00.000Z',
+  };
+
+  it('shows the free-text role and the flow-role chips, and toggles a flow role through the project module', async () => {
+    const updateAgentBinding = vi.fn().mockResolvedValue(ok({}));
+    const onMutated = vi.fn();
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: { ...readyScope, bindings: { state: 'ready', data: [binding] } },
+      projectMutations: { updateAgentBinding } as unknown as ProjectMutations,
+      onMutated,
+    });
+
+    const agents = screen.getByRole('region', { name: /^bound agents/i });
+    expect(within(agents).getByTitle('backend/infra')).toBeTruthy();
+    expect(within(agents).getByText('verifier')).toBeTruthy();
+
+    fireEvent.click(
+      within(agents).getByRole('button', { name: 'Set implementer role for agent-1' }),
+    );
+    await waitFor(() => expect(onMutated).toHaveBeenCalledTimes(1));
+    expect(updateAgentBinding).toHaveBeenCalledWith('proj-1', 'bind-1', {
+      flowRoles: ['verifier', 'implementer'],
+    });
+    expect(screen.getByText('agent-1: verifier + implementer.')).toBeTruthy();
+
+    fireEvent.click(
+      within(agents).getByRole('button', { name: 'Unset verifier role for agent-1' }),
+    );
+    await waitFor(() => expect(onMutated).toHaveBeenCalledTimes(2));
+    expect(updateAgentBinding).toHaveBeenLastCalledWith('proj-1', 'bind-1', { flowRoles: [] });
+  });
+
+  it('stays read-only without mutations: the roles are shown, no toggle or skill control is offered', () => {
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: {
+        ...readyScope,
+        bindings: { state: 'ready', data: [binding] },
+        capabilities: {
+          state: 'ready',
+          data: { truncated: false, items: [skill('cap-1', 'release-notes', false, true)] },
+        },
+      },
+    });
+
+    const agents = screen.getByRole('region', { name: /^bound agents/i });
+    expect(within(agents).getByText('verifier')).toBeTruthy();
+    expect(within(agents).queryByRole('button', { name: /role for agent-1$/ })).toBeNull();
+    const skills = screen.getByRole('region', { name: /^skills/i });
+    expect(within(skills).queryByRole('button')).toBeNull();
+  });
+
+  it('offers enable, assign and unassign on a skill row for the selected agent, hides enable for an observed package, and shows a refusal in the daemon’s words', async () => {
+    const capabilityMutations = {
+      setEnabled: vi.fn().mockResolvedValue({
+        state: 'failed',
+        reason: 'http',
+        httpStatus: 409,
+        code: 'CAPABILITY_CONFLICT',
+        message: 'The daemon said no.',
+      }),
+      assign: vi.fn().mockResolvedValue(ok({})),
+      unassign: vi.fn().mockResolvedValue(ok({})),
+      rescan: vi.fn().mockResolvedValue(ok({})),
+    };
+    const onMutated = vi.fn();
+    renderView({
+      selectedProjectId: 'proj-1',
+      selectedAgentId: 'agent-1',
+      resources: {
+        ...readyScope,
+        capabilities: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            items: [
+              skill('cap-1', 'release-notes', true, true),
+              skill('cap-2', 'db-migrate', false, false),
+            ],
+          },
+        },
+      },
+      capabilityMutations: capabilityMutations as unknown as CapabilityMutations,
+      onMutated,
+    });
+
+    const skills = screen.getByRole('region', { name: /^skills/i });
+    expect(within(skills).queryByRole('button', { name: 'Disable release-notes' })).toBeNull();
+    expect(within(skills).getByRole('button', { name: 'Enable db-migrate' })).toBeTruthy();
+
+    fireEvent.click(
+      within(skills).getByRole('button', { name: 'Assign release-notes to agent-1' }),
+    );
+    await waitFor(() => expect(onMutated).toHaveBeenCalledTimes(1));
+    expect(capabilityMutations.assign).toHaveBeenCalledWith('cap-1', {
+      projectId: 'proj-1',
+      agentId: 'agent-1',
+    });
+    expect(screen.getByText('Assigned to agent-1.')).toBeTruthy();
+
+    fireEvent.click(
+      within(skills).getByRole('button', { name: 'Unassign db-migrate from agent-1' }),
+    );
+    await waitFor(() => expect(capabilityMutations.unassign).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(within(skills).getByRole('button', { name: 'Enable db-migrate' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('The daemon said no.'));
+    expect(capabilityMutations.setEnabled).toHaveBeenCalledWith('cap-2', true);
+
+    fireEvent.click(within(skills).getByRole('button', { name: 'Rescan' }));
+    await waitFor(() => expect(capabilityMutations.rescan).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('Capabilities rescanned.')).toBeTruthy();
+  });
+
+  it('targets the whole project when no agent is selected', async () => {
+    const capabilityMutations = {
+      setEnabled: vi.fn(),
+      assign: vi.fn().mockResolvedValue(ok({})),
+      unassign: vi.fn(),
+      rescan: vi.fn(),
+    };
+    renderView({
+      selectedProjectId: 'proj-1',
+      resources: {
+        ...readyScope,
+        capabilities: {
+          state: 'ready',
+          data: { truncated: false, items: [skill('cap-1', 'release-notes', false, true)] },
+        },
+      },
+      capabilityMutations: capabilityMutations as unknown as CapabilityMutations,
+    });
+
+    const skills = screen.getByRole('region', { name: /^skills/i });
+    fireEvent.click(
+      within(skills).getByRole('button', { name: 'Assign release-notes to project' }),
+    );
+    await waitFor(() => expect(capabilityMutations.assign).toHaveBeenCalledTimes(1));
+    expect(capabilityMutations.assign).toHaveBeenCalledWith('cap-1', { projectId: 'proj-1' });
+    expect(screen.getByText('Assigned to project.')).toBeTruthy();
   });
 });

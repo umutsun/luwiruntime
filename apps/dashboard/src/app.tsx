@@ -7,6 +7,7 @@ import type { ConfigMutations } from './api/config-mutations.js';
 import type { ConfigResources } from './api/config-scope.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
 import type { IntelligenceResources } from './api/intelligence-scope.js';
+import type { CapabilityMutations } from './api/capability-mutations.js';
 import type { CoordinatorMutations } from './api/coordinator-mutations.js';
 import type { KnowledgeGraph } from './api/knowledge-scope.js';
 import type { LeaseResources } from './api/lease-scope.js';
@@ -242,6 +243,7 @@ export function DashboardApp({
   onProjectMutated,
   coordinatorMutations,
   onCoordinatorMutated,
+  capabilityMutations,
   agentPairResources = {},
   agentPairLoading = false,
   leaseResources = {},
@@ -291,6 +293,8 @@ export function DashboardApp({
   coordinatorMutations?: CoordinatorMutations | undefined;
   /** Called after a coordinator claim/release, so the snapshot can be re-read. */
   onCoordinatorMutated?: (() => void) | undefined;
+  /** Absent keeps the project drawer's Skills panel read-only (ADR 0036). */
+  capabilityMutations?: CapabilityMutations | undefined;
   agentPairResources?: Partial<AgentPairResources>;
   /** The pair-scoped reads have not returned yet. */
   agentPairLoading?: boolean;
@@ -1079,6 +1083,9 @@ export function DashboardApp({
             agentPairResources={agentPairResources}
             agentPairLoading={agentPairLoading}
             leaseResources={leaseResources}
+            {...(projectMutations === undefined ? {} : { projectMutations })}
+            {...(capabilityMutations === undefined ? {} : { capabilityMutations })}
+            {...(onProjectMutated === undefined ? {} : { onMutated: onProjectMutated })}
             onSelectAgent={(agentId) => {
               window.location.hash = detailHref(agentId);
             }}

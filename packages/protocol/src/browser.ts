@@ -1,7 +1,10 @@
 export {
   agentDefinitionCollectionSchema,
+  capabilityBindingSchema,
   capabilityCollectionSchema,
+  capabilityPackageSchema,
   capabilityProfileCollectionSchema,
+  capabilityScanResponseSchema,
   configDriftCollectionSchema,
   configOperationReceiptSchema,
   configPlanApprovalResponseSchema,
@@ -11,7 +14,10 @@ export {
   contextFootprintSchema,
   contextSourceCollectionSchema,
   effectiveAgentConfigurationSchema,
+  flowRoleSchema,
   projectAgentBindingCollectionSchema,
+  projectAgentBindingPatchRequestSchema,
+  projectAgentBindingSchema,
 } from './control-plane.js';
 export {
   attributionCollectionSchema,

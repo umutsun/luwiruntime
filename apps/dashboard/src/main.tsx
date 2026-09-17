@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client';
 import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
 import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
+import { createCapabilityMutations, type CapabilityMutations } from './api/capability-mutations.js';
 import {
   createCoordinatorMutations,
   type CoordinatorMutations,
@@ -119,6 +120,7 @@ const configMutations: ConfigMutations = createConfigMutations();
 const messageMutations: MessageMutations = createMessageMutations();
 const projectMutations: ProjectMutations = createProjectMutations();
 const coordinatorMutations: CoordinatorMutations = createCoordinatorMutations();
+const capabilityMutations: CapabilityMutations = createCapabilityMutations();
 
 /**
  * Bound once so the Graph explorer's load effect has a stable dependency; a new
@@ -566,6 +568,7 @@ function DashboardRoute() {
       onProjectMutated={retry}
       coordinatorMutations={coordinatorMutations}
       onCoordinatorMutated={retry}
+      capabilityMutations={capabilityMutations}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
       leaseResources={leaseResources}

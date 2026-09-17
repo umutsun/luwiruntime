@@ -1,4 +1,6 @@
 import {
+  projectAgentBindingPatchRequestSchema,
+  projectAgentBindingSchema,
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectUpdateRequestSchema,
@@ -7,10 +9,11 @@ import {
 import type { z } from 'zod';
 
 /**
- * The dashboard's third and last write surface (ADR 0033): registering a
- * project and editing its name, remote and default branch. Both go to the
- * daemon's own endpoints with the same bounded, validated shape the CLI sends;
- * the local path is identity and is never edited from here.
+ * The dashboard's third write surface (ADR 0033): registering a project and
+ * editing its name, remote and default branch, and — since ADR 0036 — the flow
+ * roles on a project-agent binding. All go to the daemon's own endpoints with
+ * the same bounded, validated shape the CLI sends; the local path is identity
+ * and is never edited from here.
  *
  * Kept in its own module for the same reason the other two are:
  * `product-independence.test.ts` allowlists exactly the modules that may
@@ -31,9 +34,11 @@ export type ProjectUpdateInput = {
 };
 
 export type ProjectRecord = z.infer<typeof projectResponseSchema>;
+export type ProjectBindingRecord = z.infer<typeof projectAgentBindingSchema>;
+export type FlowRole = NonNullable<ProjectBindingRecord['flowRoles']>[number];
 
-export type ProjectMutationResult =
-  | { state: 'ok'; data: ProjectRecord; httpStatus: number }
+export type MutationResult<T> =
+  | { state: 'ok'; data: T; httpStatus: number }
   | {
       state: 'failed';
       reason: 'input' | 'http';
@@ -43,6 +48,11 @@ export type ProjectMutationResult =
     }
   | { state: 'failed'; reason: 'transport' }
   | { state: 'failed'; reason: 'invalid'; httpStatus: number };
+
+export type ProjectMutationResult = MutationResult<ProjectRecord>;
+export type ProjectBindingMutationResult = MutationResult<ProjectBindingRecord>;
+
+type Parser<T> = { safeParse(value: unknown): { success: true; data: T } | { success: false } };
 
 /**
  * The outcome of an unregister (F3). `204` carries no record; a `409` carries
@@ -70,11 +80,12 @@ const inputFailure: ProjectMutationResult = {
 };
 
 export function createProjectMutations(fetchImpl: typeof fetch = fetch) {
-  const send = async (
+  const send = async <T>(
     path: string,
     method: 'POST' | 'PATCH',
     body: unknown,
-  ): Promise<ProjectMutationResult> => {
+    schema: Parser<T> = projectResponseSchema as unknown as Parser<T>,
+  ): Promise<MutationResult<T>> => {
     let response: Response;
     try {
       response = await fetchImpl(path, {
@@ -105,9 +116,9 @@ export function createProjectMutations(fetchImpl: typeof fetch = fetch) {
         : { state: 'failed', reason: 'invalid', httpStatus: response.status };
     }
 
-    let parsed: ReturnType<typeof projectResponseSchema.safeParse>;
+    let parsed: ReturnType<Parser<T>['safeParse']>;
     try {
-      parsed = projectResponseSchema.safeParse(value);
+      parsed = schema.safeParse(value);
     } catch {
       return { state: 'failed', reason: 'invalid', httpStatus: response.status };
     }
@@ -136,6 +147,36 @@ export function createProjectMutations(fetchImpl: typeof fetch = fetch) {
       });
       if (!request.success || projectId.trim() === '') return inputFailure;
       return send(`/api/v1/projects/${encodeURIComponent(projectId)}`, 'PATCH', request.data);
+    },
+
+    /**
+     * Flow roles on a project-agent binding (F5, ADR 0036): which bound agent
+     * implements and which verifies. The daemon records the roles and answers
+     * with the binding; the external flow script decides what a missing or
+     * ambiguous role means. An empty array clears them.
+     */
+    async updateAgentBinding(
+      projectId: string,
+      bindingId: string,
+      input: { flowRoles: FlowRole[] },
+    ): Promise<ProjectBindingMutationResult> {
+      const request = projectAgentBindingPatchRequestSchema.safeParse({
+        flowRoles: input.flowRoles,
+      });
+      if (!request.success || projectId.trim() === '' || bindingId.trim() === '') {
+        return {
+          state: 'failed',
+          reason: 'input',
+          code: 'REQUEST_VALIDATION_FAILED',
+          message: 'The flow roles do not match the bounded binding protocol.',
+        };
+      }
+      return send(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(bindingId)}`,
+        'PATCH',
+        request.data,
+        projectAgentBindingSchema,
+      );
     },
 
     /**

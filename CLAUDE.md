@@ -275,11 +275,13 @@ Two consequences to know before touching the daemon or the dashboard:
   `403 REQUEST_ORIGIN_REJECTED`. `PUT`, `PATCH` and `DELETE` are unaffected — a cross-site one of
   those always preflights and the daemon answers no preflight. A test that injects a bodyless POST
   now fails; real callers pass `{}`, which is what makes Fastify's `inject` set the header.
-- **Four dashboard modules may write, and only those:** `api/config-mutations.ts` (ADR 0021),
+- **Five dashboard modules may write, and only those:** `api/config-mutations.ts` (ADR 0021),
   `api/message-mutations.ts` (ADR 0018), `api/project-mutations.ts` (ADR 0033: register a
-  project, edit its name/remote/default branch — never its path) and
-  `api/coordinator-mutations.ts` (ADR 0035: claim or release the per-project coordinator role).
-  `product-independence.test.ts` is an allowlist of exactly those four and fails if one goes
+  project, edit its name/remote/default branch — never its path; ADR 0036: the flow roles on a
+  project-agent binding), `api/coordinator-mutations.ts` (ADR 0035: claim or release the
+  per-project coordinator role) and `api/capability-mutations.ts` (ADR 0036: enable/disable,
+  assign/unassign and rescan capabilities through the daemon's existing endpoints).
+  `product-independence.test.ts` is an allowlist of exactly those five and fails if one goes
   missing, so it cannot pass vacuously. A mutation anywhere else is a test failure by design.
   ADR 0033 also added the first project _update_ transition — `luwi_project_update_v1`, one
   atomic Function for the hash fields and the `project.updated` event, behind
@@ -532,6 +534,22 @@ after the project is gone; and an index member that fails `isSafeKeyPart` is rem
 and counted (`unsafeMembersDropped`) rather than interpolated into a key. Only `luwi_v1` stays
 loaded on this server: integration runs load a per-run `luwi_test_run_<id>_v1` library and delete
 it at teardown, so the live daemon keeps the Function set it started with.
+
+**F5 (2026-09-17, ADR 0036) added flow roles and dashboard skill management.** The project-agent
+binding gained `flowRoles?: ['implementer' | 'verifier']` (unique, ≤2) beside its free-text `role`
+— which the pilot already used as an area description (`"backend/migrations/infra/CI"`) and which
+nothing rendered. No new key, event type or Function: the field rides on the create/patch schemas,
+`<project>/.luwi/agent-bindings.json` and the Redis record, and `project.agent.updated` carries it.
+**The coordinator is not a flow role** (a session claim, ADR 0035) and **the daemon enforces no
+verifier uniqueness** — the repo-external `flow.mjs` reads `GET /projects/:id/agents` and refuses
+to dispatch on none / two / not-a-worker / same-agent. The project drawer's "Bound agents" table
+shows the role and toggles the flow roles through `project-mutations.updateAgentBinding`; its Skills
+panel enables/disables (hidden for an `observed` package — the daemon refuses, `SKILL.md` is the
+truth), assigns/unassigns to the project or the selected agent, and rescans, all through the new
+fifth allowlisted `api/capability-mutations.ts` over endpoints that already existed on HTTP and the
+CLI. Declined on purpose: LUWI writing a `SKILL.md`, a `.luwi/roles.md`, MCP capability writes. A
+PATCH carrying `flowRoles` is refused by a daemon started before this (strict schema) until it is
+restarted; the capability mutations need no restart.
 
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.

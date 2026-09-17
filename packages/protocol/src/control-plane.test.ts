@@ -11,6 +11,7 @@ import {
   contextSourceSchema,
   effectiveAgentConfigurationSchema,
   nativeConfigInspectionSchema,
+  projectAgentBindingPatchRequestSchema,
   projectAgentBindingSchema,
 } from './index.js';
 
@@ -79,6 +80,22 @@ describe('Phase 3 control-plane contracts', () => {
         updatedAt: timestamp,
       }).profileIds,
     ).toEqual(['backend-implementation']);
+
+    // Flow roles (F5): a bounded, unique enum beside the free-text `role`; the
+    // coordinator is a session claim and never a binding role. An empty array
+    // clears them.
+    expect(
+      projectAgentBindingPatchRequestSchema.parse({ flowRoles: ['implementer', 'verifier'] })
+        .flowRoles,
+    ).toEqual(['implementer', 'verifier']);
+    expect(projectAgentBindingPatchRequestSchema.safeParse({ flowRoles: [] }).success).toBe(true);
+    expect(
+      projectAgentBindingPatchRequestSchema.safeParse({ flowRoles: ['verifier', 'verifier'] })
+        .success,
+    ).toBe(false);
+    expect(
+      projectAgentBindingPatchRequestSchema.safeParse({ flowRoles: ['coordinator'] }).success,
+    ).toBe(false);
 
     expect(
       capabilityPackageSchema.parse({

@@ -1286,6 +1286,12 @@ is in flight; the canonical manifest is untracked before Redis so a restart cann
 project; the leaves are purged in re-runnable batches by `createProjectPurge`; and
 `luwi_project_unregister_v1` ends it atomically — refusing while the project's session set still has
 a member — appending `project.unregistered` to the global stream only (library version still 12).
+F5 (ADR 0036) then added `flowRoles` (`implementer` / `verifier`, unique) to the project-agent
+binding — configuration the daemon records and the external flow script decides on, with no
+uniqueness rule and the coordinator deliberately excluded — and a fifth allowlisted dashboard write
+module, `api/capability-mutations.ts`, over the capability endpoints that already existed (enable,
+assign, unassign, scan). No new key, event type, Function or endpoint; LUWI still writes no
+`SKILL.md`.
 
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers

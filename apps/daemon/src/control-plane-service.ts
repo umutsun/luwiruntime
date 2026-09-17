@@ -748,7 +748,11 @@ export function createControlPlaneService(
             now,
             projectId,
             agentId: updated.agentId,
-            payload: { bindingId, enabled: updated.enabled },
+            payload: {
+              bindingId,
+              enabled: updated.enabled,
+              flowRoles: updated.flowRoles ?? null,
+            },
           }),
         );
         const newlyAssignedProfiles = updated.profileIds.filter(

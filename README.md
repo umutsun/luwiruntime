@@ -415,6 +415,17 @@ global stream only. The operational graph heals at its next rebuild; native bind
 lease records and the agent- and workspace-scoped counters are left alone; and the folder can be
 registered again at once.
 
+**Flow roles and skills (ADR 0036):** a project-agent binding carries, beside its free-text `role`,
+`flowRoles` — `implementer` and/or `verifier` — which the repository-external implement→verify
+script reads to choose who implements and who verifies; the coordinator stays a session claim, not
+a binding role, and the daemon records the roles without enforcing how many verifiers a project
+has. Set them with `luwi projects agent update <projectId> <bindingId> --body
+'{"flowRoles":["verifier"]}'` or with the toggles in the project drawer's "Bound agents" table. The
+same drawer's Skills panel now enables or disables a capability package (not an observed one — its
+`SKILL.md` is the truth), assigns or unassigns it to the project or to the selected agent, and
+rescans the native skill directories, all through the existing capability endpoints. LUWI never
+writes a `SKILL.md`.
+
 ## Architecture and security
 
 Redis is the only runtime datastore. It is the operational database, durable event bus,

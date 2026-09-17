@@ -1,4 +1,8 @@
+import { useState } from 'react';
+
+import type { CapabilityMutations } from '../api/capability-mutations.js';
 import type { LeaseResources } from '../api/lease-scope.js';
+import type { ProjectMutations } from '../api/project-mutations.js';
 import { LeasePanel } from './lease-panel.js';
 import type {
   AgentPairResources,
@@ -8,6 +12,7 @@ import type {
 } from '../api/agent-pair-scope.js';
 import type {
   Bounded,
+  FlowRole,
   ProjectAttribution,
   ProjectBinding,
   ProjectCapability,
@@ -628,6 +633,9 @@ export function ProjectsView({
   onSelectProject,
   onSelectAgent,
   renderDetailInline = true,
+  projectMutations,
+  capabilityMutations,
+  onMutated,
 }: {
   snapshot: PulseSnapshot;
   selectedProjectId?: string | undefined;
@@ -643,6 +651,9 @@ export function ProjectsView({
   onSelectAgent?: (agentId: string | undefined) => void;
   /** The shell passes false and renders <ProjectDetail/> in the overlay drawer itself. */
   renderDetailInline?: boolean;
+  projectMutations?: ProjectMutations | undefined;
+  capabilityMutations?: CapabilityMutations | undefined;
+  onMutated?: (() => void) | undefined;
 }) {
   const projectsAvailable = snapshot.projectCount.state !== 'unavailable';
 
@@ -753,6 +764,9 @@ export function ProjectsView({
           leaseResources={leaseResources}
           {...(nowMs === undefined ? {} : { nowMs })}
           {...(onSelectAgent === undefined ? {} : { onSelectAgent })}
+          {...(projectMutations === undefined ? {} : { projectMutations })}
+          {...(capabilityMutations === undefined ? {} : { capabilityMutations })}
+          {...(onMutated === undefined ? {} : { onMutated })}
         />
       ) : null}
     </div>
@@ -777,6 +791,9 @@ export function ProjectDetail({
   leaseResources = {},
   nowMs,
   onSelectAgent,
+  projectMutations,
+  capabilityMutations,
+  onMutated,
 }: {
   snapshot: PulseSnapshot;
   selectedProjectId: string;
@@ -788,8 +805,84 @@ export function ProjectDetail({
   leaseResources?: Partial<LeaseResources>;
   nowMs?: number;
   onSelectAgent?: (agentId: string | undefined) => void;
+  /** Absent keeps the bound agents' flow roles read-only (ADR 0036). */
+  projectMutations?: ProjectMutations | undefined;
+  /** Absent keeps the Skills panel read-only (ADR 0036). */
+  capabilityMutations?: CapabilityMutations | undefined;
+  /** Called after a role or capability change so the scope can be re-read. */
+  onMutated?: (() => void) | undefined;
 }) {
   const selected = snapshot.projects.find((project) => project.id === selectedProjectId);
+
+  // The two write surfaces this drawer carries (F5, ADR 0036). One busy marker
+  // and one note serve both: a change here is one gesture at a time, and the
+  // daemon's own refusal is what the reader should see.
+  const [busy, setBusy] = useState<string>();
+  const [note, setNote] = useState<{ tone: 'ok' | 'danger'; message: string }>();
+  const settle = (
+    result: { state: 'ok' } | { state: 'failed'; reason: string; message?: string },
+    done: string,
+  ): void => {
+    setBusy(undefined);
+    if (result.state === 'ok') {
+      setNote({ tone: 'ok', message: done });
+      onMutated?.();
+      return;
+    }
+    setNote({
+      tone: 'danger',
+      message:
+        result.reason === 'http' && result.message !== undefined
+          ? result.message
+          : 'The change could not be completed.',
+    });
+  };
+  const toggleFlowRole = async (binding: ProjectBinding, role: FlowRole): Promise<void> => {
+    if (projectMutations === undefined) return;
+    const held = binding.flowRoles ?? [];
+    const next = held.includes(role) ? held.filter((item) => item !== role) : [...held, role];
+    setBusy(binding.id);
+    setNote(undefined);
+    settle(
+      await projectMutations.updateAgentBinding(selectedProjectId, binding.id, {
+        flowRoles: next,
+      }),
+      `${binding.agentId}: ${next.length === 0 ? 'no flow role' : next.join(' + ')}.`,
+    );
+  };
+  // A skill is assigned to the project, or to the one agent selected in the
+  // bound-agents table; the daemon's assignment shape carries no other target.
+  const capabilityTarget =
+    selectedAgentId === undefined
+      ? { projectId: selectedProjectId }
+      : { projectId: selectedProjectId, agentId: selectedAgentId };
+  const targetLabel = selectedAgentId ?? 'project';
+  const runCapability = async (
+    capabilityId: string,
+    action: 'enable' | 'disable' | 'assign' | 'unassign' | 'rescan',
+  ): Promise<void> => {
+    if (capabilityMutations === undefined) return;
+    setBusy(action === 'rescan' ? 'rescan' : capabilityId);
+    setNote(undefined);
+    const result =
+      action === 'enable' || action === 'disable'
+        ? await capabilityMutations.setEnabled(capabilityId, action === 'enable')
+        : action === 'assign'
+          ? await capabilityMutations.assign(capabilityId, capabilityTarget)
+          : action === 'unassign'
+            ? await capabilityMutations.unassign(capabilityId, capabilityTarget)
+            : await capabilityMutations.rescan();
+    settle(
+      result,
+      action === 'rescan'
+        ? 'Capabilities rescanned.'
+        : action === 'assign'
+          ? `Assigned to ${targetLabel}.`
+          : action === 'unassign'
+            ? `Unassigned from ${targetLabel}.`
+            : `Capability ${action}d.`,
+    );
+  };
   const projectFindings = snapshot.findings.filter(
     (finding) => finding.projectId === selectedProjectId,
   );
@@ -888,6 +981,15 @@ export function ProjectDetail({
         nowMs={nowMs ?? Date.now()}
       />
 
+      {note === undefined ? null : (
+        <p
+          className={note.tone === 'ok' ? 'outcome outcome--ok' : 'outcome outcome--bad'}
+          role={note.tone === 'ok' ? 'status' : 'alert'}
+        >
+          {note.message}
+        </p>
+      )}
+
       <ResourcePanel<ProjectBinding[]>
         title="Bound agents"
         collapsible
@@ -901,36 +1003,71 @@ export function ProjectDetail({
               <thead>
                 <tr>
                   <th scope="col">Agent</th>
+                  {/*
+                   * The free-text role the owner bound the agent with, and the
+                   * flow roles (implementer / verifier) the external flow script
+                   * reads (ADR 0036). The coordinator is a session claim and
+                   * lives on the sessions route, not here.
+                   */}
+                  <th scope="col">Role</th>
                   <th scope="col">State</th>
                   <th scope="col">Profiles</th>
                   <th scope="col">Capabilities</th>
                 </tr>
               </thead>
               <tbody>
-                {bindings.map((binding) => (
-                  <tr key={binding.id} aria-selected={binding.agentId === selectedAgentId}>
-                    <td>
-                      <button
-                        type="button"
-                        className="link-button"
-                        onClick={() =>
-                          onSelectAgent?.(
-                            binding.agentId === selectedAgentId ? undefined : binding.agentId,
-                          )
-                        }
-                      >
-                        {binding.agentId}
-                      </button>
-                    </td>
-                    <td>
-                      <StatusChip tone={binding.enabled ? 'success' : 'unknown'}>
-                        {binding.enabled ? 'Enabled' : 'Disabled'}
-                      </StatusChip>
-                    </td>
-                    <td>{binding.profileCount}</td>
-                    <td>{binding.capabilityCount}</td>
-                  </tr>
-                ))}
+                {bindings.map((binding) => {
+                  const held = binding.flowRoles ?? [];
+                  return (
+                    <tr key={binding.id} aria-selected={binding.agentId === selectedAgentId}>
+                      <td>
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={() =>
+                            onSelectAgent?.(
+                              binding.agentId === selectedAgentId ? undefined : binding.agentId,
+                            )
+                          }
+                        >
+                          {binding.agentId}
+                        </button>
+                      </td>
+                      <td>
+                        {binding.role === undefined ? null : (
+                          <small title={binding.role}>{binding.role}</small>
+                        )}
+                        {held.map((role) => (
+                          <StatusChip key={role} tone="info">
+                            {role}
+                          </StatusChip>
+                        ))}
+                        {projectMutations === undefined
+                          ? null
+                          : (['implementer', 'verifier'] as const).map((role) => (
+                              <button
+                                key={role}
+                                type="button"
+                                className="link-button"
+                                aria-pressed={held.includes(role)}
+                                disabled={busy === binding.id}
+                                onClick={() => void toggleFlowRole(binding, role)}
+                                aria-label={`${held.includes(role) ? 'Unset' : 'Set'} ${role} role for ${binding.agentId}`}
+                              >
+                                {held.includes(role) ? `Unset ${role}` : `Set ${role}`}
+                              </button>
+                            ))}
+                      </td>
+                      <td>
+                        <StatusChip tone={binding.enabled ? 'success' : 'unknown'}>
+                          {binding.enabled ? 'Enabled' : 'Disabled'}
+                        </StatusChip>
+                      </td>
+                      <td>{binding.profileCount}</td>
+                      <td>{binding.capabilityCount}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -946,9 +1083,21 @@ export function ProjectDetail({
       <ResourcePanel<Bounded<ProjectCapability>>
         title="Skills"
         meta={
-          resources.capabilities?.state === 'ready'
-            ? `${String(resources.capabilities.data.items.filter((item) => item.scope === 'project').length)} project · ${String(resources.capabilities.data.items.filter((item) => item.scope === 'global').length)} global`
-            : undefined
+          <>
+            {resources.capabilities?.state === 'ready'
+              ? `${String(resources.capabilities.data.items.filter((item) => item.scope === 'project').length)} project · ${String(resources.capabilities.data.items.filter((item) => item.scope === 'global').length)} global`
+              : null}
+            {capabilityMutations === undefined ? null : (
+              <button
+                type="button"
+                className="link-button"
+                disabled={busy === 'rescan'}
+                onClick={() => void runCapability('', 'rescan')}
+              >
+                Rescan
+              </button>
+            )}
+          </>
         }
         resource={resources.capabilities}
         emptyMessage="No capabilities recorded — a capability scan registers them"
@@ -965,6 +1114,7 @@ export function ProjectDetail({
                     <th scope="col">Scope</th>
                     <th scope="col">Source</th>
                     <th scope="col">State</th>
+                    {capabilityMutations === undefined ? null : <th scope="col">Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -984,6 +1134,47 @@ export function ProjectDetail({
                           {record.enabled ? 'Enabled' : 'Disabled'}
                         </StatusChip>
                       </td>
+                      {capabilityMutations === undefined ? null : (
+                        <td>
+                          {/*
+                           * An observed package cannot be enabled or disabled
+                           * here: its SKILL.md is the truth and the daemon
+                           * refuses the update. Assignment is still the
+                           * runtime's own record, so it stays.
+                           */}
+                          {record.observed ? null : (
+                            <button
+                              type="button"
+                              className="link-button"
+                              disabled={busy === record.id}
+                              onClick={() =>
+                                void runCapability(record.id, record.enabled ? 'disable' : 'enable')
+                              }
+                              aria-label={`${record.enabled ? 'Disable' : 'Enable'} ${record.name}`}
+                            >
+                              {record.enabled ? 'Disable' : 'Enable'}
+                            </button>
+                          )}{' '}
+                          <button
+                            type="button"
+                            className="link-button"
+                            disabled={busy === record.id}
+                            onClick={() => void runCapability(record.id, 'assign')}
+                            aria-label={`Assign ${record.name} to ${targetLabel}`}
+                          >
+                            Assign to {targetLabel}
+                          </button>{' '}
+                          <button
+                            type="button"
+                            className="link-button"
+                            disabled={busy === record.id}
+                            onClick={() => void runCapability(record.id, 'unassign')}
+                            aria-label={`Unassign ${record.name} from ${targetLabel}`}
+                          >
+                            Unassign
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

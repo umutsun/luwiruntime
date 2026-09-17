@@ -93,12 +93,24 @@ export const agentDetectionResponseSchema = z.strictObject({
   installations: z.array(detectedAgentInstallationSchema).max(100),
 });
 
+/**
+ * The flow roles a bound agent may hold in a project (F5, ADR 0036). The
+ * coordinator is deliberately not one of them: it is a session-level claim
+ * (ADR 0035), not agent configuration. The daemon records these; the external
+ * flow script decides what an ambiguous or missing role means (ADR 0031/0035).
+ */
+export const flowRoleSchema = z.enum(['implementer', 'verifier']);
+const flowRolesSchema = z
+  .array(flowRoleSchema)
+  .max(2)
+  .refine((roles) => new Set(roles).size === roles.length, 'Flow roles must be unique.');
 export const projectAgentBindingSchema = z.strictObject({
   id: identifierSchema,
   projectId: identifierSchema,
   agentId: agentIdSchema,
   enabled: z.boolean(),
   role: z.string().trim().min(1).max(500).optional(),
+  flowRoles: flowRolesSchema.optional(),
   profileIds: z.array(identifierSchema).max(100),
   capabilityBindingIds: z.array(identifierSchema).max(1000),
   overrides: jsonObjectSchema,
@@ -115,6 +127,7 @@ export const projectAgentBindingPatchRequestSchema = projectAgentBindingSchema
   .pick({
     enabled: true,
     role: true,
+    flowRoles: true,
     profileIds: true,
     capabilityBindingIds: true,
     overrides: true,
@@ -661,6 +674,7 @@ export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
 export type AgentDefinitionCreateRequest = z.infer<typeof agentDefinitionCreateRequestSchema>;
 export type AgentDefinitionPatchRequest = z.infer<typeof agentDefinitionPatchRequestSchema>;
 export type DetectedAgentInstallation = z.infer<typeof detectedAgentInstallationSchema>;
+export type FlowRole = z.infer<typeof flowRoleSchema>;
 export type ProjectAgentBinding = z.infer<typeof projectAgentBindingSchema>;
 export type ProjectAgentBindingCreateRequest = z.infer<
   typeof projectAgentBindingCreateRequestSchema

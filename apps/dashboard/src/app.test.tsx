@@ -815,6 +815,7 @@ describe('project settings', () => {
     register: vi.fn().mockResolvedValue({ state: 'ok', httpStatus: 201, data: registered }),
     update: vi.fn().mockResolvedValue({ state: 'ok', httpStatus: 200, data: registered }),
     remove: vi.fn().mockResolvedValue({ state: 'ok', httpStatus: 204 }),
+    updateAgentBinding: vi.fn(),
   });
 
   it('offers registration from the PROJECTS menu only when it can write, and re-reads after', async () => {
