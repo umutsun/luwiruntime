@@ -11,5 +11,3 @@ temp/
 .claude/worktrees/
 .worktrees/
 
-# SVG assets have no prettier parser
-apps/dashboard/public/favicon.svg

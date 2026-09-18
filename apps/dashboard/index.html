@@ -4,7 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!--
+      Inlined as a data URI so it needs no extra server route: the daemon serves
+      only index.html and /assets/*, so a /favicon.svg file would 404. The mark
+      is a dark rounded tile with the white LUWI glyph.
+    -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0OCA0OCI+PHJlY3Qgd2lkdGg9IjQ4IiBoZWlnaHQ9IjQ4IiByeD0iMTEiIGZpbGw9IiMxMTEzMTgiLz48ZyB0cmFuc2Zvcm09InRyYW5zbGF0ZSgyNCAyNCkgc2NhbGUoLjc0KSB0cmFuc2xhdGUoLTI0IC0yNCkiIGZpbGw9Im5vbmUiIHN0cm9rZT0iI2ZmZiIgc3Ryb2tlLXdpZHRoPSI0LjYiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTkuNSIvPjxwYXRoIGQ9Ik0xMy41IDMxdi04LjVhMTAuNSAxMC41IDAgMCAxIDIxIDBWMzEiLz48cGF0aCBkPSJNMjEuNCAyMS41djcuNmEzLjQgMy40IDAgMSAxLTYuOC40Ii8+PHBhdGggZD0iTTI2LjYgMjEuNXY3LjZhMy40IDMuNCAwIDEgMCA2LjguNCIvPjwvZz48L3N2Zz4="
+    />
     <title>Luwi Runtime — Overview</title>
   </head>
   <body>
