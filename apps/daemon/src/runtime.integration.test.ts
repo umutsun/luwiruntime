@@ -316,9 +316,24 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       });
       const received = new Promise<string>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('WebSocket event timeout')), 2_000);
-        socket.once('message', (data) => {
-          clearTimeout(timeout);
-          resolve(data.toString());
+        // Background graph projections broadcast graph.node.projected on the same
+        // realtime stream, so wait for this session's status event specifically
+        // instead of grabbing whichever frame arrives first.
+        socket.on('message', (data) => {
+          const text = data.toString();
+          let frame: { event?: { type?: string; sessionId?: string } };
+          try {
+            frame = JSON.parse(text);
+          } catch {
+            return;
+          }
+          if (
+            frame.event?.type === 'session.status.changed' &&
+            frame.event?.sessionId === session.id
+          ) {
+            clearTimeout(timeout);
+            resolve(text);
+          }
         });
       });
       const status = await runtime.app.inject({
