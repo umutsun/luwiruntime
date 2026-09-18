@@ -313,6 +313,101 @@ describe('autopilot mode switch in the drill-down (ADR 0035)', () => {
   });
 });
 
+describe('autopilot flow in the drill-down (ADR 0035)', () => {
+  const flowOf = (state: import('./model.js').AutopilotFlowState) =>
+    panelFor(overview(), { kind: 'project', id: 'p1' }, 'live', {
+      autopilotFlow: { projectId: 'p1', state },
+    }).flow;
+
+  it('maps active goals and tasks to toned chips in plan order', () => {
+    const flow = flowOf({
+      state: 'ready',
+      data: {
+        more: 1,
+        goals: [
+          {
+            id: 'g1',
+            title: 'Ship admin',
+            state: 'running',
+            tasks: [
+              {
+                id: 't1',
+                kind: 'work',
+                agentId: 'antigravity',
+                state: 'dispatched',
+                verdict: undefined,
+              },
+              { id: 't2', kind: 'review', agentId: 'codex', state: 'done', verdict: 'accept' },
+            ],
+          },
+        ],
+      },
+    });
+    expect(flow).toEqual({
+      status: 'ready',
+      more: 1,
+      goals: [
+        {
+          id: 'g1',
+          title: 'Ship admin',
+          state: { label: 'running', tone: 'info' },
+          tasks: [
+            {
+              id: 't1',
+              label: 'work · antigravity',
+              state: { label: 'dispatched', tone: 'info' },
+            },
+            {
+              id: 't2',
+              label: 'review · codex',
+              state: { label: 'done', tone: 'success' },
+              verdict: { label: 'accept', tone: 'success' },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('spells a task with no agent and underscores as words', () => {
+    const flow = flowOf({
+      state: 'ready',
+      data: {
+        more: 0,
+        goals: [
+          {
+            id: 'g1',
+            title: 'g',
+            state: 'plan_review',
+            tasks: [
+              {
+                id: 't1',
+                kind: 'work',
+                agentId: undefined,
+                state: 'awaiting_approval',
+                verdict: undefined,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(flow?.goals[0]?.state).toEqual({ label: 'plan review', tone: 'warning' });
+    expect(flow?.goals[0]?.tasks[0]).toEqual({
+      id: 't1',
+      label: 'work · unassigned',
+      state: { label: 'awaiting approval', tone: 'warning' },
+    });
+  });
+
+  it('is empty when nothing is in flight, and absent when no read is wired', () => {
+    expect(flowOf({ state: 'ready', data: { goals: [], more: 0 } })?.status).toBe('empty');
+    expect(flowOf({ state: 'loading' })?.status).toBe('loading');
+    expect(flowOf({ state: 'unavailable' })?.status).toBe('unavailable');
+    expect(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live').flow).toBeUndefined();
+  });
+});
+
 describe('flow roles in the drill-down (ADR 0036)', () => {
   const withRoles = (): PulseInput => ({
     ...input(),

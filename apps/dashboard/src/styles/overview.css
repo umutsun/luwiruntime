@@ -1594,6 +1594,55 @@ a.ticker__detail:hover {
   color: var(--text-muted);
   font-size: var(--font-size-xs);
 }
+
+.drill__flow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-5h) var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.drill__flow-goal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+}
+.drill__flow-goal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.drill__flow-goal-title {
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--font-size-xs);
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drill__flow-task {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-left: var(--space-3);
+}
+.drill__flow-task-label {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.drill__flow-task-chips {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
 .drill__row {
   display: grid;
   width: 100%;
