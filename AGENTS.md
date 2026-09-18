@@ -314,7 +314,28 @@ luwi:v1:index:session:{sessionId}:messages:source
 luwi:v1:index:session:{sessionId}:messages:target
 ```
 
-Future tasks, leases, activity, lifecycle progress, and rankings may use additional sorted
+Autopilot (ADR 0035) adds, per project, a record hash, goal and task hashes, and their indexes:
+
+```text
+luwi:v1:project:{projectId}:autopilot
+luwi:v1:index:autopilot:projects
+luwi:v1:goal:{goalId}
+luwi:v1:index:project:{projectId}:goals
+luwi:v1:index:project:{projectId}:retrospectives
+luwi:v1:task:{taskId}
+luwi:v1:index:project:{projectId}:tasks
+luwi:v1:index:project:{projectId}:tasks:active
+luwi:v1:index:project:{projectId}:tasks:dispatches
+luwi:v1:index:goal:{goalId}:tasks
+```
+
+Every write is a compare-and-set on the record's own `version` through `luwi_autopilot_put_v1`,
+`luwi_goal_write_v1` or `luwi_task_write_v1`; `luwi_task_dispatch_v1` re-checks the in-flight
+count, the hourly window (`ZCOUNT`, never trimming) and path overlap atomically with the limits
+passed as arguments; `luwi_inbox_notice_v1` appends a coordinator wake-up to an existing session
+inbox, which the claim path returns once and acknowledges on delivery.
+
+Future activity, lifecycle progress, and rankings may use additional sorted
 sets only when their phases are approved.
 
 ### TTL state
@@ -455,6 +476,11 @@ message.rejected
 message.failed
 message.timed_out
 ```
+
+ADR 0035 added `autopilot.mode.changed`, `autopilot.policy.updated`, `autopilot.notice.queued`,
+`task.created|updated|gated|approved|rejected|dispatch.denied|dispatched|completed|cancelled|verified|rework.created`,
+`goal.created|planned|plan.approved|plan.rejected|started|replanned|escalated|answered|achieved|failed|abandoned|retrospective.written`
+and `orchestrator.judgment.decided`.
 
 Add event types only with a real transition, schema, persistence path, and tests.
 
@@ -599,6 +625,13 @@ long-lived LUWI session, and one headless native run per claimed message (`claud
 completes the message. The bridge writes only what the child left unfinished, and never `answered`.
 Everything after `--` is passed to the native CLI unchanged as its whole permission model; the
 bridge starts a new process and injects nothing into any terminal.
+
+`session bridge orchestrator --project <id> --brain <luwibot-ws|claude|codex|gemini|antigravity>`
+(ADR 0035) runs the autopilot loop for one project as the policy's coordinator session: it wakes on
+its inbox and a tick, computes the next actions with the pure `planCycle`, and applies them through
+the daemon's gated goal and task routes. The brain is asked bounded, schema-validated judgments
+(`plan`, `review`, `replan`, `summarize`) and is handed no LUWI session and no tool; a native brain
+run strips `LUWI_SESSION_ID` from its environment. The orchestrator never edits, tests or commits.
 
 `@luwi/mcp-server` is a thin stdio adapter bound to one registered online session. It
 validates daemon responses, derives source/responder identity from `LUWI_SESSION_ID`, and
@@ -1303,3 +1336,17 @@ vector knowledge graph, memory federation, GitHub
 integration, prompt injection, automatic optimization apply, cloud accounts, authentication, or
 remote control-plane work until that specific scope is explicitly approved. Shipping one phase does
 not authorize the rest.
+
+### Built: per-project autopilot (ADR 0035, 2026-09-17)
+
+The owner's directive of 2026-09-17 ("let this session solve the multi-worker agent orchestration
+problem") approved and built the task-orchestration scope this section had held back, as ADR 0035
+records: a per-project autopilot record (`off | supervised | autopilot`, operator-only, never
+canonical), a filesystem-canonical policy in `.luwi/manifest.json`, goals as the unit of autonomy,
+tasks dispatched as ordinary `instruction` messages through one choke point, a LUWI-owned
+orchestrator loop in `@luwi/cli` with a pluggable brain, bounded verification, rework, escalation
+and a capped retrospective memory. `luwi_v1` is at **v13** with five new Functions. Ten MCP tools
+let a bound session read goals and tasks, create a goal, and — only when the policy names its agent
+as an operator proxy — approve, reject, answer and abandon on the operator's behalf. Not built: a
+dashboard section, a `hermes` brain provider, `luwi autopilot up`, terminal-task retention, the
+`proactive` level, and the transcript-based `scope_exceeded` check. Each remains new scope.

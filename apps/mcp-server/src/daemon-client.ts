@@ -1,4 +1,9 @@
 import {
+  autopilotStatusResponseSchema,
+  goalCollectionSchema,
+  goalSchema,
+  taskCollectionSchema,
+  taskSchema,
   leaseAcquireResponseSchema,
   leaseCollectionSchema,
   workLeaseSchema,
@@ -35,6 +40,14 @@ import {
   technologyCollectionSchema,
   usageSummarySchema,
   type AgentMessage,
+  type AutopilotStatusResponse,
+  type Goal,
+  type GoalBudget,
+  type GoalCollection,
+  type GoalState,
+  type Task,
+  type TaskCollection,
+  type TaskState,
   type AgentDefinition,
   type AgentMessageResponse,
   type InboxClaimRequest,
@@ -165,6 +178,33 @@ export type McpDaemonClient = {
   }): Promise<LeaseAcquireResponse>;
   renewLease(leaseId: string, sessionId: string, durationMs: number): Promise<WorkLease>;
   releaseLease(leaseId: string, sessionId: string): Promise<WorkLease>;
+  /** Autopilot, goals and tasks (ADR 0035); every call names the bound session as the actor. */
+  getAutopilot(projectId: string): Promise<AutopilotStatusResponse>;
+  listGoals(
+    projectId: string,
+    state: GoalState | undefined,
+    limit: number,
+  ): Promise<GoalCollection>;
+  getGoal(goalId: string): Promise<Goal>;
+  createGoal(
+    projectId: string,
+    body: {
+      title: string;
+      objective: string;
+      acceptanceCriteria: string[];
+      sessionId: string;
+      budget?: Partial<{ [Key in keyof GoalBudget]: GoalBudget[Key] | undefined }>;
+    },
+  ): Promise<Goal>;
+  approvePlan(goalId: string, sessionId: string, note?: string): Promise<Goal>;
+  rejectPlan(goalId: string, sessionId: string, note?: string): Promise<Goal>;
+  answerGoal(goalId: string, sessionId: string, text: string): Promise<Goal>;
+  abandonGoal(goalId: string, sessionId: string, reason?: string): Promise<Goal>;
+  listTasks(
+    projectId: string,
+    query: { goalId?: string; state?: TaskState; limit: number },
+  ): Promise<TaskCollection>;
+  getTask(taskId: string): Promise<Task>;
   listLeases(
     scope: { projectId?: string; sessionId?: string },
     limit: number,
@@ -423,6 +463,49 @@ export function createDaemonClient(options: {
       post(`/api/v1/leases/${encodeURIComponent(leaseId)}/release`, workLeaseSchema, {
         sessionId,
       }),
+    getAutopilot: (projectId) =>
+      request(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/autopilot`,
+        autopilotStatusResponseSchema,
+      ),
+    listGoals: (projectId, state, limit) => {
+      const query = new URLSearchParams({ limit: String(limit) });
+      if (state !== undefined) query.set('state', state);
+      return request(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/goals?${query.toString()}`,
+        goalCollectionSchema,
+      );
+    },
+    getGoal: (goalId) => request(`/api/v1/goals/${encodeURIComponent(goalId)}`, goalSchema),
+    createGoal: (projectId, body) =>
+      post(`/api/v1/projects/${encodeURIComponent(projectId)}/goals`, goalSchema, body),
+    approvePlan: (goalId, sessionId, note) =>
+      post(`/api/v1/goals/${encodeURIComponent(goalId)}/plan/approve`, goalSchema, {
+        sessionId,
+        ...(note === undefined ? {} : { note }),
+      }),
+    rejectPlan: (goalId, sessionId, note) =>
+      post(`/api/v1/goals/${encodeURIComponent(goalId)}/plan/reject`, goalSchema, {
+        sessionId,
+        ...(note === undefined ? {} : { note }),
+      }),
+    answerGoal: (goalId, sessionId, text) =>
+      post(`/api/v1/goals/${encodeURIComponent(goalId)}/answer`, goalSchema, { sessionId, text }),
+    abandonGoal: (goalId, sessionId, reason) =>
+      post(`/api/v1/goals/${encodeURIComponent(goalId)}/abandon`, goalSchema, {
+        sessionId,
+        ...(reason === undefined ? {} : { reason }),
+      }),
+    listTasks: (projectId, query) => {
+      const parameters = new URLSearchParams({ limit: String(query.limit) });
+      if (query.goalId !== undefined) parameters.set('goalId', query.goalId);
+      if (query.state !== undefined) parameters.set('state', query.state);
+      return request(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/tasks?${parameters.toString()}`,
+        taskCollectionSchema,
+      );
+    },
+    getTask: (taskId) => request(`/api/v1/tasks/${encodeURIComponent(taskId)}`, taskSchema),
     listLeases: (scope, limit) => {
       const query = new URLSearchParams({ limit: String(limit) });
       if (scope.sessionId !== undefined) query.set('sessionId', scope.sessionId);

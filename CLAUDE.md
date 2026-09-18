@@ -116,7 +116,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (34 registered Functions since F3's `luwi_project_unregister_v1`; library **v13** since ADR 0037 put `retryOf` on the message record — a new Function alone reloads without a bump, a record-shape change moves the version, and either way a daemon started before it needs one restart) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (39 registered Functions and library **v14** since the autopilot merge — the fleet line's `project_unregister`/`retryOf` set plus ADR 0035's five autopilot Functions `autopilot_put`/`goal_write`/`task_write`/`task_dispatch`/`inbox_notice`; a record-shape change moves the version, a new Function alone reloads without a bump, and either way a daemon started before it needs one restart) is already loaded on the server.
 
 ## Tools and shells
 
@@ -164,9 +164,24 @@ rendered the branch, tag, and worktree evidence the Git observation was already 
 
 Not implemented, and per §21 still explicitly out of scope without approval: automatic drift
 reconciliation (distinct from the implemented `POST /api/v1/config/reconcile`, which recovers
-interrupted apply operations at daemon start), lifecycle/release scoring, task orchestration,
-semantic or vector knowledge graph, memory federation, GitHub integration, prompt injection,
-cloud accounts, authentication, remote control-plane work.
+interrupted apply operations at daemon start), lifecycle/release scoring, semantic or vector
+knowledge graph, memory federation, GitHub integration, prompt injection, cloud accounts,
+authentication, remote control-plane work. Task orchestration is **built** as per-project autopilot
+(ADR 0035, below).
+
+**ADR 0035 (2026-09-17) built per-project autopilot.** `luwi autopilot policy` declares the
+coordinator agent, the workers, a read-only reviewer, the operator-proxy agents (the LuwiBot chat,
+so the human there can approve and answer), protected paths and budgets — written to the project's
+`.luwi/manifest.json` and projected into Redis at every owned start. `luwi autopilot mode
+off|supervised|autopilot` is operator-only and never canonical. `luwi goal create` (or the bot's
+`luwi_create_goal`) opens a goal; `luwi session bridge orchestrator --project <id> --brain
+<luwibot-ws|claude|codex|gemini|antigravity>` runs the LUWI-owned loop that plans it through the brain,
+dispatches tasks to the ADR 0031 bridge workers as ordinary `instruction` messages, verifies
+completions (evidence, commits, test claim, then a reviewer task, then a `review` judgment), reworks
+once, and parks a goal `blocked` with one question the operator answers. Read
+`docs/guides/autopilot.md` before running it. Three traps: **the daemon must be restarted once** for
+`luwi_v1` v13; a coordinator `instruction` outside a task is refused (`AUTOPILOT_DISPATCH_REQUIRED`);
+and a task with no declared paths counts as the whole project, so it gates on any protected path.
 
 ADR 0018 then removed the reason those domains were deferred. `pnpm seed` populates an isolated
 fixture runtime, and three of them were built on it: `#/messages`, effective agent configuration,
@@ -193,7 +208,8 @@ time-bounded link per LUWI session. Identity carries no presence, project or age
 refused rather than evicted; a conflict writes nothing; missing evidence is
 `NATIVE_BINDING_INCONSISTENT`. Policy is a pure `@luwi/runtime` function and Lua only validates a
 CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no inbox stream.
-`luwi_v1` is at **v13** (B1 moved it to 12, ADR 0037 to 13; see below).
+`luwi_v1` is at **v14** (the autopilot merge combined ADR 0037's `retryOf` and ADR 0035's
+autopilot/goal/task records, each of which independently reached 13; see below).
 
 ADR 0023 then approved the next item in the sequence — **native transcript ingestion** — and
 specified it as B0 / B1 / B2. **B0, B1 and B2 are all built.**
@@ -611,12 +627,14 @@ There is deliberately **no `.mcp.json`**. `apps/mcp-server/src/main.ts` calls
 unless the daemon is running and `LUWI_SESSION_ID` names a live, non-terminal session. Session IDs
 are runtime identity, not configuration — they go stale on every daemon restart.
 
-The server exposes 37 `luwi_*` tools, and "read-only" was never accurate for all of them: by the
-daemon method each one calls, **25 are reads and 12 write** coordination state — the messaging
+The server exposes 47 `luwi_*` tools, and "read-only" was never accurate for all of them: by the
+daemon method each one calls, **30 are reads and 17 write** coordination state — the messaging
 transitions, a bounded optimization analysis request, since ADR 0020 three of the four work-lease
-tools, and since ADR 0034 `luwi_join`, which registers a successor for a dropped session. Counting
-the messaging, optimization and lease families whole plus `luwi_join` gives 15, but three of their
-members only read: `luwi_await_response` and `luwi_get_message` are `GET
+tools, since ADR 0034 `luwi_join` (which registers a successor for a dropped session), and since
+ADR 0035 `luwi_create_goal` plus the four operator-proxy tools (`luwi_approve_plan`,
+`luwi_reject_plan`, `luwi_answer_goal`, `luwi_abandon_goal`), which the daemon refuses unless the
+project's policy names the bound session's agent as an operator proxy. Three of the messaging,
+optimization and lease members only read: `luwi_await_response` and `luwi_get_message` are `GET
 /api/v1/messages/…`, and `luwi_list_leases` is `GET /api/v1/leases`. Control-plane writes (config
 approval/apply, rollback, graph rebuild, Git mutation) are never exposed, per `AGENTS.md` §12.
 

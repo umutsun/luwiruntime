@@ -116,3 +116,11 @@ export type {
   UsageIngestResult,
 } from './intelligence-repository.js';
 export type { UsageListResult } from './intelligence-repository.js';
+export { createAutopilotRepository } from './autopilot-repository.js';
+export type {
+  ActiveTaskEntry,
+  AutopilotRepository,
+  CasWriteResult,
+  DispatchTaskResult,
+  QueueNoticeResult,
+} from './autopilot-repository.js';

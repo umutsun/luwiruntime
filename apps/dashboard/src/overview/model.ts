@@ -4,9 +4,11 @@ import {
   formatRelativeTime,
   monogramInitials,
 } from '../components/format.js';
+import type { AutopilotStatus } from '../api/autopilot-status.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
+import type { AutopilotMode } from '@luwi/protocol/browser';
 import type {
   ClientKind,
   CountValue,
@@ -889,6 +891,13 @@ export type PanelLink =
       action: 'claim' | 'release';
       projectId: string;
       sessionId: string;
+    }
+  /** The autopilot mode switch (ADR 0035): rendered only when the shell wires the mutation. */
+  | {
+      kind: 'autopilot';
+      label: string;
+      mode: AutopilotMode;
+      projectId: string;
     };
 
 /**
@@ -913,6 +922,49 @@ export function coordinatorFact(
     v,
     ...(holder === undefined ? {} : { detail: `${v} · ${holder.agentName}` }),
   };
+}
+
+const AUTOPILOT_MODES = ['off', 'supervised', 'autopilot'] as const;
+
+const autopilotModeLabel = (mode: AutopilotMode): string =>
+  mode === 'off' ? 'Turn off' : mode === 'supervised' ? 'Enable supervised' : 'Enable autopilot';
+
+/**
+ * A project's autopilot mode, as a fact the drill-down states (ADR 0035). The
+ * value is the mode word; the detail spells out whether a policy is set and
+ * whether a coordinator is online, because an enabled mode with no live
+ * coordinator dispatches nothing. Absent read (not a project focus, or the shell
+ * wired no loader) reads as a dash; a load in flight reads as loading.
+ */
+export function autopilotFact(
+  extras: PanelExtras,
+  projectId: string,
+): { v: string; detail?: string } {
+  const read = extras.autopilot?.projectId === projectId ? extras.autopilot.state : undefined;
+  if (read === undefined) return { v: '—' };
+  if (read.state === 'loading') return { v: 'loading…' };
+  if (read.state !== 'ready') return { v: 'unavailable' };
+  const { mode, configured, coordinatorOnline } = read.data;
+  return {
+    v: mode,
+    detail: `${mode} · ${configured ? 'policy set' : 'no policy'} · coordinator ${coordinatorOnline ? 'online' : 'offline'}`,
+  };
+}
+
+/**
+ * The autopilot mode links (ADR 0035): one per mode the project is not already
+ * in, so the current mode is never offered as a no-op. Only generated once the
+ * mode is read — the switch cannot know which transitions to offer otherwise.
+ */
+export function autopilotLinks(extras: PanelExtras, projectId: string): PanelLink[] {
+  const read = extras.autopilot?.projectId === projectId ? extras.autopilot.state : undefined;
+  if (read === undefined || read.state !== 'ready') return [];
+  return AUTOPILOT_MODES.filter((mode) => mode !== read.data.mode).map((mode) => ({
+    kind: 'autopilot',
+    label: autopilotModeLabel(mode),
+    mode,
+    projectId,
+  }));
 }
 
 /**
@@ -940,9 +992,14 @@ export type PanelBlock = { title: string; rows: Array<readonly [string, string]>
 /** The per-session usage read, in the states the drill-down must tell apart. */
 export type SessionUsageState = { state: 'loading' } | ResourceState<SessionUsage>;
 
+/** The per-project autopilot read, in the states the drill-down must tell apart. */
+export type AutopilotStatusState = { state: 'loading' } | ResourceState<AutopilotStatus>;
+
 export type PanelExtras = {
   /** Present only when the shell reads usage on focus; absent leaves the facts as dashes. */
   sessionUsage?: { sessionId: string; state: SessionUsageState };
+  /** Present only when the shell reads autopilot on a project focus (ADR 0035). */
+  autopilot?: { projectId: string; state: AutopilotStatusState };
 };
 
 export type PanelModel = {
@@ -1014,7 +1071,7 @@ function trendOf(
   return { label: `${label}${span}`, buckets, from, to };
 }
 
-function gitFacts(project: OverviewProject): Array<{ k: string; v: string }> {
+function gitFacts(project: OverviewProject): Array<{ k: string; v: string; detail?: string }> {
   if (project.git.state !== 'ready') {
     const word = project.git.state === 'not-observed' ? 'not observed' : 'unavailable';
     return [
@@ -1029,10 +1086,16 @@ function gitFacts(project: OverviewProject): Array<{ k: string; v: string }> {
     { k: 'HEAD', v: git.headSha === undefined ? '—' : abbreviateSha(git.headSha).slice(0, 7) },
     // The observation is a bounded recent window, never a repo total: label it so.
     { k: 'Commits', v: `${String(git.recentCommitCount)} recent` },
-    {
-      k: 'State',
-      v: git.clean ? 'clean' : `${String(git.untrackedCount)} untracked`,
-    },
+    // "N new" stays on one line in the 1/3-width fact card where "N untracked"
+    // wrapped to three lines (the card the owner flagged); the full phrase is the
+    // hover detail. Untracked files are files git does not yet track — new ones.
+    git.clean
+      ? { k: 'State', v: 'clean', detail: 'working tree clean' }
+      : {
+          k: 'State',
+          v: `${String(git.untrackedCount)} new`,
+          detail: `${String(git.untrackedCount)} untracked`,
+        },
     { k: 'Tags', v: String(git.tagCount) },
   ];
 }
@@ -1140,6 +1203,7 @@ export function panelFor(
         ? `HEAD ${abbreviateSha(project.git.data.headSha).slice(0, 7)}`
         : 'HEAD not observed';
     const coordinator = coordinatorFact(overview, project.id);
+    const autopilot = autopilotFact(extras, project.id);
     return {
       eyebrow: project.eyebrow,
       title: project.name,
@@ -1152,6 +1216,11 @@ export function panelFor(
           k: 'Coordinator',
           v: coordinator.v,
           ...(coordinator.detail === undefined ? {} : { detail: coordinator.detail }),
+        },
+        {
+          k: 'Autopilot',
+          v: autopilot.v,
+          ...(autopilot.detail === undefined ? {} : { detail: autopilot.detail }),
         },
         { k: 'Flow roles', v: projectFlowRolesFact(overview, project.id) },
       ],
@@ -1176,6 +1245,10 @@ export function panelFor(
           label: 'Detail',
           href: `#/pulse/${encodeURIComponent(project.id)}/detail`,
         },
+        // The autopilot mode switch (ADR 0035), where the owner drilled into the
+        // project. Only the modes it is not already in, and only once the mode
+        // has been read — the shell hides them if it wired no mutation.
+        ...autopilotLinks(extras, project.id),
         // Knowledge is a top-level lens now (ADR 0032), so a per-drill-down "Knowledge
         // graph" link just repeats the header bar — the separate #/knowledge/<id> page was
         // rejected. Dropped as redundant UI.

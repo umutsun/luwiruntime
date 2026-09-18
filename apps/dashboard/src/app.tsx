@@ -7,6 +7,8 @@ import type { ConfigMutations } from './api/config-mutations.js';
 import type { ConfigResources } from './api/config-scope.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
 import type { IntelligenceResources } from './api/intelligence-scope.js';
+import type { AutopilotMutations } from './api/autopilot-mutations.js';
+import type { AutopilotStatus } from './api/autopilot-status.js';
 import type { CapabilityMutations } from './api/capability-mutations.js';
 import type { CoordinatorMutations } from './api/coordinator-mutations.js';
 import type { KnowledgeGraph } from './api/knowledge-scope.js';
@@ -243,6 +245,7 @@ export function DashboardApp({
   onProjectMutated,
   coordinatorMutations,
   onCoordinatorMutated,
+  autopilotMutations,
   capabilityMutations,
   agentPairResources = {},
   agentPairLoading = false,
@@ -252,6 +255,7 @@ export function DashboardApp({
   loadResources,
   loadSessionUsage,
   loadKnowledge,
+  loadAutopilot,
   loadProjectDiscovery,
   onRetry,
   onActivityStateChange,
@@ -293,6 +297,8 @@ export function DashboardApp({
   coordinatorMutations?: CoordinatorMutations | undefined;
   /** Called after a coordinator claim/release, so the snapshot can be re-read. */
   onCoordinatorMutated?: (() => void) | undefined;
+  /** With `loadAutopilot`, wires the overview's autopilot mode switch (ADR 0035). */
+  autopilotMutations?: AutopilotMutations | undefined;
   /** Absent keeps the project drawer's Skills panel read-only (ADR 0036). */
   capabilityMutations?: CapabilityMutations | undefined;
   agentPairResources?: Partial<AgentPairResources>;
@@ -316,6 +322,11 @@ export function DashboardApp({
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<KnowledgeGraph>>;
+  /** Reads a focused project's autopilot mode for the overview's mode switch (ADR 0035). */
+  loadAutopilot?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<AutopilotStatus>>;
   /** Lists one directory level under a root for "Scan a folder"; absent hides that menu item. */
   loadProjectDiscovery?: (
     root: string,
@@ -917,8 +928,10 @@ export function DashboardApp({
           onInspect={openInspector}
           {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
           {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
+          {...(loadAutopilot === undefined ? {} : { loadAutopilot })}
           {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
           {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
+          {...(autopilotMutations === undefined ? {} : { autopilotMutations })}
         />
       </main>
 

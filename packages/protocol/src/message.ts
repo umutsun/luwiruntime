@@ -247,9 +247,43 @@ export const inboxResponseEnvelopeSchema = z.strictObject({
   }),
 });
 
+/**
+ * A wake-up for a coordinator session (ADR 0035): the mode changed, a plan was
+ * approved, the operator answered, a dispatched task completed, or the
+ * operator pressed "wake". It carries no work of its own and is acknowledged
+ * on claim; the coordinator re-reads the goal and task store on every wake, so
+ * a lost or duplicated notice costs latency and never correctness.
+ */
+export const inboxNoticeKindSchema = z.enum([
+  'mode_changed',
+  'goal_created',
+  'plan_approved',
+  'plan_rejected',
+  'goal_answered',
+  'goal_abandoned',
+  'task_completed',
+  'kick',
+]);
+
+export const inboxNoticeEnvelopeSchema = z.strictObject({
+  streamId: redisStreamIdSchema,
+  itemKind: z.literal('notice'),
+  targetSessionId: identifierSchema,
+  createdAt: timestampSchema,
+  payload: z.strictObject({
+    kind: inboxNoticeKindSchema,
+    projectId: identifierSchema,
+    goalId: identifierSchema.optional(),
+    taskId: identifierSchema.optional(),
+    correlationId: identifierSchema.optional(),
+    mode: z.enum(['off', 'supervised', 'autopilot']).optional(),
+  }),
+});
+
 export const inboxEnvelopeSchema = z.discriminatedUnion('itemKind', [
   inboxRequestEnvelopeSchema,
   inboxResponseEnvelopeSchema,
+  inboxNoticeEnvelopeSchema,
 ]);
 
 export const inboxClaimResponseSchema = z.strictObject({
@@ -288,5 +322,7 @@ export type MessageTransitionRequest = z.infer<typeof messageTransitionRequestSc
 export type MessageRespondRequest = z.infer<typeof messageRespondRequestSchema>;
 export type InboxClaimRequest = z.infer<typeof inboxClaimRequestSchema>;
 export type InboxEnvelope = z.infer<typeof inboxEnvelopeSchema>;
+export type InboxNoticeKind = z.infer<typeof inboxNoticeKindSchema>;
+export type InboxNoticeEnvelope = z.infer<typeof inboxNoticeEnvelopeSchema>;
 export type InboxClaimResponse = z.infer<typeof inboxClaimResponseSchema>;
 export type MessageErrorCode = z.infer<typeof messageErrorCodeSchema>;

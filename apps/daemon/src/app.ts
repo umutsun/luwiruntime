@@ -53,6 +53,29 @@ import {
   inboxClaimResponseSchema,
   knowledgeGraphResponseSchema,
   leaseAcquireRequestSchema,
+  autopilotCollectionSchema,
+  autopilotKickResponseSchema,
+  autopilotModeRequestSchema,
+  autopilotModeResponseSchema,
+  autopilotPolicyPutRequestSchema,
+  autopilotRecordSchema,
+  autopilotStatusResponseSchema,
+  goalAbandonRequestSchema,
+  goalAnswerRequestSchema,
+  goalCollectionSchema,
+  goalCreateRequestSchema,
+  goalListQuerySchema,
+  goalPlanDecisionRequestSchema,
+  goalPlanRequestSchema,
+  goalSchema,
+  goalTransitionRequestSchema,
+  taskCancelRequestSchema,
+  taskCollectionSchema,
+  taskDispatchRequestSchema,
+  taskDispatchResponseSchema,
+  taskListQuerySchema,
+  taskSchema,
+  taskVerdictRequestSchema,
   leaseAcquireResponseSchema,
   leaseCollectionSchema,
   leaseListQuerySchema,
@@ -149,6 +172,7 @@ import {
   readGraphifyKnowledge,
   type KnowledgeDocument,
 } from './graphify-knowledge.js';
+import type { AutopilotService } from './autopilot-service.js';
 import type { LeaseService } from './lease-service.js';
 import type { CoordinatorService } from './coordinator-service.js';
 import type { MessageService } from './message-service.js';
@@ -184,6 +208,7 @@ export type BuildDaemonOptions = {
     coordinator?: CoordinatorService;
     /** Absent leaves the registry without a DELETE route (F3). */
     projectUnregister?: ProjectUnregisterService;
+    autopilot?: AutopilotService;
     controlPlane?: ControlPlaneService;
     configControl?: ConfigControlService;
     intelligence?: IntelligenceService;
@@ -1218,6 +1243,177 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       app.get('/api/v1/projects/:projectId/coordinator', async (request) => {
         const { projectId } = parseRequestInput(projectParamsSchema, request.params);
         return coordinatorViewSchema.parse(await withCurrentRead(() => coordinator.get(projectId)));
+      });
+    }
+
+    if (services.autopilot !== undefined) {
+      const autopilot = services.autopilot;
+      const goalParamsSchema = z.strictObject({ goalId: z.string().min(1).max(128) });
+      const taskParamsSchema = z.strictObject({ taskId: z.string().min(1).max(128) });
+
+      /*
+       * Per-project autopilot (ADR 0035). The mode and the policy are the
+       * operator's: they are never reachable through MCP. Goals and tasks are
+       * the coordinator's to write and the operator's to gate; every write
+       * names its actor and the service refuses the wrong one.
+       */
+      app.get('/api/v1/autopilot', async () =>
+        autopilotCollectionSchema.parse({ records: await withCurrentRead(() => autopilot.list()) }),
+      );
+      app.get('/api/v1/projects/:projectId/autopilot', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        return withCurrentRead(async () => {
+          const [record, sessions] = await Promise.all([
+            autopilot.get(projectId),
+            autopilot.coordinatorSessions(projectId),
+          ]);
+          return autopilotStatusResponseSchema.parse({
+            record,
+            coordinatorOnline: sessions.length > 0,
+            coordinatorSessionIds: sessions.map((session) => session.id),
+          });
+        });
+      });
+      app.put('/api/v1/projects/:projectId/autopilot/policy', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(autopilotPolicyPutRequestSchema, request.body);
+        return autopilotRecordSchema.parse(
+          await withMutation(() => autopilot.putPolicy(projectId, body)),
+        );
+      });
+      app.post('/api/v1/projects/:projectId/autopilot/mode', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(autopilotModeRequestSchema, request.body);
+        return autopilotModeResponseSchema.parse(
+          await withMutation(() => autopilot.setMode(projectId, body.mode)),
+        );
+      });
+      app.post('/api/v1/projects/:projectId/autopilot/kick', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        return autopilotKickResponseSchema.parse(
+          await withMutation(() => autopilot.kick(projectId)),
+        );
+      });
+
+      app.get('/api/v1/projects/:projectId/goals', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const query = parseRequestInput(goalListQuerySchema, request.query);
+        const found = await withCurrentRead(() =>
+          autopilot.listGoals(projectId, {
+            ...(query.state === undefined ? {} : { state: query.state }),
+            limit: query.limit + 1,
+          }),
+        );
+        return goalCollectionSchema.parse({
+          goals: found.slice(0, query.limit),
+          truncated: found.length > query.limit,
+        });
+      });
+      app.post('/api/v1/projects/:projectId/goals', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(goalCreateRequestSchema, request.body);
+        const goal = await withMutation(() => autopilot.createGoal(projectId, body));
+        return reply
+          .code(201)
+          .header('Location', `/api/v1/goals/${goal.id}`)
+          .send(goalSchema.parse(goal));
+      });
+      app.get('/api/v1/goals/:goalId', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        return goalSchema.parse(await withCurrentRead(() => autopilot.getGoal(goalId)));
+      });
+      app.post('/api/v1/goals/:goalId/plan', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanRequestSchema, request.body);
+        return goalSchema.parse(await withMutation(() => autopilot.submitPlan(goalId, body)));
+      });
+      app.post('/api/v1/goals/:goalId/plan/approve', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanDecisionRequestSchema, request.body);
+        return goalSchema.parse(
+          await withMutation(() => autopilot.approvePlan(goalId, body.sessionId, body.note)),
+        );
+      });
+      app.post('/api/v1/goals/:goalId/plan/reject', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanDecisionRequestSchema, request.body);
+        return goalSchema.parse(
+          await withMutation(() => autopilot.rejectPlan(goalId, body.sessionId, body.note)),
+        );
+      });
+      app.post('/api/v1/goals/:goalId/answer', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalAnswerRequestSchema, request.body);
+        return goalSchema.parse(
+          await withMutation(() => autopilot.answerGoal(goalId, body.sessionId, body.text)),
+        );
+      });
+      app.post('/api/v1/goals/:goalId/abandon', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalAbandonRequestSchema, request.body);
+        return goalSchema.parse(
+          await withMutation(() => autopilot.abandonGoal(goalId, body.sessionId, body.reason)),
+        );
+      });
+      app.post('/api/v1/goals/:goalId/transition', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalTransitionRequestSchema, request.body);
+        return goalSchema.parse(await withMutation(() => autopilot.transitionGoal(goalId, body)));
+      });
+
+      app.get('/api/v1/projects/:projectId/tasks', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const query = parseRequestInput(taskListQuerySchema, request.query);
+        const found = await withCurrentRead(() =>
+          autopilot.listTasks(projectId, {
+            ...(query.goalId === undefined ? {} : { goalId: query.goalId }),
+            ...(query.state === undefined ? {} : { state: query.state }),
+            limit: query.limit + 1,
+          }),
+        );
+        return taskCollectionSchema.parse({
+          tasks: found.slice(0, query.limit),
+          truncated: found.length > query.limit,
+        });
+      });
+      app.get('/api/v1/tasks/:taskId', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        return taskSchema.parse(await withCurrentRead(() => autopilot.getTask(taskId)));
+      });
+      /*
+       * A refused dispatch is a 200 with `outcome: 'denied'`: the runtime
+       * answered the question it was asked (ADR 0020's rule for leases).
+       */
+      app.post('/api/v1/tasks/:taskId/dispatch', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskDispatchRequestSchema, request.body);
+        return taskDispatchResponseSchema.parse(
+          await withMutation(() => autopilot.dispatchTask(taskId, body.sessionId)),
+        );
+      });
+      app.post('/api/v1/tasks/:taskId/verdict', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskVerdictRequestSchema, request.body);
+        return taskSchema.parse(await withMutation(() => autopilot.recordVerdict(taskId, body)));
+      });
+      app.post('/api/v1/tasks/:taskId/review', async (request, reply) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskDispatchRequestSchema, request.body);
+        const review = await withMutation(() => autopilot.createReviewTask(taskId, body.sessionId));
+        return reply.code(201).send(taskSchema.parse(review));
+      });
+      app.post('/api/v1/tasks/:taskId/rework', async (request, reply) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskDispatchRequestSchema, request.body);
+        const rework = await withMutation(() => autopilot.createReworkTask(taskId, body.sessionId));
+        return reply.code(201).send(taskSchema.parse(rework));
+      });
+      app.post('/api/v1/tasks/:taskId/cancel', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskCancelRequestSchema, request.body);
+        return taskSchema.parse(
+          await withMutation(() => autopilot.cancelTask(taskId, body.sessionId, body.reason)),
+        );
       });
     }
 

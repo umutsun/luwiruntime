@@ -145,8 +145,45 @@ function client(): McpDaemonClient {
     waitForMessage: vi.fn(),
     claimInbox: vi.fn(async () => ({ items: [] })),
     transitionMessage: vi.fn(),
+    getAutopilot: vi.fn(async () => ({
+      record: null,
+      coordinatorOnline: false,
+      coordinatorSessionIds: [],
+    })),
+    listGoals: vi.fn(async () => ({ goals: [], truncated: false })),
+    getGoal: vi.fn(async (goalId: string) => ({ ...fixtureGoal, id: goalId })),
+    createGoal: vi.fn(async () => fixtureGoal),
+    approvePlan: vi.fn(async () => fixtureGoal),
+    rejectPlan: vi.fn(async () => fixtureGoal),
+    answerGoal: vi.fn(async () => fixtureGoal),
+    abandonGoal: vi.fn(async () => fixtureGoal),
+    listTasks: vi.fn(async () => ({ tasks: [], truncated: false })),
+    getTask: vi.fn(),
   };
 }
+
+const fixtureGoal = {
+  id: 'goal-1',
+  projectId: 'project-1',
+  title: 'Ship',
+  objective: 'Ship it.',
+  acceptanceCriteria: [],
+  createdBy: { kind: 'operator' as const },
+  budget: {
+    maxTasks: 12,
+    maxReworksPerTask: 1,
+    maxReplans: 2,
+    maxWallClockMs: 14_400_000,
+    minConfidence: 0.6,
+  },
+  state: 'proposed' as const,
+  planVersion: 0,
+  taskIds: [],
+  usage: { tasks: 0, reworks: 0, replans: 0, judgments: 0, invalidJudgments: 0 },
+  version: 1,
+  createdAt: '2026-09-17T10:00:00.000Z',
+  updatedAt: '2026-09-17T10:00:00.000Z',
+};
 
 describe('MCP tool handlers', () => {
   it('derives the message source from the bound session', async () => {
@@ -602,5 +639,36 @@ describe('join revival (ADR 0034)', () => {
     );
     await expect(tools.join({})).rejects.toBe(offline);
     expect(revive).not.toHaveBeenCalled();
+  });
+});
+
+describe('autopilot tools (ADR 0035)', () => {
+  it('creates a goal for the bound session and answers with it as the actor', async () => {
+    const daemon = client();
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await tools.createGoal({ title: 'Ship', objective: 'Ship it.' });
+    await tools.answerGoal({ goalId: 'goal-1', text: 'the other module' });
+
+    expect(daemon.createGoal).toHaveBeenCalledWith(
+      boundSession.projectId,
+      expect.objectContaining({
+        title: 'Ship',
+        sessionId: boundSession.id,
+        acceptanceCriteria: [],
+      }),
+    );
+    expect(daemon.answerGoal).toHaveBeenCalledWith('goal-1', boundSession.id, 'the other module');
+  });
+
+  it('refuses to touch a goal outside the bound project before any write', async () => {
+    const daemon = client();
+    daemon.getGoal = vi.fn(async () => ({ ...fixtureGoal, projectId: 'project-2' }));
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await expect(tools.approvePlan({ goalId: 'goal-1' })).rejects.toMatchObject({
+      code: 'BOUND_PROJECT_MISMATCH',
+    });
+    expect(daemon.approvePlan).not.toHaveBeenCalled();
   });
 });

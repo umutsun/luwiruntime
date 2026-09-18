@@ -10,6 +10,7 @@ import {
   createDaemonOwnershipLease,
   createFunctionRegistry,
   createManagedRedisConnection,
+  createAutopilotRepository,
   createLeaseRepository,
   createCoordinatorRepository,
   createMessageRepository,
@@ -73,6 +74,7 @@ import { createCanonicalStore } from './canonical-store.js';
 import { createConfigControlService } from './config-control-service.js';
 import { clearStaleConfigFileLocks } from './config-file-engine.js';
 import { createControlPlaneService } from './control-plane-service.js';
+import { createAutopilotService, type AutopilotService } from './autopilot-service.js';
 import { createLeaseService } from './lease-service.js';
 import { createCoordinatorService } from './coordinator-service.js';
 import { createMessageService } from './message-service.js';
@@ -597,6 +599,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     keys,
     functions: registry,
   });
+  const autopilotRepository = createAutopilotRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
   const controlPlaneRepository = createControlPlaneRepository({
     client: connections.command,
     keys,
@@ -633,11 +640,19 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       void releaseSessionLeases(session.id);
     },
   });
+  // Filled once the autopilot service exists; the message service's seams
+  // read it lazily so neither side depends on construction order.
+  const autopilotRef: { current?: AutopilotService } = {};
   const messageService = createMessageService({
     repository: messageRepository,
     sessions: sessionService,
     workspaceId: config.workspaceId,
     runtimeState: () => readiness.state,
+    autopilotPolicy: async (projectId) =>
+      (await autopilotRef.current?.get(projectId))?.policy ?? null,
+    onTerminal: async (message) => {
+      await autopilotRef.current?.completeFromMessage(message);
+    },
     idempotencyRetentionMs: setting(config, 'messageIdempotencyRetentionMs'),
     maxContentBytes: setting(config, 'messageMaxContentBytes'),
     maxSubjectBytes: setting(config, 'messageMaxSubjectBytes'),
@@ -796,6 +811,12 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     }
     await controlPlaneService.reconcileCanonicalState();
     await configControlService.reconcile();
+    // Every manifest-declared autopilot policy is projected; the mode is never
+    // read from a manifest and stays whatever Redis holds (default off).
+    const reconciled = await autopilot.reconcileManifests(await projectService.list());
+    if (reconciled.failed.length > 0) {
+      app?.log.warn({ projects: reconciled.failed }, 'Autopilot manifest policies refused');
+    }
   };
 
   const transitionDegraded = (): void => {
@@ -880,6 +901,19 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     sessions: sessionService,
     workspaceId: config.workspaceId,
   });
+  const autopilot = createAutopilotService({
+    repository: autopilotRepository,
+    sessions: sessionService,
+    projects: projectService,
+    messages: messageService,
+    bindings: controlPlaneService,
+    leases: leaseService,
+    commits: intelligenceRepository,
+    manifest: canonicalStore,
+    workspaceId: config.workspaceId,
+    report: (line) => app?.log.warn(line, 'Autopilot manifest policy refused'),
+  });
+  autopilotRef.current = autopilot;
   const leaseExpirySweeper = createLeaseExpirySweeper({
     now: Date.now,
     batchSize: setting(config, 'messageTimeoutBatchSize'),
@@ -1281,6 +1315,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         leases: leaseService,
         coordinator: coordinatorService,
         projectUnregister: projectUnregisterService,
+        autopilot,
         controlPlane: controlPlaneService,
         configControl: configControlService,
         intelligence: intelligenceService,
@@ -1447,6 +1482,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
               // already read: a timer of its own would be a second thing to
               // clear on shutdown for no gain.
               await nativeLinkRetentionSweeper.sweepOnce(sessions.map(({ id }) => id));
+              // The autopilot reconciliation rides here too (ADR 0035): it repairs
+              // a dispatch interrupted between its steps and closes a task whose
+              // message ended while the inline seam was not there to see it.
+              await autopilot.reconcileOnce();
               await intelligenceRepository.runRetention({
                 now: new Date(),
                 usageRetentionDays: setting(config, 'usageRetentionDays'),

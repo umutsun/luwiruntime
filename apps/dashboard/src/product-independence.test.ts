@@ -34,7 +34,7 @@ describe('dashboard product independence', () => {
     expect(dependencies).not.toMatch(/(?:goose|acp|redis|claude|codex|gemini|kimi)/i);
   });
 
-  it('issues mutation requests from the five approved mutation modules and nowhere else', () => {
+  it('issues mutation requests from the six approved mutation modules and nowhere else', () => {
     const files = productionSources(sourceRoot);
     const mutationModules = [
       join(sourceRoot, 'api', 'config-mutations.ts'),
@@ -42,6 +42,7 @@ describe('dashboard product independence', () => {
       join(sourceRoot, 'api', 'project-mutations.ts'),
       join(sourceRoot, 'api', 'coordinator-mutations.ts'),
       join(sourceRoot, 'api', 'capability-mutations.ts'),
+      join(sourceRoot, 'api', 'autopilot-mutations.ts'),
     ];
     for (const module of mutationModules) {
       expect(files, 'each allowlisted module must exist, or this test passes vacuously').toContain(
@@ -51,9 +52,10 @@ describe('dashboard product independence', () => {
 
     // Dashboard mutations are restricted to the approved configuration plan
     // chain, bounded message creation, project registration and settings
-    // (ADR 0033), coordinator role assignment (ADR 0035), and capability
-    // enable/assign/rescan through the daemon's existing endpoints (ADR 0036).
-    // A request reaching the daemon from anywhere else is still a defect.
+    // (ADR 0033), coordinator role assignment and autopilot mode (ADR 0035),
+    // and capability enable/assign/rescan through the daemon's existing
+    // endpoints (ADR 0036). A request reaching the daemon from anywhere else is
+    // still a defect.
     const elsewhere = files
       .filter((path) => !mutationModules.includes(path))
       .map((path) => readFileSync(path, 'utf8'))

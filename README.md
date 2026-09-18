@@ -66,6 +66,12 @@ realtime Pulse and the Phase 1–4 runtime foundation:
 - deterministic structural context findings and human-approved proposals that reuse Phase 3
   ConfigPlan, approval, snapshot, apply, drift, rollback, and reconciliation;
 - non-causal post-change evaluation and project-scoped read-only Phase 4 MCP tools;
+- per-project autopilot (ADR 0035): an operator-only mode, a filesystem-canonical policy
+  (coordinator, workers, reviewer, operator proxies, protected paths, budgets), goals and tasks with
+  compare-and-set Redis Functions (`luwi_v1` v13), two-step idempotent dispatch through the
+  existing message path, deterministic verification, reviewer tasks, bounded rework, escalation
+  with one open question, retrospectives, and `luwi session bridge orchestrator` — the LUWI-owned
+  loop around a LuwiBot WebSocket or headless native brain;
 - unit and opt-in Redis integration tests.
 - a loopback-served React/TypeScript dashboard whose front door (ADR 0032, 2026-09-11) is an
   overview with five switchable lenses — Board, Flow, Radial, Timeline, Knowledge — over one pure model, a
@@ -238,8 +244,12 @@ which is not the same as observing the filesystem — becomes an edge without a 
 session that never declares its native identity still contributes nothing.
 
 Automatic drift reconciliation, Git mutation, lifecycle/release scoring, release readiness,
-unified search, GitHub integration, prompt injection, task orchestration, a semantic knowledge
-graph, memory federation, cloud accounts, and authentication are not implemented. Optimization
+unified search, GitHub integration, prompt injection, a semantic knowledge graph, memory
+federation, cloud accounts, and authentication are not implemented. Task orchestration is
+implemented as per-project autopilot (ADR 0035, `docs/guides/autopilot.md`): an operator-held
+mode, a canonical policy, goals and tasks, a LUWI-owned orchestrator loop with a pluggable brain,
+and human-in-the-loop approval through the CLI or a LuwiBot session named as an operator proxy;
+it has no dashboard section yet. Optimization
 accept/reject/evaluate, graph rebuild, lease release and `config/reconcile` (interrupted-apply
 recovery, run at daemon start) exist on the HTTP API and CLI but are deliberately not dashboard
 mutations. Dashboard writes are the config plan chain, bounded question creation, project

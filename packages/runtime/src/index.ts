@@ -75,7 +75,7 @@ export type {
 } from './starting-session-reaper.js';
 export { evaluateMessageTransition } from './message-state.js';
 export type { MessageTransitionResult } from './message-state.js';
-export { selectMessageTarget, deliveryForSession } from './message-routing.js';
+export { rankAgentSessions, selectMessageTarget, deliveryForSession } from './message-routing.js';
 export type { MessageTargetSelection, SelectMessageTargetInput } from './message-routing.js';
 export {
   createMessageRequestFingerprint,
@@ -165,3 +165,28 @@ export type {
   GraphDirection,
   OperationalGraphQuery,
 } from './operational-graph.js';
+export {
+  coordinatorInstructionRefused,
+  effectiveWorkers,
+  evaluateModeChange,
+  isCoordinatorSession,
+  isOperatorProxySession,
+} from './autopilot-policy.js';
+export type { ModeChangeEvaluation } from './autopilot-policy.js';
+export { applyTaskTransition, isInFlightTaskState, isTerminalTaskState } from './task-state.js';
+export type { TaskTransition, TaskTransitionResult } from './task-state.js';
+export { evaluateDispatch, taskMatchPaths } from './task-dispatch-policy.js';
+export type { DispatchEvaluation, EvaluateDispatchInput } from './task-dispatch-policy.js';
+export { outcomeFromMessage, verifyTaskOutcome } from './task-verification.js';
+export type { VerificationInput } from './task-verification.js';
+export { applyGoalTransition, isTerminalGoalState } from './goal-state.js';
+export type { GoalTransition, GoalTransitionResult } from './goal-state.js';
+export {
+  assembleJudgmentContext,
+  frameJudgment,
+  parseJudgment,
+  validatePlannedTasks,
+} from './judgment.js';
+export type { JudgmentContextInput, ParsedJudgment } from './judgment.js';
+export { planCycle } from './orchestrator-cycle.js';
+export type { CycleAction, CycleState } from './orchestrator-cycle.js';

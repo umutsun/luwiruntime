@@ -17,6 +17,9 @@ import {
   messageStateSchema,
 } from './message.js';
 import { leaseConflictSchema, workLeaseSchema } from './lease.js';
+import { autopilotStatusResponseSchema, goalBudgetSchema } from './autopilot.js';
+import { goalCollectionSchema, goalSchema, goalStateSchema } from './goal.js';
+import { taskCollectionSchema, taskSchema, taskStateSchema } from './task.js';
 import { projectSchema } from './project.js';
 import { agentIdSchema } from './session.js';
 import { sessionViewSchema } from './session.js';
@@ -380,3 +383,48 @@ export type McpLeaseIdInput = z.infer<typeof mcpLeaseIdInputSchema>;
 export type McpReleaseLeaseInput = z.infer<typeof mcpReleaseLeaseInputSchema>;
 export type McpListLeasesInput = z.infer<typeof mcpListLeasesInputSchema>;
 export type McpAcquireLeaseOutput = z.infer<typeof mcpAcquireLeaseOutputSchema>;
+
+/**
+ * Autopilot, goals and tasks from a bound session's point of view (ADR 0035).
+ *
+ * Reads are project-bounded to the bound session's project. `luwi_create_goal`
+ * is open to any bound session — that is how the LuwiBot chat turns "add a
+ * goal" into a goal. Approving, answering and abandoning are the operator's,
+ * and a session may do them only when the project's policy names its agent as
+ * an operator proxy; the daemon enforces that, not the tool.
+ */
+export const mcpGetAutopilotInputSchema = z.strictObject({});
+export const mcpGetAutopilotOutputSchema = autopilotStatusResponseSchema;
+export const mcpListGoalsInputSchema = z.strictObject({
+  state: goalStateSchema.optional(),
+  limit: z.number().int().min(1).max(MCP_MAX_COLLECTION_ITEMS).default(MCP_MAX_COLLECTION_ITEMS),
+});
+export const mcpGoalIdInputSchema = z.strictObject({ goalId: identifierSchema });
+export const mcpCreateGoalInputSchema = z.strictObject({
+  title: z.string().trim().min(1).max(200),
+  objective: z.string().trim().min(1).max(32_768),
+  acceptanceCriteria: z.array(z.string().trim().min(1).max(500)).max(16).default([]),
+  budget: goalBudgetSchema.partial().optional(),
+});
+export const mcpGoalNoteInputSchema = z.strictObject({
+  goalId: identifierSchema,
+  note: z.string().max(500).optional(),
+});
+export const mcpAnswerGoalInputSchema = z.strictObject({
+  goalId: identifierSchema,
+  text: z.string().trim().min(1).max(4000),
+});
+export const mcpAbandonGoalInputSchema = z.strictObject({
+  goalId: identifierSchema,
+  reason: z.string().max(500).optional(),
+});
+export const mcpGoalOutputSchema = goalSchema;
+export const mcpGoalCollectionOutputSchema = goalCollectionSchema;
+export const mcpListTasksInputSchema = z.strictObject({
+  goalId: identifierSchema.optional(),
+  state: taskStateSchema.optional(),
+  limit: z.number().int().min(1).max(MCP_MAX_COLLECTION_ITEMS).default(MCP_MAX_COLLECTION_ITEMS),
+});
+export const mcpTaskIdInputSchema = z.strictObject({ taskId: identifierSchema });
+export const mcpTaskOutputSchema = taskSchema;
+export const mcpTaskCollectionOutputSchema = taskCollectionSchema;

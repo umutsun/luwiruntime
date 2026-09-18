@@ -1,16 +1,16 @@
 export type RedisFunctionRegistry = {
   libraryName: string;
   /**
-   * 13 since the re-dispatch link: the stored message record gained an
-   * optional `retryOf`, and the projection returns it. Before that 12 since
-   * B1. The version moves only when a **record shape** changes, which
-   * is why B0 stayed at 11 despite adding `native_declare`: `isCompatible`
-   * hashes the source and compares the function-name list, so a new function
-   * already forces a reload on its own. B1 adds `cacheCreationInputTokens` and
-   * `cacheReadInputTokens` to the stored usage record, and that is a shape
-   * change, so the version moves with it.
+   * 14 since the autopilot merge combined two independent 13s: ADR 0037's
+   * `retryOf` on the stored message record was one, and ADR 0035's three record
+   * kinds (the autopilot record, the goal and the task, with their indexes) were
+   * the other. Their union is a new stored shape, so the merged library is 14.
+   * The version moves only when a **record shape** changes — which is why B0
+   * stayed at 11 despite adding `native_declare`: `isCompatible` hashes the
+   * source and compares the function-name list, so a new function already forces
+   * a reload on its own. B1 (v12) added two token fields to the usage record.
    */
-  version: 13;
+  version: 14;
   functions: {
     projectRegister: string;
     projectUpdate: string;
@@ -45,6 +45,11 @@ export type RedisFunctionRegistry = {
     graphRebuildTransition: string;
     intelligenceBatchTransition: string;
     graphProjectionFailure: string;
+    autopilotPut: string;
+    goalWrite: string;
+    taskWrite: string;
+    taskDispatch: string;
+    inboxNotice: string;
     version: string;
   };
 };
@@ -83,6 +88,11 @@ const productionFunctions = {
   graphRebuildTransition: 'luwi_graph_rebuild_transition_v1',
   intelligenceBatchTransition: 'luwi_intelligence_batch_transition_v1',
   graphProjectionFailure: 'luwi_graph_projection_failure_v1',
+  autopilotPut: 'luwi_autopilot_put_v1',
+  goalWrite: 'luwi_goal_write_v1',
+  taskWrite: 'luwi_task_write_v1',
+  taskDispatch: 'luwi_task_dispatch_v1',
+  inboxNotice: 'luwi_inbox_notice_v1',
   version: 'luwi_function_version_v1',
 } as const;
 
@@ -90,7 +100,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
   if (testSuffix === undefined) {
     return {
       libraryName: 'luwi_v1',
-      version: 13,
+      version: 14,
       functions: { ...productionFunctions },
     };
   }
@@ -101,7 +111,7 @@ export function createFunctionRegistry(testSuffix?: string): RedisFunctionRegist
 
   return {
     libraryName: `luwi_test_${testSuffix}_v1`,
-    version: 13,
+    version: 14,
     functions: Object.fromEntries(
       Object.entries(productionFunctions).map(([key, value]) => [key, `${value}_${testSuffix}`]),
     ) as RedisFunctionRegistry['functions'],
