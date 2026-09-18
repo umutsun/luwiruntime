@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="LUWI">
+  <rect width="48" height="48" rx="11" fill="#111318" />
+  <g
+    transform="translate(24 24) scale(0.74) translate(-24 -24)"
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="4.6"
+    stroke-linecap="round"
+  >
+    <circle cx="24" cy="24" r="19.5" />
+    <path d="M13.5 31v-8.5a10.5 10.5 0 0 1 21 0V31" />
+    <path d="M21.4 21.5v7.6a3.4 3.4 0 1 1-6.8.4" />
+    <path d="M26.6 21.5v7.6a3.4 3.4 0 1 0 6.8.4" />
+  </g>
+</svg>

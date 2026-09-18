@@ -539,9 +539,12 @@ function DashboardRoute() {
   );
   if (snapshot === undefined) {
     return (
-      <main className="route-loading" aria-busy="true">
-        <span className="identity__mark">
-          <BrandMark size={24} />
+      <main className="route-loading route-loading--splash" aria-busy="true">
+        <span className="splash__logo" aria-hidden="true">
+          <span className="splash__orbit" />
+          <span className="splash__mark">
+            <BrandMark size={54} />
+          </span>
         </span>
         <p className="eyebrow">LUWI Runtime</p>
         <h1>Loading validated Pulse snapshot</h1>

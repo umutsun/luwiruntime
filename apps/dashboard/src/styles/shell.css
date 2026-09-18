@@ -527,6 +527,57 @@ button:focus-visible {
 .route-error p:last-child {
   color: var(--text-muted);
 }
+/*
+ * The splash: a large brand mark, a soft breath, and a thin ring orbiting it —
+ * a calm loading moment rather than a bare line of text. Width, height and
+ * radius are raw px (they are not on the --space scale); spacing and every
+ * colour come from tokens. The reduced-motion gate below stills both animations.
+ */
+.route-loading--splash {
+  gap: var(--space-2);
+}
+.splash__logo {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 132px;
+  height: 132px;
+  margin: 0 auto var(--space-1);
+}
+.splash__orbit {
+  position: absolute;
+  inset: 0;
+  border: 2px solid var(--border);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: splash-spin 1.1s linear infinite;
+}
+.splash__mark {
+  display: grid;
+  place-items: center;
+  width: 92px;
+  height: 92px;
+  border-radius: 23px;
+  background: var(--brand-mark-from);
+  color: var(--brand-mark-text);
+  animation: splash-breathe 2.6s var(--ease-out) infinite;
+}
+@keyframes splash-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes splash-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(0.965);
+  }
+}
 @keyframes ov-pulse {
   0%,
   100% {
