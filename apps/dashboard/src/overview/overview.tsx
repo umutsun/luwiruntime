@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import type { AutopilotStatus } from '../api/autopilot-status.js';
+import type { AutopilotFlow } from '../api/autopilot-flow.js';
 import type { AutopilotMutations } from '../api/autopilot-mutations.js';
 import type { CoordinatorMutations } from '../api/coordinator-mutations.js';
 import type { KnowledgeGraph } from '../api/knowledge-scope.js';
@@ -20,6 +21,7 @@ import {
   focusProject,
   panelFor,
   resolveFocus,
+  type AutopilotFlowState,
   type AutopilotStatusState,
   type Focus,
   type SessionUsageState,
@@ -57,6 +59,7 @@ export function Overview({
   loadSessionUsage,
   loadKnowledge,
   loadAutopilot,
+  loadAutopilotFlow,
   coordinatorMutations,
   onCoordinatorMutated,
   autopilotMutations,
@@ -92,6 +95,11 @@ export function Overview({
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<AutopilotStatus>>;
+  /** Reads a focused project's autopilot goal/task flow; absent hides the flow section. */
+  loadAutopilotFlow?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<AutopilotFlow>>;
   /** Both present wires the drill-down's coordinator switch (ADR 0035); either absent hides it. */
   coordinatorMutations?: CoordinatorMutations;
   onCoordinatorMutated?: () => void;
@@ -152,13 +160,37 @@ export function Overview({
     });
     return () => controller.abort();
   }, [loadAutopilot, focusedProjectId, snapshot.snapshotAt]);
+  // The autopilot goal/task flow, read on the same project focus and refresh as
+  // the mode — goals plan, dispatch and get judged between snapshots.
+  const [autopilotFlow, setAutopilotFlow] = useState<{
+    projectId: string;
+    state: AutopilotFlowState;
+  }>();
+  useEffect(() => {
+    if (loadAutopilotFlow === undefined || focusedProjectId === undefined) {
+      setAutopilotFlow(undefined);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setAutopilotFlow((current) =>
+      current?.projectId === focusedProjectId
+        ? current
+        : { projectId: focusedProjectId, state: { state: 'loading' } },
+    );
+    void loadAutopilotFlow(focusedProjectId, { signal: controller.signal }).then((state) => {
+      if (controller.signal.aborted) return;
+      setAutopilotFlow({ projectId: focusedProjectId, state });
+    });
+    return () => controller.abort();
+  }, [loadAutopilotFlow, focusedProjectId, snapshot.snapshotAt]);
   const panel = useMemo(
     () =>
       panelFor(overview, resolved, realtime, {
         ...(sessionUsage === undefined ? {} : { sessionUsage }),
         ...(autopilot === undefined ? {} : { autopilot }),
+        ...(autopilotFlow === undefined ? {} : { autopilotFlow }),
       }),
-    [overview, resolved, realtime, sessionUsage, autopilot],
+    [overview, resolved, realtime, sessionUsage, autopilot, autopilotFlow],
   );
   // The coordinator switch (ADR 0035), from the session panel the owner drills
   // into. One request at a time; the outcome is stated in words and cleared

@@ -5,6 +5,8 @@ import {
   monogramInitials,
 } from '../components/format.js';
 import type { AutopilotStatus } from '../api/autopilot-status.js';
+import type { AutopilotFlow, FlowGoal, FlowTask } from '../api/autopilot-flow.js';
+import type { StatusTone } from '../components/status-chip.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
@@ -994,13 +996,85 @@ export type SessionUsageState = { state: 'loading' } | ResourceState<SessionUsag
 
 /** The per-project autopilot read, in the states the drill-down must tell apart. */
 export type AutopilotStatusState = { state: 'loading' } | ResourceState<AutopilotStatus>;
+export type AutopilotFlowState = { state: 'loading' } | ResourceState<AutopilotFlow>;
 
 export type PanelExtras = {
   /** Present only when the shell reads usage on focus; absent leaves the facts as dashes. */
   sessionUsage?: { sessionId: string; state: SessionUsageState };
   /** Present only when the shell reads autopilot on a project focus (ADR 0035). */
   autopilot?: { projectId: string; state: AutopilotStatusState };
+  /** Present only when the shell reads the autopilot goal/task flow on a project focus. */
+  autopilotFlow?: { projectId: string; state: AutopilotFlowState };
 };
+
+/** A goal/task state or verdict, ready for a StatusChip: label plus tone. */
+export type FlowChip = { label: string; tone: StatusTone };
+export type FlowTaskView = { id: string; label: string; state: FlowChip; verdict?: FlowChip };
+export type FlowGoalView = { id: string; title: string; state: FlowChip; tasks: FlowTaskView[] };
+export type FlowPanel = {
+  status: 'loading' | 'unavailable' | 'empty' | 'ready';
+  goals: FlowGoalView[];
+  more: number;
+};
+
+const GOAL_TONES: Record<FlowGoal['state'], StatusTone> = {
+  running: 'info',
+  achieved: 'success',
+  plan_review: 'warning',
+  blocked: 'warning',
+  planning: 'warning',
+  failed: 'danger',
+  abandoned: 'danger',
+  proposed: 'unknown',
+};
+const TASK_TONES: Record<FlowTask['state'], StatusTone> = {
+  done: 'success',
+  dispatched: 'info',
+  dispatching: 'info',
+  awaiting_approval: 'warning',
+  failed: 'danger',
+  rejected: 'danger',
+  cancelled: 'danger',
+  ready: 'unknown',
+  approved: 'unknown',
+};
+const VERDICT_TONES: Record<NonNullable<FlowTask['verdict']>, StatusTone> = {
+  accept: 'success',
+  rework: 'warning',
+  escalate: 'danger',
+};
+
+/**
+ * The autopilot flow, mapped to a render-ready panel (ADR 0035): each active
+ * goal with its tasks in plan order, every state pre-toned so the drill-down
+ * only paints chips. Absent (undefined) when the shell wired no flow read;
+ * `empty` when the read succeeded but nothing is in flight.
+ */
+export function autopilotFlowPanel(extras: PanelExtras, projectId: string): FlowPanel | undefined {
+  const read =
+    extras.autopilotFlow?.projectId === projectId ? extras.autopilotFlow.state : undefined;
+  if (read === undefined) return undefined;
+  if (read.state === 'loading') return { status: 'loading', goals: [], more: 0 };
+  if (read.state !== 'ready') return { status: 'unavailable', goals: [], more: 0 };
+  const goals: FlowGoalView[] = read.data.goals.map((goal) => ({
+    id: goal.id,
+    title: goal.title,
+    state: { label: goal.state.replace(/_/g, ' '), tone: GOAL_TONES[goal.state] },
+    tasks: goal.tasks.map((task) => ({
+      id: task.id,
+      label: `${task.kind} · ${task.agentId ?? 'unassigned'}`,
+      state: { label: task.state.replace(/_/g, ' '), tone: TASK_TONES[task.state] },
+      ...(task.verdict === undefined
+        ? {}
+        : { verdict: { label: task.verdict, tone: VERDICT_TONES[task.verdict] } }),
+    })),
+  }));
+  return {
+    status: goals.length === 0 ? 'empty' : 'ready',
+    goals,
+    more: read.data.more,
+  };
+}
 
 export type PanelModel = {
   eyebrow: string;
@@ -1017,6 +1091,8 @@ export type PanelModel = {
   facts: Array<{ k: string; v: string; detail?: string }>;
   trend: { label: string; buckets: number[]; from: string; to: string };
   list: { label: string; rows: OverviewSession[]; empty: string; selectedId?: string };
+  /** The autopilot goal/task flow, on a project focus only; absent elsewhere. */
+  flow?: FlowPanel;
   links: PanelLink[];
 };
 
@@ -1204,6 +1280,7 @@ export function panelFor(
         : 'HEAD not observed';
     const coordinator = coordinatorFact(overview, project.id);
     const autopilot = autopilotFact(extras, project.id);
+    const flow = autopilotFlowPanel(extras, project.id);
     return {
       eyebrow: project.eyebrow,
       title: project.name,
@@ -1237,6 +1314,7 @@ export function panelFor(
             ? 'Session data unavailable'
             : 'No sessions observed',
       },
+      ...(flow === undefined ? {} : { flow }),
       links: [
         { kind: 'inspect-project', label: 'Inspect', id: project.id, name: project.name },
         // The detail drawer opens over the overview; editing happens inside it (ADR 0033).

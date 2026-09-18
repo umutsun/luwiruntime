@@ -9,6 +9,7 @@ import { createConfigMutations, type ConfigMutations } from './api/config-mutati
 import { createCapabilityMutations, type CapabilityMutations } from './api/capability-mutations.js';
 import { createAutopilotMutations, type AutopilotMutations } from './api/autopilot-mutations.js';
 import { loadAutopilotStatus } from './api/autopilot-status.js';
+import { loadAutopilotFlow } from './api/autopilot-flow.js';
 import {
   createCoordinatorMutations,
   type CoordinatorMutations,
@@ -146,6 +147,9 @@ const fetchKnowledge = (projectId: string, options?: { signal?: AbortSignal }) =
 /** Same reason: the overview's autopilot effect keys on this identity. */
 const fetchAutopilotStatus = (projectId: string, options?: { signal?: AbortSignal }) =>
   loadAutopilotStatus(client, projectId, options);
+/** Same reason: the overview's autopilot-flow effect keys on this identity. */
+const fetchAutopilotFlow = (projectId: string, options?: { signal?: AbortSignal }) =>
+  loadAutopilotFlow(client, projectId, options);
 
 function DashboardRoute() {
   const [input, setInput] = useState<PulseInput>();
@@ -587,6 +591,7 @@ function DashboardRoute() {
       loadSessionUsage={fetchSessionUsage}
       loadKnowledge={fetchKnowledge}
       loadAutopilot={fetchAutopilotStatus}
+      loadAutopilotFlow={fetchAutopilotFlow}
       loadProjectDiscovery={loadProjectDiscovery}
       onRetry={retry}
       onActivityStateChange={(next) => {
