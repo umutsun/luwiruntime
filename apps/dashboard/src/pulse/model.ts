@@ -92,6 +92,8 @@ export type PulseGitFacts = {
   tagCount: number;
   /** Commits in the observer's bounded recent window (git log -n), not a total. */
   recentCommitCount: number;
+  /** Reachable commits from HEAD (a true total); absent for an unborn HEAD. */
+  commitCount?: number;
   observedAt: string;
 };
 

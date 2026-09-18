@@ -413,6 +413,7 @@ export function createGitObserver(options: GitObserverOptions = {}): GitObserver
           remoteText,
           defaultBranchText,
           logText,
+          commitCountText,
         ] = await Promise.all([
           optional(repositoryRoot, ['branch', '--show-current']),
           optional(repositoryRoot, ['rev-parse', '--verify', 'HEAD']),
@@ -428,6 +429,10 @@ export function createGitObserver(options: GitObserverOptions = {}): GitObserver
             'refs/remotes/origin/HEAD',
           ]),
           optional(repositoryRoot, ['log', '-n', String(limit), '--date=iso-strict', LOG_FORMAT]),
+          // The true reachable-commit total (not the bounded recent window), so
+          // the registry can hint at repository size. Optional: an unborn HEAD
+          // has no count, and the command is already in the read-only allowlist.
+          optional(repositoryRoot, ['rev-list', '--count', 'HEAD']),
         ]);
 
         const recentCommits: GitCommit[] = [];
@@ -460,12 +465,16 @@ export function createGitObserver(options: GitObserverOptions = {}): GitObserver
         }
 
         const status = parseStatus(statusText ?? '');
+        const parsedCommitCount =
+          commitCountText === undefined ? Number.NaN : Number(commitCountText.trim());
+        const commitCount = Number.isInteger(parsedCommitCount) ? parsedCommitCount : undefined;
         const observedAt = now().toISOString();
         const state = {
           projectId: input.projectId,
           repositoryRoot,
           ...(branch === undefined ? {} : { branch }),
           ...(headSha === undefined ? {} : { headSha }),
+          ...(commitCount === undefined ? {} : { commitCount }),
           ...(defaultBranchText === undefined
             ? {}
             : { defaultBranch: defaultBranchText.replace(/^origin\//, '') }),

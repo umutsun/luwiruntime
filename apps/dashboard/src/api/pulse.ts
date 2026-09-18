@@ -123,6 +123,11 @@ async function loadGitResource(
               // The observer captures only a bounded recent window (git log -n),
               // never a true total, so this is "recent observed", not the count.
               recentCommitCount: result.data.recentCommits.length,
+              // `commitCount` is the true reachable-commit total (git rev-list
+              // --count), which is what the registry shows as a size hint.
+              ...(result.data.commitCount === undefined
+                ? {}
+                : { commitCount: result.data.commitCount }),
               observedAt: result.data.observedAt,
             },
           },

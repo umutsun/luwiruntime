@@ -731,6 +731,13 @@ export function ProjectsView({
                    * already pays for.
                    */}
                   <th scope="col">HEAD</th>
+                  {/*
+                   * The true reachable-commit total (git rev-list --count), a
+                   * rough hint at repository size — not the observer's bounded
+                   * recent window, which caps at the same number for every large
+                   * repo.
+                   */}
+                  <th scope="col">Commits</th>
                   <th scope="col">Active sessions</th>
                 </tr>
               </thead>
@@ -783,6 +790,17 @@ export function ProjectsView({
                           <span title={facts.git.data.headSha}>
                             {abbreviateSha(facts.git.data.headSha)}
                           </span>
+                        )}
+                      </td>
+                      <td>
+                        {facts === undefined || facts.git.state === 'unavailable' ? (
+                          <Unavailable />
+                        ) : facts.git.state === 'not-observed' ? (
+                          <span className="table-dim">not scanned</span>
+                        ) : facts.git.data.commitCount === undefined ? (
+                          <span className="table-dim">—</span>
+                        ) : (
+                          facts.git.data.commitCount.toLocaleString()
                         )}
                       </td>
                       <td>

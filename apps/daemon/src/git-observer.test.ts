@@ -63,6 +63,8 @@ describe('local Git observer', () => {
       tags: ['v0.1.0'],
     });
     expect(observation.headSha).toMatch(/^[a-f0-9]{40,64}$/);
+    // The true reachable-commit total, not the bounded recent window.
+    expect(observation.commitCount).toBe(1);
     expect(observation.worktrees).toHaveLength(1);
     expect(observation.recentCommits[0]).toMatchObject({
       subject: 'Initial sandbox commit',
