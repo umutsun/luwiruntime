@@ -274,3 +274,58 @@ transcript-based `scope_exceeded` check. Two measured corrections to the design:
 re-encoding of empty arrays made the Functions return the stored JSON string rather than a decoded
 table, and the reconciliation rides the retention tick rather than a timer of its own, as native
 link retention already did.
+
+## Live proof (2026-09-18)
+
+The mode was exercised end to end on a real project — a `git clone` copy of Albanoosh, registered
+into an isolated runtime (its own `LUWI_HOME` and Redis db, the live db0 untouched) because the
+branch predates the machine's `~/.luwi` schema (see "version skew" below). The brain was
+`luwibot-ws` — the owner's LuwiBot/Hermes assistant over its WebSocket, i.e. **this is per-project
+autopilot orchestrated by Hermes as the brain**, the loop still LUWI's.
+
+What ran, in order, and held: `autopilot policy` (coordinator `luwibot`, worker, reviewer `codex`,
+operator proxy `luwibot-chat`, protect `AGENTS.md`); `mode supervised`; a goal; the orchestrator
+planned it through the brain (**valid JSON judgment**) and parked it `plan_review`; `approve-plan`
+dispatched the work task; a real headless `claude` worker **created a file and made a real git
+commit and completed the message through `luwi_respond_to_message` with `git_commit` and
+`file_reference` evidence**; the orchestrator then created an independent review task for `codex`. A
+first, deliberately mis-permissioned worker run also proved the honest-failure path (the worker
+reported plain text, the bridge closed the message `failed`), and a subsequent brain `replan` that
+came back schema-invalid **twice** drove the goal to `blocked` with `escalation.reason:
+"brain_invalid"` and a concrete question — the validate-once-retry-then-escalate gate working as
+specified. Restarting the orchestrator mid-goal recovered the in-flight goal from the store
+(stateless, as designed). Under `mode autopilot` with `maxInFlight: 1`, a second dispatch while one
+task was in flight returned **`outcome: "denied"`** — the budget refusal, answered not thrown.
+
+Deviations measured, and their disposition:
+
+- **Review tasks were undispatchable (fixed).** `evaluateDispatch` denied any task whose agent was
+  not in the effective workers, with no exemption for `kind: 'review'`, so a review task — whose
+  agent is the reviewer, deliberately not a worker — always denied `worker_not_allowed`. The
+  independent-reviewer verification path could therefore never run. Fixed: for a review task the
+  eligibility now checks `policy.reviewerAgentId`; `task-dispatch-policy.test.ts` covers both the
+  accept and the wrong-agent deny. No Lua change — the Function re-checks only the atomic subset,
+  never agent eligibility.
+- **`git_commit` verification is coupled to Git-observation freshness (recorded).** The deterministic
+  check requires the commit to exist in the Git observation, which is produced at graph rebuild. A
+  freshly registered project whose graph has not rebuilt reports zero observed commits, so a task
+  that genuinely committed never verifies and the goal loops re-creating work. On the live runtime,
+  where rebuilds run on a cadence, the window is bounded; for a just-registered project it is not.
+  Options for a later change: accept the worker's own attested commit evidence, or trigger a scoped
+  observation at verification time.
+- **Worker permission model, a docs correction (see the guide).** The guide's worker `--allowedTools`
+  example used `Write`, which Claude does not honor — only `Edit(path)` rules cover the file-editing
+  tools — and a worker also needs `mcp__luwi-runtime` allowed or it cannot call
+  `luwi_respond_to_message` to complete its task. `docs/guides/autopilot.md` is corrected.
+- **The `luwibot-ws` brain plans reliably but drifted on `replan` (recorded).** Phase 0 held: a
+  71 KiB (> 64 KiB) prompt returned valid JSON three times, no truncation, ~2 s. The initial `plan`
+  judgment was valid; the `replan` judgment returned `evidenceTypes` for `evidenceRequirements` and a
+  task with no `agentId`, twice — caught by the gate. LuwiBot's `max_tokens` (700) is also a
+  truncation risk for a large plan or review; raise it there if judgments grow.
+- **Version skew (environment).** The branch is `0.1.0`; the machine has advanced to `0.2.0`
+  (`flowRoles`, project update, `retryOf`). The `0.1.0` daemon's strict canonical reconciliation
+  rejects a `~/.luwi` that carries `flowRoles`, and Redis Functions are server-global, so the live
+  `0.2.0` fleet cannot share the instance with it — the proof therefore ran isolated. A `codex`
+  reviewer was not run live: the recorded `codex.exe` path is version-stamped and had rotated, and
+  its MCP config points at the `0.2.0` launcher. None of these are autopilot defects; they are the
+  cost of proving an old branch against a moved-on machine.

@@ -37,9 +37,15 @@ manifest: it is runtime state, default `off`, and `luwi reset` leaves every proj
 Workers are the ADR 0031 bridges, with their own permission model after `--`:
 
 ```text
-luwi session bridge native claude --project <id> -- --allowedTools mcp__luwi-runtime,Edit,Write,Bash
+luwi session bridge native claude --project <id> -- --allowedTools mcp__luwi-runtime,Edit,Bash
 luwi session bridge native codex  --project <id> -- --sandbox workspace-write
 ```
+
+Two things a Claude worker must have or it will do the edit and then fail to finish it:
+`mcp__luwi-runtime`, so it can call `luwi_respond_to_message` to complete the task (without it the
+bridge only ever sees an unfinished message and closes it `failed`); and `Edit` rather than `Write`
+— Claude's file-permission rules key on `Edit(path)`, which covers `Write`, `Edit` and `MultiEdit`,
+so a bare `Write` allow grants nothing. A worker that only edits but never commits needs `Bash` too.
 
 The orchestrator is one process per project. Its brain is chosen on the command line:
 

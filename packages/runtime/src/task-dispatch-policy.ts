@@ -67,11 +67,21 @@ export function evaluateDispatch(input: EvaluateDispatchInput): DispatchEvaluati
   if (task.agentId === undefined) {
     return { decision: 'deny', reason: 'worker_not_allowed', detail: 'The task names no worker.' };
   }
-  if (task.agentId === policy.coordinatorAgentId || !input.workers.includes(task.agentId)) {
+  // A review task is dispatched to the policy's reviewer, which is deliberately
+  // not a worker (ADR 0035: an independent reviewer, never the author). Applying
+  // the worker check to it would make every review task undispatchable.
+  const agentEligible =
+    task.kind === 'review'
+      ? task.agentId === policy.reviewerAgentId
+      : input.workers.includes(task.agentId);
+  if (task.agentId === policy.coordinatorAgentId || !agentEligible) {
     return {
       decision: 'deny',
       reason: 'worker_not_allowed',
-      detail: `Agent ${task.agentId} is not an autopilot worker of this project.`,
+      detail:
+        task.kind === 'review'
+          ? `Agent ${task.agentId} is not the autopilot reviewer of this project.`
+          : `Agent ${task.agentId} is not an autopilot worker of this project.`,
     };
   }
   for (const dependencyId of task.dependsOn) {

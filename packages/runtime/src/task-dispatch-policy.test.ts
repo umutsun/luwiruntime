@@ -124,6 +124,28 @@ describe('evaluateDispatch', () => {
     expect(evaluateDispatch(evaluation)).toMatchObject({ decision: 'deny', reason });
   });
 
+  it('dispatches a review task to the reviewer even though the reviewer is not a worker', () => {
+    const reviewerPolicy: AutopilotPolicy = { ...policy, reviewerAgentId: 'gemini-cli' };
+    expect(
+      evaluateDispatch(
+        input({
+          policy: reviewerPolicy,
+          task: task({ kind: 'review', agentId: 'gemini-cli' }),
+          sessions: [session('reviewer-1', 'gemini-cli')],
+        }),
+      ),
+    ).toMatchObject({ decision: 'dispatch', targetSession: { id: 'reviewer-1' } });
+  });
+
+  it('denies a review task whose agent is not the configured reviewer', () => {
+    const reviewerPolicy: AutopilotPolicy = { ...policy, reviewerAgentId: 'gemini-cli' };
+    expect(
+      evaluateDispatch(
+        input({ policy: reviewerPolicy, task: task({ kind: 'review', agentId: 'claude-code' }) }),
+      ),
+    ).toMatchObject({ decision: 'deny', reason: 'worker_not_allowed' });
+  });
+
   it('ignores a dispatch outside the hour window and a lease held by the worker itself', () => {
     expect(
       evaluateDispatch(
