@@ -503,7 +503,9 @@ describe('Projects route', () => {
     const registry = screen.getByRole('dialog', { name: 'Projects' });
     expect(drillDown()).toBeTruthy();
     expect(within(registry).getAllByText('Scoped Project').length).toBeGreaterThan(0);
-    expect(within(registry).getByText(/load its scoped evidence/i)).toBeTruthy();
+    // The registry no longer renders the "select a project" prompt: it opens
+    // each project in its own drawer, so nothing sits below the table.
+    expect(within(registry).queryByText(/load its scoped evidence/i)).toBeNull();
   });
 
   it('reports a loading state for the selected project scope', () => {
