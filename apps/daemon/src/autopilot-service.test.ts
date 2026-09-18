@@ -148,7 +148,12 @@ const policy: AutopilotPolicyInput = {
 };
 
 function harness(
-  options: { sessions?: SessionView[]; mode?: 'off' | 'supervised' | 'autopilot' } = {},
+  options: {
+    sessions?: SessionView[];
+    mode?: 'off' | 'supervised' | 'autopilot';
+    commits?: { listGitCommits(projectId: string, limit?: number): Promise<{ sha: string }[]> };
+    refreshGitObservation?: (projectId: string) => Promise<void>;
+  } = {},
 ) {
   const fake = fakeRepository();
   const sessions = options.sessions ?? [
@@ -197,7 +202,10 @@ function harness(
         })),
     },
     leases: { list: async () => [] },
-    commits: { listGitCommits: async () => [{ sha: 'a'.repeat(40) }] },
+    commits: options.commits ?? { listGitCommits: async () => [{ sha: 'a'.repeat(40) }] },
+    ...(options.refreshGitObservation === undefined
+      ? {}
+      : { refreshGitObservation: options.refreshGitObservation }),
     manifest,
     workspaceId: 'local',
     now: () => new Date(nowIso),
@@ -462,6 +470,69 @@ describe('goals, plans and dispatch', () => {
     expect(rework).toMatchObject({ reworkOf: taskId, reworkCount: 1, state: 'ready' });
     expect(fake.goals.get(goal.id)?.taskIds).toContain(rework.id);
     await expect(service.createReworkTask(taskId, 'coord-1')).resolves.toBeDefined();
+  });
+
+  it('refreshes the Git observation before verifying a commit, so a just-made commit is not missed', async () => {
+    // The worker commits before it responds, but the periodic Git scan has not
+    // caught up: the commit is invisible until a scan runs.
+    let scanned = false;
+    const refreshGitObservation = vi.fn(async () => {
+      scanned = true;
+    });
+    const sha = 'b'.repeat(40);
+    const { service, fake, configure } = harness({
+      commits: { listGitCommits: async () => (scanned ? [{ sha }] : []) },
+      refreshGitObservation,
+    });
+    await configure('autopilot');
+    const goal = await service.createGoal('project-1', {
+      title: 'Ship',
+      objective: 'Ship it.',
+      acceptanceCriteria: [],
+    });
+    fake.goals.set(goal.id, { ...goal, state: 'planning', version: 2 });
+    const planned = await service.submitPlan(goal.id, {
+      sessionId: 'coord-1',
+      tasks: [
+        {
+          title: 'route',
+          brief: 'Add the route.',
+          agentId: 'claude-code',
+          paths: ['src/a.ts'],
+          dependsOn: [],
+          evidenceRequirements: ['git_commit'],
+        },
+      ],
+    });
+    const taskId = planned.taskIds[0] as string;
+    const dispatched = await service.dispatchTask(taskId, 'coord-1');
+    const correlationId = (dispatched as { correlationId: string }).correlationId;
+    const completed = await service.completeFromMessage({
+      id: 'm1',
+      correlationId,
+      projectId: 'project-1',
+      sourceSessionId: 'coord-1',
+      sourceAgentId: 'luwibot',
+      targetSessionId: 'worker-1',
+      targetAgentId: 'claude-code',
+      selectionReason: 'x',
+      kind: 'instruction',
+      content: 'x',
+      state: 'responded',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      deadlineAt: nowIso,
+      response: {
+        status: 'answered',
+        answer: 'Committed.',
+        evidence: [{ type: 'git_commit', summary: 'commit', gitHead: sha }],
+        verifiedAt: nowIso,
+      },
+    });
+    expect(refreshGitObservation).toHaveBeenCalledWith('project-1');
+    expect(completed?.verification?.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ check: 'commit_evidence', passed: true })]),
+    );
   });
 
   it('denies a dispatch with the evaluated reason and records the denial on the task', async () => {

@@ -114,6 +114,13 @@ export type AutopilotServiceOptions = {
   };
   leases: { list(query: { projectId?: string; limit: number }): Promise<WorkLease[]> };
   commits: { listGitCommits(projectId: string, limit?: number): Promise<{ sha: string }[]> };
+  /**
+   * Refresh the project's Git observation before a commit is verified. The
+   * worker commits before it responds, so a scan here makes the just-made
+   * commit visible to the commit_evidence check instead of racing the periodic
+   * scan interval. Best-effort: a failure falls back to the current observation.
+   */
+  refreshGitObservation?: (projectId: string) => Promise<void>;
   manifest: {
     readProjectAutopilotPolicy(projectRoot: string): Promise<unknown | undefined>;
     writeProjectAutopilotPolicy(project: Project, policy: AutopilotPolicy): Promise<void>;
@@ -483,6 +490,17 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
   const complete = async (task: Task, message: AgentMessage): Promise<Task> => {
     let commitKnown: ((sha: string) => boolean) | undefined;
     if ((message.response?.evidence ?? []).some((item) => item.type === 'git_commit')) {
+      // Refresh the observation first so a just-made commit is verified against
+      // fresh Git state, not a window the periodic scan has not reached yet.
+      // Best-effort: on failure we fall back to the current observation, which
+      // only ever makes commit_evidence fail more cautiously.
+      if (options.refreshGitObservation !== undefined) {
+        try {
+          await options.refreshGitObservation(task.projectId);
+        } catch {
+          /* fall back to the current observation */
+        }
+      }
       const known = new Set(
         (await options.commits.listGitCommits(task.projectId, 500)).map((commit) => commit.sha),
       );

@@ -909,6 +909,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     bindings: controlPlaneService,
     leases: leaseService,
     commits: intelligenceRepository,
+    refreshGitObservation: (projectId) =>
+      intelligenceService.scanGit(projectId).then(() => undefined),
     manifest: canonicalStore,
     workspaceId: config.workspaceId,
     report: (line) => app?.log.warn(line, 'Autopilot manifest policy refused'),
