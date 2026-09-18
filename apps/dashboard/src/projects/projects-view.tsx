@@ -723,19 +723,11 @@ export function ProjectsView({
               <thead>
                 <tr>
                   <th scope="col">Project</th>
-                  <th scope="col">Agents</th>
                   {/*
-                   * The comp's Stage and Release columns are not here: no
-                   * lifecycle or release domain exists (section 21). HEAD is —
-                   * it comes from the bounded per-project Git read the Pulse
-                   * already pays for.
-                   */}
-                  <th scope="col">HEAD</th>
-                  {/*
-                   * The true reachable-commit total (git rev-list --count), a
-                   * rough hint at repository size — not the observer's bounded
-                   * recent window, which caps at the same number for every large
-                   * repo.
+                   * Agents and HEAD live in the project detail drawer, not here:
+                   * the registry is a lean picker — name, size, activity — so it
+                   * fits a normal-width drawer. Commits is the true
+                   * reachable-commit total (git rev-list --count), a size hint.
                    */}
                   <th scope="col">Commits</th>
                   <th scope="col">Active sessions</th>
@@ -771,26 +763,6 @@ export function ProjectsView({
                             </small>
                           </span>
                         </span>
-                      </td>
-                      <td>
-                        {project.activeAgents.state === 'unavailable' ? (
-                          <Unavailable />
-                        ) : (
-                          `${String(project.activeAgents.value)}a`
-                        )}
-                      </td>
-                      <td>
-                        {facts === undefined || facts.git.state === 'unavailable' ? (
-                          <Unavailable />
-                        ) : facts.git.state === 'not-observed' ? (
-                          <span className="table-dim">not scanned</span>
-                        ) : facts.git.data.headSha === undefined ? (
-                          <span className="table-dim">no HEAD</span>
-                        ) : (
-                          <span title={facts.git.data.headSha}>
-                            {abbreviateSha(facts.git.data.headSha)}
-                          </span>
-                        )}
                       </td>
                       <td>
                         {facts === undefined || facts.git.state === 'unavailable' ? (

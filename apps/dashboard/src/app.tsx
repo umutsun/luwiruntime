@@ -83,13 +83,17 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   graph: { eyebrow: 'Operational graph', heading: 'Graph' },
 };
 
-/** The routes whose tables run six to eight columns take the wide drawer. */
+/**
+ * The routes whose tables run six to eight columns take the wide drawer. The
+ * projects registry is not one of them any more: it is a lean three-column
+ * picker (project, commits, active sessions), so it uses the normal width. The
+ * project detail drawer has its own branch and never used this set.
+ */
 const WIDE_DRAWER_ROUTES: ReadonlySet<DashboardRouteName> = new Set<DashboardRouteName>([
   'sessions',
   'messages',
   'capabilities',
   'config',
-  'projects',
 ]);
 
 /** The project a `#/pulse/<projectId>` hash names; anything else is the runtime. */
