@@ -429,6 +429,23 @@
   overflow-y: auto;
 }
 /*
+ * A drawer whose main content is one tall table should fill the height the
+ * route-stack already claims, not cap the table at the shared 340px and leave
+ * dead space below — that is what made the sessions and messages drawers read
+ * badly. The panel holding a tall table grows with it, and the table scrolls
+ * within the full height. Short (non-`--tall`) tables keep the cap, so a small
+ * table never stretches to fill a tall drawer.
+ */
+.detail-drawer .route-stack > .panel:has(.table-wrap--tall) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.detail-drawer .route-stack .table-wrap--tall {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/*
  * The drawer is a column of cards; it scrolls as one, and its tables never
  * push it sideways. `min-width: 0` is what actually lets a wide table shrink
  * inside a grid item rather than forcing the pane wider than its track.

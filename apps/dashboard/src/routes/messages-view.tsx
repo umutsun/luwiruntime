@@ -116,7 +116,9 @@ export function MessagesView({
         title="Messages"
         meta={
           messages?.state === 'ready'
-            ? `${String(all.length)} retained · ${String(inFlight)} in flight`
+            ? `${String(all.length)} retained · ${String(inFlight)} in flight${
+                messages.data.truncated ? ' · more exist' : ''
+              }`
             : undefined
         }
         resource={messages}
@@ -124,7 +126,7 @@ export function MessagesView({
         emptyMessage="No messages recorded between agents"
         isEmpty={(value) => value.items.length === 0}
       >
-        {(value) => (
+        {() => (
           <>
             <PanelBody>
               <div className="table-filters">
@@ -197,20 +199,6 @@ export function MessagesView({
                 </tbody>
               </TableWrap>
             )}
-
-            <PanelBody>
-              <p className="bounded-note">
-                Message kinds and states are rendered exactly as the runtime records them. A
-                rejected message is an answer, not a fault: it means the recipient declined, and the
-                reason is in its response.
-              </p>
-              {value.truncated ? (
-                <p className="bounded-note">
-                  Bounded list — more messages exist than are shown. Truncation is disclosed rather
-                  than hidden.
-                </p>
-              ) : null}
-            </PanelBody>
           </>
         )}
       </ResourcePanel>
