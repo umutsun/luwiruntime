@@ -7,6 +7,8 @@ import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
 import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
 import { createCapabilityMutations, type CapabilityMutations } from './api/capability-mutations.js';
+import { createAutopilotMutations, type AutopilotMutations } from './api/autopilot-mutations.js';
+import { loadAutopilotStatus } from './api/autopilot-status.js';
 import {
   createCoordinatorMutations,
   type CoordinatorMutations,
@@ -120,6 +122,7 @@ const configMutations: ConfigMutations = createConfigMutations();
 const messageMutations: MessageMutations = createMessageMutations();
 const projectMutations: ProjectMutations = createProjectMutations();
 const coordinatorMutations: CoordinatorMutations = createCoordinatorMutations();
+const autopilotMutations: AutopilotMutations = createAutopilotMutations();
 const capabilityMutations: CapabilityMutations = createCapabilityMutations();
 
 /**
@@ -140,6 +143,9 @@ const fetchSessionUsage = (sessionId: string, options?: { signal?: AbortSignal }
 /** Same reason: the Knowledge lens's read effect keys on this identity. */
 const fetchKnowledge = (projectId: string, options?: { signal?: AbortSignal }) =>
   loadKnowledgeScope(client, projectId, options);
+/** Same reason: the overview's autopilot effect keys on this identity. */
+const fetchAutopilotStatus = (projectId: string, options?: { signal?: AbortSignal }) =>
+  loadAutopilotStatus(client, projectId, options);
 
 function DashboardRoute() {
   const [input, setInput] = useState<PulseInput>();
@@ -568,6 +574,7 @@ function DashboardRoute() {
       onProjectMutated={retry}
       coordinatorMutations={coordinatorMutations}
       onCoordinatorMutated={retry}
+      autopilotMutations={autopilotMutations}
       capabilityMutations={capabilityMutations}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
@@ -576,6 +583,7 @@ function DashboardRoute() {
       loadResources={fetchResources}
       loadSessionUsage={fetchSessionUsage}
       loadKnowledge={fetchKnowledge}
+      loadAutopilot={fetchAutopilotStatus}
       loadProjectDiscovery={loadProjectDiscovery}
       onRetry={retry}
       onActivityStateChange={(next) => {

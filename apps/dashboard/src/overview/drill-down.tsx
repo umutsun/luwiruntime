@@ -16,10 +16,13 @@ function roleChips(key: string, value: string): string[] | undefined {
 
 /** Long facts (a coordinator name, the per-agent flow roles) get the full width. */
 function isWideFact(key: string): boolean {
-  return key === 'Coordinator' || key === 'Flow role' || key === 'Flow roles';
+  return (
+    key === 'Coordinator' || key === 'Autopilot' || key === 'Flow role' || key === 'Flow roles'
+  );
 }
 
 export type CoordinatorLink = Extract<PanelLink, { kind: 'coordinator' }>;
+export type AutopilotLink = Extract<PanelLink, { kind: 'autopilot' }>;
 
 /**
  * The docked drill-down: one panel shape, four subjects.
@@ -79,6 +82,8 @@ export function DrillDown({
   onInspect,
   onCoordinator,
   coordinatorNote,
+  onAutopilot,
+  autopilotNote,
 }: {
   panel: PanelModel;
   nowMs: number;
@@ -88,6 +93,10 @@ export function DrillDown({
   onCoordinator?: (link: CoordinatorLink) => void;
   /** The outcome of the last claim or release, shown until the focus moves. */
   coordinatorNote?: string;
+  /** Absent hides the autopilot switch (ADR 0035): a shell without the mutation shows no control. */
+  onAutopilot?: (link: AutopilotLink) => void;
+  /** The outcome of the last mode change, shown until the focus moves. */
+  autopilotNote?: string;
 }) {
   const max = panel.trend.buckets.reduce((high, value) => Math.max(high, value), 0);
   return (
@@ -201,6 +210,11 @@ export function DrillDown({
           {coordinatorNote}
         </p>
       )}
+      {autopilotNote === undefined ? null : (
+        <p className="drill__empty" role="status">
+          {autopilotNote}
+        </p>
+      )}
 
       <div className="drill__links">
         {panel.links.map((link) =>
@@ -216,6 +230,18 @@ export function DrillDown({
                 className="drill__link"
                 aria-label={`${link.label} for session ${link.sessionId}`}
                 onClick={() => onCoordinator(link)}
+              >
+                {link.label} ›
+              </button>
+            )
+          ) : link.kind === 'autopilot' ? (
+            onAutopilot === undefined ? null : (
+              <button
+                key={link.label}
+                type="button"
+                className="drill__link"
+                aria-label={`${link.label} for project ${link.projectId}`}
+                onClick={() => onAutopilot(link)}
               >
                 {link.label} ›
               </button>

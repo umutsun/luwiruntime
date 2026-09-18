@@ -37,6 +37,16 @@ export {
 } from './intelligence.js';
 export { leaseCollectionSchema } from './lease.js';
 export {
+  autopilotCollectionSchema,
+  autopilotModeResponseSchema,
+  autopilotModeSchema,
+  autopilotRecordSchema,
+  autopilotStatusResponseSchema,
+} from './autopilot.js';
+export type { AutopilotMode } from './autopilot.js';
+export { goalCollectionSchema, goalSchema } from './goal.js';
+export { taskCollectionSchema, taskSchema } from './task.js';
+export {
   coordinatorClaimRequestSchema,
   coordinatorReleaseRequestSchema,
   coordinatorSchema,

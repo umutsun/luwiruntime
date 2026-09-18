@@ -276,6 +276,43 @@ describe('coordinator role in the drill-down (ADR 0035)', () => {
   });
 });
 
+describe('autopilot mode switch in the drill-down (ADR 0035)', () => {
+  const autopilotFactOf = (panel: ReturnType<typeof panelFor>) =>
+    panel.facts.find((fact) => fact.k === 'Autopilot');
+
+  it('states the mode and offers only the other modes, once the mode is read', () => {
+    const panel = panelFor(overview(), { kind: 'project', id: 'p1' }, 'live', {
+      autopilot: {
+        projectId: 'p1',
+        state: {
+          state: 'ready',
+          data: { mode: 'supervised', configured: true, coordinatorOnline: true },
+        },
+      },
+    });
+    expect(autopilotFactOf(panel)).toEqual({
+      k: 'Autopilot',
+      v: 'supervised',
+      detail: 'supervised · policy set · coordinator online',
+    });
+    expect(panel.links.filter((link) => link.kind === 'autopilot')).toEqual([
+      { kind: 'autopilot', label: 'Turn off', mode: 'off', projectId: 'p1' },
+      { kind: 'autopilot', label: 'Enable autopilot', mode: 'autopilot', projectId: 'p1' },
+    ]);
+  });
+
+  it('reads as a dash with no links until the shell reads the mode', () => {
+    const panel = panelFor(overview(), { kind: 'project', id: 'p1' }, 'live');
+    expect(autopilotFactOf(panel)).toEqual({ k: 'Autopilot', v: '—' });
+    expect(panel.links.some((link) => link.kind === 'autopilot')).toBe(false);
+    const loading = panelFor(overview(), { kind: 'project', id: 'p1' }, 'live', {
+      autopilot: { projectId: 'p1', state: { state: 'loading' } },
+    });
+    expect(autopilotFactOf(loading)?.v).toBe('loading…');
+    expect(loading.links.some((link) => link.kind === 'autopilot')).toBe(false);
+  });
+});
+
 describe('flow roles in the drill-down (ADR 0036)', () => {
   const withRoles = (): PulseInput => ({
     ...input(),
@@ -677,10 +714,13 @@ describe('panelFor', () => {
     expect(panel.facts).toEqual([
       { k: 'HEAD', v: '31c4f54' },
       { k: 'Commits', v: '7 recent' },
-      { k: 'State', v: '3 untracked' },
+      // "N new" fits one fact card line; the full "untracked" wording is the hover detail.
+      { k: 'State', v: '3 new', detail: '3 untracked' },
       { k: 'Tags', v: '2' },
       // No coordinator read in this fixture: the role reads as free (ADR 0035).
       { k: 'Coordinator', v: 'none' },
+      // No autopilot read passed in this fixture: the mode fact reads as a dash (ADR 0035).
+      { k: 'Autopilot', v: '—' },
       // No bindings read either: no flow roles to state (ADR 0036).
       { k: 'Flow roles', v: 'none' },
     ]);

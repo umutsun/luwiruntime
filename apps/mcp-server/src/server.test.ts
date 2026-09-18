@@ -91,6 +91,16 @@ describe('LUWI MCP server', () => {
         'luwi_reject_message',
         'luwi_respond_to_message',
         'luwi_request_optimization_analysis',
+        'luwi_get_autopilot',
+        'luwi_list_goals',
+        'luwi_get_goal',
+        'luwi_create_goal',
+        'luwi_approve_plan',
+        'luwi_reject_plan',
+        'luwi_answer_goal',
+        'luwi_abandon_goal',
+        'luwi_list_tasks',
+        'luwi_get_task',
       ].toSorted(),
     );
     expect(tools.tools.every(({ outputSchema }) => outputSchema?.type === 'object')).toBe(true);
