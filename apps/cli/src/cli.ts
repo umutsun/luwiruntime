@@ -66,6 +66,17 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * LUWI's own claude bound-session MCP launcher, resolved from this module so a
+ * claude worker's `--mcp-config` is generated rather than hand-configured per
+ * project. `apps/cli/{src,dist}` both sit three levels under the repo root, so
+ * this resolves in dev and in the built CLI alike.
+ */
+const CLAUDE_MCP_LAUNCH_SCRIPT = fileURLToPath(
+  new URL('../../../scripts/claude-mcp-launch.mjs', import.meta.url),
+);
 import { createInterface } from 'node:readline/promises';
 
 import { registerControlPlaneCli } from './control-plane-cli.js';
@@ -84,6 +95,7 @@ import {
   type DeepSeekBridgeDaemonClient,
 } from './deepseek-bridge.js';
 import {
+  claudeMcpBindingArgs,
   codexMcpBindingArgs,
   createNativeBridge,
   nativeHeadlessArguments,
@@ -1646,12 +1658,17 @@ async function runNativeBridge(
       delete inherited['LUWI_DAEMON_URL'];
       delete inherited['LUWI_SESSION_ID'];
       let tail = '';
-      // codex needs the LUWI session injected into its MCP server's env and its tool
-      // calls auto-approved; claude/gemini bind through the inherited LUWI_SESSION_ID.
+      // Each provider's LUWI wiring + permission profile is GENERATED, so the
+      // fleet config carries no project-specific args: codex gets its session
+      // injected and tool calls auto-approved; claude gets an inline MCP config
+      // and a project-independent allowlist. Caller `nativeArgs` still append,
+      // for the rare per-run override.
       const providerNativeArgs =
         provider.name === 'codex' && bootstrap.sessionId !== undefined
           ? [...codexMcpBindingArgs(bootstrap.sessionId, daemonUrl), ...nativeArgs]
-          : nativeArgs;
+          : provider.name === 'claude'
+            ? [...claudeMcpBindingArgs(process.execPath, CLAUDE_MCP_LAUNCH_SCRIPT), ...nativeArgs]
+            : nativeArgs;
       // codex learns its id only after the first run, so it passes nothing until
       // then; claude forces its minted id, creating on the first run and resuming
       // after. Everything else stays a fresh, unbound run.

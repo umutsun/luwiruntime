@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { BridgeDaemonClient } from './bridge-daemon.js';
 import {
+  claudeMcpBindingArgs,
   codexMcpBindingArgs,
   createNativeBridge,
   framePrompt,
@@ -188,6 +189,37 @@ describe('codexMcpBindingArgs', () => {
     expect(args).toContain('-c');
     expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="sess-9"');
     expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_DAEMON_URL="http://127.0.0.1:4782"');
+  });
+});
+
+describe('claudeMcpBindingArgs', () => {
+  it('generates a project-independent claude profile: inline MCP config, dontAsk, a safe allowlist', () => {
+    const args = claudeMcpBindingArgs('C:/node.exe', 'C:/luwi/scripts/claude-mcp-launch.mjs');
+    // The LUWI MCP server is wired inline, pointing at LUWI's own launcher — no per-project file.
+    expect(args).toContain('--strict-mcp-config');
+    const config = args[args.indexOf('--mcp-config') + 1];
+    expect(JSON.parse(config ?? '')).toEqual({
+      mcpServers: {
+        'luwi-runtime': { command: 'C:/node.exe', args: ['C:/luwi/scripts/claude-mcp-launch.mjs'] },
+      },
+    });
+    // Non-bypass auto-approve over a fixed, generic allowlist.
+    expect(args).toContain('--permission-mode');
+    expect(args).toContain('dontAsk');
+    expect(args).toContain('Read(/**)');
+    expect(args).toContain('Edit(/**)');
+    expect(args).toContain('Bash(git commit *)');
+    expect(args).toContain('Bash(git -C * commit *)');
+    expect(args).toContain('Bash(pnpm *)');
+    expect(args).toContain('mcp__luwi-runtime__luwi_respond_to_message');
+  });
+
+  it('bakes in no project path and never allows push or merge', () => {
+    const joined = claudeMcpBindingArgs('node', '/opt/luwi/scripts/claude-mcp-launch.mjs').join(
+      ' ',
+    );
+    expect(joined).not.toMatch(/albanoosh|xampp/i);
+    expect(joined).not.toMatch(/git (?:-C \S+ )?(?:push|merge)/);
   });
 });
 

@@ -127,6 +127,74 @@ export function codexMcpBindingArgs(sessionId: string, daemonUrl: string): strin
   ];
 }
 
+/** The safe git subcommands a worker may run — never `push` or `merge`. */
+const CLAUDE_SAFE_GIT = [
+  'status',
+  'diff',
+  'add',
+  'commit',
+  'log',
+  'show',
+  'rev-parse',
+  'branch',
+  'check-ignore',
+  'worktree',
+];
+
+/**
+ * The claude worker's launch profile, GENERATED rather than hand-written per
+ * project (the mirror of {@link codexMcpBindingArgs}). Two things are made
+ * dynamic so the fleet config carries no project-specific `nativeArgs`:
+ *
+ *  - The LUWI MCP server is wired inline (`--mcp-config <json>`, which Claude
+ *    Code accepts as a JSON string), pointing at LUWI's own bound-session
+ *    launcher. That launcher recovers `LUWI_SESSION_ID` from the attach hook, so
+ *    the config needs neither a per-project file nor the session id.
+ *  - Permissions are `dontAsk` over a FIXED, project-independent allowlist:
+ *    read/edit anywhere, the safe git subcommands in both the plain and
+ *    `-C <worktree>` forms (never push or merge), the package manager and tests,
+ *    and the coordination MCP tools. No path is baked in — the worker's working
+ *    directory, passed to the process separately, is what scopes execution.
+ *
+ * `--strict-mcp-config` keeps the user's own `~/.claude.json` servers out, so a
+ * worker sees only LUWI's tools.
+ */
+export function claudeMcpBindingArgs(
+  nodeExecutable: string,
+  mcpLaunchScriptPath: string,
+): string[] {
+  const mcpConfig = JSON.stringify({
+    mcpServers: { 'luwi-runtime': { command: nodeExecutable, args: [mcpLaunchScriptPath] } },
+  });
+  const gitTools = CLAUDE_SAFE_GIT.flatMap((sub) => [
+    `Bash(git ${sub} *)`,
+    `Bash(git -C * ${sub} *)`,
+  ]);
+  return [
+    '--strict-mcp-config',
+    '--mcp-config',
+    mcpConfig,
+    '--permission-mode',
+    'dontAsk',
+    '--tools',
+    'Read,Glob,Grep,Write,Edit,Bash',
+    '--allowedTools',
+    'Read(/**)',
+    'Edit(/**)',
+    ...gitTools,
+    'Bash(pnpm *)',
+    'Bash(pnpm.cmd *)',
+    'Bash(npm *)',
+    'Bash(node --test *)',
+    'mcp__luwi-runtime__luwi_get_message',
+    'mcp__luwi-runtime__luwi_list_leases',
+    'mcp__luwi-runtime__luwi_acquire_lease',
+    'mcp__luwi-runtime__luwi_renew_lease',
+    'mcp__luwi-runtime__luwi_release_lease',
+    'mcp__luwi-runtime__luwi_respond_to_message',
+  ];
+}
+
 /** How many leased paths to name before collapsing the rest into a count; keeps the prompt bounded. */
 const MAX_COORDINATION_LEASES = 15;
 
