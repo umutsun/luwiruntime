@@ -14,6 +14,29 @@
   min-width: 0;
 }
 
+/*
+ * No project selected → the registry is the drawer's whole content, so it fills
+ * the height instead of capping the table at the drawer's shared 340px and
+ * leaving dead space below. A longer list then scrolls within the full height
+ * rather than a short window.
+ */
+.projects-stack--registry {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.projects-stack--registry .panel--projects {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.detail-drawer .projects-stack--registry .panel--projects .table-wrap {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
 .project-detail {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));

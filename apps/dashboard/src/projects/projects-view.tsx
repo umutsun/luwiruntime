@@ -703,7 +703,9 @@ export function ProjectsView({
   const projectsAvailable = snapshot.projectCount.state !== 'unavailable';
 
   return (
-    <div className="projects-stack">
+    <div
+      className={`projects-stack${selectedProjectId === undefined ? ' projects-stack--registry' : ''}`}
+    >
       <section className="panel panel--projects" aria-labelledby="projects-registry">
         <header className="panel__header">
           <h2 id="projects-registry">Registered projects</h2>

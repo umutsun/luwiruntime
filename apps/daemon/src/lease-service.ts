@@ -39,6 +39,15 @@ export type LeaseService = {
   list(query: { projectId?: string; sessionId?: string; limit: number }): Promise<WorkLease[]>;
   /** Used by the background sweep; never by an HTTP caller. */
   expire(leaseId: string): Promise<ExpireLeaseResult>;
+  /**
+   * Expires every lease a now-terminal session still holds, best-effort, and
+   * returns how many were expired. This is the runtime's own (holder-less)
+   * transition, invoked when a session goes terminal so its leases do not sit
+   * under a dead holder — blocking overlaps and unreleasable by the successor —
+   * until the deadline sweep reaches them. The sweep stays the backstop for any
+   * lease this could not expire, so a single failure never aborts the rest.
+   */
+  releaseForSession(sessionId: string): Promise<number>;
   findDueLeases(nowMs: number, limit: number): Promise<string[]>;
 };
 
@@ -76,6 +85,20 @@ export function createLeaseService(options: {
     return lease;
   };
 
+  // Re-reads the lease before expiring it so a holder that released between the
+  // scan and here is left alone rather than expired twice. Shared by the
+  // deadline sweep (`expire`) and by session-terminal release.
+  const expireHeldLease = async (leaseId: string): Promise<ExpireLeaseResult> => {
+    const current = await options.repository.getLease(leaseId);
+    if (current === null || current.state !== 'held') return 'unchanged';
+    const updated: WorkLease = { ...current, state: 'expired' };
+    const result = await options.repository.expireLease({
+      lease: updated,
+      event: event('lease.expired', updated),
+    });
+    return result.status === 'updated' ? 'expired' : 'unchanged';
+  };
+
   return {
     async acquire(input) {
       let normalized;
@@ -107,10 +130,11 @@ export function createLeaseService(options: {
         );
       }
       /**
-       * Only a completed session is refused. `disconnected` is presence loss,
-       * not an ending: that session may reconnect and renew, and if it does
-       * not, the expiry sweep frees the path on its own. Refusing here would
-       * hand the path to someone else the moment a heartbeat was missed.
+       * Only a completed session is refused. A missed heartbeat has not yet
+       * changed the status here, so refusing on it would hand the path away the
+       * instant a beat ran late. When the presence sweeper does mark a lapsed
+       * session `disconnected`, it releases that session's leases with it (P12),
+       * so a gone holder stops blocking at once rather than at its deadline.
        */
       if (session.status === 'completed') {
         throw new ApplicationError(
@@ -251,15 +275,24 @@ export function createLeaseService(options: {
       );
     },
 
-    async expire(leaseId) {
-      const current = await options.repository.getLease(leaseId);
-      if (current === null || current.state !== 'held') return 'unchanged';
-      const updated: WorkLease = { ...current, state: 'expired' };
-      const result = await options.repository.expireLease({
-        lease: updated,
-        event: event('lease.expired', updated),
-      });
-      return result.status === 'updated' ? 'expired' : 'unchanged';
+    expire: expireHeldLease,
+
+    async releaseForSession(sessionId) {
+      // A session holds leases only in its own project, so its held set is
+      // bounded by the per-project cap.
+      const leases = await options.repository.listSessionLeases(
+        sessionId,
+        LEASE_MAX_ACTIVE_PER_PROJECT,
+      );
+      let expired = 0;
+      for (const lease of leases) {
+        try {
+          if ((await expireHeldLease(lease.id)) === 'expired') expired += 1;
+        } catch {
+          // Best-effort: the deadline sweep is the backstop for anything left.
+        }
+      }
+      return expired;
     },
 
     findDueLeases: (nowMs, limit) => options.repository.findDueLeaseDeadlines(nowMs, limit),

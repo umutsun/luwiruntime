@@ -198,6 +198,23 @@ describe('KnowledgeView', () => {
 });
 
 describe('KnowledgeInspector', () => {
+  it('lists project cards in the no-project state and focuses one on click', () => {
+    const onFocus = vi.fn();
+    render(
+      <KnowledgeInspector
+        projects={[
+          { id: 'p1', name: 'Alpha', initials: 'AL' },
+          { id: 'p2', name: 'Beta', initials: 'BE' },
+        ]}
+        onSelectNode={vi.fn()}
+        onFocus={onFocus}
+      />,
+    );
+    expect(screen.getByText('NO PROJECT')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Open Beta knowledge graph' }));
+    expect(onFocus).toHaveBeenCalledWith({ kind: 'project', id: 'p2' });
+  });
+
   it('summarizes the project with its communities when nothing is selected', () => {
     render(
       <KnowledgeInspector

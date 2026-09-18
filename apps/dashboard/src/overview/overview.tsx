@@ -224,10 +224,12 @@ export function Overview({
       </div>
       {view === 'knowledge' ? (
         <KnowledgeInspector
+          projects={overview.projects}
           {...(knowledgeProject === undefined ? {} : { projectName: knowledgeProject.name })}
           {...(knowledgeState === undefined ? {} : { graph: knowledgeState })}
           {...(knowledgeNode === undefined ? {} : { selectedId: knowledgeNode })}
           onSelectNode={setKnowledgeNode}
+          onFocus={onFocus}
         />
       ) : (
         <DrillDown

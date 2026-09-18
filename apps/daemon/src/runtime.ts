@@ -150,8 +150,13 @@ export function createPresenceSweeperRepository(options: {
   repository: RuntimeRepository;
   workspaceId: string;
   createId: () => string;
+  /**
+   * Frees the work-leases a disconnected session held (P12). Best-effort and
+   * must not throw — the deadline sweep stays the backstop for anything left.
+   */
+  releaseSessionLeases?: (sessionId: string) => Promise<void>;
 }): PresenceSweeperRepository {
-  const { repository, workspaceId, createId } = options;
+  const { repository, workspaceId, createId, releaseSessionLeases } = options;
   return {
     findExpiredHeartbeatDeadlines: (nowMs, limit) =>
       repository.findExpiredHeartbeatDeadlines(nowMs, limit),
@@ -188,10 +193,15 @@ export function createPresenceSweeperRepository(options: {
             eventId,
             ...(native === undefined ? {} : { native: { ...native, unlinkedEventId } }),
           });
-          if (result.status === 'disconnected') {
-            return 'disconnected';
+          if (result.status === 'disconnected' || result.status === 'reconciled') {
+            // The session is now terminal, so free the work-leases it held
+            // rather than leaving them under a dead holder until the deadline
+            // sweep (P12) — where an overlapping acquire is refused and the
+            // successor cannot release them. Best-effort; the sweep backstops.
+            await releaseSessionLeases?.(deadline.sessionId);
+            return result.status === 'disconnected' ? 'disconnected' : 'reconciled';
           }
-          return result.status === 'reconciled' ? 'reconciled' : 'unchanged';
+          return 'unchanged';
         } catch (error) {
           if (!isVersionConflict(error)) throw error;
         }
@@ -223,8 +233,13 @@ export function createStartingSessionReaperRepository(options: {
   repository: RuntimeRepository;
   workspaceId: string;
   createId: () => string;
+  /**
+   * Frees the work-leases a reaped session held (P12). Best-effort and must not
+   * throw — the deadline sweep stays the backstop for anything left.
+   */
+  releaseSessionLeases?: (sessionId: string) => Promise<void>;
 }): StartingSessionReaperRepository {
-  const { repository, workspaceId, createId } = options;
+  const { repository, workspaceId, createId, releaseSessionLeases } = options;
   return {
     findStartingSessionsPastGrace: (nowMs, graceMs, limit) =>
       repository.findStartingSessionsPastGrace(nowMs, graceMs, limit),
@@ -242,7 +257,12 @@ export function createStartingSessionReaperRepository(options: {
             eventId,
             ...(native === undefined ? {} : { native: { ...native, unlinkedEventId } }),
           });
-          return result.status === 'disconnected' ? 'reaped' : 'skipped';
+          if (result.status === 'disconnected') {
+            // Reaped, so it is terminal: free the leases it held (P12).
+            await releaseSessionLeases?.(candidate.sessionId);
+            return 'reaped';
+          }
+          return 'skipped';
         } catch (error) {
           if (!isVersionConflict(error)) throw error;
         }
@@ -544,6 +564,13 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     void projectId;
     void reason;
   };
+  // Frees a terminating session's work-leases immediately, instead of leaving
+  // them under a dead holder until the deadline sweep (P12). Assigned once the
+  // lease service exists; a no-op until then, and best-effort by contract (it
+  // never throws), so lease cleanup can never block or lose a terminal
+  // transition. Late-bound like `refreshProject` because the lease service is
+  // built after the session service and the two sweep adapters that call this.
+  let releaseSessionLeases: (sessionId: string) => Promise<void> = async () => undefined;
 
   const hub = createWebSocketHub({
     maxQueueSize: setting(config, 'websocketQueueLimit'),
@@ -599,7 +626,12 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     presenceTtlMs: setting(config, 'sessionPresenceTtlMs'),
     heartbeatEventIntervalMs: setting(config, 'heartbeatEventIntervalMs'),
     onRegistered: (session) => refreshProject(session.projectId, 'session-started'),
-    onClosed: (session) => refreshProject(session.projectId, 'session-closed'),
+    onClosed: (session) => {
+      refreshProject(session.projectId, 'session-closed');
+      // A clean close is terminal too, so free its leases now rather than
+      // letting them lapse on the deadline sweep (P12).
+      void releaseSessionLeases(session.id);
+    },
   });
   const messageService = createMessageService({
     repository: messageRepository,
@@ -797,6 +829,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       repository,
       workspaceId: config.workspaceId,
       createId: randomUUID,
+      releaseSessionLeases: (sessionId) => releaseSessionLeases(sessionId),
     }),
   });
   const reaper = createStartingSessionReaper({
@@ -807,6 +840,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       repository,
       workspaceId: config.workspaceId,
       createId: randomUUID,
+      releaseSessionLeases: (sessionId) => releaseSessionLeases(sessionId),
     }),
   });
   const leaseService = createLeaseService({
@@ -814,6 +848,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     sessions: sessionService,
     workspaceId: config.workspaceId,
   });
+  // The sweep adapters and the session-close hook above hold this indirectly
+  // (a no-op until now); wire it to the real release, logging a failure rather
+  // than letting it escape into a terminal transition.
+  releaseSessionLeases = (sessionId) =>
+    leaseService.releaseForSession(sessionId).then(
+      () => undefined,
+      (error) => {
+        app?.log.error({ err: error, sessionId }, 'Session lease release on terminal failed');
+      },
+    );
   const projectUnregisterService = createProjectUnregisterService({
     repository,
     leases: leaseRepository,

@@ -146,6 +146,11 @@ function ProjectPicker({
               }}
               onMouseLeave={() => setTip(undefined)}
             >
+              <circle
+                className="knowledge__project-halo"
+                r={PROJECT_RADIUS + 7}
+                style={{ animationDelay: `${(index * 0.4).toFixed(2)}s` }}
+              />
               <circle className="knowledge__project-disc" r={PROJECT_RADIUS} />
               <text className="knowledge__project-initials" textAnchor="middle" dy="0.35em">
                 {project.initials}
@@ -153,6 +158,23 @@ function ProjectPicker({
             </g>
           );
         })}
+        {projects.length >= 2 ? (
+          <g
+            className="knowledge__picker-hint"
+            transform={`translate(${String(CX)} ${String(CY)})`}
+            aria-hidden="true"
+          >
+            <text className="knowledge__picker-count" textAnchor="middle" dy="-0.15em">
+              {projects.length}
+            </text>
+            <text className="knowledge__picker-label" textAnchor="middle" dy="1.15em">
+              projects
+            </text>
+            <text className="knowledge__picker-sub" textAnchor="middle" dy="2.9em">
+              pick one to open its graph
+            </text>
+          </g>
+        ) : null}
       </svg>
       {tip === undefined ? null : (
         <div
@@ -580,15 +602,19 @@ export function KnowledgeView({
  * in, in the same words the lens uses, and offers nothing else.
  */
 export function KnowledgeInspector({
+  projects,
   projectName,
   graph,
   selectedId,
   onSelectNode,
+  onFocus,
 }: {
+  projects?: readonly LensProject[];
   projectName?: string;
   graph?: KnowledgeState;
   selectedId?: string;
   onSelectNode: (id?: string) => void;
+  onFocus?: (focus: Focus) => void;
 }) {
   const head = (eyebrow: string, title: string, badge: string, sub: string, ink = false) => (
     <div className="drill__head">
@@ -604,7 +630,30 @@ export function KnowledgeInspector({
   if (projectName === undefined) {
     return (
       <aside className="drill" aria-label="Knowledge inspector">
-        {head('Project graph', title, 'NO PROJECT', 'Pick a project on the canvas')}
+        {head('Project graph', title, 'NO PROJECT', 'Pick a project to open its graph')}
+        {projects !== undefined && projects.length > 0 && onFocus !== undefined ? (
+          <div className="drill__list">
+            <p className="drill__section-label">Projects · {String(projects.length)}</p>
+            {projects.map((entry, index) => (
+              <button
+                key={entry.id}
+                type="button"
+                className="drill__row"
+                aria-label={`Open ${entry.name} knowledge graph`}
+                style={{ animationDelay: `${String(0.06 + index * 0.05)}s` }}
+                onClick={() => onFocus({ kind: 'project', id: entry.id })}
+              >
+                <span className="drill__glyph" aria-hidden="true">
+                  {entry.initials}
+                </span>
+                <span className="drill__row-text">
+                  <span className="drill__row-title">{entry.name}</span>
+                  <span className="drill__row-sub">open knowledge graph</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
       </aside>
     );
   }
