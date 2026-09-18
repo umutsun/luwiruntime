@@ -787,9 +787,15 @@ export function ProjectsView({
         )}
       </section>
 
-      {selectedProjectId === undefined ? (
+      {/*
+       * The registry (renderDetailInline=false) opens the detail in its own
+       * drawer, so nothing renders below the table — no "select a project"
+       * prompt eating vertical room. Only the inline mode shows the prompt and
+       * the docked detail.
+       */}
+      {!renderDetailInline ? null : selectedProjectId === undefined ? (
         <p className="empty-state">Select a project to load its scoped evidence.</p>
-      ) : renderDetailInline ? (
+      ) : (
         <ProjectDetail
           snapshot={snapshot}
           selectedProjectId={selectedProjectId}
@@ -805,7 +811,7 @@ export function ProjectsView({
           {...(capabilityMutations === undefined ? {} : { capabilityMutations })}
           {...(onMutated === undefined ? {} : { onMutated })}
         />
-      ) : null}
+      )}
     </div>
   );
 }
