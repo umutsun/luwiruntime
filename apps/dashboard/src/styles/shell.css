@@ -804,14 +804,75 @@ button:focus-visible {
   width: 16px;
   height: 16px;
 }
+.luwibot-cockpit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2h) var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+.luwibot-cockpit__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.luwibot-cockpit__title {
+  font-family: var(--font-ui);
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.luwibot-cockpit__objective {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.luwibot-cockpit__status {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+.luwibot-cockpit__tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.luwibot-cockpit__task {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+.luwibot-cockpit__task-label {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.luwibot-cockpit__task-chips {
+  margin-inline-start: auto;
+  display: flex;
+  gap: var(--space-1);
+  flex: none;
+}
 .luwibot-cockpit__controls {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2h) var(--space-3);
-  background: var(--surface-1);
-  border-bottom: 1px solid var(--border);
 }
 .luwibot-cockpit__btn {
   background: var(--surface-3);
@@ -830,6 +891,11 @@ button:focus-visible {
   opacity: 0.5;
   cursor: default;
 }
+.luwibot-cockpit__btn--primary {
+  background: var(--ink);
+  color: var(--paper);
+  border-color: var(--ink);
+}
 .luwibot-cockpit__btn--danger {
   color: var(--danger);
 }
@@ -838,12 +904,6 @@ button:focus-visible {
   flex-direction: column;
   gap: var(--space-2);
   width: 100%;
-}
-.luwibot-cockpit__question {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: var(--font-size-sm);
-  line-height: 1.5;
 }
 .luwibot-cockpit__answer-input {
   resize: none;
@@ -867,4 +927,71 @@ button:focus-visible {
   width: 100%;
   color: var(--danger);
   font-size: var(--font-size-sm);
+}
+.luwibot-activity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  padding: var(--space-2h) var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+.luwibot-activity__label {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.luwibot-activity__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.luwibot-activity__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--font-size-sm);
+}
+.luwibot-activity__dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+}
+.luwibot-activity__dot--working {
+  background: var(--success);
+  animation: luwibot-pulse 1.6s ease-in-out infinite;
+}
+.luwibot-activity__agent {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.luwibot-activity__state {
+  margin-inline-start: auto;
+  color: var(--text-dim);
+  font-size: var(--font-size-sm);
+  flex: none;
+}
+@keyframes luwibot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .luwibot-activity__dot--working {
+    animation: none;
+  }
 }

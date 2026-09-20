@@ -17,6 +17,8 @@ export type FlowTask = {
 export type FlowGoal = {
   id: string;
   title: string;
+  /** What "done" means, for context under the title in the cockpit. */
+  objective?: string;
   state: Goal['state'];
   tasks: FlowTask[];
   /** The blocked-goal escalation question, when the goal is awaiting an operator answer. */
@@ -65,6 +67,7 @@ export async function loadAutopilotFlow(
   const goals: FlowGoal[] = active.slice(0, MAX_GOALS).map((goal) => ({
     id: goal.id,
     title: goal.title,
+    objective: goal.objective,
     state: goal.state,
     ...(goal.escalation === undefined ? {} : { question: goal.escalation.question }),
     tasks: goal.taskIds

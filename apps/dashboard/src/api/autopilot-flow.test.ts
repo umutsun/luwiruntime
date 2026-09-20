@@ -54,8 +54,15 @@ describe('loadAutopilotFlow', () => {
       state: 'ready',
       data: {
         goals: [
-          { id: 'g1', title: 'T', state: 'blocked', tasks: [], question: 'Which API?' },
-          { id: 'g2', title: 'T', state: 'running', tasks: [] },
+          {
+            id: 'g1',
+            title: 'T',
+            objective: 'O',
+            state: 'blocked',
+            tasks: [],
+            question: 'Which API?',
+          },
+          { id: 'g2', title: 'T', objective: 'O', state: 'running', tasks: [] },
         ],
         more: 0,
       },

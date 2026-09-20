@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 
 import type { AutopilotFlow, FlowGoal } from '../api/autopilot-flow.js';
+import type { AgentActivity } from '../api/agent-activity.js';
 import { autopilotFlowPanel, type FlowPanel } from '../overview/model.js';
-import { FlowPanelView } from '../overview/flow-panel-view.js';
 import { parseRoute } from '../routing.js';
 import { ConfirmDialog } from './confirm-dialog.js';
+import { cockpitStatus } from './luwibot-cockpit.js';
+import { StatusChip } from './status-chip.js';
 import type { ResourceState } from './panel.js';
 
 /*
@@ -31,7 +33,15 @@ type IntentAction = 'approve_plan' | 'reject_plan' | 'answer_goal' | 'abandon_go
 type ConfirmableAction = 'approve_plan' | 'reject_plan' | 'abandon_goal';
 // The active goal a cockpit control acts on. Raw flow goals are already non-terminal
 // (the reader drops terminal ones), so the first is the one in flight and Stop always applies.
-type CockpitTarget = { goalId: string; title: string; state: FlowGoal['state']; question?: string };
+type CockpitTarget = {
+  goalId: string;
+  title: string;
+  objective?: string;
+  state: FlowGoal['state'];
+  question?: string;
+  done: number;
+  total: number;
+};
 
 // Copy for the consequential gates; Answer is human-authored free text and needs no confirm.
 const CONFIRM_COPY: Record<ConfirmableAction, { title: string; confirm: string; verb: string }> = {
@@ -46,6 +56,11 @@ type LuwiBotChatProps = {
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<AutopilotFlow>>;
+  /** GET reader for a project's live agent activity; absent hides the activity strip. */
+  loadAgentActivity?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<AgentActivity[]>>;
 };
 
 export function LuwiBotChat(props: LuwiBotChatProps = {}) {
@@ -65,6 +80,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   const [open, setOpen] = useState(false);
   const [flow, setFlow] = useState<FlowPanel>();
   const [target, setTarget] = useState<CockpitTarget>();
+  const [activity, setActivity] = useState<AgentActivity[]>([]);
   const [confirmAction, setConfirmAction] = useState<ConfirmableAction>();
   const [pending, setPending] = useState<{ requestId: string }>();
   const [intentError, setIntentError] = useState<string>();
@@ -122,15 +138,17 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
   }, [messages, busy]);
 
-  // While open, mirror the focused project's autopilot flow into the cockpit —
-  // read-only, refreshed every 5s and on hash change, keyed to focus. Terminal
-  // goals are already dropped upstream; `autopilotFlowPanel` is the same pure
-  // model the overview drill-down uses.
+  // While open, mirror the focused project's live state into the widget —
+  // read-only, refreshed every 5s and on hash change, keyed to focus: the agent
+  // activity strip (who is working now) and the autopilot goal cockpit.
+  // `autopilotFlowPanel` is the same pure model the overview drill-down uses.
   useEffect(() => {
     const load = props.loadAutopilotFlow;
+    const loadActivity = props.loadAgentActivity;
     if (!open || load === undefined) {
       setFlow(undefined);
       setTarget(undefined);
+      setActivity([]);
       return;
     }
     let cancelled = false;
@@ -141,23 +159,32 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         if (!cancelled) {
           setFlow(undefined);
           setTarget(undefined);
+          setActivity([]);
         }
         return;
       }
-      const result = await load(projectId, { signal: controller.signal });
+      const signal = { signal: controller.signal };
+      const [flowResult, activityResult] = await Promise.all([
+        load(projectId, signal),
+        loadActivity ? loadActivity(projectId, signal) : Promise.resolve(undefined),
+      ]);
       if (cancelled) return;
-      setFlow(autopilotFlowPanel({ autopilotFlow: { projectId, state: result } }, projectId));
-      const goal = result.state === 'ready' ? result.data.goals[0] : undefined;
+      setFlow(autopilotFlowPanel({ autopilotFlow: { projectId, state: flowResult } }, projectId));
+      const goal = flowResult.state === 'ready' ? flowResult.data.goals[0] : undefined;
       setTarget(
         goal === undefined
           ? undefined
           : {
               goalId: goal.id,
               title: goal.title,
+              ...(goal.objective === undefined ? {} : { objective: goal.objective }),
               state: goal.state,
               ...(goal.question === undefined ? {} : { question: goal.question }),
+              done: goal.tasks.filter((task) => task.state === 'done').length,
+              total: goal.tasks.length,
             },
       );
+      setActivity(activityResult?.state === 'ready' ? activityResult.data : []);
     };
     void run();
     const timer = window.setInterval(() => void run(), 5_000);
@@ -169,7 +196,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       window.clearInterval(timer);
       window.removeEventListener('hashchange', onHash);
     };
-  }, [open, props.loadAutopilotFlow]);
+  }, [open, props.loadAutopilotFlow, props.loadAgentActivity]);
 
   // Connect-or-queue send, shared by the chat turn and the cockpit intents.
   const rawSend = (frame: unknown) => {
@@ -246,74 +273,126 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               </svg>
             </button>
           </header>
-          {flow?.status === 'ready' ? <FlowPanelView panel={flow} /> : null}
+          {activity.length === 0 ? null : (
+            <section className="luwibot-activity" aria-label="Live agent activity">
+              <p className="luwibot-activity__label">
+                Live · {String(activity.filter((agent) => agent.working).length)} working
+              </p>
+              <ul className="luwibot-activity__list">
+                {activity.map((agent) => (
+                  <li key={agent.agentId} className="luwibot-activity__row">
+                    <span
+                      className={`luwibot-activity__dot${agent.working ? ' luwibot-activity__dot--working' : ''}`}
+                      aria-hidden="true"
+                    />
+                    <span className="luwibot-activity__agent">{agent.agentId}</span>
+                    <span className="luwibot-activity__state">
+                      {agent.working ? 'working' : 'idle'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           {target === undefined ? null : (
-            <div className="luwibot-cockpit__controls">
-              {target.state === 'plan_review' ? (
-                <>
-                  <button
-                    type="button"
-                    className="luwibot-cockpit__btn"
-                    disabled={pending !== undefined}
-                    onClick={() => setConfirmAction('approve_plan')}
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    className="luwibot-cockpit__btn"
-                    disabled={pending !== undefined}
-                    onClick={() => setConfirmAction('reject_plan')}
-                  >
-                    Reject
-                  </button>
-                </>
-              ) : null}
-              {target.state === 'blocked' ? (
-                <form
-                  className="luwibot-cockpit__answer"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const text = answerRef.current?.value.trim() ?? '';
-                    if (text === '' || pending !== undefined) return;
-                    sendIntent('answer_goal', { text });
-                    if (answerRef.current) answerRef.current.value = '';
-                  }}
-                >
-                  {target.question === undefined ? null : (
-                    <p className="luwibot-cockpit__question">{target.question}</p>
-                  )}
-                  <textarea
-                    ref={answerRef}
-                    className="luwibot-cockpit__answer-input"
-                    rows={2}
-                    placeholder="Answer the blocked question…"
-                    aria-label="Answer"
-                    disabled={pending !== undefined}
-                  />
-                  <button
-                    type="submit"
-                    className="luwibot-cockpit__btn"
-                    disabled={pending !== undefined}
-                  >
-                    Send answer
-                  </button>
-                </form>
-              ) : null}
-              <button
-                type="button"
-                className="luwibot-cockpit__btn luwibot-cockpit__btn--danger"
-                disabled={pending !== undefined}
-                onClick={() => setConfirmAction('abandon_goal')}
-              >
-                Stop
-              </button>
-              {intentError === undefined ? null : (
-                <p className="luwibot-cockpit__error" role="status">
-                  {intentError}
-                </p>
+            <section className="luwibot-cockpit" aria-label="Autopilot goal">
+              <div className="luwibot-cockpit__head">
+                <span className="luwibot-cockpit__title" title={target.title}>
+                  {target.title}
+                </span>
+                {flow?.status === 'ready' && flow.goals[0] !== undefined ? (
+                  <StatusChip tone={flow.goals[0].state.tone}>
+                    {flow.goals[0].state.label}
+                  </StatusChip>
+                ) : null}
+              </div>
+              {target.objective === undefined ? null : (
+                <p className="luwibot-cockpit__objective">{target.objective}</p>
               )}
-            </div>
+              <p className="luwibot-cockpit__status">
+                {target.state === 'blocked' && target.question !== undefined
+                  ? target.question
+                  : cockpitStatus(target.state, target.done, target.total)}
+              </p>
+              {flow?.status === 'ready' && (flow.goals[0]?.tasks.length ?? 0) > 0 ? (
+                <ul className="luwibot-cockpit__tasks">
+                  {flow.goals[0]?.tasks.map((task) => (
+                    <li key={task.id} className="luwibot-cockpit__task">
+                      <span className="luwibot-cockpit__task-label">{task.label}</span>
+                      <span className="luwibot-cockpit__task-chips">
+                        <StatusChip tone={task.state.tone}>{task.state.label}</StatusChip>
+                        {task.verdict === undefined ? null : (
+                          <StatusChip tone={task.verdict.tone}>{task.verdict.label}</StatusChip>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <div className="luwibot-cockpit__controls">
+                {target.state === 'plan_review' ? (
+                  <>
+                    <button
+                      type="button"
+                      className="luwibot-cockpit__btn luwibot-cockpit__btn--primary"
+                      disabled={pending !== undefined}
+                      onClick={() => setConfirmAction('approve_plan')}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      className="luwibot-cockpit__btn"
+                      disabled={pending !== undefined}
+                      onClick={() => setConfirmAction('reject_plan')}
+                    >
+                      Reject
+                    </button>
+                  </>
+                ) : null}
+                {target.state === 'blocked' ? (
+                  <form
+                    className="luwibot-cockpit__answer"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const text = answerRef.current?.value.trim() ?? '';
+                      if (text === '' || pending !== undefined) return;
+                      sendIntent('answer_goal', { text });
+                      if (answerRef.current) answerRef.current.value = '';
+                    }}
+                  >
+                    <textarea
+                      ref={answerRef}
+                      className="luwibot-cockpit__answer-input"
+                      rows={2}
+                      placeholder="Answer the blocked question…"
+                      aria-label="Answer"
+                      disabled={pending !== undefined}
+                    />
+                    <button
+                      type="submit"
+                      className="luwibot-cockpit__btn luwibot-cockpit__btn--primary"
+                      disabled={pending !== undefined}
+                    >
+                      Send answer
+                    </button>
+                  </form>
+                ) : null}
+                <button
+                  type="button"
+                  className="luwibot-cockpit__btn luwibot-cockpit__btn--danger"
+                  disabled={pending !== undefined}
+                  onClick={() => setConfirmAction('abandon_goal')}
+                >
+                  Stop
+                </button>
+                {intentError === undefined ? null : (
+                  <p className="luwibot-cockpit__error" role="status">
+                    {intentError}
+                  </p>
+                )}
+              </div>
+            </section>
           )}
           {confirmAction === undefined ? null : (
             <ConfirmDialog

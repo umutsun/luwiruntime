@@ -2,6 +2,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { AgentActivity } from '../api/agent-activity.js';
 import type { AutopilotFlow } from '../api/autopilot-flow.js';
 import type { ResourceState } from './panel.js';
 import { LuwiBotChat } from './luwibot-chat.js';
@@ -32,19 +33,28 @@ class FakeSocket {
   }
 }
 
-const ready = (flow: AutopilotFlow): ResourceState<AutopilotFlow> => ({
-  state: 'ready',
-  data: flow,
-});
-const loader = (flow: AutopilotFlow) => () => Promise.resolve(ready(flow));
+const flowReady = (flow: AutopilotFlow) => () =>
+  Promise.resolve<ResourceState<AutopilotFlow>>({ state: 'ready', data: flow });
+const activityReady = (agents: AgentActivity[]) => () =>
+  Promise.resolve<ResourceState<AgentActivity[]>>({ state: 'ready', data: agents });
+
 const oneGoal = (over: Partial<AutopilotFlow['goals'][number]>): AutopilotFlow => ({
-  goals: [{ id: 'g1', title: 'Add dates', state: 'running', tasks: [], ...over }],
+  goals: [
+    {
+      id: 'g1',
+      title: 'Add dates',
+      objective: 'Localize the dates',
+      state: 'running',
+      tasks: [],
+      ...over,
+    },
+  ],
   more: 0,
 });
 
-const openWidget = (flow: AutopilotFlow, hash = '#/pulse/p1') => {
+const open = (props: Parameters<typeof LuwiBotChat>[0], hash = '#/pulse/p1') => {
   window.location.hash = hash;
-  render(<LuwiBotChat loadAutopilotFlow={loader(flow)} />);
+  render(<LuwiBotChat {...props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Ask LuwiBot' }));
 };
 
@@ -64,44 +74,57 @@ afterEach(() => {
 });
 
 describe('LuwiBotChat cockpit', () => {
-  it("shows the focused project's active autopilot goal when open", async () => {
-    openWidget(
-      oneGoal({
-        title: 'Localized dates',
-        state: 'running',
-        tasks: [
-          { id: 't1', kind: 'review', agentId: 'reviewer-a', state: 'done', verdict: 'accept' },
-        ],
-      }),
-    );
+  it("shows the focused project's active goal with its state and verdict", async () => {
+    open({
+      loadAutopilotFlow: flowReady(
+        oneGoal({
+          title: 'Localized dates',
+          state: 'running',
+          tasks: [
+            { id: 't1', kind: 'review', agentId: 'reviewer-a', state: 'done', verdict: 'accept' },
+          ],
+        }),
+      ),
+    });
     await waitFor(() => expect(screen.getByText('Localized dates')).toBeTruthy());
     expect(screen.getByText('running')).toBeTruthy();
     expect(screen.getByText('accept')).toBeTruthy();
   });
 
-  it('shows no autopilot flow when no project is focused', async () => {
-    openWidget({ goals: [], more: 0 }, '#/pulse');
+  it('reads a proposed goal as queued with its objective, not "Planning…"', async () => {
+    open({
+      loadAutopilotFlow: flowReady(oneGoal({ state: 'proposed', objective: 'Ship the widget' })),
+    });
+    await waitFor(() => expect(screen.getByText('Queued · waiting to plan')).toBeTruthy());
+    expect(screen.getByText('Ship the widget')).toBeTruthy();
+    expect(screen.queryByText('Planning…')).toBeNull();
+  });
+
+  it('shows no cockpit when no project is focused', async () => {
+    open({ loadAutopilotFlow: flowReady({ goals: [], more: 0 }) }, '#/pulse');
     await waitFor(() => expect(screen.getByLabelText('LuwiBot assistant')).toBeTruthy());
-    expect(screen.queryByText('Autopilot flow')).toBeNull();
+    expect(screen.queryByLabelText('Autopilot goal')).toBeNull();
   });
 
   it('offers Approve/Reject and Stop on a plan_review goal, not Answer', async () => {
-    openWidget(oneGoal({ state: 'plan_review' }));
+    open({ loadAutopilotFlow: flowReady(oneGoal({ state: 'plan_review' })) });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy());
     expect(screen.getByRole('button', { name: 'Reject' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
     expect(screen.queryByLabelText('Answer')).toBeNull();
   });
 
-  it('offers the question and an Answer box on a blocked goal, not Approve', async () => {
-    openWidget(oneGoal({ state: 'blocked', question: 'Which timezone?' }));
+  it('shows the question and an Answer box on a blocked goal, not Approve', async () => {
+    open({
+      loadAutopilotFlow: flowReady(oneGoal({ state: 'blocked', question: 'Which timezone?' })),
+    });
     await waitFor(() => expect(screen.getByText('Which timezone?')).toBeTruthy());
     expect(screen.getByLabelText('Answer')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   });
 
   it('sends an approve_plan intent over the socket only after confirming', async () => {
-    openWidget(oneGoal({ state: 'plan_review' }));
+    open({ loadAutopilotFlow: flowReady(oneGoal({ state: 'plan_review' })) });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     expect(sentIntent()).toBeUndefined(); // dialog open, nothing sent yet
@@ -111,7 +134,7 @@ describe('LuwiBotChat cockpit', () => {
   });
 
   it('surfaces a refused intent error relayed from the server', async () => {
-    openWidget(oneGoal({ state: 'plan_review' }));
+    open({ loadAutopilotFlow: flowReady(oneGoal({ state: 'plan_review' })) });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy());
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
     fireEvent.click(screen.getByRole('button', { name: 'Approve plan' }));
@@ -125,5 +148,20 @@ describe('LuwiBotChat cockpit', () => {
       }),
     });
     await waitFor(() => expect(screen.getByText('plan not under review')).toBeTruthy());
+  });
+
+  it('shows the live agent activity strip with working and idle agents', async () => {
+    open({
+      loadAutopilotFlow: flowReady({ goals: [], more: 0 }),
+      loadAgentActivity: activityReady([
+        { agentId: 'coder', working: true },
+        { agentId: 'reviewer', working: false },
+      ]),
+    });
+    await waitFor(() => expect(screen.getByText('Live · 1 working')).toBeTruthy());
+    expect(screen.getByText('coder')).toBeTruthy();
+    expect(screen.getByText('reviewer')).toBeTruthy();
+    expect(screen.getByText('working')).toBeTruthy();
+    expect(screen.getByText('idle')).toBeTruthy();
   });
 });

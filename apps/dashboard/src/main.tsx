@@ -10,6 +10,7 @@ import { createCapabilityMutations, type CapabilityMutations } from './api/capab
 import { createAutopilotMutations, type AutopilotMutations } from './api/autopilot-mutations.js';
 import { loadAutopilotStatus } from './api/autopilot-status.js';
 import { loadAutopilotFlow } from './api/autopilot-flow.js';
+import { loadAgentActivity } from './api/agent-activity.js';
 import {
   createCoordinatorMutations,
   type CoordinatorMutations,
@@ -150,6 +151,9 @@ const fetchAutopilotStatus = (projectId: string, options?: { signal?: AbortSigna
 /** Same reason: the overview's autopilot-flow effect keys on this identity. */
 const fetchAutopilotFlow = (projectId: string, options?: { signal?: AbortSignal }) =>
   loadAutopilotFlow(client, projectId, options);
+/** Same reason: the LuwiBot widget's activity effect keys on this identity. */
+const fetchAgentActivity = (projectId: string, options?: { signal?: AbortSignal }) =>
+  loadAgentActivity(client, projectId, options);
 
 function DashboardRoute() {
   const [input, setInput] = useState<PulseInput>();
@@ -609,7 +613,7 @@ createRoot(root).render(
   <StrictMode>
     <DashboardErrorBoundary>
       <DashboardRoute />
-      <LuwiBotChat loadAutopilotFlow={fetchAutopilotFlow} />
+      <LuwiBotChat loadAutopilotFlow={fetchAutopilotFlow} loadAgentActivity={fetchAgentActivity} />
     </DashboardErrorBoundary>
   </StrictMode>,
 );
