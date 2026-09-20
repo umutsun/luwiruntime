@@ -804,3 +804,67 @@ button:focus-visible {
   width: 16px;
   height: 16px;
 }
+.luwibot-cockpit__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2h) var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+.luwibot-cockpit__btn {
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2h);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  cursor: pointer;
+}
+.luwibot-cockpit__btn:hover {
+  border-color: var(--border-strong);
+}
+.luwibot-cockpit__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.luwibot-cockpit__btn--danger {
+  color: var(--danger);
+}
+.luwibot-cockpit__answer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: 100%;
+}
+.luwibot-cockpit__question {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
+.luwibot-cockpit__answer-input {
+  resize: none;
+  max-height: 96px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-2h);
+  font-size: var(--font-size-sm);
+  font-family: var(--font-ui);
+  line-height: 1.5;
+}
+.luwibot-cockpit__answer-input:focus-visible {
+  outline: none;
+  border-color: var(--border-strong);
+  box-shadow: var(--focus);
+}
+.luwibot-cockpit__error {
+  margin: 0;
+  width: 100%;
+  color: var(--danger);
+  font-size: var(--font-size-sm);
+}

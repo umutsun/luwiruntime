@@ -609,7 +609,7 @@ createRoot(root).render(
   <StrictMode>
     <DashboardErrorBoundary>
       <DashboardRoute />
-      <LuwiBotChat />
+      <LuwiBotChat loadAutopilotFlow={fetchAutopilotFlow} />
     </DashboardErrorBoundary>
   </StrictMode>,
 );

@@ -19,6 +19,8 @@ export type FlowGoal = {
   title: string;
   state: Goal['state'];
   tasks: FlowTask[];
+  /** The blocked-goal escalation question, when the goal is awaiting an operator answer. */
+  question?: string;
 };
 export type AutopilotFlow = { goals: FlowGoal[]; more: number };
 
@@ -64,6 +66,7 @@ export async function loadAutopilotFlow(
     id: goal.id,
     title: goal.title,
     state: goal.state,
+    ...(goal.escalation === undefined ? {} : { question: goal.escalation.question }),
     tasks: goal.taskIds
       .map((id) => tasksById.get(id))
       .filter((task): task is Task => task !== undefined)

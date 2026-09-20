@@ -1,6 +1,7 @@
 import { abbreviateId, formatRelativeTime } from '../components/format.js';
 import { CopyIdButton } from '../components/id-badge.js';
 import { StatusChip } from '../components/status-chip.js';
+import { FlowPanelView } from './flow-panel-view.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
 import type { Focus, OverviewSession, PanelLink, PanelModel } from './model.js';
 
@@ -205,47 +206,7 @@ export function DrillDown({
         )}
       </div>
 
-      {panel.flow === undefined ? null : (
-        <div className="drill__flow">
-          <p className="drill__section-label">Autopilot flow</p>
-          {panel.flow.status === 'loading' ? (
-            <p className="drill__empty">Reading goals…</p>
-          ) : panel.flow.status === 'unavailable' ? (
-            <p className="drill__empty">Flow unavailable</p>
-          ) : panel.flow.status === 'empty' ? (
-            <p className="drill__empty">No goals in flight</p>
-          ) : (
-            panel.flow.goals.map((goal) => (
-              <div key={goal.id} className="drill__flow-goal">
-                <div className="drill__flow-goal-head">
-                  <span className="drill__flow-goal-title" title={goal.title}>
-                    {goal.title}
-                  </span>
-                  <StatusChip tone={goal.state.tone}>{goal.state.label}</StatusChip>
-                </div>
-                {goal.tasks.length === 0 ? (
-                  <p className="drill__empty">Planning…</p>
-                ) : (
-                  goal.tasks.map((task) => (
-                    <div key={task.id} className="drill__flow-task">
-                      <span className="drill__flow-task-label">{task.label}</span>
-                      <span className="drill__flow-task-chips">
-                        <StatusChip tone={task.state.tone}>{task.state.label}</StatusChip>
-                        {task.verdict === undefined ? null : (
-                          <StatusChip tone={task.verdict.tone}>{task.verdict.label}</StatusChip>
-                        )}
-                      </span>
-                    </div>
-                  ))
-                )}
-              </div>
-            ))
-          )}
-          {panel.flow.more > 0 ? (
-            <p className="drill__empty">+{String(panel.flow.more)} more goal(s)</p>
-          ) : null}
-        </div>
-      )}
+      {panel.flow === undefined ? null : <FlowPanelView panel={panel.flow} />}
 
       {coordinatorNote === undefined ? null : (
         <p className="drill__empty" role="status">
