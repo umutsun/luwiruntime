@@ -138,14 +138,14 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
   }, [messages, busy]);
 
-  // While open, mirror the focused project's live state into the widget —
-  // read-only, refreshed every 5s and on hash change, keyed to focus: the agent
-  // activity strip (who is working now) and the autopilot goal cockpit.
-  // `autopilotFlowPanel` is the same pure model the overview drill-down uses.
+  // Mirror the focused project's live state into the widget whenever one is
+  // focused — even collapsed, so the docked bar shows live status (who is
+  // working, a goal awaiting a gate). Read-only, refreshed every 5s and on hash
+  // change. `autopilotFlowPanel` is the same pure model the drill-down uses.
   useEffect(() => {
     const load = props.loadAutopilotFlow;
     const loadActivity = props.loadAgentActivity;
-    if (!open || load === undefined) {
+    if (load === undefined) {
       setFlow(undefined);
       setTarget(undefined);
       setActivity([]);
@@ -196,7 +196,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       window.clearInterval(timer);
       window.removeEventListener('hashchange', onHash);
     };
-  }, [open, props.loadAutopilotFlow, props.loadAgentActivity]);
+  }, [props.loadAutopilotFlow, props.loadAgentActivity]);
 
   // Connect-or-queue send, shared by the chat turn and the cockpit intents.
   const rawSend = (frame: unknown) => {
@@ -244,6 +244,20 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         : status === 'error'
           ? 'LuwiBot unreachable'
           : 'Not connected';
+
+  // The docked bar's live line: a goal awaiting a gate wins (it needs the
+  // operator), then in-flight work, then fleet activity, then idle.
+  const workingCount = activity.filter((agent) => agent.working).length;
+  const bar: { text: string; tone: 'attention' | 'working' | 'idle' } =
+    target?.state === 'plan_review'
+      ? { text: 'Plan ready · review', tone: 'attention' }
+      : target?.state === 'blocked'
+        ? { text: 'Blocked · needs you', tone: 'attention' }
+        : target !== undefined
+          ? { text: cockpitStatus(target.state, target.done, target.total), tone: 'working' }
+          : workingCount > 0
+            ? { text: `${String(workingCount)} working`, tone: 'working' }
+            : { text: 'Idle', tone: 'idle' };
 
   return (
     <div className="luwibot">
@@ -460,19 +474,23 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       ) : null}
       <button
         type="button"
-        className="luwibot__fab"
+        className={`luwibot__bar luwibot__bar--${bar.tone}`}
         aria-label="Ask LuwiBot"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
+        <span className="luwibot__bar-dot" aria-hidden="true" />
+        <span className="luwibot__bar-title">LuwiBot</span>
+        {open ? null : <span className="luwibot__bar-summary">{bar.text}</span>}
         <svg
-          viewBox="0 0 24 24"
+          className="luwibot__bar-chevron"
+          viewBox="0 0 16 16"
           fill="none"
           stroke="currentColor"
-          strokeWidth="1.8"
+          strokeWidth="1.6"
           aria-hidden="true"
         >
-          <path d="M4 5.5h16v10H9l-4 3.5v-3.5H4z" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M4 10l4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </button>
     </div>

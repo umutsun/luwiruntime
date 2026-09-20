@@ -622,52 +622,107 @@ button:focus-visible {
  */
 .luwibot {
   position: fixed;
-  left: var(--space-5);
-  /* Sits at the bottom-left, lifted clear of the 44px STREAM ticker so it never
-     overlaps the ticker or the lens (e.g. the radial events/min gauge). */
-  bottom: calc(44px + var(--space-4));
+  left: 0;
+  bottom: 0;
   z-index: 90;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+}
+/* The docked launcher: a live status bar at the bottom-left, not a floating
+   bubble. It reads the fleet even collapsed (a pulse when work is live, the
+   goal state when one awaits a gate), so it is a status readout, not just an
+   "ask" button. */
+.luwibot__bar {
+  width: 360px;
+  max-width: 100vw;
+  height: 44px;
+  display: flex;
+  align-items: center;
   gap: var(--space-2);
-}
-.luwibot__fab {
-  width: 48px;
-  height: 48px;
-  display: grid;
-  place-items: center;
-  background: var(--ink);
-  color: var(--paper);
+  padding: 0 var(--space-3);
+  background: var(--surface-1);
+  color: var(--text);
   border: none;
-  border-radius: var(--radius-pill);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-top-right-radius: var(--radius-md);
+  font-family: var(--font-ui);
+  text-align: left;
   cursor: pointer;
-  transition: transform var(--dur-1) var(--ease);
+  transition: background var(--dur-1) var(--ease);
 }
-.luwibot__fab:hover {
-  transform: translateY(-1px);
+.luwibot__bar:hover {
+  background: var(--surface-3);
 }
-.luwibot__fab:focus-visible {
+.luwibot__bar:focus-visible {
   outline: none;
   box-shadow: var(--focus);
 }
-.luwibot__fab svg {
-  width: 22px;
-  height: 22px;
+.luwibot__bar-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--text-dim);
+}
+.luwibot__bar--idle .luwibot__bar-dot {
+  background: var(--text-dim);
+}
+.luwibot__bar--working .luwibot__bar-dot {
+  background: var(--success);
+  animation: luwibot-pulse 1.6s ease-in-out infinite;
+}
+.luwibot__bar--attention .luwibot__bar-dot {
+  background: var(--warning);
+  animation: luwibot-pulse 1s ease-in-out infinite;
+}
+.luwibot__bar-title {
+  flex: none;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+.luwibot__bar-summary {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.luwibot__bar--attention .luwibot__bar-summary {
+  color: var(--warning);
+}
+.luwibot__bar-chevron {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease);
+}
+.luwibot__bar[aria-expanded='true'] .luwibot__bar-chevron {
+  transform: rotate(180deg);
 }
 .luwibot__panel {
   width: 360px;
-  max-width: calc(100vw - var(--space-8));
+  max-width: 100vw;
   height: 460px;
-  max-height: calc(100vh - var(--space-8));
+  max-height: calc(100vh - 44px - var(--space-4));
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  border-bottom: none;
+  border-top-right-radius: var(--radius-lg);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+@media (prefers-reduced-motion: reduce) {
+  .luwibot__bar--working .luwibot__bar-dot,
+  .luwibot__bar--attention .luwibot__bar-dot {
+    animation: none;
+  }
 }
 .luwibot__head {
   display: flex;
