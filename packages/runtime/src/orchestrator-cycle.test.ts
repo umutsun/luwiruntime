@@ -157,6 +157,29 @@ describe('planCycle', () => {
     ).toEqual([{ type: 'judge', kind: 'review', goalId: 'goal-1', taskId: 't1' }]);
   });
 
+  it('escalates instead of re-dispatching forever when the reviewer is unavailable', () => {
+    const reviewing = task('t1', {
+      state: 'done',
+      verification: { checks: [], reviewTaskId: 'r1' },
+    });
+    const review = task('r1', {
+      kind: 'review',
+      reviewOf: 't1',
+      agentId: 'codex',
+      state: 'ready',
+      lastDenial: {
+        reason: 'worker_unavailable',
+        detail: 'No online, ready session of codex in this project.',
+        at: nowIso,
+      },
+    });
+    expect(
+      planCycle(state({ goals: [goal({ taskIds: ['t1'] })], tasks: [reviewing, review] })),
+    ).toMatchObject([
+      { type: 'escalate', goalId: 'goal-1', reason: 'worker_unavailable', taskId: 't1' },
+    ]);
+  });
+
   it('judges directly when no reviewer is configured', () => {
     const done = task('t1', { state: 'done', verification: { checks: [] } });
     expect(

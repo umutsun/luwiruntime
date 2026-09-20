@@ -163,6 +163,23 @@ export function planCycle(state: CycleState): CycleAction[] {
           ? undefined
           : state.tasks.find((task) => task.id === reviewTaskId);
       if (reviewTask !== undefined && !isTerminalTaskState(reviewTask.state)) {
+        // A review dispatch that keeps being denied because the reviewer has no
+        // online session would loop every tick and stall the goal on verify
+        // silently (measured live: a reviewer out of credits). Park it for the
+        // operator instead — answering once the reviewer is back retries.
+        if (
+          (reviewTask.state === 'ready' || reviewTask.state === 'approved') &&
+          reviewTask.lastDenial?.reason === 'worker_unavailable'
+        ) {
+          actions.push({
+            type: 'escalate',
+            goalId: goal.id,
+            reason: 'worker_unavailable',
+            taskId: needsVerdict.id,
+            question: `The reviewer (${state.policy.reviewerAgentId ?? 'unassigned'}) is unavailable to verify task "${needsVerdict.title}": ${reviewTask.lastDenial.detail}. Answer once it is back to retry, or abandon the goal.`,
+          });
+          continue;
+        }
         // The reviewer is still working; dispatch it if it has not gone out yet.
         if (
           (reviewTask.state === 'ready' || reviewTask.state === 'approved') &&
