@@ -612,3 +612,70 @@ describe('native link point-in-time lookup', () => {
     await expect(repository.findNativeLinkAt(bindingId, linkedMs + 1)).resolves.toBeNull();
   });
 });
+
+/**
+ * A single poison project record must not abort the whole project listing.
+ *
+ * The daemon's recovery cycle reads every project (`reconcileCanonicalControlPlane`
+ * → `listProjects`), so a `Promise.all` there let ONE invalid projection reject the
+ * batch, fail recovery, and — retried against the same record — leave the daemon
+ * permanently degraded after any transient Redis drop. This mirrors the same
+ * tolerance `listSessions` already carries.
+ */
+class RoutingCommandClient implements RedisCommandClient {
+  readonly commands: string[][] = [];
+  constructor(private readonly handle: (command: string[]) => unknown) {}
+  async sendCommand(arguments_: readonly string[]): Promise<unknown> {
+    this.commands.push([...arguments_]);
+    return this.handle([...arguments_]);
+  }
+}
+
+const validProjectHash = (id: string): Record<string, string> => ({
+  id,
+  name: `Project ${id}`,
+  localPath: 'C:/workspace/luwi',
+  canonicalPath: 'C:/workspace/luwi',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+});
+
+describe('listProjects poison tolerance', () => {
+  const keys = createRedisKeys();
+  const makeRepository = (handle: (command: string[]) => unknown) =>
+    createRuntimeRepository({
+      client: new RoutingCommandClient(handle),
+      keys,
+      functions: createFunctionRegistry(),
+    });
+
+  it('drops one invalid project projection instead of aborting the whole listing', async () => {
+    const repository = makeRepository((command) => {
+      if (command[0] === 'SMEMBERS' && command[1] === keys.projectsIndex)
+        return ['project-good', 'project-poison'];
+      if (command[0] === 'HGETALL' && command[1] === keys.project('project-good'))
+        return validProjectHash('project-good');
+      // A non-empty but schema-invalid hash: the SMEMBERS→HGETALL window caught a
+      // partial write, so `getProject` throws REDIS_DATA_INVALID.
+      if (command[0] === 'HGETALL' && command[1] === keys.project('project-poison'))
+        return { id: 'project-poison' };
+      return null;
+    });
+
+    const projects = await repository.listProjects();
+
+    expect(projects.map((project) => project.id)).toEqual(['project-good']);
+  });
+
+  it('keeps the single-project getProject strict on the same record', async () => {
+    const repository = makeRepository((command) =>
+      command[0] === 'HGETALL' && command[1] === keys.project('project-poison')
+        ? { id: 'project-poison' }
+        : null,
+    );
+
+    await expect(repository.getProject('project-poison')).rejects.toThrow(
+      /invalid project projection/i,
+    );
+  });
+});

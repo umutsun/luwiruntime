@@ -1072,9 +1072,21 @@ export function createRuntimeRepository(options: {
         'project',
       );
 
-      const projects = (
-        await Promise.all(projectIds.map(async (projectId) => this.getProject(projectId)))
-      ).filter((project): project is Project => project !== null);
+      // A bulk listing tolerates one unreadable record; it must not let it abort
+      // the whole snapshot. A project id sits in the index while its hash is being
+      // written or removed, so the SMEMBERS→HGETALL window can catch a partial or
+      // vanished hash and `getProject` throws `REDIS_DATA_INVALID`. Dropping that
+      // one id keeps the rest visible and is race-consistent — and, crucially, the
+      // daemon's recovery cycle reads every project here, so a strict `Promise.all`
+      // let one poison record fail recovery and leave the daemon permanently
+      // degraded after any transient Redis drop. The single-lookup `getProject`
+      // stays strict: a caller that named one project must hear the truth about it.
+      const settled = await Promise.allSettled(
+        projectIds.map(async (projectId) => this.getProject(projectId)),
+      );
+      const projects = settled.flatMap((result) =>
+        result.status === 'fulfilled' && result.value !== null ? [result.value] : [],
+      );
       return projects.sort(
         (left, right) =>
           left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
