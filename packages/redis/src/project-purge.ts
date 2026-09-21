@@ -67,6 +67,49 @@ type StoredMessage = {
   idempotencyKeyHash?: string;
 };
 
+/**
+ * Removes one terminal session's Redis leaves. Shared by project unregister (the
+ * per-session block below) and the terminal-session retention sweep, so both purge
+ * exactly the same set. Plain re-runnable commands, no Function, no event — a dumb
+ * delete; the caller gates on terminal status.
+ *
+ * Order is crash-safe: the owned keys and records go first, index memberships
+ * after, and `projectSessions` — the enumeration spine — DEAD LAST, so a crash
+ * mid-purge strands at most a dangling index member (tolerated: `listSessions`
+ * drops null/rejected reads) and never an orphaned record with no index.
+ *
+ * Deliberately NOT removed here (matching the surrounding project loops that own
+ * them): shared evidence records (usage, messages, commits, context, file-change),
+ * released/expired lease records reachable by id only, session-scoped usage-metric
+ * counters, and native bindings/links (bounded by their own retention).
+ */
+export async function purgeTerminalSessionLeaves(
+  client: RedisCommandClient,
+  keys: RedisKeys,
+  sessionId: string,
+  agentId: string | undefined,
+  projectId: string,
+): Promise<void> {
+  const send = (command: string[]): Promise<unknown> => client.sendCommand(command);
+  await send([
+    'DEL',
+    keys.session(sessionId),
+    keys.sessionPresence(sessionId),
+    keys.sessionLeases(sessionId),
+    keys.sessionNativeBinding(sessionId),
+    keys.sourceSessionMessages(sessionId),
+    keys.targetSessionMessages(sessionId),
+    keys.sessionUsage(sessionId),
+    keys.sessionCommits(sessionId),
+    keys.sessionContextContributions(sessionId),
+  ]);
+  // The inbox stream carries its consumer group with it.
+  await send(['UNLINK', keys.sessionInbox(sessionId)]);
+  await send(['ZREM', keys.heartbeatDeadlines, sessionId]);
+  if (agentId !== undefined) await send(['SREM', keys.agentSessions(agentId), sessionId]);
+  await send(['SREM', keys.projectSessions(projectId), sessionId]);
+}
+
 export function createProjectPurge(options: {
   client: RedisCommandClient;
   keys: RedisKeys;
@@ -178,22 +221,7 @@ export function createProjectPurge(options: {
       }
 
       for (const { sessionId, agentId } of sessions) {
-        await del(
-          keys.session(sessionId),
-          keys.sessionPresence(sessionId),
-          keys.sessionLeases(sessionId),
-          keys.sessionNativeBinding(sessionId),
-          keys.sourceSessionMessages(sessionId),
-          keys.targetSessionMessages(sessionId),
-          keys.sessionUsage(sessionId),
-          keys.sessionCommits(sessionId),
-          keys.sessionContextContributions(sessionId),
-        );
-        // The inbox stream carries its consumer group with it.
-        await send(['UNLINK', keys.sessionInbox(sessionId)]);
-        await zrem(keys.heartbeatDeadlines, sessionId);
-        if (agentId !== undefined) await srem(keys.agentSessions(agentId), sessionId);
-        await srem(keys.projectSessions(projectId), sessionId);
+        await purgeTerminalSessionLeaves(client, keys, sessionId, agentId, projectId);
         count('sessions');
       }
       await del(keys.projectLeases(projectId));

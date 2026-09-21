@@ -64,6 +64,18 @@ export type {
   PresenceSweeperOptions,
   PresenceSweeperRepository,
 } from './presence-sweeper.js';
+export {
+  createTerminalSessionRetentionSweeper,
+  evaluateSessionRetention,
+} from './terminal-session-retention-sweeper.js';
+export type {
+  SessionRetentionDecision,
+  SessionRetentionObservation,
+  TerminalSessionRetentionInput,
+  TerminalSessionRetentionSweepResult,
+  TerminalSessionRetentionSweeper,
+  TerminalSessionRetentionSweeperOptions,
+} from './terminal-session-retention-sweeper.js';
 export { createStartingSessionReaper } from './starting-session-reaper.js';
 export type {
   ReapStartingOutcome,

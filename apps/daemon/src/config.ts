@@ -46,6 +46,19 @@ const environmentSchema = z.object({
   LUWI_STREAM_MAXLEN_DEAD_LETTER: z.coerce.number().int().min(10).default(10_000),
   LUWI_RETENTION_INTERVAL_MS: z.coerce.number().int().min(1_000).default(60_000),
   LUWI_NATIVE_LINK_RETENTION_MAX: z.coerce.number().int().min(1).max(1_000_000).default(1_000),
+  // Terminal sessions are never trimmed on their own; purge them past this age.
+  // The floor IS the message max timeout, never below it: a session purged before
+  // an in-flight message to it could resolve would let the timeout branch XADD to
+  // its now-missing inbox and recreate it as a groupless orphan stream that leaks
+  // forever (§7). At or above 24h, every message that targeted the session has hit
+  // its deadline and been resolved before the session is eligible, so the UNLINK
+  // drops nothing recoverable. Default equals the floor.
+  LUWI_TERMINAL_SESSION_RETENTION_MS: z.coerce
+    .number()
+    .int()
+    .min(MESSAGE_MAX_TIMEOUT_MS)
+    .default(MESSAGE_MAX_TIMEOUT_MS),
+  LUWI_TERMINAL_SESSION_SWEEP_BATCH_SIZE: z.coerce.number().int().min(1).max(5_000).default(500),
   LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS: z.coerce.number().int().min(50).default(1_000),
   LUWI_MESSAGE_TIMEOUT_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
   LUWI_MESSAGE_MAX_CONTENT_BYTES: z.coerce
@@ -183,6 +196,8 @@ export type DaemonConfig = {
   deadLetterStreamMaxLength?: number;
   retentionIntervalMs?: number;
   nativeLinkRetentionMax?: number;
+  terminalSessionRetentionMs?: number;
+  terminalSessionSweepBatchSize?: number;
   messageTimeoutSweepIntervalMs?: number;
   messageTimeoutBatchSize?: number;
   messageMaxContentBytes?: number;
@@ -322,6 +337,8 @@ export function loadDaemonConfig(
     deadLetterStreamMaxLength: parsed.LUWI_STREAM_MAXLEN_DEAD_LETTER,
     retentionIntervalMs: parsed.LUWI_RETENTION_INTERVAL_MS,
     nativeLinkRetentionMax: parsed.LUWI_NATIVE_LINK_RETENTION_MAX,
+    terminalSessionRetentionMs: parsed.LUWI_TERMINAL_SESSION_RETENTION_MS,
+    terminalSessionSweepBatchSize: parsed.LUWI_TERMINAL_SESSION_SWEEP_BATCH_SIZE,
     capabilityRoots,
     messageTimeoutSweepIntervalMs: parsed.LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS,
     messageTimeoutBatchSize: parsed.LUWI_MESSAGE_TIMEOUT_BATCH_SIZE,

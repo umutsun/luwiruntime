@@ -19,6 +19,7 @@ import {
   createProjectPurge,
   createRedisKeys,
   createRuntimeRepository,
+  purgeTerminalSessionLeaves,
   ensureRealtimeStreamGroup,
   readLatestRuntimeEvents,
   REALTIME_CONSUMER_GROUP,
@@ -40,6 +41,7 @@ import {
   createPresenceSweeper,
   createRuntimeReadiness,
   createStartingSessionReaper,
+  createTerminalSessionRetentionSweeper,
   NATIVE_DECLARATION_MAX_ATTEMPTS,
   type NativeLinkRetentionRepository,
   type PresenceSweeperRepository,
@@ -367,6 +369,8 @@ const defaults = {
   deadLetterStreamMaxLength: 10_000,
   retentionIntervalMs: 60_000,
   nativeLinkRetentionMax: 1_000,
+  terminalSessionRetentionMs: 86_400_000,
+  terminalSessionSweepBatchSize: 500,
   messageTimeoutSweepIntervalMs: 1_000,
   messageTimeoutBatchSize: 100,
   messageMaxContentBytes: 32_768,
@@ -928,6 +932,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     repository: createNativeLinkRetentionRepository({ repository }),
     retentionMax: setting(config, 'nativeLinkRetentionMax'),
   });
+  // Terminal sessions are never trimmed on their own; this purges the old ones in
+  // bounded batches, riding the retention tick's already-read session list. The
+  // key removal is the same one project unregister uses (purgeTerminalSessionLeaves).
+  const terminalSessionRetentionSweeper = createTerminalSessionRetentionSweeper({
+    now: () => Date.now(),
+    retentionMs: setting(config, 'terminalSessionRetentionMs'),
+    batchSize: setting(config, 'terminalSessionSweepBatchSize'),
+    purge: ({ id, projectId, agentId }) =>
+      purgeTerminalSessionLeaves(connections.command, keys, id, agentId, projectId),
+  });
   // Reads the developer's native transcripts and attributes each request's
   // tokens to the session that held the native session at that instant. The
   // root follows nativeHome so a fixture run stays isolated from the real
@@ -1194,6 +1208,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       messageTimeoutSweeper.stop();
       leaseExpirySweeper.stop();
       nativeLinkRetentionSweeper.stop();
+      terminalSessionRetentionSweeper.stop();
       if (sweepTimer !== undefined) {
         clearInterval(sweepTimer);
       }
@@ -1484,6 +1499,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
               // already read: a timer of its own would be a second thing to
               // clear on shutdown for no gain.
               await nativeLinkRetentionSweeper.sweepOnce(sessions.map(({ id }) => id));
+              // Same tick, same session list: purge the sessions that have been
+              // terminal past the retention age so the observed set stops growing.
+              await terminalSessionRetentionSweeper.sweepOnce(sessions);
               // The autopilot reconciliation rides here too (ADR 0035): it repairs
               // a dispatch interrupted between its steps and closes a task whose
               // message ended while the inline seam was not there to see it.

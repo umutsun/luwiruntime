@@ -95,7 +95,7 @@ export type {
   CoordinatorRepository,
   ReleaseCoordinatorResult,
 } from './coordinator-repository.js';
-export { createProjectPurge } from './project-purge.js';
+export { createProjectPurge, purgeTerminalSessionLeaves } from './project-purge.js';
 export type { ProjectPurge, ProjectPurgeSummary } from './project-purge.js';
 export { claimSessionInbox, ensureSessionInboxGroup } from './session-inbox.js';
 export type { ClaimSessionInboxInput } from './session-inbox.js';
