@@ -117,6 +117,9 @@ describe('LuwiBotChat cockpit', () => {
     expect(screen.getByRole('button', { name: 'Reject' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
     expect(screen.queryByLabelText('Answer')).toBeNull();
+    // The agentic rail marks Review as the operator's active touchpoint.
+    expect(screen.getByLabelText('Where you come in')).toBeTruthy();
+    expect(screen.getByText('Your turn — approve or reject the plan.')).toBeTruthy();
   });
 
   it('shows the question and an Answer box on a blocked goal, not Approve', async () => {
@@ -166,5 +169,46 @@ describe('LuwiBotChat cockpit', () => {
     await waitFor(() => expect(screen.getByText(/1 working · 1 idle/)).toBeTruthy());
     expect(screen.getByText('coder')).toBeTruthy(); // working → listed
     expect(screen.queryByText('reviewer')).toBeNull(); // idle → summarized, not listed
+  });
+
+  it('marks the launcher offline and refuses to open a dead cockpit', async () => {
+    window.location.hash = '#/pulse/p1';
+    render(<LuwiBotChat loadAutopilotFlow={flowReady({ goals: [], more: 0 })} />);
+    // The socket warms on mount; a refused connection marks the chat offline —
+    // distinct from an idle fleet, which stays openable.
+    lastSocket()?.emit('error', {});
+    const bar = await screen.findByRole('button', { name: 'LuwiBot offline' });
+    expect((bar as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(bar);
+    expect(screen.queryByLabelText('LuwiBot assistant')).toBeNull(); // did not open
+  });
+
+  it('opens normally when the fleet is merely idle (reachable, not offline)', async () => {
+    window.location.hash = '#/pulse/p1';
+    render(<LuwiBotChat loadAutopilotFlow={flowReady({ goals: [], more: 0 })} />);
+    lastSocket()?.emit('open', {}); // reachable, idle fleet
+    const bar = await screen.findByRole('button', { name: 'Ask LuwiBot' });
+    expect((bar as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(bar);
+    await waitFor(() => expect(screen.getByLabelText('LuwiBot assistant')).toBeTruthy());
+  });
+
+  it('surfaces the autopilot project cockpit when none is focused', async () => {
+    // Bare overview, no project focused — the cockpit should still follow the work.
+    open(
+      {
+        loadAutopilotFlow: flowReady(oneGoal({ state: 'running' })),
+        loadAutopilotProjects: async () => ['p1'],
+      },
+      '#/pulse',
+    );
+    await waitFor(() => expect(screen.getByLabelText('Autopilot goal')).toBeTruthy());
+    expect(screen.getByText('Add dates')).toBeTruthy(); // the goal title, without a focus
+  });
+
+  it('stays chat-only with no focus and no autopilot project', async () => {
+    open({ loadAutopilotFlow: flowReady(oneGoal({ state: 'running' })) }, '#/pulse');
+    await waitFor(() => expect(screen.getByLabelText('LuwiBot assistant')).toBeTruthy());
+    expect(screen.queryByLabelText('Autopilot goal')).toBeNull(); // no reader → no cockpit
   });
 });

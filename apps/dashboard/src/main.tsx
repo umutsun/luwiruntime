@@ -10,6 +10,7 @@ import { createCapabilityMutations, type CapabilityMutations } from './api/capab
 import { createAutopilotMutations, type AutopilotMutations } from './api/autopilot-mutations.js';
 import { loadAutopilotStatus } from './api/autopilot-status.js';
 import { loadAutopilotFlow } from './api/autopilot-flow.js';
+import { loadAutopilotProjects } from './api/autopilot-projects.js';
 import { loadAgentActivity } from './api/agent-activity.js';
 import {
   createCoordinatorMutations,
@@ -156,6 +157,9 @@ const fetchAutopilotFlow = (projectId: string, options?: { signal?: AbortSignal 
 /** Same reason: the LuwiBot widget's activity effect keys on this identity. */
 const fetchAgentActivity = (projectId: string, options?: { signal?: AbortSignal }) =>
   loadAgentActivity(client, projectId, options);
+/** Stable identity so the widget's flow effect can key on it too. */
+const fetchAutopilotProjects = (options?: { signal?: AbortSignal }) =>
+  loadAutopilotProjects(client, options);
 
 function DashboardRoute() {
   const [input, setInput] = useState<PulseInput>();
@@ -617,7 +621,11 @@ createRoot(root).render(
   <StrictMode>
     <DashboardErrorBoundary>
       <DashboardRoute />
-      <LuwiBotChat loadAutopilotFlow={fetchAutopilotFlow} loadAgentActivity={fetchAgentActivity} />
+      <LuwiBotChat
+        loadAutopilotFlow={fetchAutopilotFlow}
+        loadAgentActivity={fetchAgentActivity}
+        loadAutopilotProjects={fetchAutopilotProjects}
+      />
     </DashboardErrorBoundary>
   </StrictMode>,
 );

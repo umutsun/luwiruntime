@@ -5,6 +5,7 @@ import type { AgentActivity } from '../api/agent-activity.js';
 import { autopilotFlowPanel, type FlowPanel } from '../overview/model.js';
 import { parseRoute } from '../routing.js';
 import { ConfirmDialog } from './confirm-dialog.js';
+import { agenticStages, involvement } from './agentic-flow.js';
 import { cockpitStatus } from './luwibot-cockpit.js';
 import { StatusChip } from './status-chip.js';
 import type { ResourceState } from './panel.js';
@@ -61,6 +62,11 @@ type LuwiBotChatProps = {
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<AgentActivity[]>>;
+  /**
+   * The autopilot-enabled projects, so the cockpit can surface the one doing work
+   * when none is focused. Absent leaves the cockpit focus-only.
+   */
+  loadAutopilotProjects?: (options?: { signal?: AbortSignal }) => Promise<string[]>;
 };
 
 export function LuwiBotChat(props: LuwiBotChatProps = {}) {
@@ -88,6 +94,11 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   const [intentError, setIntentError] = useState<string>();
   const [messages, setMessages] = useState<Msg[]>([]);
   const [status, setStatus] = useState<Status>('idle');
+  // Chat-backend reachability, kept apart from the fleet-activity tone: undefined
+  // until the first attempt settles, true once the socket opens, false after a
+  // refused or errored connection. It drives the offline guard on the launcher —
+  // an idle fleet (a dim tone) must never read as an offline chat.
+  const [reachable, setReachable] = useState<boolean>();
   const [busy, setBusy] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
@@ -99,12 +110,18 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
     const ws = new WebSocket(WS_URL);
     socketRef.current = ws;
     setStatus('connecting');
-    ws.addEventListener('open', () => setStatus('open'));
+    ws.addEventListener('open', () => {
+      setStatus('open');
+      setReachable(true);
+    });
     ws.addEventListener('close', () => {
       if (socketRef.current === ws) socketRef.current = null;
       setStatus('idle');
     });
-    ws.addEventListener('error', () => setStatus('error'));
+    ws.addEventListener('error', () => {
+      setStatus('error');
+      setReachable(false);
+    });
     ws.addEventListener('message', (event: MessageEvent<string>) => {
       let data: { kind?: string; requestId?: string; ok?: boolean; reply?: string; error?: string };
       try {
@@ -130,12 +147,25 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
     return ws;
   };
 
-  // Warm the socket when the panel opens, so the status dot is honest before the
-  // first send. Closed on unmount.
+  // Keep the socket warm from mount, so the collapsed launcher knows whether the
+  // chat backend is reachable before it is ever opened — opening must never
+  // reveal a dead cockpit. A refused or dropped socket is retried on a slow
+  // timer so a LuwiBot restart re-connects on its own; closed on unmount.
   useEffect(() => {
-    if (open && socketRef.current === null) connect();
-  }, [open]);
-  useEffect(() => () => socketRef.current?.close(), []);
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const ensure = () => {
+      if (socketRef.current !== null) return;
+      connect().addEventListener('close', () => {
+        retry = setTimeout(ensure, 5000);
+      });
+    };
+    ensure();
+    return () => {
+      if (retry !== undefined) clearTimeout(retry);
+      socketRef.current?.close();
+    };
+    // `connect` closes over refs and stable setters; warmed once for the widget's life.
+  }, []);
   useEffect(() => {
     logRef.current?.scrollTo(0, logRef.current.scrollHeight);
   }, [messages, busy]);
@@ -153,10 +183,18 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       setActivity([]);
       return;
     }
+    const loadProjects = props.loadAutopilotProjects;
     let cancelled = false;
     const controller = new AbortController();
     const run = async () => {
-      const projectId = focusedProjectId();
+      const signal = { signal: controller.signal };
+      // Focus wins; with nothing focused, surface the project running autopilot so
+      // the cockpit follows the work instead of vanishing on the bare overview.
+      let projectId = focusedProjectId();
+      if (projectId === undefined && loadProjects !== undefined) {
+        projectId = (await loadProjects(signal))[0];
+        if (cancelled) return;
+      }
       if (projectId === undefined) {
         if (!cancelled) {
           setFlow(undefined);
@@ -165,7 +203,6 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         }
         return;
       }
-      const signal = { signal: controller.signal };
       const [flowResult, activityResult] = await Promise.all([
         load(projectId, signal),
         loadActivity ? loadActivity(projectId, signal) : Promise.resolve(undefined),
@@ -198,7 +235,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       window.clearInterval(timer);
       window.removeEventListener('hashchange', onHash);
     };
-  }, [props.loadAutopilotFlow, props.loadAgentActivity]);
+  }, [props.loadAutopilotFlow, props.loadAgentActivity, props.loadAutopilotProjects]);
 
   // Connect-or-queue send, shared by the chat turn and the cockpit intents.
   const rawSend = (frame: unknown) => {
@@ -255,6 +292,16 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   // "LuwiBot" identity, so the open panel's header shows the live autopilot
   // status instead of repeating the name. Off a focus it names itself.
   const headline = flow === undefined ? 'LuwiBot' : `Autopilot · ${tone.title}`;
+
+  // Genuinely unreachable chat backend — a failed connection that has not
+  // re-opened — as opposed to a merely idle fleet (a dim tone). The launcher
+  // refuses to open a cockpit that cannot talk to LuwiBot.
+  const chatOffline = reachable === false;
+
+  // The agentic pipeline of the goal in flight, so the operator sees where the
+  // loop is and where it hands back to them (the `you` stage + the line below).
+  const stages = target === undefined ? [] : agenticStages(target.state, target.done, target.total);
+  const where = target === undefined ? { you: false, text: '' } : involvement(target.state);
 
   return (
     <div className="luwibot">
@@ -344,11 +391,51 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               {target.objective === undefined ? null : (
                 <p className="luwibot-cockpit__objective">{target.objective}</p>
               )}
-              <p className="luwibot-cockpit__status">
+              <ol className="agentic-rail" aria-label="Where you come in">
+                {stages.map((stage) => (
+                  <li
+                    key={stage.key}
+                    className={`agentic-rail__stage agentic-rail__stage--${stage.status} agentic-rail__stage--${stage.actor}`}
+                    aria-current={stage.status === 'active' ? 'step' : undefined}
+                  >
+                    <span className="agentic-rail__dot" aria-hidden="true" />
+                    <span className="agentic-rail__label">{stage.label}</span>
+                  </li>
+                ))}
+              </ol>
+              {target.total > 0 ? (
+                <div
+                  className="agentic-rail__progress"
+                  role="progressbar"
+                  aria-valuenow={target.done}
+                  aria-valuemin={0}
+                  aria-valuemax={target.total}
+                  aria-label={`${String(target.done)} of ${String(target.total)} tasks done`}
+                >
+                  <span
+                    style={{ width: `${String(Math.round((target.done / target.total) * 100))}%` }}
+                  />
+                </div>
+              ) : null}
+              <p
+                className={`luwibot-cockpit__status${
+                  target.state === 'blocked' && target.question !== undefined
+                    ? ' luwibot-cockpit__status--question'
+                    : ''
+                }`}
+              >
                 {target.state === 'blocked' && target.question !== undefined
                   ? target.question
                   : cockpitStatus(target.state, target.done, target.total)}
               </p>
+              {where.text === '' ? null : (
+                <p
+                  className={`agentic-rail__where${where.you ? ' agentic-rail__where--you' : ''}`}
+                  role="status"
+                >
+                  {where.text}
+                </p>
+              )}
               {flow?.status === 'ready' && (flow.goals[0]?.tasks.length ?? 0) > 0 ? (
                 <ul className="luwibot-cockpit__tasks">
                   {flow.goals[0]?.tasks.map((task) => (
@@ -497,11 +584,13 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         <button
           type="button"
           className="luwibot__bar"
-          aria-label="Ask LuwiBot"
+          aria-label={chatOffline ? 'LuwiBot offline' : 'Ask LuwiBot'}
+          title={chatOffline ? 'LuwiBot is offline' : undefined}
+          disabled={chatOffline}
           onClick={() => setOpen(true)}
         >
           <span className={`luwibot__dot luwibot__dot--${tone.dot}`} aria-hidden="true" />
-          <span className="luwibot__bar-title">LuwiBot</span>
+          <span className="luwibot__bar-title">{chatOffline ? 'LuwiBot offline' : 'LuwiBot'}</span>
           <svg
             className="luwibot__bar-chevron"
             viewBox="0 0 16 16"
