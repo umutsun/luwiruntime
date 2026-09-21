@@ -81,6 +81,8 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   const [flow, setFlow] = useState<FlowPanel>();
   const [target, setTarget] = useState<CockpitTarget>();
   const [activity, setActivity] = useState<AgentActivity[]>([]);
+  // The live context (agents + goal) can be collapsed to give the chat room.
+  const [contextOpen, setContextOpen] = useState(true);
   const [confirmAction, setConfirmAction] = useState<ConfirmableAction>();
   const [pending, setPending] = useState<{ requestId: string }>();
   const [intentError, setIntentError] = useState<string>();
@@ -236,28 +238,18 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
     });
   };
 
-  const dotTitle =
-    status === 'open'
-      ? 'LuwiBot connected'
-      : status === 'connecting'
-        ? 'Connecting…'
-        : status === 'error'
-          ? 'LuwiBot unreachable'
-          : 'Not connected';
-
-  // The docked bar's live line: a goal awaiting a gate wins (it needs the
-  // operator), then in-flight work, then fleet activity, then idle.
-  const workingCount = activity.filter((agent) => agent.working).length;
-  const bar: { text: string; tone: 'attention' | 'working' | 'idle' } =
-    target?.state === 'plan_review'
-      ? { text: 'Plan ready · review', tone: 'attention' }
-      : target?.state === 'blocked'
-        ? { text: 'Blocked · needs you', tone: 'attention' }
-        : target !== undefined
-          ? { text: cockpitStatus(target.state, target.done, target.total), tone: 'working' }
-          : workingCount > 0
-            ? { text: `${String(workingCount)} working`, tone: 'working' }
-            : { text: 'Idle', tone: 'idle' };
+  // One live tone drives the single status dot (header when open, bar when
+  // collapsed): a warning pulse when a goal awaits a gate, green while work is
+  // actually live, dim otherwise — so it changes as the fleet does, not on the
+  // socket. A merely queued goal with idle agents reads dim, not busy.
+  const working = activity.some((agent) => agent.working);
+  const running = target?.state === 'running' || target?.state === 'planning';
+  const tone: { dot: 'alert' | 'busy' | 'calm'; title: string } =
+    target?.state === 'plan_review' || target?.state === 'blocked'
+      ? { dot: 'alert', title: 'Needs your input' }
+      : working || running
+        ? { dot: 'busy', title: 'Working' }
+        : { dot: 'calm', title: 'Idle' };
 
   return (
     <div className="luwibot">
@@ -265,11 +257,30 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         <section className="luwibot__panel" aria-label="LuwiBot assistant">
           <header className="luwibot__head">
             <span
-              className={`luwibot__dot luwibot__dot--${status}`}
-              title={dotTitle}
+              className={`luwibot__dot luwibot__dot--${tone.dot}`}
+              title={status === 'error' ? 'Chat unreachable' : tone.title}
               aria-hidden="true"
             />
             <span className="luwibot__title">LuwiBot</span>
+            {activity.length > 0 || target !== undefined ? (
+              <button
+                type="button"
+                className="luwibot__collapse"
+                aria-label={contextOpen ? 'Hide live context' : 'Show live context'}
+                aria-expanded={contextOpen}
+                onClick={() => setContextOpen((value) => !value)}
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  aria-hidden="true"
+                >
+                  <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            ) : null}
             <button
               type="button"
               className="luwibot__close"
@@ -287,28 +298,33 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               </svg>
             </button>
           </header>
-          {activity.length === 0 ? null : (
+          {!contextOpen || activity.length === 0 ? null : (
             <section className="luwibot-activity" aria-label="Live agent activity">
               <p className="luwibot-activity__label">
                 Live · {String(activity.filter((agent) => agent.working).length)} working
+                {activity.some((agent) => !agent.working)
+                  ? ` · ${String(activity.filter((agent) => !agent.working).length)} idle`
+                  : ''}
               </p>
-              <ul className="luwibot-activity__list">
-                {activity.map((agent) => (
-                  <li key={agent.agentId} className="luwibot-activity__row">
-                    <span
-                      className={`luwibot-activity__dot${agent.working ? ' luwibot-activity__dot--working' : ''}`}
-                      aria-hidden="true"
-                    />
-                    <span className="luwibot-activity__agent">{agent.agentId}</span>
-                    <span className="luwibot-activity__state">
-                      {agent.working ? 'working' : 'idle'}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+              {activity.some((agent) => agent.working) ? (
+                <ul className="luwibot-activity__list">
+                  {activity
+                    .filter((agent) => agent.working)
+                    .map((agent) => (
+                      <li key={agent.agentId} className="luwibot-activity__row">
+                        <span
+                          className="luwibot-activity__dot luwibot-activity__dot--working"
+                          aria-hidden="true"
+                        />
+                        <span className="luwibot-activity__agent">{agent.agentId}</span>
+                        <span className="luwibot-activity__state">working</span>
+                      </li>
+                    ))}
+                </ul>
+              ) : null}
             </section>
           )}
-          {target === undefined ? null : (
+          {!contextOpen || target === undefined ? null : (
             <section className="luwibot-cockpit" aria-label="Autopilot goal">
               <div className="luwibot-cockpit__head">
                 <span className="luwibot-cockpit__title" title={target.title}>
@@ -472,27 +488,27 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
           </form>
         </section>
       ) : null}
-      <button
-        type="button"
-        className={`luwibot__bar luwibot__bar--${bar.tone}`}
-        aria-label="Ask LuwiBot"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
-        <span className="luwibot__bar-dot" aria-hidden="true" />
-        <span className="luwibot__bar-title">LuwiBot</span>
-        {open ? null : <span className="luwibot__bar-summary">{bar.text}</span>}
-        <svg
-          className="luwibot__bar-chevron"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.6"
-          aria-hidden="true"
+      {open ? null : (
+        <button
+          type="button"
+          className="luwibot__bar"
+          aria-label="Ask LuwiBot"
+          onClick={() => setOpen(true)}
         >
-          <path d="M4 10l4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
+          <span className={`luwibot__dot luwibot__dot--${tone.dot}`} aria-hidden="true" />
+          <span className="luwibot__bar-title">LuwiBot</span>
+          <svg
+            className="luwibot__bar-chevron"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            aria-hidden="true"
+          >
+            <path d="M4 10l4-4 4 4" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }

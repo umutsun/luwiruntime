@@ -1300,6 +1300,9 @@
   gap: var(--space-3h);
   margin-top: auto;
   padding: 0 var(--space-5h);
+  /* Reserve the bottom-left corner for the docked LuwiBot bar so the ticker's
+     label and events start clear of it (a component dimension, not scale). */
+  padding-inline-start: 152px;
   overflow: hidden;
   border-top: 1px solid var(--border);
   background: var(--bg);
