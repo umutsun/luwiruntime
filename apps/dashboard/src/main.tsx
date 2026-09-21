@@ -17,6 +17,7 @@ import {
 } from './api/coordinator-mutations.js';
 import { createMessageMutations, type MessageMutations } from './api/message-mutations.js';
 import { createProjectMutations, type ProjectMutations } from './api/project-mutations.js';
+import { createSessionMutations, type SessionMutations } from './api/session-mutations.js';
 import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
 import { loadRuntimeResources } from './api/runtime-resources.js';
 import { loadProjectDiscovery } from './api/project-discovery.js';
@@ -126,6 +127,7 @@ const projectMutations: ProjectMutations = createProjectMutations();
 const coordinatorMutations: CoordinatorMutations = createCoordinatorMutations();
 const autopilotMutations: AutopilotMutations = createAutopilotMutations();
 const capabilityMutations: CapabilityMutations = createCapabilityMutations();
+const sessionMutations: SessionMutations = createSessionMutations();
 
 /**
  * Bound once so the Graph explorer's load effect has a stable dependency; a new
@@ -585,6 +587,8 @@ function DashboardRoute() {
       onProjectMutated={retry}
       coordinatorMutations={coordinatorMutations}
       onCoordinatorMutated={retry}
+      sessionMutations={sessionMutations}
+      onSessionMutated={retry}
       autopilotMutations={autopilotMutations}
       capabilityMutations={capabilityMutations}
       agentPairResources={agentPairResources}

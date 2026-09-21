@@ -2,6 +2,8 @@ import { useState } from 'react';
 
 import type { CoordinatorMutations } from '../api/coordinator-mutations.js';
 import type { MessageMutations } from '../api/message-mutations.js';
+import type { SessionMutations } from '../api/session-mutations.js';
+import { ConfirmDialog } from '../components/confirm-dialog.js';
 import { formatRelativeTime } from '../components/format.js';
 import { IdBadge } from '../components/id-badge.js';
 import { ResourcePanel, TableWrap, Unavailable } from '../components/panel.js';
@@ -84,6 +86,8 @@ export function SessionsView({
   onMessageCreated,
   coordinatorMutations,
   onCoordinatorMutated,
+  sessionMutations,
+  onSessionMutated,
   now = systemNow,
 }: {
   snapshot: PulseSnapshot;
@@ -94,6 +98,10 @@ export function SessionsView({
   coordinatorMutations?: CoordinatorMutations;
   /** Called after a claim/release so the snapshot (and its badge) can be re-read. */
   onCoordinatorMutated?: () => void;
+  /** Absent keeps the route observational — no End session control. */
+  sessionMutations?: SessionMutations;
+  /** Called after a session is ended, so the snapshot (and overview) can be re-read. */
+  onSessionMutated?: () => void;
   now?: () => Date;
 }) {
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({
@@ -101,6 +109,9 @@ export function SessionsView({
     direction: 'descending',
   });
   const [askTarget, setAskTarget] = useState<SessionRow>();
+  const [closingTarget, setClosingTarget] = useState<SessionRow>();
+  const [closeBusy, setCloseBusy] = useState(false);
+  const [closeError, setCloseError] = useState<string>();
   const [coordinatorBusy, setCoordinatorBusy] = useState<string>();
   const [coordinatorNote, setCoordinatorNote] = useState<{
     tone: 'ok' | 'danger';
@@ -151,6 +162,31 @@ export function SessionsView({
           : 'The coordinator update could not be completed.',
       ...(canTakeOver ? { takeoverRow: row } : {}),
     });
+  };
+  // A session the developer abandoned (context filled, new chat opened) lingers
+  // idle/online until a daemon sweeper catches it; ending it closes it now. Only
+  // a non-terminal session can be ended — close is a no-op on the rest.
+  const sessionEndEnabled = sessionMutations !== undefined && onSessionMutated !== undefined;
+  const isTerminal = (row: SessionRow): boolean =>
+    row.status === 'completed' || row.status === 'disconnected';
+  const runClose = async (row: SessionRow): Promise<void> => {
+    if (sessionMutations === undefined || onSessionMutated === undefined) return;
+    setCloseBusy(true);
+    setCloseError(undefined);
+    const result = await sessionMutations.close(row.id);
+    setCloseBusy(false);
+    if (result.state === 'ok') {
+      setClosingTarget(undefined);
+      onSessionMutated();
+      return;
+    }
+    setCloseError(
+      result.reason === 'http'
+        ? result.message
+        : result.reason === 'transport'
+          ? 'The daemon could not be reached. Check runtime status and try again.'
+          : 'The daemon returned an invalid response. The session was not ended.',
+    );
   };
   const resource =
     snapshot.sessionsState === 'ready'
@@ -305,6 +341,19 @@ export function SessionsView({
                                 Inspect
                               </button>
                             )}
+                            {sessionEndEnabled && !isTerminal(row) ? (
+                              <button
+                                className="row-action"
+                                type="button"
+                                onClick={() => {
+                                  setCloseError(undefined);
+                                  setClosingTarget(row);
+                                }}
+                                aria-label={`End session ${row.id}`}
+                              >
+                                End session
+                              </button>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
@@ -357,6 +406,29 @@ export function SessionsView({
           }}
           onCancel={() => setAskTarget(undefined)}
         />
+      )}
+      {closingTarget === undefined || !sessionEndEnabled ? null : (
+        <ConfirmDialog
+          title="End session"
+          confirmLabel="End session"
+          busy={closeBusy}
+          onCancel={() => setClosingTarget(undefined)}
+          onConfirm={() => {
+            void runClose(closingTarget);
+          }}
+        >
+          <p>
+            LUWI marks session <IdBadge id={closingTarget.id} label="session" /> as{' '}
+            <strong>completed</strong>, so it drops from the overview. Nothing on disk or in the
+            agent changes; if that session is still running, its next report is refused. The record
+            stays in this table as a completed session.
+          </p>
+          {closeError === undefined ? null : (
+            <p className="outcome outcome--bad" role="alert">
+              {closeError}
+            </p>
+          )}
+        </ConfirmDialog>
       )}
     </div>
   );

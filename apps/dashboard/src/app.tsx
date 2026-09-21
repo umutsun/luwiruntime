@@ -18,6 +18,7 @@ import type { MessageMutations } from './api/message-mutations.js';
 import type { MessageResources } from './api/messages-scope.js';
 import type { ProjectMutations } from './api/project-mutations.js';
 import type { ProjectScopeResources } from './api/project-scope.js';
+import type { SessionMutations } from './api/session-mutations.js';
 import type { PulseFreshness } from './api/refresh-state.js';
 import type { RuntimeResources } from './api/runtime-resources.js';
 import type { ProjectDiscoveryResult } from './api/project-discovery.js';
@@ -25,6 +26,7 @@ import type { SessionUsage } from './api/session-usage.js';
 import { BrandMark } from './components/brand-mark.js';
 import { ConfirmDialog } from './components/confirm-dialog.js';
 import { DetailDrawer } from './components/detail-drawer.js';
+import { ProjectAutopilot } from './components/project-autopilot.js';
 import { ProjectDiscoveryPanel } from './components/project-discovery-panel.js';
 import { ProjectForm } from './components/project-form.js';
 import type { ResourceState } from './components/panel.js';
@@ -250,6 +252,8 @@ export function DashboardApp({
   onProjectMutated,
   coordinatorMutations,
   onCoordinatorMutated,
+  sessionMutations,
+  onSessionMutated,
   autopilotMutations,
   capabilityMutations,
   agentPairResources = {},
@@ -303,6 +307,10 @@ export function DashboardApp({
   coordinatorMutations?: CoordinatorMutations | undefined;
   /** Called after a coordinator claim/release, so the snapshot can be re-read. */
   onCoordinatorMutated?: (() => void) | undefined;
+  /** Absent keeps the sessions route observational — no End session control. */
+  sessionMutations?: SessionMutations | undefined;
+  /** Called after a session is ended, so the snapshot (and overview) can be re-read. */
+  onSessionMutated?: (() => void) | undefined;
   /** With `loadAutopilot`, wires the overview's autopilot mode switch (ADR 0035). */
   autopilotMutations?: AutopilotMutations | undefined;
   /** Absent keeps the project drawer's Skills panel read-only (ADR 0036). */
@@ -621,6 +629,8 @@ export function DashboardApp({
             }}
             {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
             {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
+            {...(sessionMutations === undefined ? {} : { sessionMutations })}
+            {...(onSessionMutated === undefined ? {} : { onSessionMutated })}
             onOpenSession={(session) => openInspector({ kind: 'session', sessionId: session.id })}
           />
         );
@@ -1098,6 +1108,15 @@ export function DashboardApp({
                 </p>
               )}
             </ConfirmDialog>
+          )}
+          {autopilotMutations === undefined ||
+          loadAutopilot === undefined ||
+          detailProject === undefined ? null : (
+            <ProjectAutopilot
+              projectId={detail.projectId}
+              loadAutopilot={loadAutopilot}
+              autopilotMutations={autopilotMutations}
+            />
           )}
           <ProjectDetail
             snapshot={snapshot}

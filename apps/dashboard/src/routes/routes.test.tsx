@@ -306,6 +306,74 @@ describe('SessionsView', () => {
     await waitFor(() => expect(onCoordinatorMutated).toHaveBeenCalledOnce());
   });
 
+  it('ends a non-terminal session through a confirm gate and re-reads', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    const close = vi.fn().mockResolvedValue({ state: 'ok', httpStatus: 200 });
+    const onSessionMutated = vi.fn();
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        sessionMutations={{ close }}
+        onSessionMutated={onSessionMutated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'End session s1' }));
+    // The row button's accessible name is its aria-label, so the plain
+    // "End session" name is the dialog's confirm control alone.
+    fireEvent.click(screen.getByRole('button', { name: 'End session' }));
+    await waitFor(() => expect(close).toHaveBeenCalledWith('s1'));
+    await waitFor(() => expect(onSessionMutated).toHaveBeenCalledOnce());
+  });
+
+  it('offers no End session on an already-terminal session', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [session('s-done', { status: 'completed', presence: 'offline' })],
+        },
+      }),
+    );
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        sessionMutations={{ close: vi.fn() }}
+        onSessionMutated={() => undefined}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'End session s-done' })).toBeNull();
+  });
+
+  it('shows a daemon refusal in the gate and does not re-read', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    const close = vi.fn().mockResolvedValue({
+      state: 'failed',
+      reason: 'http',
+      httpStatus: 404,
+      code: 'SESSION_NOT_FOUND',
+      message: 'No session s1.',
+    });
+    const onSessionMutated = vi.fn();
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        sessionMutations={{ close }}
+        onSessionMutated={onSessionMutated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'End session s1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End session' }));
+    expect(await screen.findByText('No session s1.')).toBeTruthy();
+    expect(onSessionMutated).not.toHaveBeenCalled();
+  });
+
   it('chips the flow roles the row’s agent holds in its project (ADR 0036)', () => {
     const snapshot = buildPulseSnapshot(
       baseInput({
