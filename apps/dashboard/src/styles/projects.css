@@ -393,11 +393,11 @@
   text-transform: uppercase;
 }
 .table-filters select {
-  padding: var(--space-1h) var(--space-2);
+  padding: var(--space-1h) var(--space-5) var(--space-1h) var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text);
-  background: var(--surface-2);
+  background-color: var(--surface-2);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
   text-transform: none;
@@ -758,9 +758,13 @@ tr[data-selected='true'] {
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text);
-  background: var(--bg-raised);
+  background-color: var(--bg-raised);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
+}
+/* Room for the shared chevron (shell.css) on the select only. */
+.ask-form select {
+  padding-right: var(--space-5);
 }
 
 .ask-form textarea {

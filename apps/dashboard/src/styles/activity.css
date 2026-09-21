@@ -48,9 +48,13 @@
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  background: var(--surface-2);
+  background-color: var(--surface-2);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
+}
+/* Room for the shared chevron (shell.css) without crowding the value. */
+.activity-filters select {
+  padding-right: var(--space-5);
 }
 .activity-filters select:focus-visible,
 .activity-filters input:focus-visible,

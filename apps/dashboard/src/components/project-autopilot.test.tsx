@@ -15,7 +15,7 @@ const readsMode = (mode: AutopilotMode, coordinatorOnline = true) =>
   );
 
 describe('ProjectAutopilot', () => {
-  it('reads the mode and offers only the other modes', async () => {
+  it('renders every mode as a segment and presses the current one', async () => {
     render(
       <ProjectAutopilot
         projectId="p1"
@@ -24,10 +24,9 @@ describe('ProjectAutopilot', () => {
       />,
     );
 
-    expect(await screen.findByText('Off')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Enable supervised for project p1' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Enable autopilot for project p1' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Turn off for project p1' })).toBeNull();
+    expect(await screen.findByRole('button', { name: 'Off', pressed: true })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Supervised', pressed: false })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Autopilot', pressed: false })).toBeTruthy();
   });
 
   it('warns when a non-off mode has no live coordinator', async () => {
@@ -39,10 +38,10 @@ describe('ProjectAutopilot', () => {
       />,
     );
 
-    expect(await screen.findByText(/no live coordinator/)).toBeTruthy();
+    expect(await screen.findByText(/live coordinator/)).toBeTruthy();
   });
 
-  it('sets a mode and shows the outcome', async () => {
+  it('sets a mode from its segment and shows the outcome', async () => {
     const setMode = vi.fn().mockResolvedValue({
       state: 'ok',
       httpStatus: 200,
@@ -60,11 +59,23 @@ describe('ProjectAutopilot', () => {
       />,
     );
 
-    fireEvent.click(
-      await screen.findByRole('button', { name: 'Enable supervised for project p1' }),
-    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Supervised' }));
     await waitFor(() => expect(setMode).toHaveBeenCalledWith('p1', 'supervised'));
     expect(await screen.findByText('Autopilot set to supervised.')).toBeTruthy();
+  });
+
+  it('does not re-request the mode already selected', async () => {
+    const setMode = vi.fn();
+    render(
+      <ProjectAutopilot
+        projectId="p1"
+        loadAutopilot={readsMode('supervised')}
+        autopilotMutations={{ setMode }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Supervised', pressed: true }));
+    expect(setMode).not.toHaveBeenCalled();
   });
 
   it('reports an unavailable read', async () => {

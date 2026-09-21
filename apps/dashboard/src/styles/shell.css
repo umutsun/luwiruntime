@@ -438,6 +438,31 @@ button:focus-visible {
   width: 14px;
   height: 14px;
 }
+/*
+ * Native selects. Strip the OS arrow for a themed chevron so the control reads
+ * as part of the mono set rather than the browser default; the open option list
+ * stays OS-native. Scoped select rules (activity/table/ask filters) override the
+ * box but keep this chevron because they set background-color, not the shorthand.
+ */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: var(--space-2) var(--space-5) var(--space-2) var(--space-2h);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background-color: var(--surface-2);
+  background-image: var(--select-chevron);
+  background-repeat: no-repeat;
+  background-position: right var(--space-2) center;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
 /* The page region: the overview fills it; every detail is a drawer over it. */
 .page {
   min-width: 0;

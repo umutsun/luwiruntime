@@ -28,6 +28,9 @@
   --text-secondary: #d0d3da;
   --text-muted: #a3a8b2;
   --text-dim: #7b818c;
+  /* The dropdown chevron for native selects (a neutral tone that reads on both
+     grounds); not a colour token, so it is not themed per surface. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='none' stroke='%23888c98' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.75 6 7.75 9 4.75'/%3E%3C/svg%3E");
   /* The one strong colour and its ground. */
   --ink: #f7f7f9;
   --paper: #08080a;

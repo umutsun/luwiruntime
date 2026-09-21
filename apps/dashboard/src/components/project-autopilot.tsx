@@ -17,9 +17,6 @@ import type { ResourceState } from './panel.js';
  */
 const MODES: readonly AutopilotMode[] = ['off', 'supervised', 'autopilot'];
 
-const actionLabel = (mode: AutopilotMode): string =>
-  mode === 'off' ? 'Turn off' : mode === 'supervised' ? 'Enable supervised' : 'Enable autopilot';
-
 const modeLabel = (mode: AutopilotMode): string =>
   mode === 'off' ? 'Off' : mode === 'supervised' ? 'Supervised' : 'Autopilot';
 
@@ -88,26 +85,27 @@ export function ProjectAutopilot({
         <p className="coordinator-note">Autopilot status is unavailable.</p>
       ) : (
         <>
-          <p className="coordinator-note">
-            Mode: <strong>{modeLabel(ready.mode)}</strong>
-            {ready.mode !== 'off' && !ready.coordinatorOnline
-              ? ' — no live coordinator, so it dispatches nothing.'
-              : null}
-          </p>
-          <div className="row-actions">
-            {MODES.filter((mode) => mode !== ready.mode).map((mode) => (
+          <div className="segmented segmented--mono" role="group" aria-label="Autopilot mode">
+            {MODES.map((mode) => (
               <button
                 key={mode}
                 type="button"
-                className="row-action"
+                className="segmented__option"
+                aria-pressed={ready.mode === mode}
                 disabled={busy}
-                onClick={() => void setMode(mode)}
-                aria-label={`${actionLabel(mode)} for project ${projectId}`}
+                onClick={() => {
+                  if (mode !== ready.mode) void setMode(mode);
+                }}
               >
-                {actionLabel(mode)}
+                {modeLabel(mode)}
               </button>
             ))}
           </div>
+          {ready.mode !== 'off' && !ready.coordinatorOnline ? (
+            <p className="coordinator-note">
+              No live coordinator, so autopilot dispatches nothing.
+            </p>
+          ) : null}
         </>
       )}
       {note === undefined ? null : (
