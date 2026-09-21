@@ -251,6 +251,11 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         ? { dot: 'busy', title: 'Working' }
         : { dot: 'calm', title: 'Idle' };
 
+  // Header headline: on a project focus the docked bar already carries the
+  // "LuwiBot" identity, so the open panel's header shows the live autopilot
+  // status instead of repeating the name. Off a focus it names itself.
+  const headline = flow === undefined ? 'LuwiBot' : `Autopilot · ${tone.title}`;
+
   return (
     <div className="luwibot">
       {open ? (
@@ -261,7 +266,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               title={status === 'error' ? 'Chat unreachable' : tone.title}
               aria-hidden="true"
             />
-            <span className="luwibot__title">LuwiBot</span>
+            <span className="luwibot__title">{headline}</span>
             {activity.length > 0 || target !== undefined ? (
               <button
                 type="button"

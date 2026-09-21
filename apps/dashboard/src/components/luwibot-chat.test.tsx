@@ -89,6 +89,9 @@ describe('LuwiBotChat cockpit', () => {
     await waitFor(() => expect(screen.getByText('Localized dates')).toBeTruthy());
     expect(screen.getByText('running')).toBeTruthy();
     expect(screen.getByText('accept')).toBeTruthy();
+    // Header carries the live autopilot status on a focus, not a second "LuwiBot".
+    expect(screen.getByText('Autopilot · Working')).toBeTruthy();
+    expect(screen.queryByText('LuwiBot')).toBeNull();
   });
 
   it('reads a proposed goal as queued with its objective, not "Planning…"', async () => {
@@ -104,6 +107,8 @@ describe('LuwiBotChat cockpit', () => {
     open({ loadAutopilotFlow: flowReady({ goals: [], more: 0 }) }, '#/pulse');
     await waitFor(() => expect(screen.getByLabelText('LuwiBot assistant')).toBeTruthy());
     expect(screen.queryByLabelText('Autopilot goal')).toBeNull();
+    // Off a project focus the header names itself.
+    expect(screen.getByText('LuwiBot')).toBeTruthy();
   });
 
   it('offers Approve/Reject and Stop on a plan_review goal, not Answer', async () => {
@@ -150,7 +155,7 @@ describe('LuwiBotChat cockpit', () => {
     await waitFor(() => expect(screen.getByText('plan not under review')).toBeTruthy());
   });
 
-  it('shows the live agent activity strip with working and idle agents', async () => {
+  it('lists working agents and summarizes idle ones', async () => {
     open({
       loadAutopilotFlow: flowReady({ goals: [], more: 0 }),
       loadAgentActivity: activityReady([
@@ -158,10 +163,8 @@ describe('LuwiBotChat cockpit', () => {
         { agentId: 'reviewer', working: false },
       ]),
     });
-    await waitFor(() => expect(screen.getByText('Live · 1 working')).toBeTruthy());
-    expect(screen.getByText('coder')).toBeTruthy();
-    expect(screen.getByText('reviewer')).toBeTruthy();
-    expect(screen.getByText('working')).toBeTruthy();
-    expect(screen.getByText('idle')).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/1 working · 1 idle/)).toBeTruthy());
+    expect(screen.getByText('coder')).toBeTruthy(); // working → listed
+    expect(screen.queryByText('reviewer')).toBeNull(); // idle → summarized, not listed
   });
 });
