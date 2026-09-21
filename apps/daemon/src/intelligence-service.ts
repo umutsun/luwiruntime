@@ -234,6 +234,44 @@ function scopedGraphEntityId(projectId: string, entityId: string): string {
     .slice(0, 40)}`;
 }
 
+function inventoryFingerprint(
+  packages: readonly PackageRecord[],
+  technologies: readonly TechnologyRecord[],
+): string {
+  const withoutDetectedAt = (record: PackageRecord | TechnologyRecord): Record<string, unknown> => {
+    const clone: Record<string, unknown> = { ...record };
+    delete clone.detectedAt;
+    return clone;
+  };
+  const byId = (left: { id: string }, right: { id: string }): number =>
+    left.id.localeCompare(right.id);
+  return JSON.stringify({
+    packages: [...packages].sort(byId).map(withoutDetectedAt),
+    technologies: [...technologies].sort(byId).map(withoutDetectedAt),
+  });
+}
+
+/**
+ * Whether a fresh package scan matches the stored inventory. A scan runs on every
+ * git-scan tick, but packages rarely change between scans, and replacing the
+ * inventory then reprojecting is pure waste when nothing changed — the
+ * reprojection reads the whole active generation, and that Redis work is a driver
+ * of the tick contention that times out heartbeats. `detectedAt` is a scan-time
+ * stamp, so it is stripped before comparing, exactly the field the graph
+ * projection diff already ignores. Exported for its own unit test.
+ */
+export function samePackageInventory(
+  storedPackages: readonly PackageRecord[],
+  storedTechnologies: readonly TechnologyRecord[],
+  freshPackages: readonly PackageRecord[],
+  freshTechnologies: readonly TechnologyRecord[],
+): boolean {
+  return (
+    inventoryFingerprint(storedPackages, storedTechnologies) ===
+    inventoryFingerprint(freshPackages, freshTechnologies)
+  );
+}
+
 /**
  * Provenance for a `SESSION_CHANGED_FILE` edge (B2). It marks the transcript
  * observer so its edges stay distinguishable from the event-derived and
@@ -1793,24 +1831,42 @@ export function createIntelligenceService(
           localPath: project.canonicalPath,
           ...(trackedPaths === undefined ? {} : { trackedPaths }),
         });
-        await options.repository.replacePackageInventory(
-          projectId,
-          result.packages,
-          result.technologies,
-          result.workspaceLocations,
-          event(
-            'package.inventory.updated',
-            { projectId },
-            {
-              packageCount: result.packages.length,
-              technologyCount: result.technologies.length,
-              manifestCount: result.manifestCount,
-              truncated: result.truncated,
-              evidenceScope: result.evidenceScope,
-            },
-          ),
-        );
-        projectIncrementally('package-scan', projectId);
+        // Skip the write, the event, and the reprojection when the inventory is
+        // unchanged: this scan runs every git-scan tick but packages rarely change
+        // between scans, and the reprojection it triggers reads the whole active
+        // generation. A truncated scan always writes — its comparison is partial.
+        const [storedPackages, storedTechnologies] = await Promise.all([
+          options.repository.listPackages(projectId),
+          options.repository.listTechnologies(projectId),
+        ]);
+        const changed =
+          result.truncated ||
+          !samePackageInventory(
+            storedPackages,
+            storedTechnologies,
+            result.packages,
+            result.technologies,
+          );
+        if (changed) {
+          await options.repository.replacePackageInventory(
+            projectId,
+            result.packages,
+            result.technologies,
+            result.workspaceLocations,
+            event(
+              'package.inventory.updated',
+              { projectId },
+              {
+                packageCount: result.packages.length,
+                technologyCount: result.technologies.length,
+                manifestCount: result.manifestCount,
+                truncated: result.truncated,
+                evidenceScope: result.evidenceScope,
+              },
+            ),
+          );
+          projectIncrementally('package-scan', projectId);
+        }
         return {
           packages: result.packages,
           technologies: result.technologies,
