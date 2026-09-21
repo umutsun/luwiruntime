@@ -87,7 +87,11 @@ export function createWebSocketBrain(options: {
         }, timeoutMs);
         socket.addEventListener('open', () => {
           try {
-            socket.send(JSON.stringify({ message: prompt, history: [] }));
+            // `json: true` marks this as an autopilot judgment, not a chat turn, so
+            // LuwiBot answers in strict JSON mode instead of conversational prose —
+            // otherwise the plan/review answer is not a JSON object and the goal
+            // escalates `brain_invalid`.
+            socket.send(JSON.stringify({ message: prompt, history: [], json: true }));
           } catch (error) {
             finish({
               error: new BrainError(

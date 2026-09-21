@@ -39,7 +39,11 @@ describe('createWebSocketBrain', () => {
     });
     const pending = brain.judge('question', { timeoutMs: 1_000 });
     socket.emit('open');
-    expect(JSON.parse(socket.sent[0] as string)).toEqual({ message: 'question', history: [] });
+    expect(JSON.parse(socket.sent[0] as string)).toEqual({
+      message: 'question',
+      history: [],
+      json: true,
+    });
     socket.emit('message', { data: JSON.stringify({ reply: '{"ok":true}' }) });
     await expect(pending).resolves.toMatchObject({ text: '{"ok":true}' });
     expect(socket.closed).toBe(true);
