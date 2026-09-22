@@ -893,6 +893,39 @@ select:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Smart pills: LuwiBot-suggested goals; a click creates that goal. */
+.luwibot-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+.luwibot-pill {
+  max-width: 100%;
+  padding: var(--space-1h) var(--space-2h);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-xs);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease);
+}
+.luwibot-pill:hover {
+  background: var(--surface-3);
+  border-color: var(--success);
+}
+.luwibot-pill:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
 .luwibot-cockpit__objective {
   margin: 0;
   color: var(--text-dim);

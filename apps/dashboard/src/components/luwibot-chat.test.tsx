@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentActivity } from '../api/agent-activity.js';
 import type { AutopilotFlow } from '../api/autopilot-flow.js';
+import type { GoalMutations } from '../api/goal-mutations.js';
 import type { ResourceState } from './panel.js';
 import { LuwiBotChat } from './luwibot-chat.js';
 
@@ -210,5 +211,57 @@ describe('LuwiBotChat cockpit', () => {
     open({ loadAutopilotFlow: flowReady(oneGoal({ state: 'running' })) }, '#/pulse');
     await waitFor(() => expect(screen.getByLabelText('LuwiBot assistant')).toBeTruthy());
     expect(screen.queryByLabelText('Autopilot goal')).toBeNull(); // no reader → no cockpit
+  });
+
+  it('offers a New goal form and smart-pill suggestions when a project has no active goal', async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValue({ state: 'ok', httpStatus: 201, data: { title: 'X' } });
+    open(
+      {
+        loadAutopilotFlow: flowReady({ goals: [], more: 0 }),
+        loadAutopilotProjects: async () => ['p1'],
+        goalMutations: { create } as unknown as GoalMutations,
+      },
+      '#/pulse',
+    );
+    const socket = lastSocket();
+    socket?.emit('open', {});
+    // The New goal form is offered when there is no goal in flight.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create goal' })).toBeTruthy());
+    // A suggestion reply renders clickable pills; a click creates that goal.
+    socket?.emit('message', {
+      data: JSON.stringify({
+        kind: 'goal_suggestions',
+        suggestions: [{ title: 'Add dates', objective: 'Localize them' }],
+      }),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Add dates' }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith('p1', { title: 'Add dates', objective: 'Localize them' }),
+    );
+  });
+
+  it('offers a one-click create pill when a chat reply infers a goal', async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValue({ state: 'ok', httpStatus: 201, data: { title: 'X' } });
+    open(
+      {
+        loadAutopilotFlow: flowReady(oneGoal({ state: 'running' })),
+        goalMutations: { create } as unknown as GoalMutations,
+      },
+      '#/pulse/p1',
+    );
+    lastSocket()?.emit('message', {
+      data: JSON.stringify({
+        reply: 'Sure — here is a goal.',
+        goalSuggestion: { title: 'Add dates', objective: 'Localize them' },
+      }),
+    });
+    fireEvent.click(await screen.findByRole('button', { name: '+ Create goal: Add dates' }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith('p1', { title: 'Add dates', objective: 'Localize them' }),
+    );
   });
 });

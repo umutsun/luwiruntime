@@ -8,6 +8,8 @@ import { ConfirmDialog } from './confirm-dialog.js';
 import { agenticStages, involvement } from './agentic-flow.js';
 import { cockpitStatus } from './luwibot-cockpit.js';
 import { StatusChip } from './status-chip.js';
+import { ProjectGoalForm } from './project-goal-form.js';
+import type { GoalMutations } from '../api/goal-mutations.js';
 import type { ResourceState } from './panel.js';
 
 /*
@@ -29,6 +31,8 @@ const WS_URL: string =
 
 type Msg = { role: 'user' | 'assistant' | 'error'; text: string };
 type Status = 'idle' | 'connecting' | 'open' | 'error';
+/** A LuwiBot-suggested goal, rendered as a smart pill the operator clicks to create. */
+type GoalSuggestion = { title: string; objective: string };
 
 type IntentAction = 'approve_plan' | 'reject_plan' | 'answer_goal' | 'abandon_goal';
 type ConfirmableAction = 'approve_plan' | 'reject_plan' | 'abandon_goal';
@@ -67,6 +71,11 @@ type LuwiBotChatProps = {
    * when none is focused. Absent leaves the cockpit focus-only.
    */
   loadAutopilotProjects?: (options?: { signal?: AbortSignal }) => Promise<string[]>;
+  /**
+   * The allowlisted goal-create write module, so the cockpit can start a goal when
+   * none is running. Absent leaves the cockpit read-only (no start affordance).
+   */
+  goalMutations?: GoalMutations;
 };
 
 export function LuwiBotChat(props: LuwiBotChatProps = {}) {
@@ -86,12 +95,22 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   const [open, setOpen] = useState(false);
   const [flow, setFlow] = useState<FlowPanel>();
   const [target, setTarget] = useState<CockpitTarget>();
+  // The project the cockpit is currently mirroring (focused or auto-surfaced), so
+  // a "start a goal" form can post to the right project when none is running.
+  const [activeProjectId, setActiveProjectId] = useState<string>();
   const [activity, setActivity] = useState<AgentActivity[]>([]);
   // The live context (agents + goal) can be collapsed to give the chat room.
   const [contextOpen, setContextOpen] = useState(true);
   const [confirmAction, setConfirmAction] = useState<ConfirmableAction>();
   const [pending, setPending] = useState<{ requestId: string }>();
   const [intentError, setIntentError] = useState<string>();
+  // LuwiBot's suggested goals for the surfaced project (smart pills), and the
+  // project they were fetched for so they are not re-requested every 5s tick.
+  const [suggestions, setSuggestions] = useState<GoalSuggestion[]>([]);
+  // A goal LuwiBot inferred from the last chat turn ("build X"), offered as a pill.
+  const [chatSuggestion, setChatSuggestion] = useState<GoalSuggestion>();
+  const [creatingPill, setCreatingPill] = useState<string>();
+  const suggestedForRef = useRef<string | undefined>(undefined);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [status, setStatus] = useState<Status>('idle');
   // Chat-backend reachability, kept apart from the fleet-activity tone: undefined
@@ -123,7 +142,15 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       setReachable(false);
     });
     ws.addEventListener('message', (event: MessageEvent<string>) => {
-      let data: { kind?: string; requestId?: string; ok?: boolean; reply?: string; error?: string };
+      let data: {
+        kind?: string;
+        requestId?: string;
+        ok?: boolean;
+        reply?: string;
+        error?: string;
+        suggestions?: GoalSuggestion[];
+        goalSuggestion?: GoalSuggestion;
+      };
       try {
         data = JSON.parse(event.data);
       } catch {
@@ -137,12 +164,19 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         if (data.ok !== true) setIntentError(data.error ?? 'Intervention failed');
         return;
       }
+      // Smart pills: goal suggestions arrive out of band; they never touch the log.
+      if (data.kind === 'goal_suggestions') {
+        setSuggestions(Array.isArray(data.suggestions) ? data.suggestions.slice(0, 3) : []);
+        return;
+      }
       setBusy(false);
       setMessages((current) =>
         data.error !== undefined
           ? [...current, { role: 'error', text: data.error }]
           : [...current, { role: 'assistant', text: data.reply ?? '' }],
       );
+      // Phase 3: the chat turn inferred a goal → offer it as a one-click pill.
+      if (data.goalSuggestion !== undefined) setChatSuggestion(data.goalSuggestion);
     });
     return ws;
   };
@@ -167,7 +201,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
     // `connect` closes over refs and stable setters; warmed once for the widget's life.
   }, []);
   useEffect(() => {
-    logRef.current?.scrollTo(0, logRef.current.scrollHeight);
+    logRef.current?.scrollTo?.(0, logRef.current.scrollHeight);
   }, [messages, busy]);
 
   // Mirror the focused project's live state into the widget whenever one is
@@ -200,6 +234,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
           setFlow(undefined);
           setTarget(undefined);
           setActivity([]);
+          setActiveProjectId(undefined);
         }
         return;
       }
@@ -208,6 +243,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         loadActivity ? loadActivity(projectId, signal) : Promise.resolve(undefined),
       ]);
       if (cancelled) return;
+      setActiveProjectId(projectId);
       setFlow(autopilotFlowPanel({ autopilotFlow: { projectId, state: flowResult } }, projectId));
       const goal = flowResult.state === 'ready' ? flowResult.data.goals[0] : undefined;
       setTarget(
@@ -236,6 +272,28 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       window.removeEventListener('hashchange', onHash);
     };
   }, [props.loadAutopilotFlow, props.loadAgentActivity, props.loadAutopilotProjects]);
+
+  // Smart pills: ask LuwiBot for goal suggestions once per surfaced project while it
+  // has no running goal, over the same chat socket (a distinct kind, no HTTP). Cleared
+  // when the panel hides; re-tries when the socket opens (status in the deps).
+  useEffect(() => {
+    const canSuggest =
+      open &&
+      target === undefined &&
+      activeProjectId !== undefined &&
+      props.goalMutations !== undefined;
+    if (!canSuggest) {
+      suggestedForRef.current = undefined;
+      setSuggestions((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+    if (suggestedForRef.current === activeProjectId) return;
+    const ws = socketRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      suggestedForRef.current = activeProjectId;
+      ws.send(JSON.stringify({ kind: 'suggest_goals', projectId: activeProjectId }));
+    }
+  }, [open, target, activeProjectId, props.goalMutations, status]);
 
   // Connect-or-queue send, shared by the chat turn and the cockpit intents.
   const rawSend = (frame: unknown) => {
@@ -302,6 +360,20 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   // loop is and where it hands back to them (the `you` stage + the line below).
   const stages = target === undefined ? [] : agenticStages(target.state, target.done, target.total);
   const where = target === undefined ? { you: false, text: '' } : involvement(target.state);
+
+  // A smart-pill click is the operator's confirm: create that goal (deterministic
+  // dashboard POST in the allowlisted module), then let it surface in the cockpit.
+  const createFromSuggestion = async (suggestion: GoalSuggestion): Promise<void> => {
+    const create = props.goalMutations?.create;
+    if (create === undefined || activeProjectId === undefined || creatingPill !== undefined) return;
+    setCreatingPill(suggestion.title);
+    const result = await create(activeProjectId, suggestion);
+    setCreatingPill(undefined);
+    if (result.state === 'ok') {
+      setSuggestions([]);
+      setChatSuggestion(undefined);
+    }
+  };
 
   return (
     <div className="luwibot">
@@ -516,6 +588,30 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               </div>
             </section>
           )}
+          {contextOpen &&
+          target === undefined &&
+          activeProjectId !== undefined &&
+          props.goalMutations !== undefined ? (
+            <section className="luwibot-cockpit" aria-label="Start a goal">
+              {suggestions.length === 0 ? null : (
+                <div className="luwibot-pills" aria-label="Suggested goals">
+                  {suggestions.map((suggestion) => (
+                    <button
+                      key={suggestion.title}
+                      type="button"
+                      className="luwibot-pill"
+                      disabled={creatingPill !== undefined}
+                      title={suggestion.objective}
+                      onClick={() => void createFromSuggestion(suggestion)}
+                    >
+                      {suggestion.title}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <ProjectGoalForm projectId={activeProjectId} goalMutations={props.goalMutations} />
+            </section>
+          ) : null}
           {confirmAction === undefined ? null : (
             <ConfirmDialog
               title={CONFIRM_COPY[confirmAction].title}
@@ -546,6 +642,21 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
             )}
             {busy ? <p className="luwibot__msg luwibot__msg--assistant">…</p> : null}
           </div>
+          {chatSuggestion !== undefined &&
+          activeProjectId !== undefined &&
+          props.goalMutations !== undefined ? (
+            <div className="luwibot-pills" aria-label="Suggested goal from chat">
+              <button
+                type="button"
+                className="luwibot-pill"
+                disabled={creatingPill !== undefined}
+                title={chatSuggestion.objective}
+                onClick={() => void createFromSuggestion(chatSuggestion)}
+              >
+                + Create goal: {chatSuggestion.title}
+              </button>
+            </div>
+          ) : null}
           <form
             className="luwibot__form"
             onSubmit={(event) => {
