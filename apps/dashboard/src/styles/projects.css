@@ -807,7 +807,8 @@ tr[data-selected='true'] {
   color: var(--text-muted);
   font-size: var(--font-size-xs);
 }
-.project-form input {
+.project-form input,
+.project-form textarea {
   width: 100%;
   padding: var(--space-2);
   border: 1px solid var(--border);
@@ -816,6 +817,10 @@ tr[data-selected='true'] {
   background: var(--bg-raised);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
+}
+.project-form textarea {
+  resize: vertical;
+  min-height: 3.5em;
 }
 .project-form__path {
   display: grid;

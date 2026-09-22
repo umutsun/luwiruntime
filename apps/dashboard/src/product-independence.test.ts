@@ -34,7 +34,7 @@ describe('dashboard product independence', () => {
     expect(dependencies).not.toMatch(/(?:goose|acp|redis|claude|codex|gemini|kimi)/i);
   });
 
-  it('issues mutation requests from the seven approved mutation modules and nowhere else', () => {
+  it('issues mutation requests from the eight approved mutation modules and nowhere else', () => {
     const files = productionSources(sourceRoot);
     const mutationModules = [
       join(sourceRoot, 'api', 'config-mutations.ts'),
@@ -44,6 +44,7 @@ describe('dashboard product independence', () => {
       join(sourceRoot, 'api', 'capability-mutations.ts'),
       join(sourceRoot, 'api', 'autopilot-mutations.ts'),
       join(sourceRoot, 'api', 'session-mutations.ts'),
+      join(sourceRoot, 'api', 'goal-mutations.ts'),
     ];
     for (const module of mutationModules) {
       expect(files, 'each allowlisted module must exist, or this test passes vacuously').toContain(
@@ -55,8 +56,9 @@ describe('dashboard product independence', () => {
     // chain, bounded message creation, project registration and settings
     // (ADR 0033), coordinator role assignment and autopilot mode (ADR 0035),
     // capability enable/assign/rescan through the daemon's existing endpoints
-    // (ADR 0036), and ending a session through the daemon's own close route. A
-    // request reaching the daemon from anywhere else is still a defect.
+    // (ADR 0036), ending a session through the daemon's own close route, and
+    // creating an autopilot goal through the daemon's goals endpoint. A request
+    // reaching the daemon from anywhere else is still a defect.
     const elsewhere = files
       .filter((path) => !mutationModules.includes(path))
       .map((path) => readFileSync(path, 'utf8'))

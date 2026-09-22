@@ -8,6 +8,7 @@ import type { ConfigResources } from './api/config-scope.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
 import type { IntelligenceResources } from './api/intelligence-scope.js';
 import type { AutopilotMutations } from './api/autopilot-mutations.js';
+import type { GoalMutations } from './api/goal-mutations.js';
 import type { AutopilotStatus } from './api/autopilot-status.js';
 import type { AutopilotFlow } from './api/autopilot-flow.js';
 import type { CapabilityMutations } from './api/capability-mutations.js';
@@ -27,6 +28,7 @@ import { BrandMark } from './components/brand-mark.js';
 import { ConfirmDialog } from './components/confirm-dialog.js';
 import { DetailDrawer } from './components/detail-drawer.js';
 import { ProjectAutopilot } from './components/project-autopilot.js';
+import { ProjectGoalForm } from './components/project-goal-form.js';
 import { ProjectDiscoveryPanel } from './components/project-discovery-panel.js';
 import { ProjectForm } from './components/project-form.js';
 import type { ResourceState } from './components/panel.js';
@@ -255,6 +257,7 @@ export function DashboardApp({
   sessionMutations,
   onSessionMutated,
   autopilotMutations,
+  goalMutations,
   capabilityMutations,
   agentPairResources = {},
   agentPairLoading = false,
@@ -313,6 +316,7 @@ export function DashboardApp({
   onSessionMutated?: (() => void) | undefined;
   /** With `loadAutopilot`, wires the overview's autopilot mode switch (ADR 0035). */
   autopilotMutations?: AutopilotMutations | undefined;
+  goalMutations?: GoalMutations | undefined;
   /** Absent keeps the project drawer's Skills panel read-only (ADR 0036). */
   capabilityMutations?: CapabilityMutations | undefined;
   agentPairResources?: Partial<AgentPairResources>;
@@ -1117,6 +1121,9 @@ export function DashboardApp({
               loadAutopilot={loadAutopilot}
               autopilotMutations={autopilotMutations}
             />
+          )}
+          {goalMutations === undefined ? null : (
+            <ProjectGoalForm projectId={detail.projectId} goalMutations={goalMutations} />
           )}
           <ProjectDetail
             snapshot={snapshot}

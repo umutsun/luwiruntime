@@ -8,6 +8,7 @@ import { createDaemonClient } from './api/client.js';
 import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
 import { createCapabilityMutations, type CapabilityMutations } from './api/capability-mutations.js';
 import { createAutopilotMutations, type AutopilotMutations } from './api/autopilot-mutations.js';
+import { createGoalMutations, type GoalMutations } from './api/goal-mutations.js';
 import { loadAutopilotStatus } from './api/autopilot-status.js';
 import { loadAutopilotFlow } from './api/autopilot-flow.js';
 import { loadAutopilotProjects } from './api/autopilot-projects.js';
@@ -127,6 +128,7 @@ const messageMutations: MessageMutations = createMessageMutations();
 const projectMutations: ProjectMutations = createProjectMutations();
 const coordinatorMutations: CoordinatorMutations = createCoordinatorMutations();
 const autopilotMutations: AutopilotMutations = createAutopilotMutations();
+const goalMutations: GoalMutations = createGoalMutations();
 const capabilityMutations: CapabilityMutations = createCapabilityMutations();
 const sessionMutations: SessionMutations = createSessionMutations();
 
@@ -594,6 +596,7 @@ function DashboardRoute() {
       sessionMutations={sessionMutations}
       onSessionMutated={retry}
       autopilotMutations={autopilotMutations}
+      goalMutations={goalMutations}
       capabilityMutations={capabilityMutations}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
@@ -625,6 +628,7 @@ createRoot(root).render(
         loadAutopilotFlow={fetchAutopilotFlow}
         loadAgentActivity={fetchAgentActivity}
         loadAutopilotProjects={fetchAutopilotProjects}
+        goalMutations={goalMutations}
       />
     </DashboardErrorBoundary>
   </StrictMode>,
