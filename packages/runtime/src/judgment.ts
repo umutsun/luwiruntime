@@ -55,6 +55,13 @@ export type JudgmentContextInput = {
   /** Validation refusals from a previous answer, for the one repair round. */
   repairErrors?: readonly string[] | undefined;
   nowIso: string;
+  /**
+   * The largest context the brain can take, in UTF-8 bytes of its JSON. A
+   * native brain receives the prompt on its command line, which Windows caps at
+   * 32 767 characters; past that the process never starts. Defaults to
+   * {@link ORCHESTRATOR_CONTEXT_MAX_BYTES}.
+   */
+  maxBytes?: number | undefined;
 };
 
 function taskSummary(task: Task) {
@@ -158,26 +165,32 @@ export function assembleJudgmentContext(input: JudgmentContextInput): Record<str
     workerNotes: item.workerNotes,
     writtenAt: item.writtenAt,
   }));
+  const limit = input.maxBytes ?? ORCHESTRATOR_CONTEXT_MAX_BYTES;
+  const fits = (candidate: Record<string, unknown>): boolean =>
+    Buffer.byteLength(JSON.stringify(candidate), 'utf8') <= limit;
   let context: Record<string, unknown> = { ...base, retrospectives };
-  if (Buffer.byteLength(JSON.stringify(context), 'utf8') <= ORCHESTRATOR_CONTEXT_MAX_BYTES) {
-    return context;
-  }
+  if (fits(context)) return context;
   context = { ...base, retrospectives: [] };
-  if (Buffer.byteLength(JSON.stringify(context), 'utf8') <= ORCHESTRATOR_CONTEXT_MAX_BYTES) {
-    return context;
-  }
+  if (fits(context)) return context;
+  const compactTasks = input.tasks.map((task) => ({
+    id: task.id,
+    title: task.title,
+    state: task.state,
+  }));
+  context = { ...base, tasks: compactTasks, retrospectives: [] };
+  if (fits(context)) return context;
   context = {
-    ...base,
-    tasks: input.tasks.map((task) => ({ id: task.id, title: task.title, state: task.state })),
-    retrospectives: [],
-  };
-  if (Buffer.byteLength(JSON.stringify(context), 'utf8') <= ORCHESTRATOR_CONTEXT_MAX_BYTES) {
-    return context;
-  }
-  return {
     ...context,
     goal: { ...(context['goal'] as object), objective: clip(input.goal.objective, 2000) },
   };
+  if (fits(context)) return context;
+  // Last resort: drop the oldest tasks until it fits, and say how many went.
+  // A bounded context the brain can read beats a complete one it never receives.
+  for (let omitted = 1; omitted <= compactTasks.length; omitted += 1) {
+    const trimmed = { ...context, tasks: compactTasks.slice(omitted), tasksOmitted: omitted };
+    if (fits(trimmed)) return trimmed;
+  }
+  return { ...context, tasks: [], tasksOmitted: compactTasks.length };
 }
 
 const ANSWER_SHAPES: Record<JudgmentKind, string> = {

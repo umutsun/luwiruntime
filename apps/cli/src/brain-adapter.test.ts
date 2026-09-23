@@ -105,6 +105,9 @@ describe('createNativeBrain', () => {
     const input = run.mock.calls[0]?.[0];
     expect(input?.args).toEqual(['--print', 'question', '--allowedTools', 'Read']);
     expect(input?.environment).toEqual({ HOME: '/h' });
+    // The prompt rides on the command line (Windows: 32 767 characters, JSON
+    // quotes escaped), so the brain declares a context budget well under it.
+    expect(brain.maxContextBytes).toBe(20_000);
   });
 
   it('reports a silent non-zero exit as unavailable and an empty run as empty', async () => {

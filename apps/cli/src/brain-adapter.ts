@@ -12,6 +12,8 @@ export type BrainAnswer = { text: string; ms: number };
 
 export interface BrainAdapter {
   readonly name: string;
+  /** The largest judgment context (UTF-8 bytes of its JSON) this brain can take; unbounded when absent. */
+  readonly maxContextBytes?: number;
   judge(prompt: string, options: { timeoutMs: number }): Promise<BrainAnswer>;
 }
 
@@ -170,6 +172,10 @@ export function createNativeBrain(options: {
   const now = options.now ?? Date.now;
   return {
     name: options.provider,
+    // The prompt rides on the command line, which Windows caps at 32 767
+    // characters with every JSON quote escaped; past it the process never
+    // starts (AGENT_SPAWN_FAILED). 20 000 bytes of context leaves room for both.
+    maxContextBytes: 20_000,
     async judge(prompt, { timeoutMs }) {
       const { EventEmitter } = await import('node:events');
       const signals = new EventEmitter();

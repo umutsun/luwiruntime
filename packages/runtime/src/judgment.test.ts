@@ -1,4 +1,4 @@
-import type { AutopilotPolicy, Goal } from '@luwi/protocol';
+import type { AutopilotPolicy, Goal, Task } from '@luwi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -222,5 +222,62 @@ describe('assembleJudgmentContext workerRoles', () => {
   it('omits workerRoles entirely when no worker declares a lane', () => {
     const context = assembleJudgmentContext(contextInput);
     expect(context['policy']).not.toHaveProperty('workerRoles');
+  });
+});
+
+describe('assembleJudgmentContext size budget', () => {
+  // A native brain takes its prompt on the command line, which Windows caps at
+  // 32 767 characters: a bigger context never starts the process at all
+  // (measured: every summarize of an 8-task goal failed with AGENT_SPAWN_FAILED).
+  const bigTask = (index: number): Task => ({
+    id: `task-${String(index)}`,
+    projectId: 'project-1',
+    goalId: 'goal-1',
+    title: `Task ${String(index)} `.padEnd(200, 'x'),
+    brief: 'Do it.',
+    agentId: 'claude-code',
+    paths: Array.from(
+      { length: 20 },
+      (_, path) => `apps/area-${String(path)}/module-${String(index)}.ts`,
+    ),
+    matchPaths: [],
+    dependsOn: [],
+    evidenceRequirements: [],
+    timeoutMs: 600_000,
+    kind: 'work',
+    reworkCount: 0,
+    state: 'done',
+    version: 1,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  });
+  const tasks = Array.from({ length: 120 }, (_, index) => bigTask(index));
+
+  it('keeps the context within the byte budget it is given', () => {
+    const context = assembleJudgmentContext({
+      ...contextInput,
+      kind: 'summarize',
+      tasks,
+      maxBytes: 20_000,
+    });
+    expect(Buffer.byteLength(JSON.stringify(context), 'utf8')).toBeLessThanOrEqual(20_000);
+  });
+
+  it('says how many tasks it left out, and keeps the most recent ones', () => {
+    const context = assembleJudgmentContext({
+      ...contextInput,
+      kind: 'summarize',
+      tasks,
+      maxBytes: 20_000,
+    });
+    const kept = context['tasks'] as { id: string }[];
+    expect(context['tasksOmitted']).toBe(120 - kept.length);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.at(-1)?.id).toBe('task-119');
+  });
+
+  it('leaves a context that already fits untouched', () => {
+    const context = assembleJudgmentContext({ ...contextInput, maxBytes: 20_000 });
+    expect(context).not.toHaveProperty('tasksOmitted');
   });
 });

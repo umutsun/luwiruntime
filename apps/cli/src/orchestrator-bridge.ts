@@ -162,6 +162,7 @@ export function createOrchestratorBridge(options: OrchestratorBridgeOptions): Or
         kind,
         ...(repairErrors === undefined ? {} : { repairErrors }),
         nowIso: new Date(now()).toISOString(),
+        maxBytes: options.brain.maxContextBytes,
       });
       const prompt = frameJudgment(kind, assembled);
       const promptSha256 = createHash('sha256').update(prompt).digest('hex');

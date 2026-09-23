@@ -224,6 +224,17 @@ describe('orchestrator bridge', () => {
     });
   });
 
+  it('bounds the judgment context by what the brain says it can take', async () => {
+    // A native brain gets its prompt on the command line; an unbounded context
+    // made every summarize of a large goal fail to start at all.
+    const { client } = daemon({ goals: [goal({ objective: 'x'.repeat(10_000) })], tasks: [] });
+    const adapter = { ...brain(['not json']), maxContextBytes: 4_000 };
+    await bridge(client, adapter).cycleOnce();
+    const context = adapter.prompts[0]?.split('CONTEXT:\n\n')[1] ?? '';
+    expect(context.length).toBeGreaterThan(0);
+    expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(4_000);
+  });
+
   it('sends an invalid answer back once with the refusals, then escalates brain_invalid', async () => {
     const { client, calls } = daemon({ goals: [goal()], tasks: [] });
     const adapter = brain([
