@@ -417,6 +417,12 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   // Header headline: on a project focus the docked bar already carries the
   // "LuwiBot" identity, so the open panel's header shows the live autopilot
   // status instead of repeating the name. Off a focus it names itself.
+  // The panel view of the goal the cockpit acts on — its chip, its task list and the
+  // plan an Approve confirms must all be the same goal, never simply the first listed.
+  const targetView =
+    flow?.status === 'ready' && target !== undefined
+      ? flow.goals.find((goal) => goal.id === target.goalId)
+      : undefined;
   const headline = flow === undefined ? 'LuwiBot' : `Autopilot · ${tone.title}`;
 
   // Genuinely unreachable chat backend — a failed connection that has not
@@ -522,17 +528,13 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                 <span className="luwibot-cockpit__title" title={target.title}>
                   {target.title}
                 </span>
-                {flow?.status === 'ready' && flow.goals[0] !== undefined ? (
-                  <StatusChip tone={flow.goals[0].state.tone}>
-                    {flow.goals[0].state.label}
-                  </StatusChip>
-                ) : null}
+                {targetView === undefined ? null : (
+                  <StatusChip tone={targetView.state.tone}>{targetView.state.label}</StatusChip>
+                )}
               </div>
               {target.objective === undefined ? null : (
                 <details className="luwibot-cockpit__goal-detail">
-                  <summary className="luwibot-cockpit__objective" title={target.objective}>
-                    {target.objective}
-                  </summary>
+                  <summary className="luwibot-cockpit__objective">{target.objective}</summary>
                   {target.acceptanceCriteria.length === 0 ? null : (
                     <ul className="luwibot-cockpit__goal-detail-criteria">
                       {target.acceptanceCriteria.map((criterion, index) => (
@@ -601,12 +603,12 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                   ✕
                 </button>
               </div>
-              {flow?.status === 'ready' && (flow.goals[0]?.tasks.length ?? 0) > 0 ? (
+              {(targetView?.tasks.length ?? 0) > 0 ? (
                 <ul className="luwibot-cockpit__tasks">
-                  {flow.goals[0]?.tasks.map((task) => (
+                  {targetView?.tasks.map((task) => (
                     <li key={task.id}>
                       <details className="luwibot-cockpit__task">
-                        <summary className="luwibot-cockpit__task-summary" title={task.title}>
+                        <summary className="luwibot-cockpit__task-summary">
                           <span className="luwibot-cockpit__task-label">{task.title}</span>
                           <span className="luwibot-cockpit__task-chips">
                             <StatusChip tone={task.state.tone}>{task.state.label}</StatusChip>
@@ -700,7 +702,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                 {approvalTasks.map(({ goal, task }) => (
                   <li key={task.id}>
                     <details className="luwibot-cockpit__task">
-                      <summary className="luwibot-cockpit__task-summary" title={task.title}>
+                      <summary className="luwibot-cockpit__task-summary">
                         <span className="luwibot-cockpit__task-label">
                           {goal.title} — {task.title}
                         </span>
@@ -834,9 +836,9 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               <p className="luwibot-cockpit__confirm-text">
                 {CONFIRM_COPY[confirmAction].verb} “{target?.title ?? 'this goal'}”?
               </p>
-              {confirmAction === 'approve_plan' && (flow?.goals[0]?.tasks.length ?? 0) > 0 ? (
+              {confirmAction === 'approve_plan' && (targetView?.tasks.length ?? 0) > 0 ? (
                 <ol className="luwibot-cockpit__confirm-plan">
-                  {flow?.goals[0]?.tasks.map((task) => (
+                  {targetView?.tasks.map((task) => (
                     <li key={task.id}>
                       <span className="luwibot-cockpit__confirm-plan-task">
                         {task.title} — {task.detail.agent}

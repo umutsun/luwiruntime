@@ -789,6 +789,8 @@ select:focus-visible {
 }
 .luwibot__log {
   flex: 1;
+  /* The cockpit sections above give way first; the conversation keeps a floor. */
+  min-height: 6em;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -872,6 +874,11 @@ select:focus-visible {
   height: 16px;
 }
 .luwibot-cockpit {
+  /* Shrinks and scrolls inside the full-height panel, so a long goal or task
+     never clips what is below it and the chat input stays reachable. */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
@@ -946,6 +953,17 @@ select:focus-visible {
 .luwibot-cockpit__goal-detail[open] > .luwibot-cockpit__objective {
   -webkit-line-clamp: unset;
   white-space: pre-wrap;
+  color: var(--text);
+}
+/* Opened, the goal reads like a task's detail: one bounded inset box that
+   scrolls, not a wall of text pushing the plan off the panel. */
+.luwibot-cockpit__goal-detail[open] {
+  max-height: 12em;
+  overflow-y: auto;
+  padding: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
 .luwibot-cockpit__goal-detail-criteria {
   margin: var(--space-1) 0 0;
@@ -1407,6 +1425,11 @@ select:focus-visible {
 /* The single-task approve/reject queue (ADR 0035 gate `approvePlan` does not
    reach): a review or rework task gated after its plan already ran. */
 .luwibot-approvals {
+  /* Shrinks and scrolls inside the full-height panel, so a long goal or task
+     never clips what is below it and the chat input stays reachable. */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-1h);
@@ -1423,6 +1446,11 @@ select:focus-visible {
   text-transform: uppercase;
 }
 .luwibot-activity {
+  /* Shrinks and scrolls inside the full-height panel, so a long goal or task
+     never clips what is below it and the chat input stays reachable. */
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-1h);

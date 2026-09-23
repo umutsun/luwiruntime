@@ -133,6 +133,93 @@ describe('pickCockpitTarget', () => {
   });
 });
 
+describe('LuwiBotChat cockpit layout', () => {
+  it("chips the picked goal's own state, not the first goal's", async () => {
+    open({
+      loadAutopilotFlow: flowReady({
+        goals: [
+          { id: 'g1', title: 'Running one', acceptanceCriteria: [], state: 'running', tasks: [] },
+          {
+            id: 'g2',
+            title: 'Needs review',
+            acceptanceCriteria: [],
+            state: 'plan_review',
+            tasks: [],
+          },
+        ],
+        more: 0,
+      }),
+    });
+    await waitFor(() => expect(screen.getByText('Needs review')).toBeTruthy());
+    const head = screen.getByText('Needs review').parentElement as HTMLElement;
+    expect(within(head).getByText('plan review')).toBeTruthy();
+  });
+
+  it('confirms the plan of the goal being approved, not of the first goal listed', async () => {
+    const task = (id: string, title: string) => ({
+      id,
+      kind: 'work' as const,
+      title,
+      brief: 'x',
+      paths: [],
+      agentId: 'claude-code',
+      state: 'ready' as const,
+      verdict: undefined,
+    });
+    open({
+      loadAutopilotFlow: flowReady({
+        goals: [
+          {
+            id: 'g1',
+            title: 'Running one',
+            acceptanceCriteria: [],
+            state: 'running',
+            tasks: [task('t1', 'Other goal task')],
+          },
+          {
+            id: 'g2',
+            title: 'Needs review',
+            acceptanceCriteria: [],
+            state: 'plan_review',
+            tasks: [task('t2', 'Planned task under review')],
+          },
+        ],
+        more: 0,
+      }),
+    });
+    await waitFor(() => expect(screen.getByText('Needs review')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const confirm = screen.getByRole('group', { name: 'Approve plan' });
+    expect(within(confirm).getByText(/Planned task under review/)).toBeTruthy();
+    expect(within(confirm).queryByText(/Other goal task/)).toBeNull();
+  });
+
+  it('no longer duplicates a readable task as a hover tooltip', async () => {
+    open({
+      loadAutopilotFlow: flowReady(
+        oneGoal({
+          tasks: [
+            {
+              id: 't1',
+              kind: 'work',
+              title: 'Edit the tooltip',
+              brief: 'Change one file.',
+              paths: [],
+              agentId: 'antigravity',
+              state: 'dispatched',
+              verdict: undefined,
+            },
+          ],
+        }),
+      ),
+    });
+    await waitFor(() => expect(screen.getByText('Edit the tooltip')).toBeTruthy());
+    expect(
+      screen.getByText('Edit the tooltip').closest('summary')?.getAttribute('title'),
+    ).toBeNull();
+  });
+});
+
 describe('LuwiBotChat cockpit', () => {
   it("shows the focused project's active goal with its state and verdict", async () => {
     open({
