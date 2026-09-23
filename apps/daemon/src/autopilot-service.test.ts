@@ -459,6 +459,9 @@ describe('goals, plans and dispatch', () => {
       agentId: 'codex',
       state: 'ready',
     });
+    expect(review.brief).toContain(
+      'The work is committed in another worktree of the same repository. Check out the commit the worker cited as a detached HEAD in your own working directory before running any check.',
+    );
     expect(fake.tasks.get(taskId)?.verification?.reviewTaskId).toBe(review.id);
     const judged = await service.recordVerdict(taskId, {
       sessionId: 'coord-1',

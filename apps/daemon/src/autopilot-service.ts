@@ -1258,6 +1258,7 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
         title: `Review: ${task.title}`.slice(0, 200),
         brief: [
           `Review the work another agent reported for the task "${task.title}". Read only; change nothing.`,
+          'The work is committed in another worktree of the same repository. Check out the commit the worker cited as a detached HEAD in your own working directory before running any check.',
           `Original brief:\n${task.brief}`,
           task.doneCriteria === undefined ? '' : `Done means: ${task.doneCriteria}`,
           `Goal acceptance criteria: ${goal.acceptanceCriteria.join('; ') || 'none stated'}`,
