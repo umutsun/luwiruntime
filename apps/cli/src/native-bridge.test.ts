@@ -221,6 +221,14 @@ describe('claudeMcpBindingArgs', () => {
     expect(joined).not.toMatch(/albanoosh|xampp/i);
     expect(joined).not.toMatch(/git (?:-C \S+ )?(?:push|merge)/);
   });
+
+  it('includes the Flutter toolchain for mobile tasks', () => {
+    const args = claudeMcpBindingArgs('node', '/opt/luwi/scripts/claude-mcp-launch.mjs');
+    expect(args).toContain('Bash(flutter *)');
+    expect(args).toContain('Bash(flutter.bat *)');
+    expect(args).toContain('Bash(dart *)');
+    expect(args).toContain('Bash(dart.bat *)');
+  });
 });
 
 describe('framePrompt', () => {

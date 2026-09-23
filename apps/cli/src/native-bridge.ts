@@ -153,8 +153,9 @@ const CLAUDE_SAFE_GIT = [
  *  - Permissions are `dontAsk` over a FIXED, project-independent allowlist:
  *    read/edit anywhere, the safe git subcommands in both the plain and
  *    `-C <worktree>` forms (never push or merge), the package manager and tests,
- *    and the coordination MCP tools. No path is baked in — the worker's working
- *    directory, passed to the process separately, is what scopes execution.
+ *    the Flutter and Dart toolchains for mobile tasks, and the coordination MCP
+ *    tools. No path is baked in — the worker's working directory, passed to the
+ *    process separately, is what scopes execution.
  *
  * `--strict-mcp-config` keeps the user's own `~/.claude.json` servers out, so a
  * worker sees only LUWI's tools.
@@ -186,6 +187,10 @@ export function claudeMcpBindingArgs(
     'Bash(pnpm.cmd *)',
     'Bash(npm *)',
     'Bash(node --test *)',
+    'Bash(flutter *)',
+    'Bash(flutter.bat *)',
+    'Bash(dart *)',
+    'Bash(dart.bat *)',
     'mcp__luwi-runtime__luwi_get_message',
     'mcp__luwi-runtime__luwi_list_leases',
     'mcp__luwi-runtime__luwi_acquire_lease',
