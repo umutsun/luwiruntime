@@ -1259,6 +1259,7 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
         brief: [
           `Review the work another agent reported for the task "${task.title}". Read only; change nothing.`,
           'The work is committed in another worktree of the same repository. Check out the commit the worker cited as a detached HEAD in your own working directory before running any check.',
+          'If the worker cited no commit, or you cannot check it out, inspect the work read-only instead: `git worktree list` to find its worktree, then `git -C <that path> diff` for uncommitted changes, or `git show <sha>` for a commit.',
           `Original brief:\n${task.brief}`,
           task.doneCriteria === undefined ? '' : `Done means: ${task.doneCriteria}`,
           `Goal acceptance criteria: ${goal.acceptanceCriteria.join('; ') || 'none stated'}`,

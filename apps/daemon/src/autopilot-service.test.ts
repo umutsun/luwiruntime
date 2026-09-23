@@ -462,6 +462,9 @@ describe('goals, plans and dispatch', () => {
     expect(review.brief).toContain(
       'The work is committed in another worktree of the same repository. Check out the commit the worker cited as a detached HEAD in your own working directory before running any check.',
     );
+    expect(review.brief).toContain(
+      'If the worker cited no commit, or you cannot check it out, inspect the work read-only instead: `git worktree list` to find its worktree, then `git -C <that path> diff` for uncommitted changes, or `git show <sha>` for a commit.',
+    );
     expect(fake.tasks.get(taskId)?.verification?.reviewTaskId).toBe(review.id);
     const judged = await service.recordVerdict(taskId, {
       sessionId: 'coord-1',
