@@ -140,6 +140,16 @@ export const taskSchema = z.strictObject({
       at: timestampSchema,
     })
     .optional(),
+  /** How many times this task has been requeued after its target session was lost. */
+  redispatchCount: z.number().int().min(0).optional(),
+  /** The most recent requeue, kept on the record so a redispatch is readable. */
+  lastRedispatch: z
+    .strictObject({
+      at: timestampSchema,
+      reason: z.literal('target_session_lost'),
+      correlationId: identifierSchema.optional(),
+    })
+    .optional(),
   version: z.number().int().min(1),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,

@@ -126,6 +126,91 @@ describe('applyTaskTransition', () => {
     ).toMatchObject({ status: 'invalid' });
   });
 
+  it('requeues a dispatched task: dispatch fields cleared, count 1, lastRedispatch set', () => {
+    const dispatched = task({
+      state: 'dispatched',
+      correlationId: 'corr-1',
+      targetSessionId: 'worker-1',
+      dispatchSourceSessionId: 'coord',
+      dispatchedAt: now,
+    });
+    const result = applyTaskTransition(
+      dispatched,
+      { kind: 'requeue', reason: 'target_session_lost' },
+      now,
+    );
+    expect(result).toMatchObject({
+      status: 'ok',
+      task: {
+        state: 'ready',
+        redispatchCount: 1,
+        lastRedispatch: { at: now, reason: 'target_session_lost', correlationId: 'corr-1' },
+      },
+    });
+    const requeued = (result as { task: Task }).task;
+    expect(requeued.correlationId).toBeUndefined();
+    expect(requeued.targetSessionId).toBeUndefined();
+    expect(requeued.dispatchSourceSessionId).toBeUndefined();
+    expect(requeued.dispatchedAt).toBeUndefined();
+  });
+
+  it('counts a second requeue as 2', () => {
+    const firstRequeue = applyTaskTransition(
+      task({
+        state: 'dispatched',
+        correlationId: 'corr-1',
+        targetSessionId: 'worker-1',
+        dispatchSourceSessionId: 'coord',
+        dispatchedAt: now,
+      }),
+      { kind: 'requeue', reason: 'target_session_lost' },
+      now,
+    );
+    const dispatching = applyTaskTransition(
+      (firstRequeue as { task: Task }).task,
+      { kind: 'dispatching', sourceSessionId: 'coord' },
+      now,
+    );
+    const redispatched = applyTaskTransition(
+      (dispatching as { task: Task }).task,
+      { kind: 'dispatched', correlationId: 'corr-2', targetSessionId: 'worker-2' },
+      now,
+    );
+    const secondRequeue = applyTaskTransition(
+      (redispatched as { task: Task }).task,
+      { kind: 'requeue', reason: 'target_session_lost' },
+      now,
+    );
+    expect(secondRequeue).toMatchObject({ status: 'ok', task: { redispatchCount: 2 } });
+  });
+
+  it('requeues a dispatching task, omitting lastRedispatch.correlationId when it had none', () => {
+    const result = applyTaskTransition(
+      task({ state: 'dispatching', dispatchSourceSessionId: 'coord' }),
+      { kind: 'requeue', reason: 'target_session_lost' },
+      now,
+    );
+    expect(result).toMatchObject({
+      status: 'ok',
+      task: { state: 'ready', redispatchCount: 1 },
+    });
+    const requeued = (result as { task: Task }).task;
+    expect(requeued.lastRedispatch).toEqual({ at: now, reason: 'target_session_lost' });
+    expect(requeued.dispatchSourceSessionId).toBeUndefined();
+  });
+
+  it('refuses to requeue a task that is not dispatched or dispatching', () => {
+    for (const state of ['ready', 'done', 'failed', 'awaiting_approval'] as const) {
+      expect(
+        applyTaskTransition(
+          task({ state }),
+          { kind: 'requeue', reason: 'target_session_lost' },
+          now,
+        ).status,
+      ).toBe('invalid');
+    }
+  });
+
   it('refuses every move out of a terminal state', () => {
     for (const state of ['done', 'failed', 'cancelled', 'rejected'] as const) {
       expect(

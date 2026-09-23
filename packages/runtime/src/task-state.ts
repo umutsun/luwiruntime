@@ -21,6 +21,7 @@ export type TaskTransition =
   | { kind: 'dispatching'; sourceSessionId: string }
   | { kind: 'dispatched'; correlationId: string; targetSessionId: string }
   | { kind: 'dispatch_failed'; reason: string }
+  | { kind: 'requeue'; reason: 'target_session_lost' }
   | { kind: 'complete'; outcome: TaskOutcome; checks: TaskCheck[] }
   | {
       kind: 'verdict';
@@ -201,6 +202,31 @@ export function applyTaskTransition(
             terminalAt: now,
             outcome: transition.outcome,
             verification: { checks: transition.checks },
+          },
+          now,
+        ),
+      };
+    }
+    case 'requeue': {
+      if (task.state !== 'dispatched' && task.state !== 'dispatching') {
+        return invalid(task, transition, 'only a dispatched or dispatching task can be requeued');
+      }
+      return {
+        status: 'ok',
+        task: next(
+          task,
+          {
+            state: 'ready',
+            correlationId: undefined,
+            targetSessionId: undefined,
+            dispatchSourceSessionId: undefined,
+            dispatchedAt: undefined,
+            redispatchCount: (task.redispatchCount ?? 0) + 1,
+            lastRedispatch: {
+              at: now,
+              reason: transition.reason,
+              ...(task.correlationId === undefined ? {} : { correlationId: task.correlationId }),
+            },
           },
           now,
         ),
