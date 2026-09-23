@@ -363,6 +363,32 @@ export function createIntelligenceRepository(
     return value === null ? null : parse(value, schema, description);
   };
 
+  // Reads many hashes with bounded concurrency. node-redis pipelines the
+  // commands issued within one tick, so a chunk is one round trip rather than
+  // one per record: the whole active generation once took 8.7 s read one
+  // sequential HGET at a time, long enough to rotate the coordinator every
+  // tick. The chunk bounds how many replies are buffered at once; order is
+  // preserved so the caller's cap and sort still hold.
+  const READ_CHUNK = 500;
+  const readMany = async <Value>(
+    keysToRead: string[],
+    schema: Schema<Value>,
+    description: string,
+  ): Promise<(Value | null)[]> => {
+    const out: (Value | null)[] = [];
+    for (let index = 0; index < keysToRead.length; index += READ_CHUNK) {
+      const chunk = keysToRead.slice(index, index + READ_CHUNK);
+      const values = await Promise.all(
+        chunk.map((key) => client.sendCommand(['HGET', key, 'json'])),
+      );
+      for (const value of values) {
+        const decoded = decode(value);
+        out.push(decoded === null ? null : parse(decoded, schema, description));
+      }
+    }
+    return out;
+  };
+
   const put = async (
     key: string,
     index: string,
@@ -426,9 +452,12 @@ export function createIntelligenceRepository(
     const projectStream =
       event.projectId === undefined ? keys.globalEvents : keys.projectEvents(event.projectId);
     const operationKeys = [...new Set(operations.map(({ key }) => key))];
+    // A map, not `indexOf`: the lookup runs once per operation, and a quadratic
+    // scan of a 30 000-node batch held the event loop for six seconds.
+    const keyPositions = new Map(operationKeys.map((key, index) => [key, index + 3]));
     const encoded = operations.map((operation) => ({
       ...operation,
-      key: operationKeys.indexOf(operation.key) + 3,
+      key: keyPositions.get(operation.key),
       ...('value' in operation ? { json: JSON.stringify(operation.value), value: undefined } : {}),
     }));
     const result = decode(
@@ -1138,6 +1167,12 @@ export function createIntelligenceRepository(
       const nextNodes = new Map(nodes.map((node) => [`${node.kind}\0${node.entityId}`, node]));
       const currentEdges = new Map(current.edges.map((edge) => [edge.id, edge]));
       const nextEdges = new Map(edges.map((edge) => [edge.id, edge]));
+      // Observers stamp `observedAt` with the scan time, so on its own it is not
+      // a change: counting it rewrote every record of an unchanged project on
+      // every projection, and past the operation limit no projection succeeded.
+      const unchanged = (existing: GraphNode | GraphEdge, next: GraphNode | GraphEdge): boolean =>
+        JSON.stringify({ ...existing, observedAt: '' }) ===
+        JSON.stringify({ ...next, observedAt: '' });
       const operations: IntelligenceBatchOperation[] = [];
       const removeEdge = (edge: GraphEdge): void => {
         operations.push(
@@ -1188,7 +1223,7 @@ export function createIntelligenceRepository(
         const replacement = nextEdges.get(id);
         if (replacement === undefined) {
           removeEdge(existing);
-        } else if (JSON.stringify(existing) !== JSON.stringify(replacement)) {
+        } else if (!unchanged(existing, replacement)) {
           removeEdge(existing);
           putEdge(replacement);
         }
@@ -1211,7 +1246,7 @@ export function createIntelligenceRepository(
       }
       for (const [reference, node] of nextNodes) {
         const existing = currentNodes.get(reference);
-        if (existing !== undefined && JSON.stringify(existing) === JSON.stringify(node)) continue;
+        if (existing !== undefined && unchanged(existing, node)) continue;
         operations.push(
           {
             kind: 'hash_json',
@@ -1252,13 +1287,13 @@ export function createIntelligenceRepository(
         const ids = (
           await scanSet(keys.graphNodesByKind(selectedGeneration, kind), remaining)
         ).members.toSorted();
-        for (const id of ids) {
+        const values = await readMany(
+          ids.map((id) => keys.graphNode(selectedGeneration, kind, id)),
+          graphNodeSchema,
+          'graph node',
+        );
+        for (const value of values) {
           if (nodes.length >= maximumNodes) break;
-          const value = await read(
-            keys.graphNode(selectedGeneration, kind, id),
-            graphNodeSchema,
-            'graph node',
-          );
           if (value !== null) nodes.push(value);
         }
         if (nodes.length >= maximumNodes) break;
@@ -1270,13 +1305,13 @@ export function createIntelligenceRepository(
         const ids = (
           await scanSet(keys.graphEdgesByKind(selectedGeneration, kind), remaining)
         ).members.toSorted();
-        for (const id of ids) {
+        const values = await readMany(
+          ids.map((id) => keys.graphEdge(selectedGeneration, id)),
+          graphEdgeSchema,
+          'graph edge',
+        );
+        for (const value of values) {
           if (edges.length >= maximumEdges) break;
-          const value = await read(
-            keys.graphEdge(selectedGeneration, id),
-            graphEdgeSchema,
-            'graph edge',
-          );
           if (value !== null) edges.push(value);
         }
         if (edges.length >= maximumEdges) break;

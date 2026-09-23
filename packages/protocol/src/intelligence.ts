@@ -600,6 +600,10 @@ export const graphNodeSchema = z.strictObject({
   kind: graphNodeKindSchema,
   entityId: identifierSchema,
   projectId: identifierSchema.optional(),
+  // On a node and on an edge alike: when this record was first seen with its
+  // current content, not when it was last scanned. The incremental projection
+  // leaves a record alone when only this field differs, so the neighbors
+  // route's `from`/`to` window selects by first sight; a full rebuild restamps.
   observedAt: timestampSchema,
   provenance: z.string().trim().min(1).max(256),
   confidence: intelligenceConfidenceSchema,

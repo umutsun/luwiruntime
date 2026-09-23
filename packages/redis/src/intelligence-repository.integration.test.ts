@@ -514,6 +514,27 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         generation,
         edges: [{ kind: 'SESSION_CHANGED_FILE', count: 1 }],
       });
+
+      // A rescan that found nothing new differs only in its scan time, and that
+      // is not a change: the record stays as it was first observed.
+      const rescannedAt = '2026-09-01T00:05:00.000Z';
+      await repository.replaceGraphSnapshot(
+        generation,
+        [sessionNode, { ...fileNode, observedAt: rescannedAt }],
+        [{ ...edge, observedAt: rescannedAt }],
+        event('event-sfc-rescanned', 'graph.node.projected'),
+      );
+      await expect(repository.getGraphNode('file', fileNode.entityId)).resolves.toEqual(fileNode);
+
+      // A real difference is still written, with the time it was seen.
+      const changed = { ...fileNode, observedAt: rescannedAt, evidenceIds: ['sfc-integration-2'] };
+      await repository.replaceGraphSnapshot(
+        generation,
+        [sessionNode, changed],
+        [edge],
+        event('event-sfc-changed', 'graph.node.projected'),
+      );
+      await expect(repository.getGraphNode('file', fileNode.entityId)).resolves.toEqual(changed);
     });
 
     it('reports a namespace with no active generation as unbuilt rather than empty', async () => {

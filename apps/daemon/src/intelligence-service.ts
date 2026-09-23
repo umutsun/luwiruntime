@@ -147,6 +147,13 @@ export type IntelligenceServiceOptions = {
    * safely.
    */
   projectionStopped?: () => boolean;
+  /**
+   * Hears why a reprojection failed. The failure record carries a constant
+   * code, so without this the reason is lost: 1008 projections once failed in
+   * a row on the batch operation limit and nothing said so. Not called during
+   * shutdown, where a closing connection fails the run in flight by design.
+   */
+  onProjectionFailure?: (error: unknown, operation: string) => void;
 };
 
 export type ContextIntelligence = {
@@ -326,11 +333,44 @@ export function createIntelligenceService(
    * any time and needs no second source of truth. A project whose path is gone
    * simply contributes no structural layer.
    */
-  const observeCodeStructure = async (
-    localPath: string,
-  ): Promise<CodeStructureObservation | null> => {
+  /**
+   * The last structural scan per project, keyed on the git state hash it was
+   * scanned at. A whole-fleet reprojection fires on any one project's git flip
+   * (or a transcript tick), but re-parsing every project's tracked files each
+   * time is the ~31s loop-blocking cost that starves heartbeats. Keyed on the
+   * same `repositoryStateHash` scanGit uses to decide a project changed, only
+   * the project whose git state actually flipped re-parses; the rest reuse
+   * their last scan. A project with no git observation has no stable key and so
+   * always scans (unchanged from before).
+   */
+  const codeStructureCache = new Map<
+    string,
+    { hash: string; observation: CodeStructureObservation | null }
+  >();
+  const observeCodeStructure = async (project: {
+    id: string;
+    localPath: string;
+  }): Promise<CodeStructureObservation | null> => {
+    const hash = (await options.repository.getCurrentGitObservation(project.id).catch(() => null))
+      ?.repositoryStateHash;
+    if (hash !== undefined) {
+      const cached = codeStructureCache.get(project.id);
+      if (cached !== undefined && cached.hash === hash) return cached.observation;
+    }
     try {
-      return await codeStructureObserver.scan({ localPath });
+      // The files git tracks, as the package inventory reads them. A walk also
+      // follows untracked worktree copies and build output: on one registered
+      // project that was 20 000 files and 350 s where git tracks 250. A path
+      // that is no repository, or a listing that fails, still gets the walk.
+      const trackedPaths = await gitObserver
+        .listTrackedFiles(project.localPath)
+        .catch(() => undefined);
+      const observation = await codeStructureObserver.scan({
+        localPath: project.localPath,
+        ...(trackedPaths === undefined ? {} : { trackedPaths }),
+      });
+      if (hash !== undefined) codeStructureCache.set(project.id, { hash, observation });
+      return observation;
     } catch {
       return null;
     }
@@ -895,7 +935,7 @@ export function createIntelligenceService(
       // Structural projection (ADR 0012). A failed or absent scan leaves the
       // structural layer out entirely rather than degrading the operational
       // one — the graph is allowed to be incomplete, never wrong.
-      const structure = await observeCodeStructure(project.localPath);
+      const structure = await observeCodeStructure(project);
       if (structure !== null) {
         const structuralFiles = new Map<string, string>();
         // Counted once, not filtered per file: on a 20 000-file project the
@@ -1353,7 +1393,8 @@ export function createIntelligenceService(
           },
         ),
       );
-    } catch {
+    } catch (error) {
+      if (options.projectionStopped?.() !== true) options.onProjectionFailure?.(error, operation);
       await options.repository.recordGraphProjectionFailure({
         id: createId(),
         operation,

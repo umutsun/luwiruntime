@@ -617,6 +617,35 @@ rejected or null read; the single-lookup `getSession(id)` stays strict, because 
 one session must hear the truth about it, not a silent null. The rule generalises: a bulk listing
 tolerates one unreadable member and stays race-consistent; a targeted read does not.
 
+**A scan-time stamp is not a change (2026-09-19, live-measured).** The pilot's coordinator session
+expired on every five-minute tick and the daemon logged Redis `TimeoutError`s; Redis, its BGSAVE and
+the transcript scans were each measured and exonerated. The incremental projection had failed 1008
+times in a row and never stopped running: `replaceGraphSnapshot` diffed by full JSON equality while
+observers stamp `observedAt` with the scan time, so an unchanged project produced ~566 000 batch
+operations against `transitionWithEvent`'s 100 000 limit, and `runProjection`'s bare `catch {}` kept
+the reason. The diff now ignores `observedAt` (an unchanged record keeps the time it was first seen),
+and `onProjectionFailure` hands the reason to the daemon's log. Two costs rode along: the
+projection's structure scan walked the filesystem — 443 s across the registered projects, 350 s of
+it 20 000 untracked `temp/worktrees/` files where git tracks 250 — and now takes the git-tracked
+list the package inventory already used (31 s, walk as fallback); and `transitionWithEvent` found
+each operation's key with `indexOf`, 5 985 ms synchronous for a 30 000-node batch, now a map. The
+rule generalises: before comparing two observations, drop the field that says when you looked.
+`scanPackages` still rewrites the inventory and reprojects on every tick (`detectedAt` is a scan
+time too) — a candidate if a post-deploy probe still shows stalls. No `luwi_v1` bump; **a
+daemon started before it must be restarted once**.
+
+**And the diff baseline read must be batched (2026-09-19, live-measured after the first deploy).**
+With the writes fixed and the graph halved, one residual ~2.3 s event-loop stall per tick remained
+and still rotated the fleet coordinator, because the manager heartbeats it through a CLI call with a
+2 s timeout. Measured: it was not the diff (168 ms synchronous, zero ops on a quiet tick) but
+`readGraphGeneration` reading the whole active generation one sequential `HGET` at a time to build
+the diff baseline — 52 000 round trips, 8.7 s of interleaved I/O that kept the loop busy. The reads
+now go through `readMany`, chunked `Promise.all` of 500 (node-redis pipelines a chunk into one round
+trip): the same generation read dropped from 8.7 s to ~0.6 s (29 806 node records 4096 ms → 311 ms
+measured standalone). Order, the node/edge caps, the null-skip and the per-record `parse` throw are
+all preserved, so the read API that shares this path only gets faster. This is a second restart
+after the first deploy.
+
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.
 

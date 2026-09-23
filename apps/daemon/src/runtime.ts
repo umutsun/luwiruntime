@@ -87,6 +87,7 @@ import { createGraphifyObserver, GRAPHIFY_OUTPUT_RELATIVE_PATH } from './graphif
 import { createHostResourcesReader } from './host-resources.js';
 import { createProjectService } from './project-service.js';
 import { createProjectUnregisterService } from './project-unregister-service.js';
+import { forEachSpaced } from './scan-spacing.js';
 import { createRealtimeRelay } from './realtime-relay.js';
 import { createSessionService, isVersionConflict } from './session-service.js';
 import {
@@ -756,6 +757,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     // Readiness leaves `ready` the moment shutdown begins, so this is the same
     // signal every background tick already gates on.
     projectionStopped: () => readiness.state !== 'ready',
+    onProjectionFailure: (error, operation) =>
+      app?.log.error({ err: error, operation }, 'Operational graph projection failed'),
     deferProjection: (run) => {
       const scheduled = backgroundWork.run(run, (error) =>
         app?.log.error({ err: error }, 'Operational graph projection failed'),
@@ -1531,9 +1534,20 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         if (readiness.state !== 'ready') return;
         const scheduled = backgroundWork.run(
           async () => {
-            for (const project of await projectService.list()) {
-              refreshProject(project.id, 'periodic');
-            }
+            // Spread the per-project scans so the loop keeps servicing
+            // heartbeats between them; running all of them back-to-back blocked
+            // it long enough (≈20-30 s across the fleet) to lapse session
+            // presence and churn the workers. 2 s between projects; stop early
+            // when the runtime is draining.
+            await forEachSpaced(
+              await projectService.list(),
+              (project) => refreshProject(project.id, 'periodic'),
+              {
+                spacingMs: 2_000,
+                wait: (ms) => delay(ms),
+                keepGoing: () => readiness.state === 'ready',
+              },
+            );
           },
           (error) => app?.log.error({ err: error }, 'Periodic repository scan failed'),
         );
