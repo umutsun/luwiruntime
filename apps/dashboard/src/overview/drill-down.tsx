@@ -3,7 +3,6 @@ import type { ReactNode } from 'react';
 import { abbreviateId, formatRelativeTime } from '../components/format.js';
 import { CopyIdButton } from '../components/id-badge.js';
 import { StatusChip } from '../components/status-chip.js';
-import { FlowPanelView } from './flow-panel-view.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
 import type { Focus, OverviewSession, PanelLink, PanelModel } from './model.js';
 
@@ -215,8 +214,6 @@ export function DrillDown({
           ))
         )}
       </div>
-
-      {panel.flow === undefined ? null : <FlowPanelView panel={panel.flow} />}
 
       <div className="drill__links">
         {panel.links

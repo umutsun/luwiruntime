@@ -9,7 +9,6 @@ import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.j
 import type { IntelligenceResources } from './api/intelligence-scope.js';
 import type { AutopilotMutations } from './api/autopilot-mutations.js';
 import type { AutopilotStatus } from './api/autopilot-status.js';
-import type { AutopilotFlow } from './api/autopilot-flow.js';
 import type { CapabilityMutations } from './api/capability-mutations.js';
 import type { CoordinatorMutations } from './api/coordinator-mutations.js';
 import type { KnowledgeGraph } from './api/knowledge-scope.js';
@@ -265,7 +264,6 @@ export function DashboardApp({
   loadSessionUsage,
   loadKnowledge,
   loadAutopilot,
-  loadAutopilotFlow,
   loadProjectDiscovery,
   onRetry,
   onActivityStateChange,
@@ -341,11 +339,6 @@ export function DashboardApp({
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<AutopilotStatus>>;
-  /** Reads a focused project's autopilot goal/task flow for the drill-down's flow section. */
-  loadAutopilotFlow?: (
-    projectId: string,
-    options?: { signal?: AbortSignal },
-  ) => Promise<ResourceState<AutopilotFlow>>;
   /** Lists one directory level under a root for "Scan a folder"; absent hides that menu item. */
   loadProjectDiscovery?: (
     root: string,
@@ -951,7 +944,6 @@ export function DashboardApp({
             {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
             {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
             {...(loadAutopilot === undefined ? {} : { loadAutopilot })}
-            {...(loadAutopilotFlow === undefined ? {} : { loadAutopilotFlow })}
             {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
             {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
             {...(autopilotMutations === undefined ? {} : { autopilotMutations })}

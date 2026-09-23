@@ -605,7 +605,6 @@ function DashboardRoute() {
       loadSessionUsage={fetchSessionUsage}
       loadKnowledge={fetchKnowledge}
       loadAutopilot={fetchAutopilotStatus}
-      loadAutopilotFlow={fetchAutopilotFlow}
       loadProjectDiscovery={loadProjectDiscovery}
       onRetry={retry}
       onActivityStateChange={(next) => {

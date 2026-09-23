@@ -1114,8 +1114,6 @@ export type PanelModel = {
   facts: Array<{ k: string; v: string; detail?: string }>;
   trend: { label: string; buckets: number[]; from: string; to: string };
   list: { label: string; rows: OverviewSession[]; empty: string; selectedId?: string };
-  /** The autopilot goal/task flow, on a project focus only; absent elsewhere. */
-  flow?: FlowPanel;
   links: PanelLink[];
 };
 
@@ -1303,7 +1301,6 @@ export function panelFor(
         : 'HEAD not observed';
     const coordinator = coordinatorFact(overview, project.id);
     const autopilot = autopilotFact(extras, project.id);
-    const flow = autopilotFlowPanel(extras, project.id);
     return {
       eyebrow: project.eyebrow,
       title: project.name,
@@ -1337,7 +1334,6 @@ export function panelFor(
             ? 'Session data unavailable'
             : 'No sessions observed',
       },
-      ...(flow === undefined ? {} : { flow }),
       links: [
         { kind: 'inspect-project', label: 'Inspect', id: project.id, name: project.name },
         // The detail drawer opens over the overview; editing happens inside it (ADR 0033).

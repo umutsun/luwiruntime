@@ -4,6 +4,7 @@ import type { AgentMessage } from '../api/messages-scope.js';
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 import {
+  autopilotFlowPanel,
   blockedEvidence,
   buildOverview,
   eventDetail,
@@ -310,11 +311,10 @@ describe('autopilot mode switch in the drill-down (ADR 0035)', () => {
   });
 });
 
-describe('autopilot flow in the drill-down (ADR 0035)', () => {
+// The drill-down no longer draws the flow (the LuwiBot cockpit does); the model is the cockpit's.
+describe('autopilotFlowPanel (ADR 0035)', () => {
   const flowOf = (state: AutopilotFlowState) =>
-    panelFor(overview(), { kind: 'project', id: 'p1' }, 'live', {
-      autopilotFlow: { projectId: 'p1', state },
-    }).flow;
+    autopilotFlowPanel({ autopilotFlow: { projectId: 'p1', state } }, 'p1');
 
   it('maps active goals and tasks to toned chips in plan order', () => {
     const flow = flowOf({
@@ -433,7 +433,8 @@ describe('autopilot flow in the drill-down (ADR 0035)', () => {
     expect(flowOf({ state: 'ready', data: { goals: [], more: 0 } })?.status).toBe('empty');
     expect(flowOf({ state: 'loading' })?.status).toBe('loading');
     expect(flowOf({ state: 'unavailable' })?.status).toBe('unavailable');
-    expect(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live').flow).toBeUndefined();
+    expect(autopilotFlowPanel({}, 'p1')).toBeUndefined();
+    expect(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live')).not.toHaveProperty('flow');
   });
 });
 
