@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CoordinatorMutations } from '../api/coordinator-mutations.js';
+import { ToastProvider } from '../components/toast.js';
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 import { RUNTIME_FOCUS, type Focus } from './model.js';
@@ -135,23 +136,25 @@ describe('coordinator switch in the drill-down (ADR 0035)', () => {
     });
     const onCoordinatorMutated = vi.fn();
     render(
-      <Overview
-        snapshot={buildPulseSnapshot(input())}
-        events={events}
-        nowMs={NOW}
-        view="radial"
-        focus={sessionFocus}
-        following
-        pendingCount={0}
-        realtime="live"
-        onFocus={vi.fn()}
-        onInspect={vi.fn()}
-        coordinatorMutations={mutations(claim)}
-        onCoordinatorMutated={onCoordinatorMutated}
-      />,
+      <ToastProvider>
+        <Overview
+          snapshot={buildPulseSnapshot(input())}
+          events={events}
+          nowMs={NOW}
+          view="radial"
+          focus={sessionFocus}
+          following
+          pendingCount={0}
+          realtime="live"
+          onFocus={vi.fn()}
+          onInspect={vi.fn()}
+          coordinatorMutations={mutations(claim)}
+          onCoordinatorMutated={onCoordinatorMutated}
+        />
+      </ToastProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Make coordinator for session s1' }));
-    expect((await screen.findByRole('status')).textContent).toBe('Coordinator assigned.');
+    expect(await screen.findByText('Coordinator assigned.')).toBeTruthy();
     expect(claim).toHaveBeenCalledWith('p1', 's1');
     expect(onCoordinatorMutated).toHaveBeenCalledTimes(1);
   });
@@ -166,25 +169,25 @@ describe('coordinator switch in the drill-down (ADR 0035)', () => {
     });
     const onCoordinatorMutated = vi.fn();
     render(
-      <Overview
-        snapshot={buildPulseSnapshot(input())}
-        events={events}
-        nowMs={NOW}
-        view="radial"
-        focus={sessionFocus}
-        following
-        pendingCount={0}
-        realtime="live"
-        onFocus={vi.fn()}
-        onInspect={vi.fn()}
-        coordinatorMutations={mutations(claim)}
-        onCoordinatorMutated={onCoordinatorMutated}
-      />,
+      <ToastProvider>
+        <Overview
+          snapshot={buildPulseSnapshot(input())}
+          events={events}
+          nowMs={NOW}
+          view="radial"
+          focus={sessionFocus}
+          following
+          pendingCount={0}
+          realtime="live"
+          onFocus={vi.fn()}
+          onInspect={vi.fn()}
+          coordinatorMutations={mutations(claim)}
+          onCoordinatorMutated={onCoordinatorMutated}
+        />
+      </ToastProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Make coordinator for session s1' }));
-    expect((await screen.findByRole('status')).textContent).toBe(
-      'Session s9 holds the coordinator role.',
-    );
+    expect(await screen.findByText('Session s9 holds the coordinator role.')).toBeTruthy();
     expect(onCoordinatorMutated).not.toHaveBeenCalled();
   });
 

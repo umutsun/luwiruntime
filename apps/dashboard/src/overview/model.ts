@@ -1404,9 +1404,12 @@ export function panelFor(
     const coordinator = coordinatorFact(overview, session.projectId);
     const holdsRole = coordinator.holderId === session.id;
     // The role switch, where the owner looks for it (ADR 0035): release for the
-    // live holder, claim for any other active session — a live holder answers
-    // 409 with its name, so a swap is release then claim. A terminal session
-    // gets no control: it cannot hold the role.
+    // live holder, and claim ONLY when the role is actually free — a live holder
+    // (e.g. the autopilot orchestrator) cannot be evicted, so offering "Make
+    // coordinator" there just produces a 409; to reassign, the holder releases
+    // first and then the target becomes claimable. A terminal session gets no
+    // control: it cannot hold the role.
+    const roleFree = coordinator.holderId === undefined;
     const roleLink: PanelLink[] = holdsRole
       ? [
           {
@@ -1417,7 +1420,7 @@ export function panelFor(
             sessionId: session.id,
           },
         ]
-      : session.active
+      : session.active && roleFree
         ? [
             {
               kind: 'coordinator',
@@ -1782,6 +1785,12 @@ export type RadialNode = {
 export type RadialLayout = {
   nodes: RadialNode[];
   centre: { big: string; small: string; ink: boolean; title: string; hint: string; focus: Focus };
+  /**
+   * The focused project's own focus, present only when a project (or a session
+   * in it) is focused. Deselecting a session returns here — staying in the
+   * project's session orbit — instead of zooming all the way out to runtime.
+   */
+  projectFocus?: Focus;
 };
 
 export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
@@ -1893,7 +1902,11 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
           hint: 'sessions · click the core to zoom out',
           focus: RUNTIME_FOCUS,
         };
-  return { nodes, centre };
+  return {
+    nodes,
+    centre,
+    ...(project === undefined ? {} : { projectFocus: { kind: 'project', id: project.id } }),
+  };
 }
 
 // ---------------------------------------------------------------------------

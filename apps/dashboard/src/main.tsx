@@ -596,7 +596,6 @@ function DashboardRoute() {
       sessionMutations={sessionMutations}
       onSessionMutated={retry}
       autopilotMutations={autopilotMutations}
-      goalMutations={goalMutations}
       capabilityMutations={capabilityMutations}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}

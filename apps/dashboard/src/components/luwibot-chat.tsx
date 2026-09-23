@@ -4,7 +4,6 @@ import type { AutopilotFlow, FlowGoal } from '../api/autopilot-flow.js';
 import type { AgentActivity } from '../api/agent-activity.js';
 import { autopilotFlowPanel, type FlowPanel } from '../overview/model.js';
 import { parseRoute } from '../routing.js';
-import { ConfirmDialog } from './confirm-dialog.js';
 import { agenticStages, involvement } from './agentic-flow.js';
 import { cockpitStatus } from './luwibot-cockpit.js';
 import { StatusChip } from './status-chip.js';
@@ -123,7 +122,12 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   const logRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const answerRef = useRef<HTMLTextAreaElement>(null);
+  const confirmGoRef = useRef<HTMLButtonElement>(null);
   const intentSeq = useRef(0);
+  // Focus the confirm button when the inline confirm opens, so Enter confirms.
+  useEffect(() => {
+    if (confirmAction !== undefined) confirmGoRef.current?.focus();
+  }, [confirmAction]);
 
   const connect = (): WebSocket => {
     const ws = new WebSocket(WS_URL);
@@ -500,14 +504,28 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                   ? target.question
                   : cockpitStatus(target.state, target.done, target.total)}
               </p>
-              {where.text === '' ? null : (
-                <p
-                  className={`agentic-rail__where${where.you ? ' agentic-rail__where--you' : ''}`}
-                  role="status"
+              <div className="luwibot-cockpit__turn">
+                {where.text === '' ? (
+                  <span />
+                ) : (
+                  <p
+                    className={`agentic-rail__where${where.you ? ' agentic-rail__where--you' : ''}`}
+                    role="status"
+                  >
+                    {where.text}
+                  </p>
+                )}
+                <button
+                  type="button"
+                  className="luwibot-cockpit__stop"
+                  aria-label="Stop the goal"
+                  title="Stop goal"
+                  disabled={pending !== undefined}
+                  onClick={() => setConfirmAction('abandon_goal')}
                 >
-                  {where.text}
-                </p>
-              )}
+                  ✕
+                </button>
+              </div>
               {flow?.status === 'ready' && (flow.goals[0]?.tasks.length ?? 0) > 0 ? (
                 <ul className="luwibot-cockpit__tasks">
                   {flow.goals[0]?.tasks.map((task) => (
@@ -572,14 +590,6 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                     </button>
                   </form>
                 ) : null}
-                <button
-                  type="button"
-                  className="luwibot-cockpit__btn luwibot-cockpit__btn--danger"
-                  disabled={pending !== undefined}
-                  onClick={() => setConfirmAction('abandon_goal')}
-                >
-                  Stop
-                </button>
                 {intentError === undefined ? null : (
                   <p className="luwibot-cockpit__error" role="status">
                     {intentError}
@@ -613,20 +623,43 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
             </section>
           ) : null}
           {confirmAction === undefined ? null : (
-            <ConfirmDialog
-              title={CONFIRM_COPY[confirmAction].title}
-              confirmLabel={CONFIRM_COPY[confirmAction].confirm}
-              busy={pending !== undefined}
-              onCancel={() => setConfirmAction(undefined)}
-              onConfirm={() => {
-                sendIntent(confirmAction);
-                setConfirmAction(undefined);
+            <div
+              className="luwibot-cockpit__confirm"
+              role="group"
+              aria-label={CONFIRM_COPY[confirmAction].title}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && pending === undefined) {
+                  event.stopPropagation();
+                  setConfirmAction(undefined);
+                }
               }}
             >
-              <p>
+              <p className="luwibot-cockpit__confirm-text">
                 {CONFIRM_COPY[confirmAction].verb} “{target?.title ?? 'this goal'}”?
               </p>
-            </ConfirmDialog>
+              <div className="luwibot-cockpit__confirm-actions">
+                <button
+                  type="button"
+                  className="luwibot-cockpit__btn"
+                  disabled={pending !== undefined}
+                  onClick={() => setConfirmAction(undefined)}
+                >
+                  Cancel
+                </button>
+                <button
+                  ref={confirmGoRef}
+                  type="button"
+                  className={`luwibot-cockpit__confirm-go${confirmAction === 'abandon_goal' ? ' luwibot-cockpit__confirm-go--danger' : ''}`}
+                  disabled={pending !== undefined}
+                  onClick={() => {
+                    sendIntent(confirmAction);
+                    setConfirmAction(undefined);
+                  }}
+                >
+                  {CONFIRM_COPY[confirmAction].confirm}
+                </button>
+              </div>
+            </div>
           )}
           <div className="luwibot__log" ref={logRef}>
             {messages.length === 0 ? (

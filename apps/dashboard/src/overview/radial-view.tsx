@@ -170,7 +170,11 @@ export function RadialView({
                   aria-pressed={node.selected}
                   aria-label={`Focus ${node.kind} ${node.label}`}
                   title={node.hint}
-                  onClick={() => onFocus(node.selected ? { kind: 'runtime' } : node.focus)}
+                  onClick={() =>
+                    onFocus(
+                      node.selected ? (layout.projectFocus ?? { kind: 'runtime' }) : node.focus,
+                    )
+                  }
                 >
                   {node.initials}
                 </button>

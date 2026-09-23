@@ -563,7 +563,7 @@ tr[data-selected='true'] {
 }
 
 .dialog {
-  width: min(46rem, 100%);
+  width: min(32rem, 100%);
   max-height: 80vh;
   overflow-y: auto;
   padding: var(--space-4);
@@ -591,12 +591,17 @@ tr[data-selected='true'] {
   margin-top: var(--space-4);
 }
 
+/* Solid danger fill so the destructive label is readable — the outline (red
+   text on the surface) failed contrast. --paper is the ink/paper pair's light
+   side, so it reads in both themes (dark on the light-red, light on dark-red). */
 .dialog__confirm {
+  background: var(--danger);
   border-color: var(--danger);
-  color: var(--danger);
+  color: var(--paper);
 }
 
 .dialog__confirm:disabled {
+  background: var(--surface-3);
   border-color: var(--border);
   color: var(--text-muted);
 }

@@ -1556,6 +1556,11 @@ a.ticker__detail:hover {
   text-align: right;
   justify-content: flex-end;
 }
+/* The autopilot mode switch, docked where the read-only "Autopilot" fact was
+   (ADR 0035): same horizontal gutter as the facts and trend so it lines up. */
+.drill__autopilot {
+  padding: var(--space-2) var(--space-5h) 0;
+}
 .drill__trend {
   padding: var(--space-3h) var(--space-5h) var(--space-1);
 }

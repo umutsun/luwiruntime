@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+
 import { abbreviateId, formatRelativeTime } from '../components/format.js';
 import { CopyIdButton } from '../components/id-badge.js';
 import { StatusChip } from '../components/status-chip.js';
@@ -82,9 +84,8 @@ export function DrillDown({
   onFocus,
   onInspect,
   onCoordinator,
-  coordinatorNote,
   onAutopilot,
-  autopilotNote,
+  autopilotControl,
 }: {
   panel: PanelModel;
   nowMs: number;
@@ -92,12 +93,15 @@ export function DrillDown({
   onInspect: (selection: InspectorSelection) => void;
   /** Absent hides the coordinator switch (ADR 0035): a shell without the mutation shows no control. */
   onCoordinator?: (link: CoordinatorLink) => void;
-  /** The outcome of the last claim or release, shown until the focus moves. */
-  coordinatorNote?: string;
   /** Absent hides the autopilot switch (ADR 0035): a shell without the mutation shows no control. */
   onAutopilot?: (link: AutopilotLink) => void;
-  /** The outcome of the last mode change, shown until the focus moves. */
-  autopilotNote?: string;
+  /**
+   * The segmented autopilot mode switch, rendered in place of the read-only
+   * "Autopilot" fact and the mode links. Present only on a project focus whose
+   * shell wires the mutation; when it is here the fact and links are suppressed
+   * so the switch is the single control.
+   */
+  autopilotControl?: ReactNode;
 }) {
   const max = panel.trend.buckets.reduce((high, value) => Math.max(high, value), 0);
   return (
@@ -132,32 +136,38 @@ export function DrillDown({
       )}
 
       <div className="drill__facts">
-        {panel.facts.map((fact, index) => (
-          <div
-            key={fact.k}
-            className={`drill__fact${isWideFact(fact.k) ? ' drill__fact--wide' : ''}`}
-            style={{ animationDelay: `${String(0.05 + index * 0.05)}s` }}
-          >
-            <span className="drill__fact-k">{fact.k}</span>
-            {(() => {
-              const chips = roleChips(fact.k, fact.v);
-              return chips === undefined ? (
-                <span className="drill__fact-v" title={fact.detail ?? fact.v}>
-                  {fact.v}
-                </span>
-              ) : (
-                <span className="drill__fact-roles">
-                  {chips.map((role) => (
-                    <StatusChip key={role} tone="info">
-                      {role}
-                    </StatusChip>
-                  ))}
-                </span>
-              );
-            })()}
-          </div>
-        ))}
+        {panel.facts
+          .filter((fact) => autopilotControl === undefined || fact.k !== 'Autopilot')
+          .map((fact, index) => (
+            <div
+              key={fact.k}
+              className={`drill__fact${isWideFact(fact.k) ? ' drill__fact--wide' : ''}`}
+              style={{ animationDelay: `${String(0.05 + index * 0.05)}s` }}
+            >
+              <span className="drill__fact-k">{fact.k}</span>
+              {(() => {
+                const chips = roleChips(fact.k, fact.v);
+                return chips === undefined ? (
+                  <span className="drill__fact-v" title={fact.detail ?? fact.v}>
+                    {fact.v}
+                  </span>
+                ) : (
+                  <span className="drill__fact-roles">
+                    {chips.map((role) => (
+                      <StatusChip key={role} tone="info">
+                        {role}
+                      </StatusChip>
+                    ))}
+                  </span>
+                );
+              })()}
+            </div>
+          ))}
       </div>
+
+      {autopilotControl === undefined ? null : (
+        <div className="drill__autopilot">{autopilotControl}</div>
+      )}
 
       <div className="drill__trend">
         <p className="drill__section-label">{panel.trend.label}</p>
@@ -208,69 +218,60 @@ export function DrillDown({
 
       {panel.flow === undefined ? null : <FlowPanelView panel={panel.flow} />}
 
-      {coordinatorNote === undefined ? null : (
-        <p className="drill__empty" role="status">
-          {coordinatorNote}
-        </p>
-      )}
-      {autopilotNote === undefined ? null : (
-        <p className="drill__empty" role="status">
-          {autopilotNote}
-        </p>
-      )}
-
       <div className="drill__links">
-        {panel.links.map((link) =>
-          link.kind === 'route' ? (
-            <a key={link.label} className="drill__link" href={link.href}>
-              {link.label} ›
-            </a>
-          ) : link.kind === 'coordinator' ? (
-            onCoordinator === undefined ? null : (
+        {panel.links
+          .filter((link) => autopilotControl === undefined || link.kind !== 'autopilot')
+          .map((link) =>
+            link.kind === 'route' ? (
+              <a key={link.label} className="drill__link" href={link.href}>
+                {link.label} ›
+              </a>
+            ) : link.kind === 'coordinator' ? (
+              onCoordinator === undefined ? null : (
+                <button
+                  key={link.label}
+                  type="button"
+                  className="drill__link"
+                  aria-label={`${link.label} for session ${link.sessionId}`}
+                  onClick={() => onCoordinator(link)}
+                >
+                  {link.label} ›
+                </button>
+              )
+            ) : link.kind === 'autopilot' ? (
+              onAutopilot === undefined ? null : (
+                <button
+                  key={link.label}
+                  type="button"
+                  className="drill__link"
+                  aria-label={`${link.label} for project ${link.projectId}`}
+                  onClick={() => onAutopilot(link)}
+                >
+                  {link.label} ›
+                </button>
+              )
+            ) : link.kind === 'inspect-project' ? (
               <button
                 key={link.label}
                 type="button"
                 className="drill__link"
-                aria-label={`${link.label} for session ${link.sessionId}`}
-                onClick={() => onCoordinator(link)}
+                aria-label={`Inspect project ${link.name}`}
+                onClick={() => onInspect({ kind: 'project', projectId: link.id })}
               >
                 {link.label} ›
               </button>
-            )
-          ) : link.kind === 'autopilot' ? (
-            onAutopilot === undefined ? null : (
+            ) : (
               <button
                 key={link.label}
                 type="button"
                 className="drill__link"
-                aria-label={`${link.label} for project ${link.projectId}`}
-                onClick={() => onAutopilot(link)}
+                aria-label={`Inspect session ${link.id}`}
+                onClick={() => onInspect({ kind: 'session', sessionId: link.id })}
               >
                 {link.label} ›
               </button>
-            )
-          ) : link.kind === 'inspect-project' ? (
-            <button
-              key={link.label}
-              type="button"
-              className="drill__link"
-              aria-label={`Inspect project ${link.name}`}
-              onClick={() => onInspect({ kind: 'project', projectId: link.id })}
-            >
-              {link.label} ›
-            </button>
-          ) : (
-            <button
-              key={link.label}
-              type="button"
-              className="drill__link"
-              aria-label={`Inspect session ${link.id}`}
-              onClick={() => onInspect({ kind: 'session', sessionId: link.id })}
-            >
-              {link.label} ›
-            </button>
-          ),
-        )}
+            ),
+          )}
       </div>
     </aside>
   );

@@ -116,7 +116,7 @@ describe('LuwiBotChat cockpit', () => {
     open({ loadAutopilotFlow: flowReady(oneGoal({ state: 'plan_review' })) });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy());
     expect(screen.getByRole('button', { name: 'Reject' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop the goal' })).toBeTruthy();
     expect(screen.queryByLabelText('Answer')).toBeNull();
     // The agentic rail marks Review as the operator's active touchpoint.
     expect(screen.getByLabelText('Where you come in')).toBeTruthy();

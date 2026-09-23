@@ -1158,8 +1158,127 @@ select:focus-visible {
   color: var(--paper);
   border-color: var(--ink);
 }
-.luwibot-cockpit__btn--danger {
+/* The status/your-turn line and its minimal stop control on one row: the big
+   Stop button was replaced by a small ✕ next to the "…or stop" message. */
+.luwibot-cockpit__turn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.luwibot-cockpit__stop {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--space-5);
+  height: var(--space-5);
+  background: transparent;
   color: var(--danger);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.luwibot-cockpit__stop:hover {
+  border-color: var(--danger);
+  background: var(--surface-3);
+}
+.luwibot-cockpit__stop:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Corner notifications for transient action outcomes (coordinator/autopilot),
+   so a result like "already coordinated" overlays instead of shoving the
+   drill-down body around. Fixed, pointer-through except on the cards. */
+.toast-host {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: var(--z-dialog);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-width: min(24rem, calc(100vw - var(--space-8)));
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2h) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  pointer-events: auto;
+  animation: ov-pop 0.18s var(--ease-out) both;
+}
+.toast--error {
+  border-color: var(--danger);
+}
+.toast--info {
+  border-color: var(--border-strong);
+}
+.toast__message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.toast__dismiss {
+  flex-shrink: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  line-height: 1;
+  cursor: pointer;
+}
+.toast__dismiss:hover {
+  color: var(--text);
+}
+
+/* The cockpit's own confirm, inline in the panel instead of a centre-screen
+   modal far from the ✕ that opened it. Compact, and its danger action reads
+   (solid fill + --paper), not red text on a muted button. */
+.luwibot-cockpit__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2h);
+  padding: var(--space-2h) var(--space-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.luwibot-cockpit__confirm-text {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+}
+.luwibot-cockpit__confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.luwibot-cockpit__confirm-go {
+  padding: var(--space-1) var(--space-2h);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+.luwibot-cockpit__confirm-go--danger {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+.luwibot-cockpit__confirm-go:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .luwibot-cockpit__answer {
   display: flex;

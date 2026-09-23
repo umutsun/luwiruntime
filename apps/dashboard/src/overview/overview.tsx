@@ -8,6 +8,8 @@ import type { KnowledgeGraph } from '../api/knowledge-scope.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
+import { ProjectAutopilot } from '../components/project-autopilot.js';
+import { useToast } from '../components/toast.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
 import type { PulseSnapshot } from '../pulse/model.js';
 import type { DashboardEvent } from '../realtime/schema.js';
@@ -106,6 +108,7 @@ export function Overview({
   /** With `loadAutopilot`, wires the drill-down's autopilot mode switch (ADR 0035). */
   autopilotMutations?: AutopilotMutations;
 }) {
+  const pushToast = useToast();
   const overview = useMemo(
     () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable),
     [snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable],
@@ -196,47 +199,39 @@ export function Overview({
   // into. One request at a time; the outcome is stated in words and cleared
   // when the focus moves, and a success re-reads the snapshot so the fact and
   // the badge follow the daemon rather than the click.
-  const [coordinatorNote, setCoordinatorNote] = useState<string>();
   const [coordinatorBusy, setCoordinatorBusy] = useState(false);
-  useEffect(() => {
-    setCoordinatorNote(undefined);
-  }, [focusedSessionId]);
   const coordinatorEnabled =
     coordinatorMutations !== undefined && onCoordinatorMutated !== undefined;
   const runCoordinator = async (link: CoordinatorLink): Promise<void> => {
     if (coordinatorMutations === undefined || onCoordinatorMutated === undefined) return;
     if (coordinatorBusy) return;
     setCoordinatorBusy(true);
-    setCoordinatorNote(undefined);
     const result =
       link.action === 'claim'
         ? await coordinatorMutations.claim(link.projectId, link.sessionId)
         : await coordinatorMutations.release(link.projectId, link.sessionId);
     setCoordinatorBusy(false);
     if (result.state === 'ok') {
-      setCoordinatorNote(
+      pushToast(
         link.action === 'claim' ? 'Coordinator assigned.' : 'Coordinator released.',
+        'info',
       );
       onCoordinatorMutated();
       return;
     }
-    setCoordinatorNote(
+    pushToast(
       result.reason === 'http' ? result.message : 'The coordinator update could not be completed.',
+      'error',
     );
   };
   // The autopilot mode switch (ADR 0035), from the project panel. One request at
   // a time; the daemon returns the new record, so the fact follows the response
   // without a re-read — autopilot is not in the pulse, so nothing else needs it.
-  const [autopilotNote, setAutopilotNote] = useState<string>();
   const [autopilotBusy, setAutopilotBusy] = useState(false);
-  useEffect(() => {
-    setAutopilotNote(undefined);
-  }, [focusedProjectId]);
   const autopilotEnabled = autopilotMutations !== undefined && loadAutopilot !== undefined;
   const runAutopilot = async (link: AutopilotLink): Promise<void> => {
     if (autopilotMutations === undefined || autopilotBusy) return;
     setAutopilotBusy(true);
-    setAutopilotNote(undefined);
     const result = await autopilotMutations.setMode(link.projectId, link.mode);
     setAutopilotBusy(false);
     if (result.state === 'ok') {
@@ -255,13 +250,15 @@ export function Overview({
           },
         },
       }));
-      setAutopilotNote(
+      pushToast(
         result.data.changed ? `Autopilot set to ${link.mode}.` : `Autopilot already ${link.mode}.`,
+        'info',
       );
       return;
     }
-    setAutopilotNote(
+    pushToast(
       result.reason === 'http' ? result.message : 'The autopilot update could not be completed.',
+      'error',
     );
   };
   // Each hero tile opens its own detail drawer over the overview, the owner's
@@ -356,7 +353,6 @@ export function Overview({
                 },
               }
             : {})}
-          {...(coordinatorNote === undefined ? {} : { coordinatorNote })}
           {...(autopilotEnabled
             ? {
                 onAutopilot: (link: AutopilotLink) => {
@@ -364,7 +360,19 @@ export function Overview({
                 },
               }
             : {})}
-          {...(autopilotNote === undefined ? {} : { autopilotNote })}
+          {...(focusedProjectId !== undefined &&
+          loadAutopilot !== undefined &&
+          autopilotMutations !== undefined
+            ? {
+                autopilotControl: (
+                  <ProjectAutopilot
+                    projectId={focusedProjectId}
+                    loadAutopilot={loadAutopilot}
+                    autopilotMutations={autopilotMutations}
+                  />
+                ),
+              }
+            : {})}
         />
       )}
     </div>

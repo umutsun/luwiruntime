@@ -20,6 +20,7 @@ import {
   RUNTIME_FOCUS,
   sessionBadge,
   toneOf,
+  type AutopilotFlowState,
   type TimelineBar,
   type TimelineLane,
 } from './model.js';
@@ -234,7 +235,7 @@ describe('coordinator role in the drill-down (ADR 0035)', () => {
     );
   });
 
-  it('offers Release to the holder, Make coordinator to another active session, nothing to a terminal one', () => {
+  it('offers Release to the holder, and hides Make coordinator while the role is held (no evicting a live holder)', () => {
     const held = model(withHolder('s-think', true));
     const holder = panelFor(held, { kind: 'session', id: 's-think' }, 'live');
     expect(coordinatorFactOf(holder)).toBe('this session');
@@ -245,15 +246,11 @@ describe('coordinator role in the drill-down (ADR 0035)', () => {
       projectId: 'p1',
       sessionId: 's-think',
     });
+    // A live holder cannot be evicted, so another active session is offered no
+    // claim (the button that would only 409) — it still reads who holds the role.
     const other = panelFor(held, { kind: 'session', id: 's-blocked' }, 'live');
     expect(coordinatorFactOf(other)).toBe('Implement graph generation transition');
-    expect(other.links).toContainEqual({
-      kind: 'coordinator',
-      label: 'Make coordinator',
-      action: 'claim',
-      projectId: 'p1',
-      sessionId: 's-blocked',
-    });
+    expect(other.links.some((link) => link.kind === 'coordinator')).toBe(false);
     const done = panelFor(held, { kind: 'session', id: 's-done' }, 'live');
     expect(done.links.some((link) => link.kind === 'coordinator')).toBe(false);
   });
@@ -314,7 +311,7 @@ describe('autopilot mode switch in the drill-down (ADR 0035)', () => {
 });
 
 describe('autopilot flow in the drill-down (ADR 0035)', () => {
-  const flowOf = (state: import('./model.js').AutopilotFlowState) =>
+  const flowOf = (state: AutopilotFlowState) =>
     panelFor(overview(), { kind: 'project', id: 'p1' }, 'live', {
       autopilotFlow: { projectId: 'p1', state },
     }).flow;
@@ -1039,6 +1036,14 @@ describe('radial layout', () => {
     expect(layout.centre).toMatchObject({ big: 'AP', small: '1 BLOCKED', ink: true });
     expect(layout.nodes.map((node) => node.key)).toEqual(['s-blocked', 's-think']);
     expect(layout.nodes[1]?.sub).toBe('FEATURE/GRAPH');
+  });
+
+  it('carries the focused project so deselecting a session stays in it, and none at runtime', () => {
+    // Deselecting a session returns to layout.projectFocus (its project's orbit),
+    // not all the way out to runtime.
+    const zoomed = layoutRadial(overview(), { kind: 'session', id: 's-blocked' });
+    expect(zoomed.projectFocus).toEqual({ kind: 'project', id: 'p1' });
+    expect(layoutRadial(overview(), RUNTIME_FOCUS).projectFocus).toBeUndefined();
   });
 
   it('hints a session node with its GUI title, falling back to the session id', () => {
