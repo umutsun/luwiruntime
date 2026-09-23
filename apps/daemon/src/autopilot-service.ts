@@ -146,6 +146,17 @@ export type AutopilotServiceOptions = {
 
 const ANSWER_CLIP = 1500;
 
+/**
+ * The message idempotency key a dispatch uses. A redispatch after a lost target
+ * session is a new request (new content, `retryOf`), so it needs its own key;
+ * reusing the first one would answer IDEMPOTENCY_KEY_CONFLICT. The first
+ * dispatch keeps the original shape, so in-flight records still resolve.
+ */
+export function dispatchIdempotencyKey(task: Pick<Task, 'id' | 'redispatchCount'>): string {
+  const count = task.redispatchCount ?? 0;
+  return count === 0 ? `task:${task.id}` : `task:${task.id}:redispatch:${String(count)}`;
+}
+
 function policyHash(policy: AutopilotPolicy): string {
   return createHash('sha256').update(JSON.stringify(policy)).digest('hex');
 }
@@ -453,7 +464,7 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
           timeoutMs: task.timeoutMs,
           ...(retryOf === undefined ? {} : { retryOf }),
         },
-        `task:${task.id}`,
+        dispatchIdempotencyKey(task),
       );
       correlationId = result.message.correlationId;
       targetSessionId = result.message.targetSessionId;
@@ -1550,7 +1561,7 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
             // The issuing session's idempotency index first; a re-issue only when it holds nothing.
             const existing = await options.messages.findByIdempotencyKey(
               task.dispatchSourceSessionId,
-              `task:${task.id}`,
+              dispatchIdempotencyKey(task),
             );
             if (existing !== null) {
               const dispatched = taskMove(task, {

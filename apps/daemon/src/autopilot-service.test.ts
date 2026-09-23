@@ -1004,7 +1004,9 @@ describe('redispatch after a lost target session', () => {
         retryOf: 'corr-old',
         content: expect.stringContaining(INTERRUPTED_ATTEMPT_LINE),
       }),
-      expect.any(String),
+      // A redispatch is a new request: reusing the first dispatch's key would answer
+      // IDEMPOTENCY_KEY_CONFLICT (different content) and fail the redispatch at once.
+      `task:${taskId}:redispatch:1`,
     );
   });
 });
