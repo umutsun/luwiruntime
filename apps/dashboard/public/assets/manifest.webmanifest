@@ -1,0 +1,25 @@
+{
+  "id": "/",
+  "name": "LUWI Runtime",
+  "short_name": "LUWI",
+  "description": "Local control and coordination runtime for AI coding agents.",
+  "start_url": "/#/pulse",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "icons": [
+    {
+      "src": "/assets/luwi-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/assets/luwi-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
