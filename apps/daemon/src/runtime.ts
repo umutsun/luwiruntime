@@ -154,6 +154,18 @@ async function resolveExpiringNativeUnlink(
  * presence path that can make a session terminal with no caller to answer to,
  * and it is therefore the one worth exercising without a Redis stack behind it.
  */
+/** A terminal transition must never fail because its message cleanup did. */
+async function failLostTargetMessagesSafely(
+  fail: ((sessionId: string) => Promise<void>) | undefined,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await fail?.(sessionId);
+  } catch {
+    // Best-effort: the message deadline sweep is the backstop.
+  }
+}
+
 export function createPresenceSweeperRepository(options: {
   repository: RuntimeRepository;
   workspaceId: string;
@@ -163,8 +175,11 @@ export function createPresenceSweeperRepository(options: {
    * must not throw — the deadline sweep stays the backstop for anything left.
    */
   releaseSessionLeases?: (sessionId: string) => Promise<void>;
+  /** Fails the disconnected session's in-flight target messages; a throw is swallowed. */
+  failLostTargetMessages?: (sessionId: string) => Promise<void>;
 }): PresenceSweeperRepository {
-  const { repository, workspaceId, createId, releaseSessionLeases } = options;
+  const { repository, workspaceId, createId, releaseSessionLeases, failLostTargetMessages } =
+    options;
   return {
     findExpiredHeartbeatDeadlines: (nowMs, limit) =>
       repository.findExpiredHeartbeatDeadlines(nowMs, limit),
@@ -207,6 +222,7 @@ export function createPresenceSweeperRepository(options: {
             // sweep (P12) — where an overlapping acquire is refused and the
             // successor cannot release them. Best-effort; the sweep backstops.
             await releaseSessionLeases?.(deadline.sessionId);
+            await failLostTargetMessagesSafely(failLostTargetMessages, deadline.sessionId);
             return result.status === 'disconnected' ? 'disconnected' : 'reconciled';
           }
           return 'unchanged';
@@ -246,8 +262,11 @@ export function createStartingSessionReaperRepository(options: {
    * throw — the deadline sweep stays the backstop for anything left.
    */
   releaseSessionLeases?: (sessionId: string) => Promise<void>;
+  /** Fails the reaped session's in-flight target messages; a throw is swallowed. */
+  failLostTargetMessages?: (sessionId: string) => Promise<void>;
 }): StartingSessionReaperRepository {
-  const { repository, workspaceId, createId, releaseSessionLeases } = options;
+  const { repository, workspaceId, createId, releaseSessionLeases, failLostTargetMessages } =
+    options;
   return {
     findStartingSessionsPastGrace: (nowMs, graceMs, limit) =>
       repository.findStartingSessionsPastGrace(nowMs, graceMs, limit),
@@ -268,6 +287,7 @@ export function createStartingSessionReaperRepository(options: {
           if (result.status === 'disconnected') {
             // Reaped, so it is terminal: free the leases it held (P12).
             await releaseSessionLeases?.(candidate.sessionId);
+            await failLostTargetMessagesSafely(failLostTargetMessages, candidate.sessionId);
             return 'reaped';
           }
           return 'skipped';
@@ -582,6 +602,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   // built after the session service and the two sweep adapters that call this.
   let releaseSessionLeases: (sessionId: string) => Promise<void> = async () => undefined;
 
+  // Fails a terminating session's in-flight target messages with
+  // TARGET_SESSION_LOST at once. Late-bound like `releaseSessionLeases` (the
+  // message service is built after the session service); never throws.
+  let failLostTargetMessages: (sessionId: string) => Promise<void> = async () => undefined;
+
   const hub = createWebSocketHub({
     maxQueueSize: setting(config, 'websocketQueueLimit'),
     maxBufferedBytes: setting(config, 'websocketMaxBufferedBytes'),
@@ -645,7 +670,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       refreshProject(session.projectId, 'session-closed');
       // A clean close is terminal too, so free its leases now rather than
       // letting them lapse on the deadline sweep (P12).
-      void releaseSessionLeases(session.id);
+      // Then fail its in-flight target messages instead of letting them wait
+      // for their deadline.
+      void releaseSessionLeases(session.id).then(() => failLostTargetMessages(session.id));
     },
   });
   // Filled once the autopilot service exists; the message service's seams
@@ -697,6 +724,17 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         },
       }),
   });
+  failLostTargetMessages = (sessionId) =>
+    messageService.failForLostTarget(sessionId).then(
+      ({ failed, skipped }) => {
+        if (failed > 0) {
+          app?.log.info({ sessionId, failed, skipped }, 'Lost target session messages failed');
+        }
+      },
+      (error) => {
+        app?.log.error({ err: error, sessionId }, 'Lost target session message cleanup failed');
+      },
+    );
   const controlPlaneService = createControlPlaneService({
     repository: controlPlaneRepository,
     canonicalStore,
@@ -862,6 +900,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       workspaceId: config.workspaceId,
       createId: randomUUID,
       releaseSessionLeases: (sessionId) => releaseSessionLeases(sessionId),
+      failLostTargetMessages: (sessionId) => failLostTargetMessages(sessionId),
     }),
   });
   const reaper = createStartingSessionReaper({
@@ -873,6 +912,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       workspaceId: config.workspaceId,
       createId: randomUUID,
       releaseSessionLeases: (sessionId) => releaseSessionLeases(sessionId),
+      failLostTargetMessages: (sessionId) => failLostTargetMessages(sessionId),
     }),
   });
   const leaseService = createLeaseService({

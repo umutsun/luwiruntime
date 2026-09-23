@@ -539,3 +539,116 @@ describe('responder session status follows the message lifecycle', () => {
     await expect(service.respond('correlation-1', 'target', answer)).resolves.toBeDefined();
   });
 });
+
+describe('failing a lost target session in-flight messages', () => {
+  const inFlight = (id: string, state: AgentMessage['state']): AgentMessage => ({
+    ...message,
+    id,
+    correlationId: `correlation-${id}`,
+    state,
+  });
+
+  it('fails every non-terminal target message with TARGET_SESSION_LOST and skips the rest', async () => {
+    const delivered = inFlight('m-delivered', 'delivered');
+    const processing = inFlight('m-processing', 'processing');
+    const responded = inFlight('m-responded', 'responded');
+    const listMessages = vi.fn(async () => [delivered, processing, responded]);
+    const transitionMessage = vi.fn(
+      async (_kind: string, input: { correlationId: string; responseJson?: string }) => ({
+        status: 'updated' as const,
+        message: {
+          ...inFlight(input.correlationId, 'failed'),
+          response: JSON.parse(input.responseJson ?? '{}') as AgentMessage['response'],
+        },
+        event: null as never,
+        globalStreamId: '1-0',
+        projectStreamId: '1-0',
+      }),
+    );
+    const onTerminal = vi.fn(async () => undefined);
+    const sessions = sessionService();
+    const service = createMessageService({
+      repository: repository({ listMessages, transitionMessage }),
+      sessions,
+      workspaceId: 'local',
+      onTerminal,
+    });
+
+    await expect(service.failForLostTarget('target')).resolves.toEqual({ failed: 2, skipped: 1 });
+    expect(listMessages).toHaveBeenCalledWith({ targetSessionId: 'target', limit: 1000 });
+    expect(transitionMessage).toHaveBeenCalledTimes(2);
+    for (const [index, correlationId] of [
+      'correlation-m-delivered',
+      'correlation-m-processing',
+    ].entries()) {
+      const [kind, input] = transitionMessage.mock.calls[index] ?? [];
+      expect(kind).toBe('failed');
+      expect(input).toMatchObject({ correlationId, responderSessionId: 'target' });
+      const response = JSON.parse(input?.responseJson ?? '{}') as Record<string, unknown>;
+      expect(response).toMatchObject({
+        status: 'failed',
+        answer: 'TARGET_SESSION_LOST: The target session target ended before responding.',
+        evidence: [
+          {
+            type: 'session_state',
+            reference: 'target',
+            metadata: { code: 'TARGET_SESSION_LOST' },
+          },
+        ],
+      });
+    }
+    // The autopilot's terminal seam hears each failure like any other.
+    expect(onTerminal).toHaveBeenCalledTimes(2);
+    // A dead session's status is not touched.
+    expect(sessions.updateStatus).not.toHaveBeenCalled();
+  });
+
+  it('counts a message that turned terminal meanwhile as skipped, never thrown', async () => {
+    const service = createMessageService({
+      repository: repository({
+        listMessages: async () => [
+          inFlight('m-raced', 'processing'),
+          inFlight('m-unchanged', 'delivered'),
+        ],
+        transitionMessage: async (_kind, input) => {
+          if (input.correlationId === 'correlation-m-raced') {
+            throw new RedisRepositoryError('MESSAGE_TERMINAL', 'The message is already terminal.');
+          }
+          return { status: 'unchanged', message: inFlight('m-unchanged', 'responded') };
+        },
+      }),
+      sessions: sessionService(),
+      workspaceId: 'local',
+    });
+
+    await expect(service.failForLostTarget('target')).resolves.toEqual({ failed: 0, skipped: 2 });
+  });
+
+  it('keeps failing the rest after an unexpected error, then reports it', async () => {
+    const transitionMessage = vi.fn(async (_kind: string, input: { correlationId: string }) => {
+      if (input.correlationId === 'correlation-m-bad') {
+        throw new RedisRepositoryError('REDIS_DATA_INVALID', 'Redis message data is invalid.');
+      }
+      return {
+        status: 'updated' as const,
+        message: inFlight('m-good', 'failed'),
+        event: null as never,
+        globalStreamId: '1-0',
+        projectStreamId: '1-0',
+      };
+    });
+    const service = createMessageService({
+      repository: repository({
+        listMessages: async () => [inFlight('m-bad', 'delivered'), inFlight('m-good', 'queued')],
+        transitionMessage,
+      }),
+      sessions: sessionService(),
+      workspaceId: 'local',
+    });
+
+    await expect(service.failForLostTarget('target')).rejects.toMatchObject({
+      code: 'REDIS_DATA_INVALID',
+    });
+    expect(transitionMessage).toHaveBeenCalledTimes(2);
+  });
+});

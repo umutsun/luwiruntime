@@ -451,5 +451,99 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         globalBeforeStaleTimeout,
       );
     });
+
+    it('lets a terminal target fail its in-flight message, and nothing else', async () => {
+      await runtimeRepository.registerSession({
+        session: {
+          id: 'lost',
+          agentId: 'gemini-sim',
+          projectId: 'project-1',
+          status: 'starting',
+          workingDirectory: 'C:/workspace/transitions',
+          metadataJson: '{}',
+        },
+        workspaceId: 'local',
+        eventId: 'event-lost',
+        presenceTtlMs: 60_000,
+      });
+      const input = createInput('lost');
+      input.message.targetSessionId = 'lost';
+      await messages.createMessage(input);
+      // Claimed by the worker, so a pending inbox entry must be acknowledged.
+      await claimSessionInbox({
+        client: commandClient,
+        keys,
+        sessionId: 'lost',
+        bridgeInstanceId: 'bridge_lost',
+        limit: 1,
+        minIdleMs: 0,
+        getMessage: (messageId) => messages.getMessageById(messageId),
+        markDelivered: async (correlationId) => {
+          await messages.transitionMessage('delivered', {
+            correlationId,
+            responderSessionId: 'lost',
+            workspaceId: 'local',
+            eventId: 'event-delivered-lost',
+          });
+        },
+      });
+      const sourceInboxBefore = Number(
+        await commandClient.sendCommand(['XLEN', keys.sessionInbox('source')]),
+      );
+      const globalBefore = Number(await commandClient.sendCommand(['XLEN', keys.globalEvents]));
+      await runtimeRepository.closeSession({
+        sessionId: 'lost',
+        projectId: 'project-1',
+        workspaceId: 'local',
+        eventId: 'event-close-lost',
+      });
+      const transition = (kind: 'responded' | 'failed', status: string) =>
+        messages.transitionMessage(kind, {
+          correlationId: 'correlation-lost',
+          responderSessionId: 'lost',
+          workspaceId: 'local',
+          eventId: `event-${kind}-lost`,
+          responseJson: JSON.stringify({
+            status,
+            answer: 'TARGET_SESSION_LOST: The target session lost ended before responding.',
+            evidence: [],
+            verifiedAt: '2026-07-29T12:00:00.000Z',
+          }),
+        });
+
+      await expect(transition('responded', 'answered')).rejects.toMatchObject({
+        code: 'RESPONDER_SESSION_MISMATCH',
+      });
+      await expect(transition('failed', 'failed')).resolves.toMatchObject({
+        status: 'updated',
+        message: { state: 'failed', response: { status: 'failed' } },
+      });
+      await expect(
+        commandClient.sendCommand(['ZSCORE', keys.messageDeadlines, 'message-lost']),
+      ).resolves.toBeNull();
+      await expect(
+        commandClient.sendCommand([
+          'XPENDING',
+          keys.sessionInbox('lost'),
+          SESSION_INBOX_CONSUMER_GROUP,
+        ]),
+      ).resolves.toEqual(expect.arrayContaining([0]));
+      await expect(commandClient.sendCommand(['XLEN', keys.sessionInbox('source')])).resolves.toBe(
+        sourceInboxBefore + 1,
+      );
+      // The close appended its own event; the failure appends exactly one more.
+      const events = (await commandClient.sendCommand([
+        'XREVRANGE',
+        keys.globalEvents,
+        '+',
+        '-',
+        'COUNT',
+        '1',
+      ])) as Array<[string, string[]]>;
+      expect(JSON.stringify(events)).toContain('message.failed');
+      await expect(commandClient.sendCommand(['XLEN', keys.globalEvents])).resolves.toBe(
+        globalBefore + 2,
+      );
+    });
   },
 );

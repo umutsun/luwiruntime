@@ -74,7 +74,17 @@ export type MessageService = {
   ): Promise<AgentMessage>;
   claimInbox(sessionId: string, request: InboxClaimRequest): Promise<InboxClaimResponse>;
   timeoutMessage(messageId: string, expectedDeadlineMs: number): Promise<'timed_out' | 'unchanged'>;
+  /**
+   * Fails every in-flight message addressed to a session that just became
+   * terminal, with `TARGET_SESSION_LOST`, instead of letting each wait for its
+   * deadline. A message that is already terminal, or turns terminal meanwhile,
+   * is `skipped`. The deadline sweep stays the backstop.
+   */
+  failForLostTarget(sessionId: string): Promise<{ failed: number; skipped: number }>;
 };
+
+/** The reason code a lost-target failure carries in `response.evidence[].metadata.code`. */
+export const TARGET_SESSION_LOST = 'TARGET_SESSION_LOST';
 
 export type MessageServiceOptions = {
   repository: MessageRepository;
@@ -567,6 +577,67 @@ export function createMessageService(options: MessageServiceOptions): MessageSer
       } catch (error) {
         return repositoryError(error);
       }
+    },
+
+    async failForLostTarget(sessionId) {
+      // ponytail: the newest 1000 target messages; an in-flight one older than that is
+      // left to the deadline sweep, which is the backstop anyway.
+      const messages = await options.repository.listMessages({
+        targetSessionId: sessionId,
+        limit: 1000,
+      });
+      const detail = `The target session ${sessionId} ended before responding.`;
+      let failed = 0;
+      let skipped = 0;
+      let firstError: unknown;
+      for (const message of messages) {
+        if (terminalStates.has(message.state)) {
+          skipped += 1;
+          continue;
+        }
+        const verifiedAt = new Date(now()).toISOString();
+        try {
+          // The responder is the dead target itself: `message_transition` requires
+          // responder === target, and admits a terminal responder for `failed` only.
+          // Not `transition()`, because that would write a status to a dead session.
+          const result = await options.repository.transitionMessage('failed', {
+            correlationId: message.correlationId,
+            responderSessionId: sessionId,
+            workspaceId: options.workspaceId,
+            eventId: createId(),
+            responseJson: JSON.stringify({
+              status: 'failed',
+              answer: `${TARGET_SESSION_LOST}: ${detail}`,
+              evidence: [
+                {
+                  type: 'session_state',
+                  reference: sessionId,
+                  summary: detail,
+                  observedAt: verifiedAt,
+                  metadata: { code: TARGET_SESSION_LOST },
+                },
+              ],
+              verifiedAt,
+            } satisfies AgentMessageResponse),
+            idempotencyRetentionMs: options.idempotencyRetentionMs ?? 86_400_000,
+          });
+          if (result.status !== 'updated') {
+            skipped += 1;
+            continue;
+          }
+          failed += 1;
+          await fireTerminal(result.message);
+        } catch (error) {
+          skipped += 1;
+          // One bad message must not strand the rest; the first real fault is
+          // still reported once the batch is done.
+          if (!(error instanceof RedisRepositoryError && error.code === 'MESSAGE_TERMINAL')) {
+            firstError ??= error;
+          }
+        }
+      }
+      if (firstError !== undefined) throw firstError;
+      return { failed, skipped };
     },
   };
 }
