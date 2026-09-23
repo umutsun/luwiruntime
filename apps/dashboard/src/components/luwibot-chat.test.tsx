@@ -3,10 +3,10 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentActivity } from '../api/agent-activity.js';
-import type { AutopilotFlow } from '../api/autopilot-flow.js';
+import type { AutopilotFlow, FlowGoal } from '../api/autopilot-flow.js';
 import type { GoalMutations } from '../api/goal-mutations.js';
 import type { ResourceState } from './panel.js';
-import { LuwiBotChat } from './luwibot-chat.js';
+import { LuwiBotChat, pickCockpitTarget } from './luwibot-chat.js';
 
 // jsdom has no WebSocket, and Node's global one would open a real connection to
 // the LuwiBot service; this fake stays off the network, records sent frames, and
@@ -88,6 +88,48 @@ describe('LuwiBotChat grounding', () => {
       .map((frame) => JSON.parse(frame) as Record<string, unknown>)
       .find((frame) => frame.message === 'Ne üzerinde çalışıyoruz?');
     expect(chat).toMatchObject({ projectId: 'p1' });
+  });
+});
+
+describe('pickCockpitTarget', () => {
+  const goal = (over: Partial<FlowGoal>): FlowGoal => ({
+    id: over.id ?? 'g',
+    title: over.title ?? 'Goal',
+    acceptanceCriteria: [],
+    state: 'running',
+    tasks: [],
+    ...over,
+  });
+
+  it('prefers a goal with a task awaiting approval over one listed first', () => {
+    const first = goal({ id: 'g1', state: 'running' });
+    const gated = goal({
+      id: 'g2',
+      state: 'running',
+      tasks: [
+        {
+          id: 't1',
+          kind: 'review',
+          title: 'Review it',
+          brief: 'x',
+          paths: [],
+          agentId: 'codex',
+          state: 'awaiting_approval',
+          verdict: undefined,
+        },
+      ],
+    });
+    expect(pickCockpitTarget([first, gated])?.id).toBe('g2');
+  });
+
+  it('falls back to plan_review, then blocked, then the first goal', () => {
+    const running = goal({ id: 'g1', state: 'running' });
+    const planReview = goal({ id: 'g2', state: 'plan_review' });
+    const blocked = goal({ id: 'g3', state: 'blocked' });
+    expect(pickCockpitTarget([running, planReview, blocked])?.id).toBe('g2');
+    expect(pickCockpitTarget([running, blocked])?.id).toBe('g3');
+    expect(pickCockpitTarget([running])?.id).toBe('g1');
+    expect(pickCockpitTarget([])).toBeUndefined();
   });
 });
 
@@ -363,6 +405,45 @@ describe('LuwiBotChat cockpit', () => {
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith('p1', { title: 'Add dates', objective: 'Localize them' }),
     );
+  });
+
+  it('lists a gated task waiting for approval even when another goal is listed first, and approves it only after confirming', async () => {
+    const flow: AutopilotFlow = {
+      goals: [
+        { id: 'g1', title: 'Running goal', acceptanceCriteria: [], state: 'running', tasks: [] },
+        {
+          id: 'g2',
+          title: 'Gated goal',
+          acceptanceCriteria: [],
+          state: 'running',
+          tasks: [
+            {
+              id: 't1',
+              kind: 'review',
+              title: 'Review the fix',
+              brief: 'Check it works.',
+              paths: ['apps/x.ts'],
+              agentId: 'codex',
+              state: 'awaiting_approval',
+              verdict: undefined,
+            },
+          ],
+        },
+      ],
+      more: 0,
+    };
+    open({ loadAutopilotFlow: flowReady(flow) });
+    await waitFor(() => expect(screen.getByLabelText('Waiting for your approval')).toBeTruthy());
+    const section = screen.getByLabelText('Waiting for your approval');
+    expect(within(section).getByText(/Gated goal.*Review the fix/)).toBeTruthy();
+    expect(within(section).getByText(/review · codex/)).toBeTruthy();
+    fireEvent.click(within(section).getByRole('button', { name: 'Approve' }));
+    expect(sentIntent()).toBeUndefined(); // confirm shown, nothing sent yet
+    const confirm = screen.getByRole('group', { name: 'Approve task' });
+    expect(within(confirm).getByText(/Review the fix/)).toBeTruthy();
+    expect(within(confirm).getByText('apps/x.ts')).toBeTruthy();
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Approve' }));
+    expect(sentIntent()).toMatchObject({ kind: 'intent', action: 'approve_task', taskId: 't1' });
   });
 
   it('offers a one-click create pill when a chat reply infers a goal', async () => {

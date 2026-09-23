@@ -1403,6 +1403,25 @@ select:focus-visible {
   color: var(--danger);
   font-size: var(--font-size-sm);
 }
+
+/* The single-task approve/reject queue (ADR 0035 gate `approvePlan` does not
+   reach): a review or rework task gated after its plan already ran. */
+.luwibot-approvals {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  padding: var(--space-2h) var(--space-3);
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+}
+.luwibot-approvals__title {
+  margin: 0;
+  color: var(--text-dim);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
 .luwibot-activity {
   display: flex;
   flex-direction: column;

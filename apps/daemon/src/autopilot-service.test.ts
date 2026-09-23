@@ -746,3 +746,57 @@ describe('goals, plans and dispatch', () => {
     expect(abandoned).toMatchObject({ state: 'abandoned', failureReason: 'enough' });
   });
 });
+
+describe('approveTask and rejectTask', () => {
+  const gatedTask = (overrides: Partial<Task> = {}): Task => ({
+    id: 't-gated',
+    projectId: 'project-1',
+    goalId: 'goal-1',
+    title: 'Review: x',
+    brief: 'Review it.',
+    agentId: 'codex',
+    paths: [],
+    matchPaths: [''],
+    dependsOn: [],
+    evidenceRequirements: [],
+    timeoutMs: 600_000,
+    kind: 'review',
+    reworkCount: 0,
+    state: 'awaiting_approval',
+    gate: 'supervised',
+    version: 1,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    ...overrides,
+  });
+
+  it('approves a gated task, notifies the coordinator, and refuses a session that is not the operator', async () => {
+    const { service, fake } = harness();
+    await service.putPolicy('project-1', policy);
+    fake.tasks.set('t-gated', gatedTask());
+    await expect(service.approveTask('t-gated', 'worker-1')).rejects.toMatchObject({
+      code: 'AUTOPILOT_NOT_OPERATOR',
+    });
+    const approved = await service.approveTask('t-gated', undefined, 'looks good');
+    expect(approved).toMatchObject({ state: 'approved' });
+    expect(eventTypes(fake.events)).toContain('task.approved');
+    expect(fake.notices.map((notice) => notice.kind)).toContain('kick');
+  });
+
+  it('rejects a gated task and refuses a task that is not awaiting approval', async () => {
+    const { service, fake } = harness();
+    await service.putPolicy('project-1', policy);
+    fake.tasks.set('t-gated', gatedTask());
+    const rejected = await service.rejectTask('t-gated', undefined, 'not now');
+    expect(rejected).toMatchObject({ state: 'rejected' });
+    expect(eventTypes(fake.events)).toContain('task.rejected');
+
+    fake.tasks.set(
+      't-dispatching',
+      gatedTask({ id: 't-dispatching', state: 'dispatching', gate: undefined }),
+    );
+    await expect(service.approveTask('t-dispatching', undefined)).rejects.toMatchObject({
+      code: 'TASK_STATE_INVALID',
+    });
+  });
+});

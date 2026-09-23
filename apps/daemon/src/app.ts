@@ -1408,6 +1408,20 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         const rework = await withMutation(() => autopilot.createReworkTask(taskId, body.sessionId));
         return reply.code(201).send(taskSchema.parse(rework));
       });
+      app.post('/api/v1/tasks/:taskId/approve', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanDecisionRequestSchema, request.body);
+        return taskSchema.parse(
+          await withMutation(() => autopilot.approveTask(taskId, body.sessionId, body.note)),
+        );
+      });
+      app.post('/api/v1/tasks/:taskId/reject', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanDecisionRequestSchema, request.body);
+        return taskSchema.parse(
+          await withMutation(() => autopilot.rejectTask(taskId, body.sessionId, body.note)),
+        );
+      });
       app.post('/api/v1/tasks/:taskId/cancel', async (request) => {
         const { taskId } = parseRequestInput(taskParamsSchema, request.params);
         const body = parseRequestInput(taskCancelRequestSchema, request.body);

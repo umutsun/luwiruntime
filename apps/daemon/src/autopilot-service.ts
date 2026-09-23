@@ -98,6 +98,10 @@ export type AutopilotService = {
   createReviewTask(taskId: string, sessionId: string): Promise<Task>;
   createReworkTask(taskId: string, sessionId: string): Promise<Task>;
   cancelTask(taskId: string, actorSessionId: string | undefined, reason?: string): Promise<Task>;
+  /** The single-task gate `approvePlan`'s bulk approval does not cover (a review or rework task
+   * gated after plan approval). Operator-only; wakes the coordinator the same way `kick` does. */
+  approveTask(taskId: string, actorSessionId: string | undefined, note?: string): Promise<Task>;
+  rejectTask(taskId: string, actorSessionId: string | undefined, note?: string): Promise<Task>;
   /** The message-terminal seam: completes the task a message dispatched, if any. */
   completeFromMessage(message: AgentMessage): Promise<Task | null>;
   /** Repairs a dispatch interrupted between its steps and closes tasks whose message ended unseen. */
@@ -1415,6 +1419,52 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
         ),
         null,
       );
+    },
+
+    async approveTask(taskId, actorSessionId, note) {
+      const task = await requireTask(taskId);
+      const { policy } = await requireConfigured(task.projectId);
+      const by = await requireOperator(policy, task.projectId, actorSessionId);
+      const approved = taskMove(task, {
+        kind: 'approve',
+        by,
+        ...(note === undefined ? {} : { note }),
+      });
+      const stored = await writeTask(
+        approved,
+        task.version,
+        event(
+          'task.approved',
+          { projectId: task.projectId },
+          { taskId: task.id, goalId: task.goalId, by, ...(note === undefined ? {} : { note }) },
+        ),
+        null,
+      );
+      await notify(task.projectId, 'kick', { goalId: task.goalId, taskId: task.id });
+      return stored;
+    },
+
+    async rejectTask(taskId, actorSessionId, note) {
+      const task = await requireTask(taskId);
+      const { policy } = await requireConfigured(task.projectId);
+      const by = await requireOperator(policy, task.projectId, actorSessionId);
+      const rejected = taskMove(task, {
+        kind: 'reject',
+        by,
+        ...(note === undefined ? {} : { note }),
+      });
+      const stored = await writeTask(
+        rejected,
+        task.version,
+        event(
+          'task.rejected',
+          { projectId: task.projectId },
+          { taskId: task.id, goalId: task.goalId, by, ...(note === undefined ? {} : { note }) },
+        ),
+        null,
+      );
+      await notify(task.projectId, 'kick', { goalId: task.goalId, taskId: task.id });
+      return stored;
     },
 
     async completeFromMessage(message) {

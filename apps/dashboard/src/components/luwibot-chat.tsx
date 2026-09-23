@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 
-import type { AutopilotFlow, FlowGoal } from '../api/autopilot-flow.js';
+import type { AutopilotFlow, FlowGoal, FlowTask } from '../api/autopilot-flow.js';
 import type { AgentActivity } from '../api/agent-activity.js';
 import { autopilotFlowPanel, type FlowPanel } from '../overview/model.js';
 import { parseRoute } from '../routing.js';
@@ -33,8 +33,13 @@ type Status = 'idle' | 'connecting' | 'open' | 'error';
 /** A LuwiBot-suggested goal, rendered as a smart pill the operator clicks to create. */
 type GoalSuggestion = { title: string; objective: string };
 
-type IntentAction = 'approve_plan' | 'reject_plan' | 'answer_goal' | 'abandon_goal';
+type IntentAction =
+  'approve_plan' | 'reject_plan' | 'answer_goal' | 'abandon_goal' | 'approve_task' | 'reject_task';
 type ConfirmableAction = 'approve_plan' | 'reject_plan' | 'abandon_goal';
+/** A single gated task (any active goal, not just the cockpit's target) awaiting the
+ * operator's approve/reject — the one-off gate `approvePlan`'s bulk approval does not
+ * cover (a review or rework task created after the plan was already approved). */
+type TaskConfirm = { goal: FlowGoal; task: FlowTask; action: 'approve_task' | 'reject_task' };
 // The active goal a cockpit control acts on. Raw flow goals are already non-terminal
 // (the reader drops terminal ones), so the first is the one in flight and Stop always applies.
 type CockpitTarget = {
@@ -91,10 +96,29 @@ function focusedProjectId(): string | undefined {
   return route.name === 'pulse' || route.name === 'projects' ? route.projectId : undefined;
 }
 
+/**
+ * The goal the operator most needs to look at — not blindly the first one back
+ * from the daemon. A goal with a task gated `awaiting_approval` (nothing moves
+ * until a human acts) outranks a plan under review, which outranks an
+ * escalation, which outranks whatever happens to be listed first.
+ */
+export function pickCockpitTarget(goals: readonly FlowGoal[]): FlowGoal | undefined {
+  return (
+    goals.find((goal) => goal.tasks.some((task) => task.state === 'awaiting_approval')) ??
+    goals.find((goal) => goal.state === 'plan_review') ??
+    goals.find((goal) => goal.state === 'blocked') ??
+    goals[0]
+  );
+}
+
 function LuwiBotChatPanel(props: LuwiBotChatProps) {
   const [open, setOpen] = useState(false);
   const [flow, setFlow] = useState<FlowPanel>();
   const [target, setTarget] = useState<CockpitTarget>();
+  // The raw active goals (not the render-ready FlowPanel), so every gated task
+  // across every active goal can be listed for approval, not just the target's.
+  const [flowGoals, setFlowGoals] = useState<readonly FlowGoal[]>([]);
+  const [taskConfirm, setTaskConfirm] = useState<TaskConfirm>();
   // The project the cockpit is currently mirroring (focused or auto-surfaced), so
   // a "start a goal" form can post to the right project when none is running.
   const [activeProjectId, setActiveProjectId] = useState<string>();
@@ -124,11 +148,15 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const answerRef = useRef<HTMLTextAreaElement>(null);
   const confirmGoRef = useRef<HTMLButtonElement>(null);
+  const taskConfirmGoRef = useRef<HTMLButtonElement>(null);
   const intentSeq = useRef(0);
   // Focus the confirm button when the inline confirm opens, so Enter confirms.
   useEffect(() => {
     if (confirmAction !== undefined) confirmGoRef.current?.focus();
   }, [confirmAction]);
+  useEffect(() => {
+    if (taskConfirm !== undefined) taskConfirmGoRef.current?.focus();
+  }, [taskConfirm]);
 
   const connect = (): WebSocket => {
     const ws = new WebSocket(WS_URL);
@@ -219,6 +247,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
     if (load === undefined) {
       setFlow(undefined);
       setTarget(undefined);
+      setFlowGoals([]);
       setActivity([]);
       return;
     }
@@ -238,6 +267,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
         if (!cancelled) {
           setFlow(undefined);
           setTarget(undefined);
+          setFlowGoals([]);
           setActivity([]);
           setActiveProjectId(undefined);
         }
@@ -250,7 +280,9 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       if (cancelled) return;
       setActiveProjectId(projectId);
       setFlow(autopilotFlowPanel({ autopilotFlow: { projectId, state: flowResult } }, projectId));
-      const goal = flowResult.state === 'ready' ? flowResult.data.goals[0] : undefined;
+      setFlowGoals(flowResult.state === 'ready' ? flowResult.data.goals : []);
+      const goal =
+        flowResult.state === 'ready' ? pickCockpitTarget(flowResult.data.goals) : undefined;
       setTarget(
         goal === undefined
           ? undefined
@@ -343,6 +375,31 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       ...(payload === undefined ? {} : { payload }),
     });
   };
+
+  // The single-task counterpart: a gated task can belong to any active goal, not
+  // only the cockpit's current target, so it carries its own task id instead.
+  const sendTaskIntent = (action: 'approve_task' | 'reject_task', taskId: string) => {
+    if (pending !== undefined) return;
+    intentSeq.current += 1;
+    const requestId = `intent-${String(intentSeq.current)}`;
+    setIntentError(undefined);
+    setPending({ requestId });
+    rawSend({ kind: 'intent', action, taskId, requestId });
+  };
+
+  // Every task, on any active goal, gated `awaiting_approval` — the operator's
+  // "Waiting for your approval" queue, independent of which goal is the target.
+  // A `plan_review` goal is excluded: its own Approve/Reject already bulk-covers
+  // every `ready`/`awaiting_approval` task on that plan (`approvePlan`); this
+  // queue is for the gate `approvePlan` does not reach — a review or rework
+  // task gated after the plan was already approved.
+  const approvalTasks = flowGoals
+    .filter((goal) => goal.state !== 'plan_review')
+    .flatMap((goal) =>
+      goal.tasks
+        .filter((task) => task.state === 'awaiting_approval')
+        .map((task) => ({ goal, task })),
+    );
 
   // One live tone drives the single status dot (header when open, bar when
   // collapsed): a warning pulse when a goal awaits a gate, green while work is
@@ -635,6 +692,108 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                 )}
               </div>
             </section>
+          )}
+          {!contextOpen || approvalTasks.length === 0 ? null : (
+            <section className="luwibot-approvals" aria-label="Waiting for your approval">
+              <p className="luwibot-approvals__title">Waiting for your approval</p>
+              <ul className="luwibot-cockpit__tasks">
+                {approvalTasks.map(({ goal, task }) => (
+                  <li key={task.id}>
+                    <details className="luwibot-cockpit__task">
+                      <summary className="luwibot-cockpit__task-summary" title={task.title}>
+                        <span className="luwibot-cockpit__task-label">
+                          {goal.title} — {task.title}
+                        </span>
+                        <span className="luwibot-cockpit__task-chips">
+                          <StatusChip tone="warning">
+                            {task.kind} · {task.agentId ?? 'unassigned'}
+                          </StatusChip>
+                        </span>
+                      </summary>
+                      <div className="luwibot-cockpit__task-detail">
+                        <p className="luwibot-cockpit__task-brief">{task.brief}</p>
+                        {task.paths.length === 0 ? (
+                          <p className="luwibot-cockpit__task-paths">Whole project</p>
+                        ) : (
+                          <ul className="luwibot-cockpit__task-paths">
+                            {task.paths.map((path) => (
+                              <li key={path}>{path}</li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </details>
+                    <div className="luwibot-cockpit__controls">
+                      <button
+                        type="button"
+                        className="luwibot-cockpit__btn luwibot-cockpit__btn--primary"
+                        disabled={pending !== undefined}
+                        onClick={() => setTaskConfirm({ goal, task, action: 'approve_task' })}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        className="luwibot-cockpit__btn"
+                        disabled={pending !== undefined}
+                        onClick={() => setTaskConfirm({ goal, task, action: 'reject_task' })}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+          {taskConfirm === undefined ? null : (
+            <div
+              className="luwibot-cockpit__confirm"
+              role="group"
+              aria-label={taskConfirm.action === 'approve_task' ? 'Approve task' : 'Reject task'}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && pending === undefined) {
+                  event.stopPropagation();
+                  setTaskConfirm(undefined);
+                }
+              }}
+            >
+              <p className="luwibot-cockpit__confirm-text">
+                {taskConfirm.action === 'approve_task' ? 'Approve' : 'Reject'} “
+                {taskConfirm.task.title}” — {taskConfirm.task.agentId ?? 'unassigned'}?
+              </p>
+              {taskConfirm.task.paths.length === 0 ? (
+                <p className="luwibot-cockpit__confirm-plan-paths">Whole project</p>
+              ) : (
+                <ul className="luwibot-cockpit__confirm-plan-paths">
+                  {taskConfirm.task.paths.map((path) => (
+                    <li key={path}>{path}</li>
+                  ))}
+                </ul>
+              )}
+              <div className="luwibot-cockpit__confirm-actions">
+                <button
+                  type="button"
+                  className="luwibot-cockpit__btn"
+                  disabled={pending !== undefined}
+                  onClick={() => setTaskConfirm(undefined)}
+                >
+                  Cancel
+                </button>
+                <button
+                  ref={taskConfirmGoRef}
+                  type="button"
+                  className="luwibot-cockpit__confirm-go"
+                  disabled={pending !== undefined}
+                  onClick={() => {
+                    sendTaskIntent(taskConfirm.action, taskConfirm.task.id);
+                    setTaskConfirm(undefined);
+                  }}
+                >
+                  {taskConfirm.action === 'approve_task' ? 'Approve' : 'Reject'}
+                </button>
+              </div>
+            </div>
           )}
           {contextOpen &&
           target === undefined &&

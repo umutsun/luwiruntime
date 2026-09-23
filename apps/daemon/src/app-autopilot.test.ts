@@ -175,4 +175,54 @@ describe('autopilot routes', () => {
     });
     expect(listed.json()).toMatchObject({ tasks: [{ id: 'task-1' }], truncated: true });
   });
+
+  it('approves a gated task and maps a non-operator refusal to 403', async () => {
+    const approveTask = vi.fn().mockResolvedValue({ ...task, state: 'approved' });
+    app = daemon({ approveTask });
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/v1/tasks/task-1/approve',
+      payload: { sessionId: 'chat-1', note: 'looks good' },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ state: 'approved' });
+    expect(approveTask).toHaveBeenCalledWith('task-1', 'chat-1', 'looks good');
+
+    app = daemon({
+      approveTask: vi
+        .fn()
+        .mockRejectedValue(new ApplicationError('AUTOPILOT_NOT_OPERATOR', 'no', 403)),
+    });
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/v1/tasks/task-1/approve',
+      payload: {},
+    });
+    expect(refused.statusCode).toBe(403);
+  });
+
+  it('rejects a gated task, and a non-gated task answers 409', async () => {
+    const rejectTask = vi.fn().mockResolvedValue({ ...task, state: 'rejected' });
+    app = daemon({ rejectTask });
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/v1/tasks/task-1/reject',
+      payload: { sessionId: 'chat-1' },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toMatchObject({ state: 'rejected' });
+    expect(rejectTask).toHaveBeenCalledWith('task-1', 'chat-1', undefined);
+
+    app = daemon({
+      rejectTask: vi
+        .fn()
+        .mockRejectedValue(new ApplicationError('TASK_STATE_INVALID', 'not gated', 409)),
+    });
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/v1/tasks/task-1/reject',
+      payload: {},
+    });
+    expect(refused.statusCode).toBe(409);
+  });
 });
