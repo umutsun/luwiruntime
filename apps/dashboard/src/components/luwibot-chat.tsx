@@ -41,6 +41,7 @@ type CockpitTarget = {
   goalId: string;
   title: string;
   objective?: string;
+  acceptanceCriteria: string[];
   state: FlowGoal['state'];
   question?: string;
   done: number;
@@ -257,6 +258,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               goalId: goal.id,
               title: goal.title,
               ...(goal.objective === undefined ? {} : { objective: goal.objective }),
+              acceptanceCriteria: goal.acceptanceCriteria,
               state: goal.state,
               ...(goal.question === undefined ? {} : { question: goal.question }),
               done: goal.tasks.filter((task) => task.state === 'done').length,
@@ -465,7 +467,18 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                 ) : null}
               </div>
               {target.objective === undefined ? null : (
-                <p className="luwibot-cockpit__objective">{target.objective}</p>
+                <details className="luwibot-cockpit__goal-detail">
+                  <summary className="luwibot-cockpit__objective" title={target.objective}>
+                    {target.objective}
+                  </summary>
+                  {target.acceptanceCriteria.length === 0 ? null : (
+                    <ul className="luwibot-cockpit__goal-detail-criteria">
+                      {target.acceptanceCriteria.map((criterion, index) => (
+                        <li key={index}>{criterion}</li>
+                      ))}
+                    </ul>
+                  )}
+                </details>
               )}
               <ol className="agentic-rail" aria-label="Where you come in">
                 {stages.map((stage) => (
@@ -529,14 +542,34 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               {flow?.status === 'ready' && (flow.goals[0]?.tasks.length ?? 0) > 0 ? (
                 <ul className="luwibot-cockpit__tasks">
                   {flow.goals[0]?.tasks.map((task) => (
-                    <li key={task.id} className="luwibot-cockpit__task">
-                      <span className="luwibot-cockpit__task-label">{task.label}</span>
-                      <span className="luwibot-cockpit__task-chips">
-                        <StatusChip tone={task.state.tone}>{task.state.label}</StatusChip>
-                        {task.verdict === undefined ? null : (
-                          <StatusChip tone={task.verdict.tone}>{task.verdict.label}</StatusChip>
-                        )}
-                      </span>
+                    <li key={task.id}>
+                      <details className="luwibot-cockpit__task">
+                        <summary className="luwibot-cockpit__task-summary" title={task.title}>
+                          <span className="luwibot-cockpit__task-label">{task.title}</span>
+                          <span className="luwibot-cockpit__task-chips">
+                            <StatusChip tone={task.state.tone}>{task.state.label}</StatusChip>
+                            {task.verdict === undefined ? null : (
+                              <StatusChip tone={task.verdict.tone}>{task.verdict.label}</StatusChip>
+                            )}
+                          </span>
+                        </summary>
+                        <div className="luwibot-cockpit__task-detail">
+                          <p className="luwibot-cockpit__task-meta">{task.label}</p>
+                          <p className="luwibot-cockpit__task-brief">{task.detail.brief}</p>
+                          {task.detail.paths.length === 0 ? (
+                            <p className="luwibot-cockpit__task-paths">Whole project</p>
+                          ) : (
+                            <ul className="luwibot-cockpit__task-paths">
+                              {task.detail.paths.map((path) => (
+                                <li key={path}>{path}</li>
+                              ))}
+                            </ul>
+                          )}
+                          {task.detail.doneCriteria === undefined ? null : (
+                            <p className="luwibot-cockpit__task-done">{task.detail.doneCriteria}</p>
+                          )}
+                        </div>
+                      </details>
                     </li>
                   ))}
                 </ul>
@@ -637,6 +670,26 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               <p className="luwibot-cockpit__confirm-text">
                 {CONFIRM_COPY[confirmAction].verb} “{target?.title ?? 'this goal'}”?
               </p>
+              {confirmAction === 'approve_plan' && (flow?.goals[0]?.tasks.length ?? 0) > 0 ? (
+                <ol className="luwibot-cockpit__confirm-plan">
+                  {flow?.goals[0]?.tasks.map((task) => (
+                    <li key={task.id}>
+                      <span className="luwibot-cockpit__confirm-plan-task">
+                        {task.title} — {task.detail.agent}
+                      </span>
+                      {task.detail.paths.length === 0 ? (
+                        <span className="luwibot-cockpit__confirm-plan-paths">Whole project</span>
+                      ) : (
+                        <ul className="luwibot-cockpit__confirm-plan-paths">
+                          {task.detail.paths.map((path) => (
+                            <li key={path}>{path}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
               <div className="luwibot-cockpit__confirm-actions">
                 <button
                   type="button"

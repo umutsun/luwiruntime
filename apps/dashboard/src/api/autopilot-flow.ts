@@ -10,6 +10,10 @@ type Task = z.infer<typeof taskCollectionSchema>['tasks'][number];
 export type FlowTask = {
   id: string;
   kind: Task['kind'];
+  title: string;
+  brief: string;
+  paths: string[];
+  doneCriteria?: string;
   agentId: string | undefined;
   state: Task['state'];
   verdict: NonNullable<Task['verification']>['verdict'];
@@ -19,6 +23,8 @@ export type FlowGoal = {
   title: string;
   /** What "done" means, for context under the title in the cockpit. */
   objective?: string;
+  /** What the goal counts as achieved, so the cockpit can show it beside the objective. */
+  acceptanceCriteria: string[];
   state: Goal['state'];
   tasks: FlowTask[];
   /** The blocked-goal escalation question, when the goal is awaiting an operator answer. */
@@ -68,6 +74,7 @@ export async function loadAutopilotFlow(
     id: goal.id,
     title: goal.title,
     objective: goal.objective,
+    acceptanceCriteria: goal.acceptanceCriteria,
     state: goal.state,
     ...(goal.escalation === undefined ? {} : { question: goal.escalation.question }),
     tasks: goal.taskIds
@@ -76,6 +83,10 @@ export async function loadAutopilotFlow(
       .map((task) => ({
         id: task.id,
         kind: task.kind,
+        title: task.title,
+        brief: task.brief,
+        paths: task.paths,
+        ...(task.doneCriteria === undefined ? {} : { doneCriteria: task.doneCriteria }),
         agentId: task.agentId,
         state: task.state,
         verdict: task.verification?.verdict,

@@ -926,6 +926,12 @@ select:focus-visible {
   opacity: 0.55;
   cursor: not-allowed;
 }
+/* The goal detail: the objective, clamped to one line as a `<summary>`, opens
+   to its full text (the clamp lifts once the parent is open) plus the
+   acceptance criteria, so the owner can read what "done" means before a gate. */
+.luwibot-cockpit__goal-detail {
+  display: block;
+}
 .luwibot-cockpit__objective {
   margin: 0;
   color: var(--text-dim);
@@ -935,6 +941,20 @@ select:focus-visible {
   -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  cursor: pointer;
+}
+.luwibot-cockpit__goal-detail[open] > .luwibot-cockpit__objective {
+  -webkit-line-clamp: unset;
+  white-space: pre-wrap;
+}
+.luwibot-cockpit__goal-detail-criteria {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
 }
 .luwibot-cockpit__status {
   margin: 0;
@@ -1113,10 +1133,17 @@ select:focus-visible {
   gap: var(--space-1);
 }
 .luwibot-cockpit__task {
+  font-size: var(--font-size-sm);
+}
+.luwibot-cockpit__task-summary {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: var(--font-size-sm);
+  cursor: pointer;
+  list-style: none;
+}
+.luwibot-cockpit__task-summary::-webkit-details-marker {
+  display: none;
 }
 .luwibot-cockpit__task-label {
   color: var(--text-secondary);
@@ -1129,6 +1156,46 @@ select:focus-visible {
   display: flex;
   gap: var(--space-1);
   flex: none;
+}
+/* A task's own plan detail, opened on click: agent/kind, brief, paths, done
+   criteria. Scrolls within the cockpit rather than pushing the controls off. */
+.luwibot-cockpit__task-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-height: 12em;
+  overflow-y: auto;
+  margin-top: var(--space-1h);
+  padding: var(--space-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.luwibot-cockpit__task-meta {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--font-size-2xs);
+}
+.luwibot-cockpit__task-brief {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.luwibot-cockpit__task-paths {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
+}
+.luwibot-cockpit__task-done {
+  margin: 0;
+  color: var(--text-dim);
+  font-size: var(--font-size-xs);
+  white-space: pre-wrap;
 }
 .luwibot-cockpit__controls {
   display: flex;
@@ -1256,6 +1323,33 @@ select:focus-visible {
   margin: 0;
   color: var(--text);
   font-size: var(--font-size-sm);
+}
+/* The plan itself, inside the approve confirm: what the owner is about to
+   approve, in the same place they approve it. Scrolls rather than pushing the
+   Approve/Cancel actions off the panel on a long plan. */
+.luwibot-cockpit__confirm-plan {
+  margin: 0;
+  padding-left: var(--space-3);
+  max-height: 10em;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1h);
+  font-size: var(--font-size-sm);
+  color: var(--text);
+}
+.luwibot-cockpit__confirm-plan-task {
+  display: block;
+  font-weight: 600;
+}
+.luwibot-cockpit__confirm-plan-paths {
+  display: block;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-mono);
 }
 .luwibot-cockpit__confirm-actions {
   display: flex;

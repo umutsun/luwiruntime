@@ -325,16 +325,31 @@ describe('autopilot flow in the drill-down (ADR 0035)', () => {
           {
             id: 'g1',
             title: 'Ship admin',
+            objective: 'Localize the admin dates',
+            acceptanceCriteria: ['Dates render in the local timezone'],
             state: 'running',
             tasks: [
               {
                 id: 't1',
                 kind: 'work',
+                title: 'Localize date rendering',
+                brief: 'Format dates through the user locale.',
+                paths: ['apps/admin/dates.ts'],
+                doneCriteria: 'All admin dates show the local timezone.',
                 agentId: 'antigravity',
                 state: 'dispatched',
                 verdict: undefined,
               },
-              { id: 't2', kind: 'review', agentId: 'codex', state: 'done', verdict: 'accept' },
+              {
+                id: 't2',
+                kind: 'review',
+                title: 'Review the date change',
+                brief: 'Confirm the fix and run the tests.',
+                paths: [],
+                agentId: 'codex',
+                state: 'done',
+                verdict: 'accept',
+              },
             ],
           },
         ],
@@ -347,16 +362,27 @@ describe('autopilot flow in the drill-down (ADR 0035)', () => {
         {
           id: 'g1',
           title: 'Ship admin',
+          objective: 'Localize the admin dates',
+          acceptanceCriteria: ['Dates render in the local timezone'],
           state: { label: 'running', tone: 'info' },
           tasks: [
             {
               id: 't1',
               label: 'work · antigravity',
+              title: 'Localize date rendering',
+              detail: {
+                agent: 'antigravity',
+                brief: 'Format dates through the user locale.',
+                paths: ['apps/admin/dates.ts'],
+                doneCriteria: 'All admin dates show the local timezone.',
+              },
               state: { label: 'dispatched', tone: 'info' },
             },
             {
               id: 't2',
               label: 'review · codex',
+              title: 'Review the date change',
+              detail: { agent: 'codex', brief: 'Confirm the fix and run the tests.', paths: [] },
               state: { label: 'done', tone: 'success' },
               verdict: { label: 'accept', tone: 'success' },
             },
@@ -375,11 +401,15 @@ describe('autopilot flow in the drill-down (ADR 0035)', () => {
           {
             id: 'g1',
             title: 'g',
+            acceptanceCriteria: [],
             state: 'plan_review',
             tasks: [
               {
                 id: 't1',
                 kind: 'work',
+                title: 'Do the thing',
+                brief: 'No agent assigned yet.',
+                paths: [],
                 agentId: undefined,
                 state: 'awaiting_approval',
                 verdict: undefined,
@@ -393,6 +423,8 @@ describe('autopilot flow in the drill-down (ADR 0035)', () => {
     expect(flow?.goals[0]?.tasks[0]).toEqual({
       id: 't1',
       label: 'work · unassigned',
+      title: 'Do the thing',
+      detail: { agent: 'unassigned', brief: 'No agent assigned yet.', paths: [] },
       state: { label: 'awaiting approval', tone: 'warning' },
     });
   });

@@ -1009,8 +1009,22 @@ export type PanelExtras = {
 
 /** A goal/task state or verdict, ready for a StatusChip: label plus tone. */
 export type FlowChip = { label: string; tone: StatusTone };
-export type FlowTaskView = { id: string; label: string; state: FlowChip; verdict?: FlowChip };
-export type FlowGoalView = { id: string; title: string; state: FlowChip; tasks: FlowTaskView[] };
+export type FlowTaskView = {
+  id: string;
+  label: string;
+  title: string;
+  detail: { agent: string; brief: string; paths: string[]; doneCriteria?: string };
+  state: FlowChip;
+  verdict?: FlowChip;
+};
+export type FlowGoalView = {
+  id: string;
+  title: string;
+  objective?: string;
+  acceptanceCriteria: string[];
+  state: FlowChip;
+  tasks: FlowTaskView[];
+};
 export type FlowPanel = {
   status: 'loading' | 'unavailable' | 'empty' | 'ready';
   goals: FlowGoalView[];
@@ -1059,10 +1073,19 @@ export function autopilotFlowPanel(extras: PanelExtras, projectId: string): Flow
   const goals: FlowGoalView[] = read.data.goals.map((goal) => ({
     id: goal.id,
     title: goal.title,
+    ...(goal.objective === undefined ? {} : { objective: goal.objective }),
+    acceptanceCriteria: goal.acceptanceCriteria,
     state: { label: goal.state.replace(/_/g, ' '), tone: GOAL_TONES[goal.state] },
     tasks: goal.tasks.map((task) => ({
       id: task.id,
       label: `${task.kind} · ${task.agentId ?? 'unassigned'}`,
+      title: task.title,
+      detail: {
+        agent: task.agentId ?? 'unassigned',
+        brief: task.brief,
+        paths: task.paths,
+        ...(task.doneCriteria === undefined ? {} : { doneCriteria: task.doneCriteria }),
+      },
       state: { label: task.state.replace(/_/g, ' '), tone: TASK_TONES[task.state] },
       ...(task.verdict === undefined
         ? {}

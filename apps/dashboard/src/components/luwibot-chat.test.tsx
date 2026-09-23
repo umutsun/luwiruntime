@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentActivity } from '../api/agent-activity.js';
@@ -45,6 +45,7 @@ const oneGoal = (over: Partial<AutopilotFlow['goals'][number]>): AutopilotFlow =
       id: 'g1',
       title: 'Add dates',
       objective: 'Localize the dates',
+      acceptanceCriteria: [],
       state: 'running',
       tasks: [],
       ...over,
@@ -82,7 +83,16 @@ describe('LuwiBotChat cockpit', () => {
           title: 'Localized dates',
           state: 'running',
           tasks: [
-            { id: 't1', kind: 'review', agentId: 'reviewer-a', state: 'done', verdict: 'accept' },
+            {
+              id: 't1',
+              kind: 'review',
+              title: 'Review the dates',
+              brief: 'Confirm the fix.',
+              paths: [],
+              agentId: 'reviewer-a',
+              state: 'done',
+              verdict: 'accept',
+            },
           ],
         }),
       ),
@@ -104,6 +114,30 @@ describe('LuwiBotChat cockpit', () => {
     expect(screen.queryByText('Planning…')).toBeNull();
   });
 
+  it('expands the goal objective and acceptance criteria on click', async () => {
+    open({
+      loadAutopilotFlow: flowReady(
+        oneGoal({
+          objective: 'Localize every admin-facing date to the viewer timezone.',
+          acceptanceCriteria: ['Dates render in the local timezone', 'Existing tests still pass'],
+        }),
+      ),
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText('Localize every admin-facing date to the viewer timezone.'),
+      ).toBeTruthy(),
+    );
+    const summary = screen.getByText('Localize every admin-facing date to the viewer timezone.');
+    const details = summary.closest('details');
+    // Collapsed by default: the native <details> starts closed.
+    expect(details?.open).toBeFalsy();
+    fireEvent.click(summary);
+    expect(details?.open).toBe(true);
+    expect(screen.getByText('Dates render in the local timezone')).toBeTruthy();
+    expect(screen.getByText('Existing tests still pass')).toBeTruthy();
+  });
+
   it('shows no cockpit when no project is focused', async () => {
     open({ loadAutopilotFlow: flowReady({ goals: [], more: 0 }) }, '#/pulse');
     await waitFor(() => expect(screen.getByLabelText('LuwiBot assistant')).toBeTruthy());
@@ -121,6 +155,79 @@ describe('LuwiBotChat cockpit', () => {
     // The agentic rail marks Review as the operator's active touchpoint.
     expect(screen.getByLabelText('Where you come in')).toBeTruthy();
     expect(screen.getByText('Your turn — approve or reject the plan.')).toBeTruthy();
+  });
+
+  it("shows a task's brief and paths inside its own details on a plan_review goal", async () => {
+    open({
+      loadAutopilotFlow: flowReady(
+        oneGoal({
+          state: 'plan_review',
+          tasks: [
+            {
+              id: 't1',
+              kind: 'work',
+              title: 'Localize date rendering',
+              brief: 'Format every admin date through the user locale.',
+              paths: ['apps/admin/dates.ts'],
+              doneCriteria: 'All admin dates show the local timezone.',
+              agentId: 'antigravity',
+              state: 'awaiting_approval',
+              verdict: undefined,
+            },
+          ],
+        }),
+      ),
+    });
+    await waitFor(() => expect(screen.getByText('Localize date rendering')).toBeTruthy());
+    const summary = screen.getByText('Localize date rendering');
+    const details = summary.closest('details');
+    // Collapsed by default: the native <details> starts closed.
+    expect(details?.open).toBeFalsy();
+    fireEvent.click(summary);
+    expect(details?.open).toBe(true);
+    expect(screen.getByText('Format every admin date through the user locale.')).toBeTruthy();
+    expect(screen.getByText('apps/admin/dates.ts')).toBeTruthy();
+    expect(screen.getByText('All admin dates show the local timezone.')).toBeTruthy();
+  });
+
+  it('shows the plan (task titles and paths) inside the approve confirm before sending', async () => {
+    open({
+      loadAutopilotFlow: flowReady(
+        oneGoal({
+          state: 'plan_review',
+          tasks: [
+            {
+              id: 't1',
+              kind: 'work',
+              title: 'Localize date rendering',
+              brief: 'Format every admin date through the user locale.',
+              paths: ['apps/admin/dates.ts'],
+              agentId: 'antigravity',
+              state: 'awaiting_approval',
+              verdict: undefined,
+            },
+            {
+              id: 't2',
+              kind: 'review',
+              title: 'Review the date change',
+              brief: 'Confirm the fix and run the tests.',
+              paths: [],
+              agentId: 'codex',
+              state: 'ready',
+              verdict: undefined,
+            },
+          ],
+        }),
+      ),
+    });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    const confirm = screen.getByRole('group', { name: 'Approve plan' });
+    expect(within(confirm).getByText(/Localize date rendering — antigravity/)).toBeTruthy();
+    expect(within(confirm).getByText('apps/admin/dates.ts')).toBeTruthy();
+    expect(within(confirm).getByText(/Review the date change — codex/)).toBeTruthy();
+    expect(within(confirm).getByText('Whole project')).toBeTruthy();
+    expect(sentIntent()).toBeUndefined(); // shown before the intent is sent
   });
 
   it('shows the question and an Answer box on a blocked goal, not Approve', async () => {
