@@ -1425,6 +1425,15 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
       const task = await requireTask(taskId);
       const { policy } = await requireConfigured(task.projectId);
       const by = await requireOperator(policy, task.projectId, actorSessionId);
+      // The state machine also approves a `ready` task (the plan's bulk approval),
+      // but one approved here would skip the gate dispatch is about to raise.
+      if (task.state !== 'awaiting_approval') {
+        throw new ApplicationError(
+          'TASK_STATE_INVALID',
+          'Only a task awaiting approval can be approved.',
+          409,
+        );
+      }
       const approved = taskMove(task, {
         kind: 'approve',
         by,

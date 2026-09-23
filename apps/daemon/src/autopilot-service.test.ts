@@ -798,5 +798,12 @@ describe('approveTask and rejectTask', () => {
     await expect(service.approveTask('t-dispatching', undefined)).rejects.toMatchObject({
       code: 'TASK_STATE_INVALID',
     });
+    // A ready task was never gated: approving it here would pre-empt the gate
+    // the dispatch policy is about to raise, so only a gated task is approvable.
+    fake.tasks.set('t-ready', gatedTask({ id: 't-ready', state: 'ready', gate: undefined }));
+    await expect(service.approveTask('t-ready', undefined)).rejects.toMatchObject({
+      code: 'TASK_STATE_INVALID',
+      statusCode: 409,
+    });
   });
 });
