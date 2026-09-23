@@ -13,6 +13,7 @@ import { ApplicationError } from '@luwi/runtime';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createAutopilotService, type AutopilotService } from './autopilot-service.js';
+import { TARGET_SESSION_LOST } from './message-service.js';
 
 const nowIso = '2026-09-17T10:00:00.000Z';
 const project: Project = {
@@ -805,5 +806,205 @@ describe('approveTask and rejectTask', () => {
       code: 'TASK_STATE_INVALID',
       statusCode: 409,
     });
+  });
+});
+
+describe('redispatch after a lost target session', () => {
+  const INTERRUPTED_ATTEMPT_LINE =
+    'A previous attempt was interrupted when its session ended; the working tree may contain its partial changes — inspect them before continuing.';
+
+  function dispatchedTask(overrides: Partial<Task> = {}): Task {
+    return {
+      id: 't-lost',
+      projectId: 'project-1',
+      goalId: 'goal-1',
+      title: 'route',
+      brief: 'Add the route.',
+      agentId: 'claude-code',
+      paths: ['src/a.ts'],
+      matchPaths: ['src/a.ts/'],
+      dependsOn: [],
+      evidenceRequirements: [],
+      timeoutMs: 600_000,
+      kind: 'work',
+      reworkCount: 0,
+      state: 'dispatched',
+      correlationId: 'corr-1',
+      targetSessionId: 'worker-1',
+      dispatchedAt: nowIso,
+      version: 3,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      ...overrides,
+    };
+  }
+
+  function lostTargetMessage(
+    correlationId: string,
+    overrides: Partial<AgentMessage> = {},
+  ): AgentMessage {
+    return {
+      id: 'm-lost',
+      correlationId,
+      projectId: 'project-1',
+      sourceSessionId: 'coord-1',
+      sourceAgentId: 'luwibot',
+      targetSessionId: 'worker-1',
+      targetAgentId: 'claude-code',
+      selectionReason: 'x',
+      kind: 'instruction',
+      content: 'x',
+      state: 'failed',
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      deadlineAt: nowIso,
+      response: {
+        status: 'failed',
+        answer: `${TARGET_SESSION_LOST}: The target session worker-1 ended before responding.`,
+        evidence: [
+          {
+            type: 'session_state',
+            reference: 'worker-1',
+            summary: 'The target session worker-1 ended before responding.',
+            metadata: { code: TARGET_SESSION_LOST },
+          },
+        ],
+        verifiedAt: nowIso,
+      },
+      ...overrides,
+    };
+  }
+
+  function seedDispatched(fake: ReturnType<typeof fakeRepository>, task: Task): void {
+    fake.tasks.set(task.id, task);
+    fake.activeOf(task.projectId).set(task.id, {
+      taskId: task.id,
+      goalId: task.goalId,
+      agentId: task.agentId ?? 'unknown',
+      state: 'dispatched',
+      matchPaths: task.matchPaths,
+      ...(task.correlationId === undefined ? {} : { correlationId: task.correlationId }),
+    });
+  }
+
+  it('requeues a dispatched task whose message failed TARGET_SESSION_LOST, and kicks the coordinator', async () => {
+    const { service, fake } = harness();
+    await service.putPolicy('project-1', policy);
+    const task = dispatchedTask();
+    seedDispatched(fake, task);
+
+    const result = await service.completeFromMessage(lostTargetMessage('corr-1'));
+    expect(result).toMatchObject({
+      state: 'ready',
+      redispatchCount: 1,
+      correlationId: undefined,
+      targetSessionId: undefined,
+      dispatchSourceSessionId: undefined,
+      lastRedispatch: { reason: 'target_session_lost', correlationId: 'corr-1' },
+    });
+    expect(fake.tasks.get(task.id)).toMatchObject({ state: 'ready', redispatchCount: 1 });
+    // No longer in flight: the active-task index entry is cleared.
+    expect(fake.active.get('project-1')?.has(task.id)).toBe(false);
+    expect(fake.notices.map((notice) => notice.kind)).toContain('kick');
+    expect(eventTypes(fake.events)).toContain('task.updated');
+  });
+
+  it('fails the task outright on its third lost-target loss, past the redispatch bound', async () => {
+    const { service, fake } = harness();
+    await service.putPolicy('project-1', policy);
+    const task = dispatchedTask({ redispatchCount: 2 });
+    seedDispatched(fake, task);
+
+    const result = await service.completeFromMessage(lostTargetMessage('corr-1'));
+    expect(result).toMatchObject({ state: 'failed', outcome: { messageState: 'failed' } });
+    expect(fake.tasks.get(task.id)?.redispatchCount).toBe(2);
+    expect(fake.active.get('project-1')?.has(task.id)).toBe(false);
+  });
+
+  it('does not requeue a failure for any other reason', async () => {
+    const { service, fake } = harness();
+    await service.putPolicy('project-1', policy);
+    const task = dispatchedTask();
+    seedDispatched(fake, task);
+
+    const message = lostTargetMessage('corr-1', {
+      response: {
+        status: 'failed',
+        answer: 'boom',
+        evidence: [],
+        verifiedAt: nowIso,
+      },
+    });
+    const result = await service.completeFromMessage(message);
+    expect(result).toMatchObject({ state: 'failed' });
+    expect(fake.tasks.get(task.id)?.redispatchCount).toBeUndefined();
+  });
+
+  it('never requeues on a stale correlationId that no longer matches the tasks current dispatch', async () => {
+    const { service, fake } = harness();
+    await service.putPolicy('project-1', policy);
+    // The task has already moved on to a new dispatch (corr-2); the active-task
+    // index entry is the stale race the correlationId guard exists for: it still
+    // names the old correlationId (corr-1) that just failed as lost.
+    const task = dispatchedTask({ correlationId: 'corr-2' });
+    fake.tasks.set(task.id, task);
+    fake.activeOf(task.projectId).set(task.id, {
+      taskId: task.id,
+      goalId: task.goalId,
+      agentId: task.agentId ?? 'unknown',
+      state: 'dispatched',
+      matchPaths: task.matchPaths,
+      correlationId: 'corr-1',
+    });
+
+    const result = await service.completeFromMessage(lostTargetMessage('corr-1'));
+    // Unchanged: the stale message runs through today's ordinary completion,
+    // never touching the task's own (still-current, still-active) dispatch.
+    expect(result).toMatchObject({ state: 'failed' });
+    expect(fake.tasks.get(task.id)?.redispatchCount).toBeUndefined();
+    expect(fake.tasks.get(task.id)?.correlationId).toBe('corr-2');
+  });
+
+  it('redispatches a requeued task with retryOf and the interrupted-attempt line', async () => {
+    const { service, fake, messages, configure } = harness();
+    await configure('autopilot');
+    const goal = await service.createGoal('project-1', {
+      title: 'Ship',
+      objective: 'Ship it.',
+      acceptanceCriteria: [],
+    });
+    fake.goals.set(goal.id, { ...goal, state: 'planning', version: 2 });
+    const planned = await service.submitPlan(goal.id, {
+      sessionId: 'coord-1',
+      tasks: [
+        {
+          title: 'route',
+          brief: 'Add the route.',
+          agentId: 'claude-code',
+          paths: ['src/a.ts'],
+          dependsOn: [],
+          evidenceRequirements: [],
+        },
+      ],
+    });
+    const taskId = planned.taskIds[0] as string;
+    const ready = fake.tasks.get(taskId) as Task;
+    // Simulate: this task already lost its target session once and was requeued.
+    fake.tasks.set(taskId, {
+      ...ready,
+      redispatchCount: 1,
+      lastRedispatch: { at: nowIso, reason: 'target_session_lost', correlationId: 'corr-old' },
+      version: ready.version + 1,
+    });
+
+    const dispatched = await service.dispatchTask(taskId, 'coord-1');
+    expect(dispatched).toMatchObject({ outcome: 'dispatched' });
+    expect(messages.askForTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        retryOf: 'corr-old',
+        content: expect.stringContaining(INTERRUPTED_ATTEMPT_LINE),
+      }),
+      expect.any(String),
+    );
   });
 });

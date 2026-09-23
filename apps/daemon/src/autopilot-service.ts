@@ -47,7 +47,7 @@ import {
   type TaskTransition,
 } from '@luwi/runtime';
 
-import type { MessageService } from './message-service.js';
+import { TARGET_SESSION_LOST, type MessageService } from './message-service.js';
 import type { SessionService } from './session-service.js';
 
 /**
@@ -400,6 +400,9 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
       task.paths.length === 0
         ? 'Declared scope: the whole project. Claim leases before editing.'
         : `Declared scope (claim leases before editing): ${task.paths.join(', ')}`,
+      task.lastRedispatch === undefined
+        ? ''
+        : 'A previous attempt was interrupted when its session ended; the working tree may contain its partial changes — inspect them before continuing.',
     ]
       .filter((part) => part !== '')
       .join('\n\n');
@@ -437,6 +440,7 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
     // Step 2: the ordinary message path, keyed so a repeat returns the same message.
     let correlationId: string;
     let targetSessionId: string;
+    const retryOf = task.lastRedispatch?.correlationId;
     try {
       const result = await options.messages.askForTask(
         {
@@ -447,6 +451,7 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
           content: projectContent(task),
           evidenceRequirements: task.evidenceRequirements,
           timeoutMs: task.timeoutMs,
+          ...(retryOf === undefined ? {} : { retryOf }),
         },
         `task:${task.id}`,
       );
@@ -500,7 +505,48 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
     return { outcome: 'dispatched', task: stored, correlationId };
   };
 
+  const isLostTargetFailure = (message: AgentMessage): boolean =>
+    message.state === 'failed' &&
+    (message.response?.evidence ?? []).some((item) => item.metadata?.code === TARGET_SESSION_LOST);
+
   const complete = async (task: Task, message: AgentMessage): Promise<Task> => {
+    // The worker's session was lost mid-task (a presence-sweeper disconnect, not
+    // necessarily a dead process). Requeue it to its agent's next live session
+    // instead of failing it outright, up to the redispatch bound. The
+    // correlationId check guards against a stale or duplicate failure (this
+    // message's target session lost race can outlive a task that has already
+    // moved on to a fresh dispatch) requeuing a task that is no longer this
+    // message's to decide.
+    if (
+      isLostTargetFailure(message) &&
+      task.correlationId === message.correlationId &&
+      (task.redispatchCount ?? 0) < 2
+    ) {
+      const requeued = taskMove(task, { kind: 'requeue', reason: 'target_session_lost' });
+      const stored = await writeTask(
+        requeued,
+        task.version,
+        event(
+          'task.updated',
+          {
+            projectId: task.projectId,
+            ...(task.targetSessionId === undefined ? {} : { sessionId: task.targetSessionId }),
+            ...(task.agentId === undefined ? {} : { agentId: task.agentId }),
+            correlationId: message.correlationId,
+          },
+          {
+            taskId: task.id,
+            goalId: task.goalId,
+            state: requeued.state,
+            redispatchCount: requeued.redispatchCount,
+            reason: 'target_session_lost',
+          },
+        ),
+        null,
+      );
+      await notify(task.projectId, 'kick', { taskId: task.id });
+      return stored;
+    }
     let commitKnown: ((sha: string) => boolean) | undefined;
     if ((message.response?.evidence ?? []).some((item) => item.type === 'git_commit')) {
       // Refresh the observation first so a just-made commit is verified against
