@@ -320,7 +320,12 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
     setMessages((current) => [...current, { role: 'user', text }]);
     setBusy(true);
     if (inputRef.current) inputRef.current.value = '';
-    rawSend({ message: text, history });
+    // The focused project grounds the answer in that project's goals, tasks and commits.
+    rawSend({
+      message: text,
+      history,
+      ...(activeProjectId === undefined ? {} : { projectId: activeProjectId }),
+    });
   };
 
   // A cockpit intent leaves over the same WS as a distinct kind — no HTTP mutation, no model call.

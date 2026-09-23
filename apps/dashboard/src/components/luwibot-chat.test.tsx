@@ -75,6 +75,22 @@ afterEach(() => {
   window.location.hash = '';
 });
 
+describe('LuwiBotChat grounding', () => {
+  it('sends the focused project with a chat message, so the answer is about that project', async () => {
+    open({ loadAutopilotFlow: flowReady(oneGoal({ title: 'Localized dates', state: 'running' })) });
+    await waitFor(() => expect(screen.getByText('Localized dates')).toBeTruthy());
+    lastSocket()?.emit('open', {});
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), {
+      target: { value: 'Ne üzerinde çalışıyoruz?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    const chat = (lastSocket()?.sent ?? [])
+      .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+      .find((frame) => frame.message === 'Ne üzerinde çalışıyoruz?');
+    expect(chat).toMatchObject({ projectId: 'p1' });
+  });
+});
+
 describe('LuwiBotChat cockpit', () => {
   it("shows the focused project's active goal with its state and verdict", async () => {
     open({
