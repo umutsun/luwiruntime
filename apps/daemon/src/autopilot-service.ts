@@ -115,6 +115,15 @@ export type AutopilotServiceOptions = {
   leases: { list(query: { projectId?: string; limit: number }): Promise<WorkLease[]> };
   commits: { listGitCommits(projectId: string, limit?: number): Promise<{ sha: string }[]> };
   /**
+   * A lane worktree commits on `lane/<role>` branches of the same repository,
+   * which the observed log (`commits.listGitCommits`, the project's root HEAD
+   * history) never reaches. Asked only for a cited sha the observed log does
+   * not already know, so `commit_evidence` accepts it without the recent-commits
+   * UI filling with worktree branches. Absent, or an answer of `false`, leaves
+   * today's behavior unchanged.
+   */
+  commitExists?: (projectId: string, sha: string) => Promise<boolean>;
+  /**
    * Refresh the project's Git observation before a commit is verified. The
    * worker commits before it responds, so a scan here makes the just-made
    * commit visible to the commit_evidence check instead of racing the periodic
@@ -504,6 +513,17 @@ export function createAutopilotService(options: AutopilotServiceOptions): Autopi
       const known = new Set(
         (await options.commits.listGitCommits(task.projectId, 500)).map((commit) => commit.sha),
       );
+      if (options.commitExists !== undefined) {
+        const cited = new Set(
+          (message.response?.evidence ?? [])
+            .filter((item) => item.type === 'git_commit')
+            .map((item) => item.gitHead ?? item.reference)
+            .filter((sha): sha is string => sha !== undefined && !known.has(sha)),
+        );
+        for (const sha of cited) {
+          if (await options.commitExists(task.projectId, sha)) known.add(sha);
+        }
+      }
       commitKnown = (sha) => known.has(sha);
     }
     const outcome = outcomeFromMessage(message);

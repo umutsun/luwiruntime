@@ -69,12 +69,23 @@ function isReadOnlyObservationCommand(arguments_: readonly string[]): boolean {
   ) {
     return true;
   }
-  return (
+  if (
     arguments_.length === 4 &&
     equals(arguments_.slice(0, 3), ['show', '-s', TRAILER_FORMAT]) &&
     commitIdentityPattern.test(arguments_[3] ?? '')
+  ) {
+    return true;
+  }
+  return (
+    arguments_.length === 3 &&
+    arguments_[0] === 'cat-file' &&
+    arguments_[1] === '-e' &&
+    /^[0-9a-fA-F]{7,40}\^\{commit\}$/.test(arguments_[2] ?? '')
   );
 }
+
+/** Untrusted worker evidence: only this shape may ever reach a git invocation. */
+const commitShaPattern = /^[0-9a-f]{7,40}$/i;
 
 export type GitIntelligenceErrorCode =
   'GIT_REPOSITORY_NOT_FOUND' | 'GIT_COMMAND_TIMEOUT' | 'GIT_OBSERVATION_FAILED';
@@ -341,6 +352,14 @@ export type GitObserverOptions = {
 export interface GitObserver {
   observe(input: ObserveGitInput): Promise<GitObservation>;
   listTrackedFiles(localPath: string): Promise<string[]>;
+  /**
+   * Whether a commit sha exists in the repository at `localPath`'s root —
+   * used to accept a lane-worktree commit (a `lane/<role>` branch of the same
+   * repository) as commit evidence without widening the observed log itself.
+   * `sha` is untrusted worker evidence: an invalid shape never reaches git,
+   * and any error (not a repository, git failure) answers `false` (fail closed).
+   */
+  commitExists(localPath: string, sha: string): Promise<boolean>;
 }
 
 export function createGitObserver(options: GitObserverOptions = {}): GitObserver {
@@ -380,6 +399,18 @@ export function createGitObserver(options: GitObserverOptions = {}): GitObserver
         .split('\0')
         .filter((path) => path !== '')
         .toSorted();
+    },
+    async commitExists(localPath, sha) {
+      if (!commitShaPattern.test(sha)) return false;
+      try {
+        const resolved = await realpath(localPath).catch(() => localPath);
+        const root = await run(resolved, ['rev-parse', '--show-toplevel']);
+        if (root.exitCode !== 0 || root.stdout.trim() === '') return false;
+        const result = await run(root.stdout.trim(), ['cat-file', '-e', `${sha}^{commit}`]);
+        return result.exitCode === 0;
+      } catch {
+        return false;
+      }
     },
     async observe(input) {
       const localPath = await realpath(input.localPath).catch(() => input.localPath);

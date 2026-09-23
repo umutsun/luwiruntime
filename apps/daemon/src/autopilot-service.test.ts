@@ -153,6 +153,7 @@ function harness(
     mode?: 'off' | 'supervised' | 'autopilot';
     commits?: { listGitCommits(projectId: string, limit?: number): Promise<{ sha: string }[]> };
     refreshGitObservation?: (projectId: string) => Promise<void>;
+    commitExists?: (projectId: string, sha: string) => Promise<boolean>;
   } = {},
 ) {
   const fake = fakeRepository();
@@ -206,6 +207,7 @@ function harness(
     ...(options.refreshGitObservation === undefined
       ? {}
       : { refreshGitObservation: options.refreshGitObservation }),
+    ...(options.commitExists === undefined ? {} : { commitExists: options.commitExists }),
     manifest,
     workspaceId: 'local',
     now: () => new Date(nowIso),
@@ -538,6 +540,101 @@ describe('goals, plans and dispatch', () => {
     expect(refreshGitObservation).toHaveBeenCalledWith('project-1');
     expect(completed?.verification?.checks).toEqual(
       expect.arrayContaining([expect.objectContaining({ check: 'commit_evidence', passed: true })]),
+    );
+  });
+
+  async function commitEvidenceTask(
+    harnessOptions: Parameters<typeof harness>[0],
+    sha: string,
+  ): Promise<{ complete: () => ReturnType<AutopilotService['completeFromMessage']> }> {
+    const { service, fake, configure } = harness(harnessOptions);
+    await configure('autopilot');
+    const goal = await service.createGoal('project-1', {
+      title: 'Ship',
+      objective: 'Ship it.',
+      acceptanceCriteria: [],
+    });
+    fake.goals.set(goal.id, { ...goal, state: 'planning', version: 2 });
+    const planned = await service.submitPlan(goal.id, {
+      sessionId: 'coord-1',
+      tasks: [
+        {
+          title: 'route',
+          brief: 'Add the route.',
+          agentId: 'claude-code',
+          paths: ['src/a.ts'],
+          dependsOn: [],
+          evidenceRequirements: ['git_commit'],
+        },
+      ],
+    });
+    const taskId = planned.taskIds[0] as string;
+    const dispatched = await service.dispatchTask(taskId, 'coord-1');
+    const correlationId = (dispatched as { correlationId: string }).correlationId;
+    return {
+      complete: () =>
+        service.completeFromMessage({
+          id: 'm1',
+          correlationId,
+          projectId: 'project-1',
+          sourceSessionId: 'coord-1',
+          sourceAgentId: 'luwibot',
+          targetSessionId: 'worker-1',
+          targetAgentId: 'claude-code',
+          selectionReason: 'x',
+          kind: 'instruction',
+          content: 'x',
+          state: 'responded',
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          deadlineAt: nowIso,
+          response: {
+            status: 'answered',
+            answer: 'Committed in a lane worktree.',
+            evidence: [{ type: 'git_commit', summary: 'commit', gitHead: sha }],
+            verifiedAt: nowIso,
+          },
+        }),
+    };
+  }
+
+  it('accepts a lane-worktree commit as commit evidence when commitExists confirms it', async () => {
+    const sha = 'c'.repeat(40);
+    const commitExists = vi.fn(async () => true);
+    const { complete } = await commitEvidenceTask(
+      { commits: { listGitCommits: async () => [] }, commitExists },
+      sha,
+    );
+    const completed = await complete();
+    expect(commitExists).toHaveBeenCalledWith('project-1', sha);
+    expect(completed?.verification?.checks).toEqual(
+      expect.arrayContaining([expect.objectContaining({ check: 'commit_evidence', passed: true })]),
+    );
+  });
+
+  it('still fails commit_evidence when commitExists denies it or is absent', async () => {
+    const sha = 'd'.repeat(40);
+    const commitExists = vi.fn(async () => false);
+    const { complete } = await commitEvidenceTask(
+      { commits: { listGitCommits: async () => [] }, commitExists },
+      sha,
+    );
+    const completed = await complete();
+    expect(completed?.verification?.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ check: 'commit_evidence', passed: false }),
+      ]),
+    );
+
+    const { complete: completeWithoutHelper } = await commitEvidenceTask(
+      { commits: { listGitCommits: async () => [] } },
+      sha,
+    );
+    const completedWithoutHelper = await completeWithoutHelper();
+    expect(completedWithoutHelper?.verification?.checks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ check: 'commit_evidence', passed: false }),
+      ]),
     );
   });
 

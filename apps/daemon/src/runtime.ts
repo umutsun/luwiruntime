@@ -723,6 +723,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       await service.recordConfigPlanApplied(plan.id);
     },
   });
+  const gitObserver = createGitObserver({
+    timeoutMs: setting(config, 'gitCommandTimeoutMs'),
+  });
   const intelligenceService = createIntelligenceService({
     repository: intelligenceRepository,
     projects: projectService,
@@ -730,9 +733,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     controlPlane: controlPlaneService,
     configControl: configControlService,
     workspaceId: config.workspaceId,
-    gitObserver: createGitObserver({
-      timeoutMs: setting(config, 'gitCommandTimeoutMs'),
-    }),
+    gitObserver,
     graphifyObserver: createGraphifyObserver({
       outputRelativePath: config.graphifyOutputPath ?? GRAPHIFY_OUTPUT_RELATIVE_PATH,
     }),
@@ -918,6 +919,15 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     commits: intelligenceRepository,
     refreshGitObservation: (projectId) =>
       intelligenceService.scanGit(projectId).then(() => undefined),
+    // A lane worktree commits on a `lane/<role>` branch of the same
+    // repository, which the observed log never reaches (that log stays
+    // bounded to the root checkout's HEAD history on purpose). Read-only,
+    // fails closed on any error, including no such project.
+    commitExists: async (projectId, sha) => {
+      const project = await projectService.get(projectId);
+      if (project === null) return false;
+      return gitObserver.commitExists(project.localPath, sha);
+    },
     manifest: canonicalStore,
     workspaceId: config.workspaceId,
     report: (line) => app?.log.warn(line, 'Autopilot manifest policy refused'),
