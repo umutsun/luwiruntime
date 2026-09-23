@@ -1127,6 +1127,39 @@ describe('daemon intelligence service — rebuild lock and failure reasons', () 
     });
   });
 
+  it('discards its own shadow generation when it fails, without masking the reason', async () => {
+    const { service, values } = harness({
+      repository: {
+        validateGraphGeneration: vi.fn(async () => {
+          throw new Error('counts did not match');
+        }),
+        discardGraphGeneration: vi.fn(async () => {
+          throw new Error('Redis went away');
+        }),
+      },
+    });
+
+    await expect(service.rebuildGraph()).rejects.toMatchObject({
+      message: 'The graph rebuild failed: counts did not match',
+    });
+    const [failed] = vi.mocked(values.repository.failGraphRebuild).mock.calls[0] ?? [];
+    expect(values.repository.discardGraphGeneration).toHaveBeenCalledWith(
+      failed?.shadowGeneration,
+      expect.any(Number),
+    );
+  });
+
+  it('does not discard the generation of a rebuild that completed', async () => {
+    const { service, values } = harness({
+      repository: {
+        discardGraphGeneration: vi.fn(async () => ({ keysRemoved: 0, truncated: false })),
+      },
+    });
+
+    await service.rebuildGraph();
+    expect(values.repository.discardGraphGeneration).not.toHaveBeenCalled();
+  });
+
   it('keeps the original reason when the failure itself cannot be recorded', async () => {
     const { service } = harness({
       repository: {

@@ -97,6 +97,13 @@ const GRAPH_REBUILD_MAX_INPUTS = 100_000;
  */
 const DEFAULT_GRAPH_REBUILD_RENEW_INTERVAL_MS = 60_000;
 
+/**
+ * How many of its shadow's keys a failed rebuild deletes before it rethrows. A
+ * full shadow on this machine is ~60 000 keys; what a bound leaves is
+ * unindexed, so the retention tick's orphan sweep drains the rest.
+ */
+const GRAPH_SHADOW_DISCARD_MAX_KEYS = 100_000;
+
 export type IntelligenceServiceOptions = {
   repository: IntelligenceRepository;
   projects: ProjectService;
@@ -2192,22 +2199,32 @@ export function createIntelligenceService(
           failureSummary: [reason],
           completedAt: now().toISOString(),
         });
+        let refused: string | undefined;
         try {
           await options.repository.failGraphRebuild(
             failed,
             event('graph.rebuild.failed', {}, { operationId, failureCount: 1 }),
           );
         } catch (transition) {
-          const detail = transition instanceof Error ? transition.message : 'unknown';
-          throw new ApplicationError(
-            'GRAPH_REBUILD_FAILED',
-            `The graph rebuild failed: ${reason} (recording the failure was refused: ${detail})`,
-            503,
+          refused = transition instanceof Error ? transition.message : 'unknown';
+        }
+        // The write loop has stopped, so nothing writes this shadow any more and
+        // nothing will read it: it was never activated. Left behind, failed
+        // shadows once held 44 % of all keys. Best-effort — the failure reason
+        // is what the caller needs, and the orphan sweep finishes the rest.
+        try {
+          await options.repository.discardGraphGeneration(
+            shadowGeneration,
+            GRAPH_SHADOW_DISCARD_MAX_KEYS,
           );
+        } catch {
+          // The retention tick's orphan sweep removes what this could not.
         }
         throw new ApplicationError(
           'GRAPH_REBUILD_FAILED',
-          `The graph rebuild failed: ${reason}`,
+          refused === undefined
+            ? `The graph rebuild failed: ${reason}`
+            : `The graph rebuild failed: ${reason} (recording the failure was refused: ${refused})`,
           503,
         );
       } finally {

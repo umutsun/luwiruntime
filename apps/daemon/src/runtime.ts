@@ -102,6 +102,9 @@ import {
 } from './shutdown.js';
 import { createWebSocketHub } from './websocket-hub.js';
 
+/** Keys the retention tick's orphan graph generation sweep may UNLINK per tick. */
+const GRAPH_ORPHAN_PURGE_MAX_KEYS_PER_TICK = 20_000;
+
 /**
  * The open native link a lapsing session holds, if it holds one.
  *
@@ -1525,6 +1528,14 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
                 gitObservationRetentionCount: setting(config, 'gitObservationRetentionCount'),
                 graphGenerationRetentionCount: setting(config, 'graphGenerationRetentionCount'),
               });
+              // Shadows of rebuilds that failed or died, which nothing indexes or
+              // reads. Bounded per tick; the next tick drains what is left.
+              const orphans = await intelligenceRepository.purgeOrphanGraphGenerations({
+                maxKeys: GRAPH_ORPHAN_PURGE_MAX_KEYS_PER_TICK,
+              });
+              if (orphans.keysRemoved > 0) {
+                app?.log.info(orphans, 'Purged orphan graph generation keys');
+              }
             } finally {
               retaining = false;
             }
