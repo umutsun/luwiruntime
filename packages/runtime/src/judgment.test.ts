@@ -1,6 +1,71 @@
+import type { AutopilotPolicy, Goal } from '@luwi/protocol';
 import { describe, expect, it } from 'vitest';
 
-import { frameJudgment, parseJudgment, validatePlannedTasks } from './judgment.js';
+import {
+  assembleJudgmentContext,
+  frameJudgment,
+  parseJudgment,
+  validatePlannedTasks,
+} from './judgment.js';
+
+const nowIso = '2026-09-22T10:00:00.000Z';
+
+const policy: AutopilotPolicy = {
+  coordinatorAgentId: 'luwibot',
+  workerAgentIds: ['claude-code', 'antigravity'],
+  reviewerAgentId: 'codex',
+  operatorProxyAgentIds: [],
+  protectedPaths: [],
+  maxInFlight: 2,
+  maxDispatchesPerHour: 20,
+  defaultTaskTimeoutMs: 600_000,
+  maxJudgmentsPerHour: 30,
+  maxConcurrentGoals: 1,
+  goalDefaults: {
+    maxTasks: 12,
+    maxReworksPerTask: 1,
+    maxReplans: 2,
+    maxWallClockMs: 14_400_000,
+    minConfidence: 0.6,
+  },
+  retrospectives: 5,
+};
+
+const goal: Goal = {
+  id: 'goal-1',
+  projectId: 'project-1',
+  title: 'Ship it',
+  objective: 'Ship it.',
+  acceptanceCriteria: [],
+  createdBy: { kind: 'operator' },
+  budget: policy.goalDefaults,
+  state: 'planning',
+  planVersion: 1,
+  taskIds: [],
+  usage: {
+    tasks: 0,
+    reworks: 0,
+    replans: 0,
+    judgments: 0,
+    invalidJudgments: 0,
+    startedAt: nowIso,
+  },
+  version: 1,
+  createdAt: nowIso,
+  updatedAt: nowIso,
+};
+
+const contextInput = {
+  kind: 'plan' as const,
+  goal,
+  tasks: [],
+  policy,
+  workers: ['claude-code', 'antigravity'],
+  sessions: [],
+  retrospectives: [],
+  leases: [],
+  nowIso,
+};
 
 describe('parseJudgment', () => {
   it('accepts a bare decision object, a wrapped one, and a fenced one', () => {
@@ -42,6 +107,53 @@ describe('parseJudgment', () => {
       decision: { decision: { summary: 'used } and { inside' } },
     });
   });
+
+  it('strips an unknown per-task key the brain hallucinates instead of rejecting the plan', () => {
+    // Live: the brain kept adding a per-task `kind` field, tripping the strict
+    // task schema and blocking every goal with `Unrecognized key: "kind"`.
+    const result = parseJudgment(
+      'plan',
+      '{"kind":"plan","decision":{"tasks":[{"title":"t","brief":"b","agentId":"claude-code","kind":"work"}],"confidence":0.8}}',
+    );
+    expect(result.ok).toBe(true);
+    const task = (
+      result as { ok: true; decision: { decision: { tasks: Record<string, unknown>[] } } }
+    ).decision.decision.tasks[0];
+    expect(task).toMatchObject({ title: 't', brief: 'b', agentId: 'claude-code' });
+    expect(task).not.toHaveProperty('kind');
+  });
+
+  it('still rejects a task missing a required field', () => {
+    const result = parseJudgment(
+      'plan',
+      '{"kind":"plan","decision":{"tasks":[{"brief":"b","agentId":"claude-code"}],"confidence":0.8}}',
+    );
+    expect(result.ok).toBe(false);
+  });
+
+  it('defaults a missing confidence on a review judgment instead of blocking the goal', () => {
+    // Live: the DeepSeek brain kept omitting `confidence`, blocking goals with
+    // `brain_invalid`. A missing confidence should default, not fail — the
+    // verdict is the decision that matters.
+    const result = parseJudgment(
+      'review',
+      '{"kind":"review","decision":{"verdict":"accept","feedback":"ok"}}',
+    );
+    expect(result.ok).toBe(true);
+    const d = (
+      result as { ok: true; decision: { decision: { verdict: string; confidence: number } } }
+    ).decision.decision;
+    expect(d.verdict).toBe('accept');
+    expect(typeof d.confidence).toBe('number');
+  });
+
+  it('defaults a missing confidence on a plan judgment', () => {
+    const result = parseJudgment(
+      'plan',
+      '{"kind":"plan","decision":{"tasks":[{"title":"t","brief":"b","agentId":"claude-code"}]}}',
+    );
+    expect(result.ok).toBe(true);
+  });
 });
 
 describe('validatePlannedTasks', () => {
@@ -80,5 +192,35 @@ describe('frameJudgment', () => {
     expect(text.startsWith('LUWI autopilot judgment: plan.')).toBe(true);
     expect(text).toContain('you do not act');
     expect(text.endsWith('CONTEXT:\n\n{"goal":{"id":"g"}}')).toBe(true);
+  });
+
+  it('instructs the brain to route each task by the worker lane, not default to one worker', () => {
+    const text = frameJudgment('plan', {});
+    expect(text).toContain('policy.workerRoles');
+    expect(text).toContain('lane');
+    expect(text).toContain('do not default every task to one worker');
+  });
+});
+
+describe('assembleJudgmentContext workerRoles', () => {
+  it('surfaces each worker lane so the brain can route by fit', () => {
+    const context = assembleJudgmentContext({
+      ...contextInput,
+      workerRoles: {
+        'claude-code': { role: 'backend/contracts/DB', flowRoles: ['implementer'] },
+        antigravity: { role: 'mobile/Flutter' },
+      },
+    });
+    expect(context['policy']).toMatchObject({
+      workerRoles: {
+        'claude-code': { role: 'backend/contracts/DB', flowRoles: ['implementer'] },
+        antigravity: { role: 'mobile/Flutter' },
+      },
+    });
+  });
+
+  it('omits workerRoles entirely when no worker declares a lane', () => {
+    const context = assembleJudgmentContext(contextInput);
+    expect(context['policy']).not.toHaveProperty('workerRoles');
   });
 });

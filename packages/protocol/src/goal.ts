@@ -141,8 +141,16 @@ export const goalCreateRequestSchema = z.strictObject({
   budget: goalBudgetSchema.partial().optional(),
 });
 
-/** One planned task as the brain proposes it; ids are assigned by the runtime. */
-export const plannedTaskSchema = z.strictObject({
+/**
+ * One planned task as the brain proposes it; ids are assigned by the runtime.
+ *
+ * `object`, not `strictObject`: the brain (an LLM) keeps hallucinating an extra
+ * per-task key (a `kind` field mirrored from the task summaries it was shown),
+ * which under a strict shape rejected the whole plan and blocked every goal with
+ * `Unrecognized key: "kind"`. `object` strips unknown keys while still enforcing
+ * every declared field, so a stray key is dropped rather than fatal.
+ */
+export const plannedTaskSchema = z.object({
   title: z.string().trim().min(1).max(200),
   brief: z.string().trim().min(1).max(32_768),
   agentId: agentIdSchema,

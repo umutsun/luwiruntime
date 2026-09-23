@@ -18,13 +18,13 @@ export const judgmentKindSchema = z.enum(['plan', 'review', 'replan', 'summarize
 export const planDecisionSchema = z.strictObject({
   tasks: z.array(plannedTaskSchema).min(1).max(64),
   rationale: z.string().max(ORCHESTRATOR_RATIONALE_MAX).default(''),
-  confidence: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1).default(0.7),
 });
 
 export const reviewDecisionSchema = z.strictObject({
   verdict: taskVerdictSchema,
   feedback: z.string().max(ORCHESTRATOR_FEEDBACK_MAX).default(''),
-  confidence: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1).default(0.7),
 });
 
 export const replanDecisionSchema = z.strictObject({
@@ -34,7 +34,7 @@ export const replanDecisionSchema = z.strictObject({
   /** The brain may give up: the goal fails with this reason instead of replanning. */
   giveUp: z.string().max(1000).optional(),
   rationale: z.string().max(ORCHESTRATOR_RATIONALE_MAX).default(''),
-  confidence: z.number().min(0).max(1),
+  confidence: z.number().min(0).max(1).default(0.7),
 });
 
 export const summarizeDecisionSchema = z.strictObject({

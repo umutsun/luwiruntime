@@ -37,6 +37,14 @@ export type JudgmentContextInput = {
   tasks: readonly Task[];
   policy: AutopilotPolicy;
   workers: readonly string[];
+  /**
+   * Each worker's specialty/lane (the binding's free-text `role`) and its flow
+   * roles (ADR 0036), so the plan routes each task to the worker it fits instead
+   * of defaulting every task to the first listed worker. Absent for a worker
+   * with no declared role — the brain then falls back to presence alone.
+   */
+  workerRoles?:
+    Readonly<Record<string, { role?: string; flowRoles?: readonly string[] }>> | undefined;
   sessions: readonly SessionView[];
   retrospectives: readonly GoalRetrospective[];
   leases: readonly Pick<WorkLease, 'path' | 'agentId' | 'sessionId'>[];
@@ -123,6 +131,7 @@ export function assembleJudgmentContext(input: JudgmentContextInput): Record<str
     policy: {
       workers: input.workers,
       workerPresence,
+      ...(input.workerRoles === undefined ? {} : { workerRoles: input.workerRoles }),
       reviewer: input.policy.reviewerAgentId ?? null,
       protectedPaths: input.policy.protectedPaths,
       maxInFlight: input.policy.maxInFlight,
@@ -179,7 +188,7 @@ const ANSWER_SHAPES: Record<JudgmentKind, string> = {
 };
 
 const QUESTIONS: Record<JudgmentKind, string> = {
-  plan: 'Plan the goal as an ordered list of tasks for the listed workers. Each task is one bounded piece of work a worker completes unattended in one headless run: name the files it may touch under paths, the evidence it must return, and what done means. Declare no path only when the task genuinely touches the whole project. Never assign a worker that is absent or not listed. Keep the plan within budget.maxTasks.',
+  plan: 'Plan the goal as an ordered list of tasks for the listed workers. Each task is one bounded piece of work a worker completes unattended in one headless run: name the files it may touch under paths, the evidence it must return, and what done means. Assign each task to the worker whose lane fits it: policy.workerRoles gives each worker its role (its free-text specialty, e.g. mobile/Flutter vs backend/contracts/DB) and flowRoles — match the task to that specialty and do not default every task to one worker. Declare no path only when the task genuinely touches the whole project. Never assign a worker that is absent or not listed. Keep the plan within budget.maxTasks.',
   review:
     "Judge the task under review against the goal's acceptance criteria, the task's doneCriteria, the deterministic checks and the reviewer's answer when present. accept only what the evidence supports; rework with concrete feedback when a bounded follow-up would fix it; escalate when a human must decide.",
   replan:

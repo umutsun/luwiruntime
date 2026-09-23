@@ -41,7 +41,9 @@ import type { BrainAdapter } from './brain-adapter.js';
 
 export interface OrchestratorDaemonClient {
   getAutopilot(projectId: string): Promise<AutopilotStatusResponse>;
-  listProjectAgentBindings(projectId: string): Promise<{ agentId: string; enabled: boolean }[]>;
+  listProjectAgentBindings(
+    projectId: string,
+  ): Promise<{ agentId: string; enabled: boolean; role?: string; flowRoles?: string[] }[]>;
   listGoals(projectId: string): Promise<Goal[]>;
   listTasks(projectId: string): Promise<Task[]>;
   listSessions(projectId: string): Promise<SessionView[]>;
@@ -256,12 +258,35 @@ export function createOrchestratorBridge(options: OrchestratorBridgeOptions): Or
     const goal = view.goals.find((candidate) => candidate.id === action.goalId);
     if (goal === undefined) return;
     const workers = effectiveWorkers(policy, view.bindings);
+    // Each worker's declared lane, so the brain routes a task to the agent it
+    // fits (mobile/Flutter vs backend) instead of defaulting to the first one —
+    // the misroute that thrashed the fleet. Only workers with a role or flow
+    // role are listed; an empty map is omitted so the brain falls back to
+    // presence alone.
+    const workerRoles = Object.fromEntries(
+      view.bindings
+        .filter(
+          (binding) =>
+            workers.includes(binding.agentId) &&
+            (binding.role !== undefined || (binding.flowRoles?.length ?? 0) > 0),
+        )
+        .map((binding) => [
+          binding.agentId,
+          {
+            ...(binding.role === undefined ? {} : { role: binding.role }),
+            ...(binding.flowRoles === undefined || binding.flowRoles.length === 0
+              ? {}
+              : { flowRoles: binding.flowRoles }),
+          },
+        ]),
+    );
     const goalTasks = view.tasks.filter((task) => task.goalId === goal.id);
     const baseContext = {
       goal,
       tasks: goalTasks,
       policy,
       workers,
+      ...(Object.keys(workerRoles).length === 0 ? {} : { workerRoles }),
       sessions: view.sessions,
       retrospectives: view.goals
         .filter((candidate) => candidate.retrospective !== undefined)
