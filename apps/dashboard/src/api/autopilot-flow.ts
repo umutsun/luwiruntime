@@ -70,6 +70,19 @@ export async function loadAutopilotFlow(
 
   const tasksById = new Map(tasksResult.data.tasks.map((task) => [task.id, task]));
   const active = goalsResult.data.goals.filter((goal) => !GOAL_TERMINAL.has(goal.state));
+  // The plan in its own order, then any task the runtime created for this goal outside
+  // `taskIds` (a review task is never added to the plan) oldest first — otherwise a
+  // review gated for approval never reaches the cockpit and nobody can approve it.
+  const goalTasks = (goal: Goal): Task[] => {
+    const planned = goal.taskIds
+      .map((id) => tasksById.get(id))
+      .filter((task): task is Task => task !== undefined);
+    const inPlan = new Set(goal.taskIds);
+    const extra = tasksResult.data.tasks
+      .filter((task) => task.goalId === goal.id && !inPlan.has(task.id))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    return [...planned, ...extra];
+  };
   const goals: FlowGoal[] = active.slice(0, MAX_GOALS).map((goal) => ({
     id: goal.id,
     title: goal.title,
@@ -77,20 +90,17 @@ export async function loadAutopilotFlow(
     acceptanceCriteria: goal.acceptanceCriteria,
     state: goal.state,
     ...(goal.escalation === undefined ? {} : { question: goal.escalation.question }),
-    tasks: goal.taskIds
-      .map((id) => tasksById.get(id))
-      .filter((task): task is Task => task !== undefined)
-      .map((task) => ({
-        id: task.id,
-        kind: task.kind,
-        title: task.title,
-        brief: task.brief,
-        paths: task.paths,
-        ...(task.doneCriteria === undefined ? {} : { doneCriteria: task.doneCriteria }),
-        agentId: task.agentId,
-        state: task.state,
-        verdict: task.verification?.verdict,
-      })),
+    tasks: goalTasks(goal).map((task) => ({
+      id: task.id,
+      kind: task.kind,
+      title: task.title,
+      brief: task.brief,
+      paths: task.paths,
+      ...(task.doneCriteria === undefined ? {} : { doneCriteria: task.doneCriteria }),
+      agentId: task.agentId,
+      state: task.state,
+      verdict: task.verification?.verdict,
+    })),
   }));
   return { state: 'ready', data: { goals, more: Math.max(0, active.length - goals.length) } };
 }
