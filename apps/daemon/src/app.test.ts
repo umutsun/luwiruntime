@@ -371,6 +371,39 @@ describe('LUWI daemon HTTP API', () => {
     expect(response.body).not.toContain('secret connection details');
   });
 
+  it("answers a malformed request body with a 400, not the server's 500", async () => {
+    // Live 2026-09-24: a client sent a Content-Length that did not match its (UTF-8)
+    // body; Fastify raised a 400-class FST_ERR and the daemon answered 500
+    // INTERNAL_ERROR, which read as "the daemon is broken".
+    const redis = new FakeRedisGateway();
+    app = buildDaemon({
+      config,
+      redis,
+      logger: false,
+      runtimeInstanceId: 'runtime-1',
+      runtimeState: () => 'ready',
+    });
+    app.post('/test/echo', async () => ({ ok: true }));
+
+    const malformedJson = await app.inject({
+      method: 'POST',
+      url: '/test/echo',
+      headers: { 'content-type': 'application/json' },
+      payload: '{"note": ',
+    });
+    expect(malformedJson.statusCode).toBe(400);
+    expect(malformedJson.json()).toMatchObject({ error: { code: 'REQUEST_MALFORMED' } });
+
+    const lengthMismatch = await app.inject({
+      method: 'POST',
+      url: '/test/echo',
+      headers: { 'content-type': 'application/json', 'content-length': '40' },
+      payload: '{"note":"ş"}',
+    });
+    expect(lengthMismatch.statusCode).toBe(400);
+    expect(lengthMismatch.json()).toMatchObject({ error: { code: 'REQUEST_MALFORMED' } });
+  });
+
   it('emits normalized lifecycle events and closes Redis gracefully', async () => {
     const redis = new FakeRedisGateway();
     const events: RuntimeEvent[] = [];

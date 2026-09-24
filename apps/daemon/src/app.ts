@@ -308,6 +308,25 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         },
       });
     }
+    // Fastify's own request-parsing faults (malformed JSON, a Content-Length that does not
+    // match the body, an oversized or unsupported body) are the client's, never the
+    // server's: answered as 500 INTERNAL_ERROR they read as "the daemon is broken".
+    const fastifyStatus = (error as { statusCode?: unknown; code?: unknown }).statusCode;
+    if (
+      typeof (error as { code?: unknown }).code === 'string' &&
+      String((error as { code: string }).code).startsWith('FST_ERR_') &&
+      typeof fastifyStatus === 'number' &&
+      fastifyStatus >= 400 &&
+      fastifyStatus < 500
+    ) {
+      app.log.warn(
+        { err: error, requestId: request.id, statusCode: fastifyStatus },
+        'Request failed',
+      );
+      return reply.code(fastifyStatus).send({
+        error: { code: 'REQUEST_MALFORMED', message: 'The request body could not be read.' },
+      });
+    }
     const publicError = toPublicError(error);
     // A 4xx is an expected client outcome — a 404 for a project with no Git
     // observation, a 409 for a stale message transition, a 400 for a malformed
