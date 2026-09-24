@@ -958,6 +958,44 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         }
       });
 
+      it('keeps the shadow of the rebuild holding the lock through a retention run', async () => {
+        // Shadow writes are scored by the records' own observedAt, so a shadow
+        // of old records ranks below every newer generation in the index.
+        const generation = await shadow('retention-in-flight', 'running', 2);
+        await commandClient.sendCommand(['ZADD', keys.graphGenerationsIndex, '1', generation]);
+        for (const newer of ['retention-newer-a', 'retention-newer-b']) {
+          await repository.putGraphNode(`generation-${newer}`, {
+            ...orphanNode(newer),
+            observedAt: '2026-08-29T00:00:00.000Z',
+          });
+        }
+        await commandClient.sendCommand(['SET', keys.graphRebuildLock, 'retention-in-flight']);
+        const before = await keysOf(generation);
+
+        try {
+          await repository.runRetention({
+            now: new Date('2026-08-30T00:00:00.000Z'),
+            usageRetentionDays: 30,
+            gitObservationRetentionCount: 1,
+            graphGenerationRetentionCount: 1,
+            maximumRecords: 1000,
+          });
+
+          // Proves retention trimmed at all: the older of the two newer ones goes.
+          expect(await keysOf('generation-retention-newer-a')).toEqual([]);
+          expect((await keysOf(generation)).toSorted()).toEqual(before.toSorted());
+          await expect(
+            commandClient.sendCommand(['ZSCORE', keys.graphGenerationsIndex, generation]),
+          ).resolves.not.toBeNull();
+        } finally {
+          await commandClient.sendCommand(['DEL', keys.graphRebuildLock]);
+          await repository.discardGraphGeneration(generation, 100);
+          for (const newer of ['retention-newer-a', 'retention-newer-b']) {
+            await repository.discardGraphGeneration(`generation-${newer}`, 100);
+          }
+        }
+      });
+
       it('removes at most maxKeys per call and reports what is left', async () => {
         await drain();
         const generation = await shadow('orphan-bounded', 'failed', 3);

@@ -1877,11 +1877,18 @@ export function createIntelligenceRepository(
       const generationValues = stringArray(
         await client.sendCommand(['ZRANGE', keys.graphGenerationsIndex, '0', '-1']),
       );
+      // The index is scored by each record's observedAt, so a shadow still being
+      // written can rank below older generations; deleting it mid-write fails the
+      // rebuild's count validation. The lock names the live rebuild's operation.
+      // Read it before the active pointer: activation swaps the pointer and drops
+      // the lock atomically, so in this order one of the two reads sees the shadow.
+      const rebuildLockOwner = text(await client.sendCommand(['GET', keys.graphRebuildLock]));
       const activeGeneration = text(await client.sendCommand(['GET', keys.graphActiveGeneration]));
       const retainedGenerations = new Set(
         generationValues.slice(-Math.max(1, options.graphGenerationRetentionCount)),
       );
       if (activeGeneration !== null) retainedGenerations.add(activeGeneration);
+      if (rebuildLockOwner !== null) retainedGenerations.add(`${shadowPrefix}${rebuildLockOwner}`);
       for (const generation of generationValues) {
         if (retainedGenerations.has(generation)) continue;
         const incomplete = await removeGraphGeneration(generation, maximum);
