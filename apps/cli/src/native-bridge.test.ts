@@ -6,6 +6,7 @@ import {
   claudeMcpBindingArgs,
   codexMcpBindingArgs,
   createNativeBridge,
+  detectUsageLimit,
   framePrompt,
   nativeHeadlessArguments,
   renderLeaseCoordination,
@@ -302,6 +303,50 @@ describe('renderLeaseCoordination', () => {
   });
 });
 
+describe('detectUsageLimit', () => {
+  it('matches a codex usage-limit line and captures the "try again at" hint', () => {
+    const line =
+      'ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 27th, 2026 11:48 AM.';
+    expect(detectUsageLimit(`some noise\n${line}\nmore noise`)).toEqual({
+      retryAt: 'Sep 27th, 2026 11:48 AM',
+      line,
+    });
+  });
+
+  it('matches a claude usage-limit line and captures the "resets at" hint', () => {
+    const line = 'Claude usage limit reached. Your limit resets at 2pm (America/Los_Angeles).';
+    expect(detectUsageLimit(line)).toEqual({ retryAt: '2pm (America/Los_Angeles)', line });
+  });
+
+  it('matches a bare rate-limit line with no retry hint', () => {
+    expect(detectUsageLimit('Error: rate limited, please retry later.')).toEqual({
+      line: 'Error: rate limited, please retry later.',
+    });
+  });
+
+  it('matches a 429 line only when it reads like an HTTP error', () => {
+    expect(detectUsageLimit('Request failed with status code 429')).toEqual({
+      line: 'Request failed with status code 429',
+    });
+    expect(detectUsageLimit('Found 429 matching files in the repo')).toBeUndefined();
+  });
+
+  it('matches quota-exceeded lines', () => {
+    expect(detectUsageLimit('quota exceeded for this billing period')).toEqual({
+      line: 'quota exceeded for this billing period',
+    });
+  });
+
+  it('is conservative: a line merely containing "limit" does not match', () => {
+    expect(detectUsageLimit('Reached the file size limit for this repo.')).toBeUndefined();
+  });
+
+  it('returns undefined for empty or unrelated output', () => {
+    expect(detectUsageLimit('')).toBeUndefined();
+    expect(detectUsageLimit('Traceback (most recent call last):\n  File "x.py"')).toBeUndefined();
+  });
+});
+
 describe('createNativeBridge', () => {
   it('runs the child and completes nothing when the child completed the message', async () => {
     const log: string[] = [];
@@ -394,6 +439,24 @@ describe('createNativeBridge', () => {
     await bridge.pollOnce();
 
     expect(log.find((line) => line.startsWith('complete:fail'))).toContain('code 3');
+  });
+
+  it('names a usage-limit exit instead of the generic reason, and keeps the output tail', async () => {
+    const log: string[] = [];
+    const d = daemon(log, ['delivered', 'processing'], requestInbox());
+    const tail =
+      'ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 27th, 2026 11:48 AM.';
+    const exec = executor({ result: 'completed', exitCode: 1, outputTail: tail });
+    const bridge = createNativeBridge(options({ daemon: d.client, executor: exec }));
+
+    await bridge.pollOnce();
+
+    const failure = log.find((line) => line.startsWith('complete:fail'));
+    expect(failure).toContain(
+      'AGENT_USAGE_LIMIT: claude-code is out of usage until Sep 27th, 2026 11:48 AM',
+    );
+    expect(failure).toContain('[native output tail]');
+    expect(failure).not.toContain('without completing the message');
   });
 
   it('fails with a deadline reason when the run hit the deadline', async () => {

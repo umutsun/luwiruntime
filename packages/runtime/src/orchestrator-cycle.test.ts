@@ -180,6 +180,54 @@ describe('planCycle', () => {
     ]);
   });
 
+  it('escalates instead of judging when the reviewer itself is out of usage', () => {
+    const reviewing = task('t1', {
+      state: 'done',
+      verification: { checks: [], reviewTaskId: 'r1' },
+    });
+    const review = task('r1', {
+      kind: 'review',
+      reviewOf: 't1',
+      agentId: 'codex',
+      state: 'failed',
+      outcome: {
+        messageState: 'failed',
+        status: 'failed',
+        answer:
+          'AGENT_USAGE_LIMIT: codex is out of usage until Sep 27th, 2026 11:48 AM — ERROR: usage limit hit.',
+        evidenceCount: 0,
+        evidenceTypes: [],
+      },
+    });
+    expect(
+      planCycle(state({ goals: [goal({ taskIds: ['t1'] })], tasks: [reviewing, review] })),
+    ).toMatchObject([
+      { type: 'escalate', goalId: 'goal-1', reason: 'worker_unavailable', taskId: 't1' },
+    ]);
+  });
+
+  it('still judges a review task that failed for an unrelated reason', () => {
+    const reviewing = task('t1', {
+      state: 'done',
+      verification: { checks: [], reviewTaskId: 'r1' },
+    });
+    const review = task('r1', {
+      kind: 'review',
+      reviewOf: 't1',
+      agentId: 'codex',
+      state: 'failed',
+      outcome: {
+        messageState: 'failed',
+        evidenceCount: 0,
+        evidenceTypes: [],
+        answer: 'The reviewer crashed on an unrelated error.',
+      },
+    });
+    expect(
+      planCycle(state({ goals: [goal({ taskIds: ['t1'] })], tasks: [reviewing, review] })),
+    ).toEqual([{ type: 'judge', kind: 'review', goalId: 'goal-1', taskId: 't1' }]);
+  });
+
   it('judges directly when no reviewer is configured', () => {
     const done = task('t1', { state: 'done', verification: { checks: [] } });
     expect(

@@ -190,6 +190,24 @@ export function planCycle(state: CycleState): CycleAction[] {
         }
         continue;
       }
+      // A review task that failed because its own worker is out of usage is not a verdict on the
+      // work — judging it would let the brain accept the goal on deterministic checks alone, with
+      // the second pair of eyes silently gone (measured live: a codex reviewer hit its account
+      // limit). Park it for the operator instead, the same way `worker_unavailable` above does.
+      if (reviewTask !== undefined && reviewTask.state === 'failed') {
+        const usageAnswer = reviewTask.outcome?.answer;
+        if (usageAnswer?.startsWith('AGENT_USAGE_LIMIT:') === true) {
+          const summary = (usageAnswer.split('\n')[0] ?? usageAnswer).slice(0, 500);
+          actions.push({
+            type: 'escalate',
+            goalId: goal.id,
+            reason: 'worker_unavailable',
+            taskId: needsVerdict.id,
+            question: `The reviewer (${reviewTask.agentId ?? state.policy.reviewerAgentId ?? 'unassigned'}) is out of usage and cannot verify task "${needsVerdict.title}": ${summary}. Answer to accept the work without review, or abandon the goal.`,
+          });
+          continue;
+        }
+      }
       judge({ type: 'judge', kind: 'review', goalId: goal.id, taskId: needsVerdict.id });
       continue;
     }

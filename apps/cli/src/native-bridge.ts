@@ -260,6 +260,50 @@ function withTail(reason: string, tail: string): string {
   return trimmed === '' ? reason : `${reason}\n\n[native output tail]\n${trimmed}`;
 }
 
+export type UsageLimitDetection = { retryAt?: string; line: string };
+
+/** Phrases that clearly state a usage/rate limit, not any line merely containing "limit". */
+const USAGE_LIMIT_LINE_PATTERNS: readonly RegExp[] = [
+  /hit your usage limit/i,
+  /usage limit reached/i,
+  /\blimit reached\b/i,
+  /\brate limit(?:ed|ing)?\b/i,
+  /\bquota exceeded\b/i,
+];
+
+const RETRY_HINT_PATTERN = /\b(?:try again|resets?)\s+at\s+([^.\n]+)/i;
+
+/** "429" alone is too common a number to trust on its own; require it to read like an HTTP error. */
+function isRateLimitStatusLine(line: string): boolean {
+  return /\b429\b/.test(line) && /error|status|request|http/i.test(line);
+}
+
+/**
+ * A child that exits without completing its message sometimes says why in its own output — most
+ * often a provider usage/rate limit. Scanned line by line so an unrelated line elsewhere in the
+ * tail (e.g. a stack trace) cannot suppress a real match earlier in the output.
+ */
+export function detectUsageLimit(tail: string): UsageLimitDetection | undefined {
+  for (const raw of tail.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '') continue;
+    if (
+      !USAGE_LIMIT_LINE_PATTERNS.some((pattern) => pattern.test(line)) &&
+      !isRateLimitStatusLine(line)
+    )
+      continue;
+    const retryAt = RETRY_HINT_PATTERN.exec(line)?.[1]?.trim();
+    return retryAt === undefined ? { line } : { retryAt, line };
+  }
+  return undefined;
+}
+
+/** The failure reason when a usage-limit line was found, so the orchestrator can name it and escalate. */
+function usageLimitReason(agentId: string, detection: UsageLimitDetection): string {
+  const until = detection.retryAt === undefined ? '' : ` until ${detection.retryAt}`;
+  return `AGENT_USAGE_LIMIT: ${agentId} is out of usage${until} — ${detection.line}`;
+}
+
 export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
   const now = options.now ?? (() => new Date().toISOString());
   const seenSessions = new Set<string>();
@@ -381,7 +425,11 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
       } else if (run.result === 'deadline') {
         reason = 'The native agent was stopped at the message deadline before completing it.';
       } else {
-        reason = `The native agent exited (code ${run.exitCode}) without completing the message.`;
+        const usageLimit = detectUsageLimit(run.outputTail);
+        reason =
+          usageLimit === undefined
+            ? `The native agent exited (code ${run.exitCode}) without completing the message.`
+            : usageLimitReason(options.agentId, usageLimit);
       }
       await completeSafely(correlationId, failure(withTail(reason, run.outputTail)));
       options.report?.({ correlationId, completedBy: 'bridge', reason, exitCode: run.exitCode });
