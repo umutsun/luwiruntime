@@ -48,9 +48,13 @@
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
-  background: var(--surface-2);
+  background-color: var(--surface-2);
   font-family: var(--font-mono);
   font-size: var(--font-size-xs);
+}
+/* Room for the shared chevron (shell.css) without crowding the value. */
+.activity-filters select {
+  padding-right: var(--space-5);
 }
 .activity-filters select:focus-visible,
 .activity-filters input:focus-visible,
@@ -427,6 +431,23 @@
 .detail-drawer .table-wrap {
   max-height: 340px;
   overflow-y: auto;
+}
+/*
+ * A drawer whose main content is one tall table should fill the height the
+ * route-stack already claims, not cap the table at the shared 340px and leave
+ * dead space below — that is what made the sessions and messages drawers read
+ * badly. The panel holding a tall table grows with it, and the table scrolls
+ * within the full height. Short (non-`--tall`) tables keep the cap, so a small
+ * table never stretches to fill a tall drawer.
+ */
+.detail-drawer .route-stack > .panel:has(.table-wrap--tall) {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.detail-drawer .route-stack .table-wrap--tall {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 /*
  * The drawer is a column of cards; it scrolls as one, and its tables never

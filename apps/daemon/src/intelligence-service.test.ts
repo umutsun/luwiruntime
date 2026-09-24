@@ -432,6 +432,57 @@ describe('daemon intelligence service', () => {
     releaseProjection?.();
   }, 15_000);
 
+  it('reports why a projection failed instead of only that it did', async () => {
+    // The failure record carries a constant code, and the catch kept nothing
+    // else: on the live runtime 1008 projections failed in a row on the batch
+    // operation limit and no log line ever said so.
+    const values = dependencies();
+    const reason = new Error('The intelligence transition exceeded its operation limit.');
+    // The reads a projection makes before it writes, so the run gets as far as
+    // the write that fails.
+    Object.assign(values.repository, {
+      listPackages: vi.fn(async () => []),
+      listTechnologies: vi.fn(async () => []),
+      listWorkspaceLocations: vi.fn(async () => []),
+      listAttributions: vi.fn(async () => []),
+      getCurrentGitObservation: vi.fn(async () => null),
+      replaceGraphSnapshot: vi.fn(async () => {
+        throw reason;
+      }),
+    });
+    Object.assign(values.controlPlane, {
+      listAgents: vi.fn(async () => []),
+      listProjectAgentBindings: vi.fn(async () => []),
+    });
+    const onProjectionFailure = vi.fn();
+    const service = createIntelligenceService({
+      ...values,
+      workspaceId: 'local',
+      now: () => new Date(timestamp),
+      onProjectionFailure,
+    });
+
+    await service.observeContextContribution({
+      projectId: project.id,
+      agentId: 'codex',
+      sessionId: session.id,
+      contextSourceId: contextSource.id,
+      loadingMode: 'always',
+      loaded: true,
+      invoked: false,
+      source: 'session-reported',
+      confidence: 'medium',
+      observedAt: timestamp,
+      evidenceIds: ['bridge-event-failing'],
+      metadata: {},
+    });
+
+    await vi.waitFor(() =>
+      expect(values.repository.recordGraphProjectionFailure).toHaveBeenCalled(),
+    );
+    expect(onProjectionFailure).toHaveBeenCalledWith(reason, 'context-observation');
+  });
+
   it('coalesces concurrent projections instead of stacking one per mutation', async () => {
     // Deferring the projection freed the request, but nothing bounded how many
     // could then run at once: on the live fixture 61 reprojections ran in
@@ -777,6 +828,7 @@ describe('daemon intelligence service — graphify layer (ADR 0029)', () => {
       observe?: () => Promise<GraphifyObservation | null>;
       repository?: Record<string, unknown>;
       renewIntervalMs?: number;
+      gitObserver?: NonNullable<Parameters<typeof createIntelligenceService>[0]['gitObserver']>;
     } = {},
   ) => {
     const values = dependencies();
@@ -798,17 +850,19 @@ describe('daemon intelligence service — graphify layer (ADR 0029)', () => {
       listAgents: vi.fn(async () => []),
       listProjectAgentBindings: vi.fn(async () => []),
     });
+    const scan = vi.fn(async () => structure);
     const service = createIntelligenceService({
       ...values,
       workspaceId: 'local',
       now: () => new Date(timestamp),
-      codeStructureObserver: { scan: vi.fn(async () => structure) },
+      codeStructureObserver: { scan },
       graphifyObserver: { observe: overrides.observe ?? vi.fn(async () => graphify) },
+      ...(overrides.gitObserver === undefined ? {} : { gitObserver: overrides.gitObserver }),
       ...(overrides.renewIntervalMs === undefined
         ? {}
         : { graphRebuildRenewIntervalMs: overrides.renewIntervalMs }),
     });
-    return { service, values };
+    return { service, values, scan };
   };
 
   /** Runs the real rebuild path and hands back what it wrote. */
@@ -833,6 +887,81 @@ describe('daemon intelligence service — graphify layer (ADR 0029)', () => {
       );
     return { operation, nodes, edges, file, importsBetween, values };
   };
+
+  it('scans the structure of the git-tracked files only, as the package inventory does', async () => {
+    // A filesystem walk follows untracked worktree copies and build output: on
+    // one registered project it read 20 000 files for 350 s where git tracks
+    // 250, and the projection that waits on it never finished inside a tick.
+    const { service, scan } = harness({
+      gitObserver: {
+        observe: vi.fn(),
+        listTrackedFiles: vi.fn(async () => ['src/a.ts', 'src/b.ts']),
+      },
+    });
+
+    await service.rebuildGraph();
+
+    expect(scan).toHaveBeenCalledWith({
+      localPath: project.canonicalPath,
+      trackedPaths: ['src/a.ts', 'src/b.ts'],
+    });
+  });
+
+  it('walks the filesystem when the tracked files cannot be listed', async () => {
+    const { service, scan } = harness({
+      gitObserver: {
+        observe: vi.fn(),
+        listTrackedFiles: vi.fn(async () => {
+          throw new Error('not a repository');
+        }),
+      },
+    });
+
+    await service.rebuildGraph();
+
+    expect(scan).toHaveBeenCalledWith({ localPath: project.canonicalPath });
+  });
+
+  it('reuses a project structure scan while its git state hash is unchanged', async () => {
+    // The whole-fleet reprojection fires on any one project's git flip, but a
+    // project whose repositoryStateHash did not change must not re-parse its
+    // tracked files (the ~31s loop-blocking TS scan) every time.
+    const { service, scan } = harness({
+      git: commitTouching('src/a.ts'),
+      gitObserver: {
+        observe: vi.fn(),
+        listTrackedFiles: vi.fn(async () => ['src/a.ts', 'src/b.ts']),
+      },
+    });
+
+    await service.rebuildGraph();
+    await service.rebuildGraph();
+
+    expect(scan).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-scans a project structure when its git state hash changes', async () => {
+    const changed = {
+      ...commitTouching('src/a.ts'),
+      repositoryStateHash: 'e'.repeat(64),
+    } as unknown as GitObservation;
+    const getCurrentGitObservation = vi
+      .fn()
+      .mockResolvedValueOnce(commitTouching('src/a.ts'))
+      .mockResolvedValue(changed);
+    const { service, scan } = harness({
+      gitObserver: {
+        observe: vi.fn(),
+        listTrackedFiles: vi.fn(async () => ['src/a.ts', 'src/b.ts']),
+      },
+      repository: { getCurrentGitObservation },
+    });
+
+    await service.rebuildGraph();
+    await service.rebuildGraph();
+
+    expect(scan).toHaveBeenCalledTimes(2);
+  });
 
   it('adds the files the structural observer could not see, with provenance and bounded metadata', async () => {
     const { operation, file, importsBetween } = await rebuild();
@@ -996,6 +1125,39 @@ describe('daemon intelligence service — rebuild lock and failure reasons', () 
       state: 'failed',
       failureSummary: ['The shadow graph counts did not match the rebuild result.'],
     });
+  });
+
+  it('discards its own shadow generation when it fails, without masking the reason', async () => {
+    const { service, values } = harness({
+      repository: {
+        validateGraphGeneration: vi.fn(async () => {
+          throw new Error('counts did not match');
+        }),
+        discardGraphGeneration: vi.fn(async () => {
+          throw new Error('Redis went away');
+        }),
+      },
+    });
+
+    await expect(service.rebuildGraph()).rejects.toMatchObject({
+      message: 'The graph rebuild failed: counts did not match',
+    });
+    const [failed] = vi.mocked(values.repository.failGraphRebuild).mock.calls[0] ?? [];
+    expect(values.repository.discardGraphGeneration).toHaveBeenCalledWith(
+      failed?.shadowGeneration,
+      expect.any(Number),
+    );
+  });
+
+  it('does not discard the generation of a rebuild that completed', async () => {
+    const { service, values } = harness({
+      repository: {
+        discardGraphGeneration: vi.fn(async () => ({ keysRemoved: 0, truncated: false })),
+      },
+    });
+
+    await service.rebuildGraph();
+    expect(values.repository.discardGraphGeneration).not.toHaveBeenCalled();
   });
 
   it('keeps the original reason when the failure itself cannot be recorded', async () => {

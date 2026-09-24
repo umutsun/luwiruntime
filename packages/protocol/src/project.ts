@@ -60,7 +60,31 @@ export const projectCollectionResponseSchema = z.strictObject({
   projects: z.array(projectSchema),
 });
 
+/**
+ * One directory found directly under a discovery root — the CLI's
+ * `project discover`, the dashboard's "Scan a folder". A plain candidate has
+ * neither field; one already registered names its `existingProjectId`; one
+ * that cannot be registered says why in `reason`.
+ */
+export const projectDiscoveryCandidateSchema = z.strictObject({
+  directoryName: z.string().min(1).max(255),
+  displayName: z.string().trim().min(1).max(200),
+  localPath: pathSchema,
+  canonicalPath: pathSchema,
+  existingProjectId: identifierSchema.optional(),
+  reason: z.enum(['excluded', 'unreadable', 'outside_root']).optional(),
+});
+
+/** `truncated` discloses a root with more directories than the response carries. */
+export const projectDiscoveryResponseSchema = z.strictObject({
+  root: pathSchema,
+  candidates: z.array(projectDiscoveryCandidateSchema),
+  truncated: z.boolean(),
+});
+
 export type ProjectRegistrationRequest = z.infer<typeof projectRegistrationRequestSchema>;
 export type ProjectUpdateRequest = z.infer<typeof projectUpdateRequestSchema>;
 export type Project = z.infer<typeof projectSchema>;
 export type ProjectCollectionResponse = z.infer<typeof projectCollectionResponseSchema>;
+export type ProjectDiscoveryCandidate = z.infer<typeof projectDiscoveryCandidateSchema>;
+export type ProjectDiscoveryResponse = z.infer<typeof projectDiscoveryResponseSchema>;

@@ -514,6 +514,27 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
         generation,
         edges: [{ kind: 'SESSION_CHANGED_FILE', count: 1 }],
       });
+
+      // A rescan that found nothing new differs only in its scan time, and that
+      // is not a change: the record stays as it was first observed.
+      const rescannedAt = '2026-09-01T00:05:00.000Z';
+      await repository.replaceGraphSnapshot(
+        generation,
+        [sessionNode, { ...fileNode, observedAt: rescannedAt }],
+        [{ ...edge, observedAt: rescannedAt }],
+        event('event-sfc-rescanned', 'graph.node.projected'),
+      );
+      await expect(repository.getGraphNode('file', fileNode.entityId)).resolves.toEqual(fileNode);
+
+      // A real difference is still written, with the time it was seen.
+      const changed = { ...fileNode, observedAt: rescannedAt, evidenceIds: ['sfc-integration-2'] };
+      await repository.replaceGraphSnapshot(
+        generation,
+        [sessionNode, changed],
+        [edge],
+        event('event-sfc-changed', 'graph.node.projected'),
+      );
+      await expect(repository.getGraphNode('file', fileNode.entityId)).resolves.toEqual(changed);
     });
 
     it('reports a namespace with no active generation as unbuilt rather than empty', async () => {
@@ -832,6 +853,189 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       await expect(
         commandClient.sendCommand(['ZSCORE', keys.graphGenerationsIndex, 'generation-cleanup-old']),
       ).resolves.toBeNull();
+    });
+
+    describe('orphan graph generations', () => {
+      const orphanNode = (id: string): GraphNode => ({
+        id: `node-${id}`,
+        kind: 'project',
+        entityId: `project-${id}`,
+        projectId: `project-${id}`,
+        observedAt: timestamp,
+        provenance: 'orphan-test',
+        confidence: 'high',
+        evidenceIds: [`event-${id}`],
+        metadata: {},
+      });
+      const rebuild = (
+        operationId: string,
+        state: GraphRebuildOperation['state'],
+      ): GraphRebuildOperation => ({
+        id: operationId,
+        state,
+        shadowGeneration: `generation-${operationId}`,
+        processedEvents: 0,
+        nodeCount: 0,
+        edgeCount: 0,
+        failureCount: state === 'failed' ? 1 : 0,
+        failureSummary: state === 'failed' ? ['The shadow graph counts did not match.'] : [],
+        startedAt: timestamp,
+      });
+      /** A shadow of `nodes` node keys plus its kind index (n + 1 keys), left unindexed. */
+      const shadow = async (
+        operationId: string,
+        state: GraphRebuildOperation['state'] | null,
+        nodes = 1,
+      ): Promise<string> => {
+        const generation = `generation-${operationId}`;
+        for (let index = 0; index < nodes; index += 1) {
+          await repository.putGraphNode(generation, orphanNode(`${operationId}-${index}`));
+        }
+        await commandClient.sendCommand(['ZREM', keys.graphGenerationsIndex, generation]);
+        if (state !== null) await repository.updateGraphRebuild(rebuild(operationId, state));
+        return generation;
+      };
+      const keysOf = async (generation: string): Promise<string[]> => {
+        const found: string[] = [];
+        let cursor = '0';
+        do {
+          const reply = (await commandClient.sendCommand([
+            'SCAN',
+            cursor,
+            'MATCH',
+            `${namespace}:graph:generation:${generation}:*`,
+            'COUNT',
+            '1000',
+          ])) as [string, string[]];
+          cursor = reply[0];
+          found.push(...reply[1]);
+        } while (cursor !== '0');
+        return found;
+      };
+      // Earlier tests in this namespace may leave eligible orphans; start each from none.
+      const drain = () => repository.purgeOrphanGraphGenerations({ maxKeys: 100_000 });
+
+      it('removes a failed or finished orphan and keeps every live generation', async () => {
+        await drain();
+        const failed = await shadow('orphan-failed', 'failed', 2);
+        const finished = await shadow('orphan-finished', 'completed');
+        const crashed = await shadow('orphan-crashed', 'running');
+        const holding = await shadow('orphan-holding', 'running');
+        const unrecorded = await shadow('orphan-unrecorded', null);
+        const indexed = await shadow('orphan-indexed', 'failed');
+        await commandClient.sendCommand(['ZADD', keys.graphGenerationsIndex, '1', indexed]);
+        const active = await shadow('orphan-active', 'completed');
+        const previousActive = await repository.getActiveGraphGeneration();
+        await commandClient.sendCommand(['SET', keys.graphActiveGeneration, active]);
+        await commandClient.sendCommand(['SET', keys.graphRebuildLock, 'orphan-holding']);
+        const outside = [
+          `${namespace}:unrelated:generation-orphan-failed:node`,
+          `${namespace}:graph:rebuild:orphan-failed-copy`,
+        ];
+        for (const key of outside) await commandClient.sendCommand(['SET', key, 'keep']);
+
+        try {
+          const result = await repository.purgeOrphanGraphGenerations({ maxKeys: 10_000 });
+
+          expect(result).toEqual({ generationsRemoved: 3, keysRemoved: 7, truncated: false });
+          expect(await keysOf(failed)).toEqual([]);
+          expect(await keysOf(finished)).toEqual([]);
+          expect(await keysOf(crashed)).toEqual([]);
+          expect(await keysOf(holding)).not.toEqual([]);
+          expect(await keysOf(unrecorded)).not.toEqual([]);
+          expect(await keysOf(indexed)).not.toEqual([]);
+          expect(await keysOf(active)).not.toEqual([]);
+          for (const key of outside) {
+            await expect(commandClient.sendCommand(['GET', key])).resolves.toBe('keep');
+          }
+          // The rebuild record is history, not a generation key.
+          await expect(repository.getGraphRebuild('orphan-failed')).resolves.not.toBeNull();
+        } finally {
+          await commandClient.sendCommand(['DEL', keys.graphRebuildLock, ...outside]);
+          if (previousActive !== null) {
+            await commandClient.sendCommand(['SET', keys.graphActiveGeneration, previousActive]);
+          }
+        }
+      });
+
+      it('keeps the shadow of the rebuild holding the lock through a retention run', async () => {
+        // Shadow writes are scored by the records' own observedAt, so a shadow
+        // of old records ranks below every newer generation in the index.
+        const generation = await shadow('retention-in-flight', 'running', 2);
+        await commandClient.sendCommand(['ZADD', keys.graphGenerationsIndex, '1', generation]);
+        for (const newer of ['retention-newer-a', 'retention-newer-b']) {
+          await repository.putGraphNode(`generation-${newer}`, {
+            ...orphanNode(newer),
+            observedAt: '2026-08-29T00:00:00.000Z',
+          });
+        }
+        await commandClient.sendCommand(['SET', keys.graphRebuildLock, 'retention-in-flight']);
+        const before = await keysOf(generation);
+
+        try {
+          await repository.runRetention({
+            now: new Date('2026-08-30T00:00:00.000Z'),
+            usageRetentionDays: 30,
+            gitObservationRetentionCount: 1,
+            graphGenerationRetentionCount: 1,
+            maximumRecords: 1000,
+          });
+
+          // Proves retention trimmed at all: the older of the two newer ones goes.
+          expect(await keysOf('generation-retention-newer-a')).toEqual([]);
+          expect((await keysOf(generation)).toSorted()).toEqual(before.toSorted());
+          await expect(
+            commandClient.sendCommand(['ZSCORE', keys.graphGenerationsIndex, generation]),
+          ).resolves.not.toBeNull();
+        } finally {
+          await commandClient.sendCommand(['DEL', keys.graphRebuildLock]);
+          await repository.discardGraphGeneration(generation, 100);
+          for (const newer of ['retention-newer-a', 'retention-newer-b']) {
+            await repository.discardGraphGeneration(`generation-${newer}`, 100);
+          }
+        }
+      });
+
+      it('removes at most maxKeys per call and reports what is left', async () => {
+        await drain();
+        const generation = await shadow('orphan-bounded', 'failed', 3);
+
+        const first = await repository.purgeOrphanGraphGenerations({ maxKeys: 2 });
+        expect(first).toMatchObject({ keysRemoved: 2, truncated: true });
+        expect(await keysOf(generation)).toHaveLength(2);
+
+        const second = await repository.purgeOrphanGraphGenerations({ maxKeys: 2 });
+        expect(second).toMatchObject({ keysRemoved: 2, truncated: false });
+        expect(await keysOf(generation)).toEqual([]);
+      });
+
+      it("discards a failed rebuild's own shadow, bounded, but never the active one", async () => {
+        const generation = await shadow('discard-own', 'failed', 2);
+        await commandClient.sendCommand(['ZADD', keys.graphGenerationsIndex, '1', generation]);
+
+        await expect(repository.discardGraphGeneration(generation, 2)).resolves.toEqual({
+          keysRemoved: 2,
+          truncated: true,
+        });
+        await expect(
+          commandClient.sendCommand(['ZSCORE', keys.graphGenerationsIndex, generation]),
+        ).resolves.toBeNull();
+        await expect(repository.discardGraphGeneration(generation, 10)).resolves.toEqual({
+          keysRemoved: 1,
+          truncated: false,
+        });
+        expect(await keysOf(generation)).toEqual([]);
+
+        const active = await repository.getActiveGraphGeneration();
+        expect(active).not.toBeNull();
+        const activeKeys = await keysOf(active ?? '');
+        expect(activeKeys).not.toEqual([]);
+        await expect(repository.discardGraphGeneration(active ?? '', 10)).resolves.toEqual({
+          keysRemoved: 0,
+          truncated: false,
+        });
+        expect(await keysOf(active ?? '')).toEqual(activeKeys);
+      });
     });
   },
 );

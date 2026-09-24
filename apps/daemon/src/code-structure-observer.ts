@@ -373,7 +373,7 @@ export function moduleDependencyPairs(
     const from = moduleOf(value.fromPath);
     const to = moduleOf(value.toPath);
     if (from === null || to === null || from === to) continue;
-    const key = `${from} ${to}`;
+    const key = `${from}\0${to}`;
     const current = best.get(key);
     // A module dependency is as strong as its strongest proven import. Unknown
     // imports contributed nothing above, so nothing is upgraded here.

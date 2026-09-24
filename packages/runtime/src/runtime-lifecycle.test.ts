@@ -24,7 +24,7 @@ describe('runtime lifecycle events', () => {
       occurredAt: '2026-07-28T08:00:00.000Z',
       workspaceId: 'workspace-1',
       payload: {
-        runtimeVersion: '0.1.0',
+        runtimeVersion: '0.2.0',
       },
     });
   });

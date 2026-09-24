@@ -29,6 +29,8 @@ describe('daemon configuration', () => {
       deadLetterStreamMaxLength: 10000,
       retentionIntervalMs: 60000,
       nativeLinkRetentionMax: 1000,
+      terminalSessionRetentionMs: 86400000,
+      terminalSessionSweepBatchSize: 500,
       capabilityRoots: [],
       messageTimeoutSweepIntervalMs: 1000,
       messageTimeoutBatchSize: 100,
@@ -138,6 +140,8 @@ describe('daemon configuration', () => {
       deadLetterStreamMaxLength: 10000,
       retentionIntervalMs: 60000,
       nativeLinkRetentionMax: 1000,
+      terminalSessionRetentionMs: 86400000,
+      terminalSessionSweepBatchSize: 500,
       messageTimeoutSweepIntervalMs: 1000,
       messageTimeoutBatchSize: 100,
       messageMaxContentBytes: 32768,
@@ -199,6 +203,34 @@ describe('daemon configuration', () => {
     expect(() => loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: '0' })).toThrow();
     expect(() => loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: '-1' })).toThrow();
     expect(() => loadDaemonConfig({ LUWI_NATIVE_LINK_RETENTION_MAX: 'many' })).toThrow();
+  });
+
+  it('never lets terminal-session retention fall below the message max timeout (§7)', () => {
+    // Default is the 24h message max timeout. A shorter retention could purge a
+    // session while a message to it still had an open deadline, whose late
+    // resolution would XADD-recreate the inbox as a groupless orphan stream.
+    expect(loadDaemonConfig({}).terminalSessionRetentionMs).toBe(86_400_000);
+    expect(() => loadDaemonConfig({ LUWI_TERMINAL_SESSION_RETENTION_MS: '3600000' })).toThrow();
+    expect(
+      loadDaemonConfig({ LUWI_TERMINAL_SESSION_RETENTION_MS: '604800000' })
+        .terminalSessionRetentionMs,
+    ).toBe(604_800_000);
+  });
+
+  it('keeps a graphify output override relative and inside the project', () => {
+    expect(
+      loadDaemonConfig({ LUWI_GRAPHIFY_OUTPUT_PATH: 'kg/graph.json' }).graphifyOutputPath,
+    ).toBe('kg/graph.json');
+    expect(loadDaemonConfig({}).graphifyOutputPath).toBeUndefined();
+    for (const escaping of [
+      '../graph.json',
+      'kg/../../graph.json',
+      '/tmp/graph.json',
+      'C:/graph.json',
+      '\\\\server\\share\\graph.json',
+    ]) {
+      expect(() => loadDaemonConfig({ LUWI_GRAPHIFY_OUTPUT_PATH: escaping })).toThrow(/inside/);
+    }
   });
 
   it('rejects non-loopback binding', () => {

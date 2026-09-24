@@ -55,6 +55,39 @@ function stubClient(messages: unknown[]): { client: DaemonClient; paths: string[
 }
 
 describe('loadMessageScope', () => {
+  it('keeps the distinct evidence types and the re-dispatch link a message carries', async () => {
+    const { client } = stubClient([
+      message({
+        retryOf: 'corr-0',
+        response: {
+          status: 'answered',
+          answer: 'Green.',
+          evidence: [
+            { type: 'test_result', summary: 'pnpm test: 12 passed' },
+            { type: 'test_result', summary: 'pnpm lint: clean' },
+            { type: 'git_diff', summary: '3 files' },
+          ],
+          verifiedAt: '2026-08-10T00:04:00.000Z',
+        },
+      }),
+    ]);
+
+    const result = await loadMessageScope(client, ['messages']);
+
+    expect(result.messages).toMatchObject({
+      state: 'ready',
+      data: {
+        items: [
+          {
+            correlationId: 'corr-1',
+            retryOf: 'corr-0',
+            response: { evidenceCount: 3, evidenceTypes: ['test_result', 'git_diff'] },
+          },
+        ],
+      },
+    });
+  });
+
   it('maps a terminal exchange including its response', async () => {
     const { client } = stubClient([message()]);
 
@@ -71,7 +104,7 @@ describe('loadMessageScope', () => {
             targetAgentId: 'agent-b',
             state: 'responded',
             subject: 'Who owns retention?',
-            response: { status: 'answered', confidence: 0.9, evidenceCount: 0 },
+            response: { status: 'answered', confidence: 0.9, evidenceCount: 0, evidenceTypes: [] },
           },
         ],
       },

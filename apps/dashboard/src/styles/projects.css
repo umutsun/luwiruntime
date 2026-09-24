@@ -14,6 +14,29 @@
   min-width: 0;
 }
 
+/*
+ * No project selected → the registry is the drawer's whole content, so it fills
+ * the height instead of capping the table at the drawer's shared 340px and
+ * leaving dead space below. A longer list then scrolls within the full height
+ * rather than a short window.
+ */
+.projects-stack--registry {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.projects-stack--registry .panel--projects {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.detail-drawer .projects-stack--registry .panel--projects .table-wrap {
+  max-height: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
 .project-detail {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
@@ -39,6 +62,13 @@
   gap: var(--space-3);
   min-width: 0;
   padding: var(--panel-pad-y) var(--panel-pad-x) var(--space-3);
+}
+
+/* A prominent link to the repository home, above the git key-values. */
+.repo-link {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
 }
 
 .link-button {
@@ -363,11 +393,11 @@
   text-transform: uppercase;
 }
 .table-filters select {
-  padding: var(--space-1h) var(--space-2);
+  padding: var(--space-1h) var(--space-5) var(--space-1h) var(--space-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text);
-  background: var(--surface-2);
+  background-color: var(--surface-2);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
   text-transform: none;
@@ -533,7 +563,7 @@ tr[data-selected='true'] {
 }
 
 .dialog {
-  width: min(46rem, 100%);
+  width: min(32rem, 100%);
   max-height: 80vh;
   overflow-y: auto;
   padding: var(--space-4);
@@ -561,12 +591,17 @@ tr[data-selected='true'] {
   margin-top: var(--space-4);
 }
 
+/* Solid danger fill so the destructive label is readable — the outline (red
+   text on the surface) failed contrast. --paper is the ink/paper pair's light
+   side, so it reads in both themes (dark on the light-red, light on dark-red). */
 .dialog__confirm {
+  background: var(--danger);
   border-color: var(--danger);
-  color: var(--danger);
+  color: var(--paper);
 }
 
 .dialog__confirm:disabled {
+  background: var(--surface-3);
   border-color: var(--border);
   color: var(--text-muted);
 }
@@ -635,9 +670,42 @@ tr[data-selected='true'] {
   min-width: 48rem;
 }
 
-.ask-button {
-  border-color: var(--selection);
-  color: var(--selection);
+/* One consistent, quiet button for every session-row action (Make/Release
+   coordinator, Ask, Inspect, Take over). Before this they each set only a
+   colour and fell back to the browser's grey 3D default (outset border, grey
+   fill) — the mismatched look the owner flagged. A single ghost button ties
+   the row together and stays out of the way. */
+.row-action {
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  white-space: nowrap;
+}
+.row-action:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.row-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.coordinator-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-xs);
+}
+
+.coordinator-note--ok {
+  color: var(--success);
+}
+
+.coordinator-note--danger {
+  color: var(--danger);
 }
 
 .ask-dialog {
@@ -695,9 +763,13 @@ tr[data-selected='true'] {
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   color: var(--text);
-  background: var(--bg-raised);
+  background-color: var(--bg-raised);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
+}
+/* Room for the shared chevron (shell.css) on the select only. */
+.ask-form select {
+  padding-right: var(--space-5);
 }
 
 .ask-form textarea {
@@ -719,7 +791,9 @@ tr[data-selected='true'] {
    labelled fields, the path shown as identity. */
 .project-edit {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: var(--space-2);
   margin: 0 0 var(--space-3);
 }
 .project-form {
@@ -738,7 +812,8 @@ tr[data-selected='true'] {
   color: var(--text-muted);
   font-size: var(--font-size-xs);
 }
-.project-form input {
+.project-form input,
+.project-form textarea {
   width: 100%;
   padding: var(--space-2);
   border: 1px solid var(--border);
@@ -747,6 +822,10 @@ tr[data-selected='true'] {
   background: var(--bg-raised);
   font-family: var(--font-ui);
   font-size: var(--font-size-sm);
+}
+.project-form textarea {
+  resize: vertical;
+  min-height: 3.5em;
 }
 .project-form__path {
   display: grid;

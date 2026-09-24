@@ -53,6 +53,29 @@ import {
   inboxClaimResponseSchema,
   knowledgeGraphResponseSchema,
   leaseAcquireRequestSchema,
+  autopilotCollectionSchema,
+  autopilotKickResponseSchema,
+  autopilotModeRequestSchema,
+  autopilotModeResponseSchema,
+  autopilotPolicyPutRequestSchema,
+  autopilotRecordSchema,
+  autopilotStatusResponseSchema,
+  goalAbandonRequestSchema,
+  goalAnswerRequestSchema,
+  goalCollectionSchema,
+  goalCreateRequestSchema,
+  goalListQuerySchema,
+  goalPlanDecisionRequestSchema,
+  goalPlanRequestSchema,
+  goalSchema,
+  goalTransitionRequestSchema,
+  taskCancelRequestSchema,
+  taskCollectionSchema,
+  taskDispatchRequestSchema,
+  taskDispatchResponseSchema,
+  taskListQuerySchema,
+  taskSchema,
+  taskVerdictRequestSchema,
   leaseAcquireResponseSchema,
   leaseCollectionSchema,
   leaseListQuerySchema,
@@ -60,6 +83,10 @@ import {
   leaseRenewRequestSchema,
   lifecycleStopResponseSchema,
   workLeaseSchema,
+  coordinatorClaimRequestSchema,
+  coordinatorReleaseRequestSchema,
+  coordinatorSchema,
+  coordinatorViewSchema,
   messageCollectionResponseSchema,
   messageCreateRequestSchema,
   messageCreateResponseSchema,
@@ -75,6 +102,7 @@ import {
   sessionNativeRefResponseSchema,
   type HealthResponse,
   projectCollectionResponseSchema,
+  projectDiscoveryResponseSchema,
   projectRegistrationRequestSchema,
   projectUpdateRequestSchema,
   projectResponseSchema,
@@ -123,10 +151,12 @@ import {
 import { RedisRepositoryError, type RedisGateway } from '@luwi/redis';
 import {
   ApplicationError,
+  createProjectDiscoveryService,
   createRuntimeLifecycleEvent,
   createRuntimeState,
   getRuntimeUptimeMs,
   toPublicError,
+  type ProjectDiscoveryService,
   type RuntimeReadiness,
 } from '@luwi/runtime';
 import websocketPlugin from '@fastify/websocket';
@@ -142,10 +172,13 @@ import {
   readGraphifyKnowledge,
   type KnowledgeDocument,
 } from './graphify-knowledge.js';
+import type { AutopilotService } from './autopilot-service.js';
 import type { LeaseService } from './lease-service.js';
+import type { CoordinatorService } from './coordinator-service.js';
 import type { MessageService } from './message-service.js';
 import type { IntelligenceService } from './intelligence-service.js';
 import type { ProjectService } from './project-service.js';
+import type { ProjectUnregisterService } from './project-unregister-service.js';
 import type { SessionService } from './session-service.js';
 import {
   type WebSocketHub,
@@ -159,7 +192,8 @@ export type DaemonApp = FastifyInstance;
 export type BuildDaemonOptions = {
   config: DaemonConfig;
   redis: RedisGateway;
-  logger?: boolean | { level: string };
+  /** `stream` lets a test read the lines the daemon would have logged. */
+  logger?: boolean | { level: string; stream?: { write: (line: string) => void } };
   now?: () => Date;
   startedAt?: Date;
   runtimeInstanceId?: string;
@@ -171,6 +205,10 @@ export type BuildDaemonOptions = {
     sessions: SessionService;
     messages?: MessageService;
     leases?: LeaseService;
+    coordinator?: CoordinatorService;
+    /** Absent leaves the registry without a DELETE route (F3). */
+    projectUnregister?: ProjectUnregisterService;
+    autopilot?: AutopilotService;
     controlPlane?: ControlPlaneService;
     configControl?: ConfigControlService;
     intelligence?: IntelligenceService;
@@ -189,6 +227,8 @@ export type BuildDaemonOptions = {
   resources?: () => Promise<RuntimeResourcesResponse>;
   /** Filesystem read of graphify's output; defaults to `readGraphifyKnowledge` so tests can stub it. */
   readKnowledgeGraph?: (localPath: string) => Promise<KnowledgeDocument | null>;
+  /** One-level directory discovery for `GET /projects/discover`; defaults to the runtime's, so tests can stub it. */
+  projectDiscovery?: ProjectDiscoveryService;
   lifecycle?: {
     token: string;
     requestStop: () => Promise<void>;
@@ -258,14 +298,8 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
     });
 
   app.setErrorHandler((error, request, reply) => {
-    app.log.error(
-      {
-        err: error,
-        requestId: request.id,
-      },
-      'Request failed',
-    );
     if (error instanceof RedisRepositoryError && error.code === 'REDIS_UNAVAILABLE') {
+      app.log.error({ err: error, requestId: request.id }, 'Request failed');
       options.onRedisUnavailable?.(error);
       return reply.code(503).send({
         error: {
@@ -274,7 +308,35 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         },
       });
     }
+    // Fastify's own request-parsing faults (malformed JSON, a Content-Length that does not
+    // match the body, an oversized or unsupported body) are the client's, never the
+    // server's: answered as 500 INTERNAL_ERROR they read as "the daemon is broken".
+    const fastifyStatus = (error as { statusCode?: unknown; code?: unknown }).statusCode;
+    if (
+      typeof (error as { code?: unknown }).code === 'string' &&
+      String((error as { code: string }).code).startsWith('FST_ERR_') &&
+      typeof fastifyStatus === 'number' &&
+      fastifyStatus >= 400 &&
+      fastifyStatus < 500
+    ) {
+      app.log.warn(
+        { err: error, requestId: request.id, statusCode: fastifyStatus },
+        'Request failed',
+      );
+      return reply.code(fastifyStatus).send({
+        error: { code: 'REQUEST_MALFORMED', message: 'The request body could not be read.' },
+      });
+    }
     const publicError = toPublicError(error);
+    // A 4xx is an expected client outcome — a 404 for a project with no Git
+    // observation, a 409 for a stale message transition, a 400 for a malformed
+    // body — not a server fault. Logging every one at `error` buried the real
+    // failures and was a driver of the multi-hundred-MB daemon.log; reserve
+    // `error` for 5xx and record client errors at `warn`.
+    app.log[publicError.statusCode >= 500 ? 'error' : 'warn'](
+      { err: error, requestId: request.id, statusCode: publicError.statusCode },
+      'Request failed',
+    );
     const existingProjectId = publicError.body.error.details?.existingProjectId;
     if (
       publicError.body.error.code === 'PROJECT_ALREADY_REGISTERED' &&
@@ -476,6 +538,30 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         .header('Location', `/api/v1/projects/${project.id}`)
         .send(projectResponseSchema.parse(project));
     });
+    // One directory level under a root the loopback caller names, read-only —
+    // the dashboard's "Scan a folder" and the CLI's `project discover` share
+    // the runtime's discovery. Registration stays `POST /projects`, one per
+    // candidate, so nothing here writes.
+    const MAX_DISCOVERY_CANDIDATES = 500;
+    const discoveryQuerySchema = z.strictObject({ root: z.string().trim().min(1).max(4096) });
+    const projectDiscovery = options.projectDiscovery ?? createProjectDiscoveryService();
+    app.get('/api/v1/projects/discover', async (request) => {
+      const { root } = parseRequestInput(discoveryQuerySchema, request.query);
+      const plan = await withCurrentRead(async () =>
+        projectDiscovery.createPlan({
+          root,
+          excludes: [],
+          names: {},
+          existingProjects: await services.projects.list(),
+        }),
+      );
+      const candidates = [...plan.selected, ...plan.invalid];
+      return projectDiscoveryResponseSchema.parse({
+        root: plan.root,
+        candidates: candidates.slice(0, MAX_DISCOVERY_CANDIDATES),
+        truncated: candidates.length > MAX_DISCOVERY_CANDIDATES,
+      });
+    });
     app.get('/api/v1/projects/:projectId', async (request) => {
       const { projectId } = parseRequestInput(projectParamsSchema, request.params);
       const project = await withCurrentRead(() => services.projects.get(projectId));
@@ -528,7 +614,11 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
         native: await services.sessions.getNativeRef(sessionId),
       });
     });
-    app.post('/api/v1/sessions/:sessionId/heartbeat', async (request) => {
+    // Every live session heartbeats every few seconds and every bridge long-polls
+    // its inbox; at info Fastify wrote two lines per request and the daemon log
+    // grew by hundreds of megabytes a day. These two routes log at warn — a
+    // failure still surfaces, a healthy poll does not.
+    app.post('/api/v1/sessions/:sessionId/heartbeat', { logLevel: 'warn' }, async (request) => {
       const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
       const body = parseRequestInput(heartbeatRequestSchema, request.body ?? {});
       return withMutation(() => services.sessions.heartbeat(sessionId, body));
@@ -552,6 +642,17 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       const project = await withMutation(() => services.projects.update(projectId, body));
       return projectResponseSchema.parse(project);
     });
+    // Unregister only (F3): the registry and the evidence LUWI collected go; the
+    // project's files and its .luwi directory stay. Refused, with what blocks
+    // it named, while anything live still points at the project.
+    const projectUnregister = services.projectUnregister;
+    if (projectUnregister !== undefined) {
+      app.delete('/api/v1/projects/:projectId', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        await withMutation(() => projectUnregister.remove(projectId));
+        return reply.code(204).send();
+      });
+    }
     app.get('/api/v1/projects/:projectId/sessions', async (request) => {
       const { projectId } = parseRequestInput(projectParamsSchema, request.params);
       if ((await withCurrentRead(() => services.projects.get(projectId))) === null) {
@@ -950,7 +1051,10 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
             400,
           );
         }
-        const body = messageCreateRequestSchema.parse({ ...rawBody, timeoutMs });
+        // Through parseRequestInput, not a raw parse: a raw ZodError here answered
+        // every malformed ask as 500 INTERNAL_ERROR, which an agent read as the
+        // daemon being down rather than its own request being wrong.
+        const body = parseRequestInput(messageCreateRequestSchema, { ...rawBody, timeoutMs });
         const idempotencyHeader = request.headers['idempotency-key'];
         if (idempotencyHeader !== undefined && typeof idempotencyHeader !== 'string') {
           throw new ApplicationError(
@@ -1040,7 +1144,7 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           );
         });
       }
-      app.post('/api/v1/sessions/:sessionId/inbox/claim', async (request) => {
+      app.post('/api/v1/sessions/:sessionId/inbox/claim', { logLevel: 'warn' }, async (request) => {
         const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
         const rawBody = isRecord(request.body) ? request.body : {};
         const body = inboxClaimRequestSchema.parse({
@@ -1119,6 +1223,230 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
       app.get('/api/v1/leases/:leaseId', async (request) => {
         const { leaseId } = parseRequestInput(leaseParamsSchema, request.params);
         return workLeaseSchema.parse(await withCurrentRead(() => leases.get(leaseId)));
+      });
+    }
+
+    if (services.coordinator !== undefined) {
+      const coordinator = services.coordinator;
+
+      /**
+       * The per-project coordinator role (ADR 0035). Claim is single-holder: a
+       * live holder refuses with 409 COORDINATOR_CONFLICT naming it, a terminal
+       * holder is taken over, and the same session re-claiming is idempotent.
+       */
+      app.post('/api/v1/projects/:projectId/coordinator', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(coordinatorClaimRequestSchema, request.body);
+        const claimed = await withMutation(() =>
+          coordinator.claim({
+            projectId,
+            sessionId: body.sessionId,
+            ...(body.takeover === undefined ? {} : { takeover: body.takeover }),
+          }),
+        );
+        return reply
+          .code(201)
+          .header('Location', `/api/v1/projects/${projectId}/coordinator`)
+          .send(coordinatorSchema.parse(claimed));
+      });
+
+      // Holder-only: the body names the session so a coordinator another session
+      // can evict is not a single holder.
+      app.delete('/api/v1/projects/:projectId/coordinator', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(coordinatorReleaseRequestSchema, request.body);
+        await withMutation(() => coordinator.release({ projectId, sessionId: body.sessionId }));
+        return reply.code(204).send();
+      });
+
+      app.get('/api/v1/projects/:projectId/coordinator', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        return coordinatorViewSchema.parse(await withCurrentRead(() => coordinator.get(projectId)));
+      });
+    }
+
+    if (services.autopilot !== undefined) {
+      const autopilot = services.autopilot;
+      const goalParamsSchema = z.strictObject({ goalId: z.string().min(1).max(128) });
+      const taskParamsSchema = z.strictObject({ taskId: z.string().min(1).max(128) });
+
+      /*
+       * Per-project autopilot (ADR 0035). The mode and the policy are the
+       * operator's: they are never reachable through MCP. Goals and tasks are
+       * the coordinator's to write and the operator's to gate; every write
+       * names its actor and the service refuses the wrong one.
+       */
+      app.get('/api/v1/autopilot', async () =>
+        autopilotCollectionSchema.parse({ records: await withCurrentRead(() => autopilot.list()) }),
+      );
+      app.get('/api/v1/projects/:projectId/autopilot', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        return withCurrentRead(async () => {
+          const [record, sessions] = await Promise.all([
+            autopilot.get(projectId),
+            autopilot.coordinatorSessions(projectId),
+          ]);
+          return autopilotStatusResponseSchema.parse({
+            record,
+            coordinatorOnline: sessions.length > 0,
+            coordinatorSessionIds: sessions.map((session) => session.id),
+          });
+        });
+      });
+      app.put('/api/v1/projects/:projectId/autopilot/policy', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(autopilotPolicyPutRequestSchema, request.body);
+        return autopilotRecordSchema.parse(
+          await withMutation(() => autopilot.putPolicy(projectId, body)),
+        );
+      });
+      app.post('/api/v1/projects/:projectId/autopilot/mode', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(autopilotModeRequestSchema, request.body);
+        return autopilotModeResponseSchema.parse(
+          await withMutation(() => autopilot.setMode(projectId, body.mode)),
+        );
+      });
+      app.post('/api/v1/projects/:projectId/autopilot/kick', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        return autopilotKickResponseSchema.parse(
+          await withMutation(() => autopilot.kick(projectId)),
+        );
+      });
+
+      app.get('/api/v1/projects/:projectId/goals', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const query = parseRequestInput(goalListQuerySchema, request.query);
+        const found = await withCurrentRead(() =>
+          autopilot.listGoals(projectId, {
+            ...(query.state === undefined ? {} : { state: query.state }),
+            limit: query.limit + 1,
+          }),
+        );
+        return goalCollectionSchema.parse({
+          goals: found.slice(0, query.limit),
+          truncated: found.length > query.limit,
+        });
+      });
+      app.post('/api/v1/projects/:projectId/goals', async (request, reply) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const body = parseRequestInput(goalCreateRequestSchema, request.body);
+        const goal = await withMutation(() => autopilot.createGoal(projectId, body));
+        return reply
+          .code(201)
+          .header('Location', `/api/v1/goals/${goal.id}`)
+          .send(goalSchema.parse(goal));
+      });
+      app.get('/api/v1/goals/:goalId', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        return goalSchema.parse(await withCurrentRead(() => autopilot.getGoal(goalId)));
+      });
+      app.post('/api/v1/goals/:goalId/plan', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanRequestSchema, request.body);
+        return goalSchema.parse(await withMutation(() => autopilot.submitPlan(goalId, body)));
+      });
+      app.post('/api/v1/goals/:goalId/plan/approve', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanDecisionRequestSchema, request.body);
+        return goalSchema.parse(
+          await withMutation(() => autopilot.approvePlan(goalId, body.sessionId, body.note)),
+        );
+      });
+      app.post('/api/v1/goals/:goalId/plan/reject', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanDecisionRequestSchema, request.body);
+        return goalSchema.parse(
+          await withMutation(() => autopilot.rejectPlan(goalId, body.sessionId, body.note)),
+        );
+      });
+      app.post('/api/v1/goals/:goalId/answer', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalAnswerRequestSchema, request.body);
+        return goalSchema.parse(
+          await withMutation(() => autopilot.answerGoal(goalId, body.sessionId, body.text)),
+        );
+      });
+      app.post('/api/v1/goals/:goalId/abandon', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalAbandonRequestSchema, request.body);
+        return goalSchema.parse(
+          await withMutation(() => autopilot.abandonGoal(goalId, body.sessionId, body.reason)),
+        );
+      });
+      app.post('/api/v1/goals/:goalId/transition', async (request) => {
+        const { goalId } = parseRequestInput(goalParamsSchema, request.params);
+        const body = parseRequestInput(goalTransitionRequestSchema, request.body);
+        return goalSchema.parse(await withMutation(() => autopilot.transitionGoal(goalId, body)));
+      });
+
+      app.get('/api/v1/projects/:projectId/tasks', async (request) => {
+        const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+        const query = parseRequestInput(taskListQuerySchema, request.query);
+        const found = await withCurrentRead(() =>
+          autopilot.listTasks(projectId, {
+            ...(query.goalId === undefined ? {} : { goalId: query.goalId }),
+            ...(query.state === undefined ? {} : { state: query.state }),
+            limit: query.limit + 1,
+          }),
+        );
+        return taskCollectionSchema.parse({
+          tasks: found.slice(0, query.limit),
+          truncated: found.length > query.limit,
+        });
+      });
+      app.get('/api/v1/tasks/:taskId', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        return taskSchema.parse(await withCurrentRead(() => autopilot.getTask(taskId)));
+      });
+      /*
+       * A refused dispatch is a 200 with `outcome: 'denied'`: the runtime
+       * answered the question it was asked (ADR 0020's rule for leases).
+       */
+      app.post('/api/v1/tasks/:taskId/dispatch', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskDispatchRequestSchema, request.body);
+        return taskDispatchResponseSchema.parse(
+          await withMutation(() => autopilot.dispatchTask(taskId, body.sessionId)),
+        );
+      });
+      app.post('/api/v1/tasks/:taskId/verdict', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskVerdictRequestSchema, request.body);
+        return taskSchema.parse(await withMutation(() => autopilot.recordVerdict(taskId, body)));
+      });
+      app.post('/api/v1/tasks/:taskId/review', async (request, reply) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskDispatchRequestSchema, request.body);
+        const review = await withMutation(() => autopilot.createReviewTask(taskId, body.sessionId));
+        return reply.code(201).send(taskSchema.parse(review));
+      });
+      app.post('/api/v1/tasks/:taskId/rework', async (request, reply) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskDispatchRequestSchema, request.body);
+        const rework = await withMutation(() => autopilot.createReworkTask(taskId, body.sessionId));
+        return reply.code(201).send(taskSchema.parse(rework));
+      });
+      app.post('/api/v1/tasks/:taskId/approve', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanDecisionRequestSchema, request.body);
+        return taskSchema.parse(
+          await withMutation(() => autopilot.approveTask(taskId, body.sessionId, body.note)),
+        );
+      });
+      app.post('/api/v1/tasks/:taskId/reject', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(goalPlanDecisionRequestSchema, request.body);
+        return taskSchema.parse(
+          await withMutation(() => autopilot.rejectTask(taskId, body.sessionId, body.note)),
+        );
+      });
+      app.post('/api/v1/tasks/:taskId/cancel', async (request) => {
+        const { taskId } = parseRequestInput(taskParamsSchema, request.params);
+        const body = parseRequestInput(taskCancelRequestSchema, request.body);
+        return taskSchema.parse(
+          await withMutation(() => autopilot.cancelTask(taskId, body.sessionId, body.reason)),
+        );
       });
     }
 

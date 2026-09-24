@@ -1,9 +1,11 @@
 import {
   agentDefinitionCollectionSchema,
   contextContributionCollectionSchema,
+  coordinatorViewSchema,
   gitObservationSchema,
   healthResponseSchema,
   optimizationFindingCollectionSchema,
+  projectAgentBindingCollectionSchema,
   projectCollectionResponseSchema,
   runtimeInfoResponseSchema,
   usageSummarySchema,
@@ -12,6 +14,10 @@ import { z } from 'zod';
 
 import type {
   Availability,
+  PulseBindingsEntry,
+  PulseBindingsResource,
+  PulseCoordinatorEntry,
+  PulseCoordinatorResource,
   PulseGitEntry,
   PulseGitResource,
   PulseInput,
@@ -75,6 +81,8 @@ const pulseResourceKeys: PulseResourceKey[] = [
   'findings',
   'runtime',
   'git',
+  'coordinator',
+  'bindings',
 ];
 
 /**
@@ -112,6 +120,14 @@ async function loadGitResource(
               clean: result.data.clean,
               untrackedCount: result.data.untrackedCount,
               tagCount: result.data.tags.length,
+              // The observer captures only a bounded recent window (git log -n),
+              // never a true total, so this is "recent observed", not the count.
+              recentCommitCount: result.data.recentCommits.length,
+              // `commitCount` is the true reachable-commit total (git rev-list
+              // --count), which is what the registry shows as a size hint.
+              ...(result.data.commitCount === undefined
+                ? {}
+                : { commitCount: result.data.commitCount }),
               observedAt: result.data.observedAt,
             },
           },
@@ -122,6 +138,89 @@ async function loadGitResource(
       if (result.httpStatus === 404)
         return { projectId: project.id, git: { state: 'not-observed' } };
       return { projectId: project.id, git: { state: 'unavailable' } };
+    }),
+  );
+  return {
+    state: 'ready',
+    data: { truncated: projects.data.length > GIT_FANOUT_MAX, entries },
+  };
+}
+
+/**
+ * One `GET /projects/:id/coordinator` per project (same bounded fan-out as git),
+ * so the sessions table can badge the holder and offer Make/Release without a
+ * per-row read. The view always answers 200 (`{coordinator, live}`), so there is
+ * no not-observed state — a failed read is `unavailable`.
+ */
+async function loadCoordinatorResource(
+  client: DaemonClient,
+  projects: Availability<PulseProject[]>,
+  options: { signal?: AbortSignal },
+): Promise<Availability<PulseCoordinatorResource>> {
+  if (projects.state !== 'ready') return { state: 'unavailable' };
+  const capped = projects.data.slice(0, GIT_FANOUT_MAX);
+  const entries = await Promise.all(
+    capped.map(async (project): Promise<PulseCoordinatorEntry> => {
+      const result = await client.get(
+        `/api/v1/projects/${encodeURIComponent(project.id)}/coordinator`,
+        coordinatorViewSchema,
+        options,
+      );
+      if (result.state === 'ready') {
+        return {
+          projectId: project.id,
+          coordinator: {
+            state: 'ready',
+            data: {
+              sessionId: result.data.coordinator?.sessionId ?? null,
+              live: result.data.live,
+            },
+          },
+        };
+      }
+      return { projectId: project.id, coordinator: { state: 'unavailable' } };
+    }),
+  );
+  return {
+    state: 'ready',
+    data: { truncated: projects.data.length > GIT_FANOUT_MAX, entries },
+  };
+}
+
+/**
+ * One `GET /projects/:id/agents` per project (the same bounded fan-out), kept
+ * to what the overview states: which enabled agent holds which flow role (F5,
+ * ADR 0036). The collection always answers 200 for a registered project, so a
+ * failed read is `unavailable`, never an empty list.
+ */
+async function loadBindingsResource(
+  client: DaemonClient,
+  projects: Availability<PulseProject[]>,
+  options: { signal?: AbortSignal },
+): Promise<Availability<PulseBindingsResource>> {
+  if (projects.state !== 'ready') return { state: 'unavailable' };
+  const capped = projects.data.slice(0, GIT_FANOUT_MAX);
+  const entries = await Promise.all(
+    capped.map(async (project): Promise<PulseBindingsEntry> => {
+      const result = await client.get(
+        `/api/v1/projects/${encodeURIComponent(project.id)}/agents`,
+        projectAgentBindingCollectionSchema,
+        options,
+      );
+      if (result.state === 'ready') {
+        return {
+          projectId: project.id,
+          bindings: {
+            state: 'ready',
+            data: result.data.bindings.map((binding) => ({
+              agentId: binding.agentId,
+              enabled: binding.enabled,
+              flowRoles: binding.flowRoles ?? [],
+            })),
+          },
+        };
+      }
+      return { projectId: project.id, bindings: { state: 'unavailable' } };
     }),
   );
   return {
@@ -229,11 +328,24 @@ export async function loadPulseResources(
             key,
             client.get('/api/v1/usage/summary?limit=1000', usageSummarySchema, options),
             ({ sources }) =>
-              sources.map(({ source, recordCount, totalTokens }) => ({
-                source,
-                recordCount,
-                ...(totalTokens === undefined ? {} : { totalTokens }),
-              })),
+              sources.map(({ source, recordCount, totalTokens, inputTokens, outputTokens }) => {
+                // Transcript-derived usage (adapter-extracted) stores input, output
+                // and cache separately and carries no pre-summed `totalTokens`, so
+                // the tile read empty on the live fleet though 18k records existed.
+                // Derive the headline the same way the protocol defines it —
+                // inputTokens + outputTokens, both fresh — never folding cache in
+                // (cache-read dwarfs real work and is not new tokens).
+                const derived =
+                  totalTokens ??
+                  (inputTokens !== undefined && outputTokens !== undefined
+                    ? inputTokens + outputTokens
+                    : undefined);
+                return {
+                  source,
+                  recordCount,
+                  ...(derived === undefined ? {} : { totalTokens: derived }),
+                };
+              }),
           ),
         );
         break;
@@ -289,7 +401,9 @@ export async function loadPulseResources(
         );
         break;
       case 'git':
-        // Depends on the project list; resolved after the batch below.
+      case 'coordinator':
+      case 'bindings':
+        // Depend on the project list; resolved after the batch below.
         break;
       case 'findings':
         requests.push(
@@ -322,9 +436,9 @@ export async function loadPulseResources(
   const entries = await Promise.all(requests);
   const resources = Object.fromEntries(entries) as Partial<PulseResources>;
 
-  if (requested.has('git')) {
-    // The fan-out needs the project list. Reuse the one from this batch when
-    // it was requested; a git-only invalidation fetches it fresh.
+  if (requested.has('git') || requested.has('coordinator') || requested.has('bindings')) {
+    // The fan-outs need the project list. Reuse the one from this batch when it
+    // was requested; a fan-out-only invalidation fetches it fresh once.
     const projects: Availability<PulseProject[]> =
       resources.projects ??
       (await client
@@ -340,7 +454,13 @@ export async function loadPulseResources(
             })),
           ),
         ));
-    resources.git = await loadGitResource(client, projects, options);
+    if (requested.has('git')) resources.git = await loadGitResource(client, projects, options);
+    if (requested.has('coordinator')) {
+      resources.coordinator = await loadCoordinatorResource(client, projects, options);
+    }
+    if (requested.has('bindings')) {
+      resources.bindings = await loadBindingsResource(client, projects, options);
+    }
   }
 
   return resources;
@@ -370,5 +490,7 @@ export async function loadPulseInput(
     findings: resources.findings ?? { state: 'unavailable' },
     runtime: resources.runtime ?? { state: 'unavailable' },
     git: resources.git ?? { state: 'unavailable' },
+    coordinator: resources.coordinator ?? { state: 'unavailable' },
+    bindings: resources.bindings ?? { state: 'unavailable' },
   };
 }

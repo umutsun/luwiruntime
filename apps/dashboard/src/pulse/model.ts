@@ -90,6 +90,10 @@ export type PulseGitFacts = {
   clean: boolean;
   untrackedCount: number;
   tagCount: number;
+  /** Commits in the observer's bounded recent window (git log -n), not a total. */
+  recentCommitCount: number;
+  /** Reachable commits from HEAD (a true total); absent for an unborn HEAD. */
+  commitCount?: number;
   observedAt: string;
 };
 
@@ -104,6 +108,31 @@ export type PulseGitEntry = {
 };
 
 export type PulseGitResource = { truncated: boolean; entries: PulseGitEntry[] };
+
+/**
+ * The per-project coordinator role (ADR 0035) as the daemon reports it: the
+ * session that holds it (or `null`) and whether that session is still live.
+ * Only a live holder is authoritative; a terminal one reads `live: false` and
+ * is takeable, so the sessions view badges only `sessionId` matches with `live`.
+ */
+export type PulseCoordinator = { sessionId: string | null; live: boolean };
+export type PulseCoordinatorEntry = {
+  projectId: string;
+  coordinator: Availability<PulseCoordinator>;
+};
+export type PulseCoordinatorResource = { truncated: boolean; entries: PulseCoordinatorEntry[] };
+
+/**
+ * The flow roles (F5, ADR 0036) a project's bound agents hold, as the daemon
+ * records them: configuration on the binding, never a session claim. Read per
+ * project with the same bounded fan-out as git and the coordinator, so the
+ * sessions table can chip a row and the drill-down can state who implements
+ * and who verifies without a per-row read.
+ */
+export type PulseFlowRole = 'implementer' | 'verifier';
+export type PulseBinding = { agentId: string; enabled: boolean; flowRoles: PulseFlowRole[] };
+export type PulseBindingsEntry = { projectId: string; bindings: Availability<PulseBinding[]> };
+export type PulseBindingsResource = { truncated: boolean; entries: PulseBindingsEntry[] };
 
 export type PulseRuntimeInfo = {
   workspaceId: string;
@@ -128,19 +157,23 @@ export type PulseResources = {
   findings: Availability<PulseFinding[]>;
   runtime: Availability<PulseRuntimeInfo>;
   git: Availability<PulseGitResource>;
+  coordinator: Availability<PulseCoordinatorResource>;
+  bindings: Availability<PulseBindingsResource>;
 };
 
-export type PulseInput = Omit<PulseResources, 'runtime' | 'git'> & {
+export type PulseInput = Omit<PulseResources, 'runtime' | 'git' | 'coordinator' | 'bindings'> & {
   measuredLatencyMs: number;
   snapshotAt: string;
   /**
-   * Optional because most unit tests build an input without the two newest
-   * reads; the real loader always supplies them. An absent key means "not
-   * requested" and does not mark the snapshot partial — an explicit
-   * `unavailable` still does.
+   * Optional because most unit tests build an input without the newest reads;
+   * the real loader always supplies them. An absent key means "not requested"
+   * and does not mark the snapshot partial — an explicit `unavailable` still
+   * does.
    */
   runtime?: Availability<PulseRuntimeInfo>;
   git?: Availability<PulseGitResource>;
+  coordinator?: Availability<PulseCoordinatorResource>;
+  bindings?: Availability<PulseBindingsResource>;
 };
 
 /**
@@ -196,6 +229,34 @@ const waitingStatuses = new Set(['waiting_for_input', 'waiting_for_agent']);
 export function labelSessionStatus(status: string): string {
   if (!knownSessionStatuses.has(status)) return 'Unknown';
   return status.replaceAll('_', ' ');
+}
+
+/**
+ * How a session reached the runtime: a headless `cli` worker (`agent run`), an
+ * interactive `gui`/`ide` attach, or the realtime `bridge`. Generic by design —
+ * `product-independence.test.ts` forbids vendor names in production source, and
+ * these four are client shapes, not vendors.
+ */
+export type ClientKind = 'cli' | 'gui' | 'ide' | 'bridge';
+const knownClientKinds = new Set<ClientKind>(['cli', 'gui', 'ide', 'bridge']);
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value.length > 0;
+
+/**
+ * The client kind, from an explicit `metadata.client` marker when one is present,
+ * else derived from the signals the runtime already carries: a bridge stamps
+ * `metadata.bridge`, an interactive attach earns a native `metadata.title`, and a
+ * plain session is a CLI worker. The marker makes new sessions exact; the
+ * fallback keeps every already-registered session answerable.
+ */
+export function deriveClientKind(metadata: Record<string, unknown> | undefined): ClientKind {
+  const explicit = metadata?.['client'];
+  if (typeof explicit === 'string' && knownClientKinds.has(explicit as ClientKind)) {
+    return explicit as ClientKind;
+  }
+  if (isNonEmptyString(metadata?.['bridge'])) return 'bridge';
+  if (isNonEmptyString(metadata?.['title'])) return 'gui';
+  return 'cli';
 }
 
 /** One entry per status actually present, so an absent status states nothing. */
@@ -268,6 +329,7 @@ export function buildPulseSnapshot(input: PulseInput) {
              */
             agentName: definition?.displayName ?? session.agentId,
             agentKnown: definition !== undefined,
+            clientKind: deriveClientKind(session.metadata),
             context: sessionContext(session.id),
           };
         })
@@ -412,6 +474,34 @@ export function buildPulseSnapshot(input: PulseInput) {
     }),
   );
 
+  const coordinatorResource = input.coordinator ?? { state: 'unavailable' as const };
+  // projectId -> the live/none coordinator view, for the sessions table badge and
+  // its Make/Release action. Only ready entries are kept; a missing project means
+  // "not read", which the view treats the same as "no coordinator" (no badge).
+  const coordinatorByProject: Record<string, PulseCoordinator> = {};
+  if (coordinatorResource.state === 'ready') {
+    for (const entry of coordinatorResource.data.entries) {
+      if (entry.coordinator.state === 'ready') {
+        coordinatorByProject[entry.projectId] = entry.coordinator.data;
+      }
+    }
+  }
+
+  const bindingsResource = input.bindings ?? { state: 'unavailable' as const };
+  // projectId -> agentId -> the flow roles (F5, ADR 0036) an enabled binding
+  // holds, for the sessions table chips and the drill-down facts. Only ready
+  // entries with at least one role are kept; a missing key reads as none.
+  const flowRolesByProject: Record<string, Record<string, PulseFlowRole[]>> = {};
+  if (bindingsResource.state === 'ready') {
+    for (const entry of bindingsResource.data.entries) {
+      if (entry.bindings.state !== 'ready') continue;
+      for (const binding of entry.bindings.data) {
+        if (!binding.enabled || binding.flowRoles.length === 0) continue;
+        (flowRolesByProject[entry.projectId] ??= {})[binding.agentId] = binding.flowRoles;
+      }
+    }
+  }
+
   const contributions = input.context.state === 'ready' ? input.context.data : [];
   /*
    * The comp's two insight sentences, kept honest: a pair is counted only when
@@ -467,6 +557,10 @@ export function buildPulseSnapshot(input: PulseInput) {
     repositoryFacts,
     gitState: gitResource.state,
     gitTruncated: gitResource.state === 'ready' ? gitResource.data.truncated : false,
+    coordinatorByProject,
+    coordinatorState: coordinatorResource.state,
+    flowRolesByProject,
+    bindingsState: bindingsResource.state,
     activityState: input.activity.state,
     activity: input.activity.state === 'ready' ? input.activity.data : [],
     findingCount: countOf(input.findings),
@@ -486,6 +580,8 @@ export function buildPulseSnapshot(input: PulseInput) {
       // failure marks the snapshot partial.
       ...(input.runtime === undefined ? [] : [input.runtime]),
       ...(input.git === undefined ? [] : [input.git]),
+      ...(input.coordinator === undefined ? [] : [input.coordinator]),
+      ...(input.bindings === undefined ? [] : [input.bindings]),
     ].some((resource) => resource.state === 'unavailable'),
   };
 }

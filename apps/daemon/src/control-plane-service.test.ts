@@ -380,6 +380,46 @@ describe('control-plane service', () => {
     });
   });
 
+  it('records flow roles on a binding in the project manifest beside the free-text role', async () => {
+    const { service, bindings, projectRoot } = await serviceFixture();
+    await service.createAgent({
+      id: 'codex-main',
+      kind: 'codex',
+      displayName: 'Codex',
+      enabled: true,
+      adapterId: 'codex-native-v1',
+      nativeConfigRoots: ['/fake/.codex'],
+      metadata: {},
+    });
+    const bound = await service.bindProjectAgent('project-1', {
+      agentId: 'codex-main',
+      enabled: true,
+      role: 'planning/contracts/review',
+      profileIds: [],
+      capabilityBindingIds: [],
+      overrides: {},
+    });
+
+    const updated = await service.updateProjectAgentBinding('project-1', bound.id, {
+      flowRoles: ['verifier'],
+    });
+
+    expect(updated).toMatchObject({ role: 'planning/contracts/review', flowRoles: ['verifier'] });
+    expect(bindings.find(({ id }) => id === bound.id)?.flowRoles).toEqual(['verifier']);
+    const manifest = JSON.parse(
+      await readFile(join(projectRoot, '.luwi', 'agent-bindings.json'), 'utf8'),
+    ) as { data: { bindings: Array<{ id: string; flowRoles?: string[] }> } };
+    expect(manifest.data.bindings.find(({ id }) => id === bound.id)?.flowRoles).toEqual([
+      'verifier',
+    ]);
+
+    // An empty array clears them; the record and the file agree.
+    const cleared = await service.updateProjectAgentBinding('project-1', bound.id, {
+      flowRoles: [],
+    });
+    expect(cleared.flowRoles).toEqual([]);
+  });
+
   it('compiles deterministic effective configuration with project-agent overrides last', async () => {
     const { service } = await serviceFixture();
     await service.createAgent({

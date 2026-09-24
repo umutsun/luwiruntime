@@ -166,7 +166,7 @@ function canonical(value: unknown): string {
 }
 
 function envelopeMatchesProjection(
-  envelope: InboxClaimResponse['items'][number],
+  envelope: Exclude<InboxClaimResponse['items'][number], { itemKind: 'notice' }>,
   message: AgentMessage,
 ): boolean {
   if (envelope.messageId !== message.id || envelope.correlationId !== message.correlationId) {
@@ -250,6 +250,15 @@ export async function claimSessionInbox(
     if (!parsed.success) {
       invalidEntries += 1;
       await input.onInvalidEntry?.({ streamId, reason: 'envelope_invalid' });
+      await acknowledge(input.client, stream, streamId);
+      continue;
+    }
+
+    // A notice (ADR 0035) has no message projection: it is a wake-up for a
+    // coordinator, returned once and acknowledged on claim, so a lost or
+    // duplicated one costs latency and never correctness.
+    if (parsed.data.itemKind === 'notice') {
+      items.push(parsed.data);
       await acknowledge(input.client, stream, streamId);
       continue;
     }

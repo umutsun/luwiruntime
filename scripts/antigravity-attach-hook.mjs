@@ -72,6 +72,8 @@ if (process.argv[2] === 'supervise') {
       'antigravity',
       '--native-session',
       conversationId,
+      '--client',
+      'ide',
       '--working-directory',
       workspace,
       '--session-out',

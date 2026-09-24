@@ -63,6 +63,8 @@ describe('local Git observer', () => {
       tags: ['v0.1.0'],
     });
     expect(observation.headSha).toMatch(/^[a-f0-9]{40,64}$/);
+    // The true reachable-commit total, not the bounded recent window.
+    expect(observation.commitCount).toBe(1);
     expect(observation.worktrees).toHaveLength(1);
     expect(observation.recentCommits[0]).toMatchObject({
       subject: 'Initial sandbox commit',
@@ -198,6 +200,25 @@ describe('local Git observer', () => {
           localPath: directory,
         }),
       ).rejects.toMatchObject({ code: 'GIT_REPOSITORY_NOT_FOUND' });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('reports whether a commit sha exists at the project root, and fails closed', async () => {
+    const observer = createGitObserver();
+    const { stdout: sha } = await exec('git', ['rev-parse', 'HEAD'], { cwd: repository });
+    await expect(observer.commitExists(repository, sha.trim())).resolves.toBe(true);
+    await expect(observer.commitExists(repository, 'f'.repeat(40))).resolves.toBe(false);
+    // Invalid shas never reach a git invocation (untrusted worker evidence).
+    await expect(observer.commitExists(repository, 'not-a-sha')).resolves.toBe(false);
+    await expect(observer.commitExists(repository, '')).resolves.toBe(false);
+    // A short (>=7 char) abbreviation is accepted by the shape check.
+    await expect(observer.commitExists(repository, sha.trim().slice(0, 7))).resolves.toBe(true);
+
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-not-git-'));
+    try {
+      await expect(observer.commitExists(directory, sha.trim())).resolves.toBe(false);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

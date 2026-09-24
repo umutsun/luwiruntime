@@ -41,6 +41,7 @@ function message(overrides: MessageOverrides = {}): AgentMessage {
       answer: 'The background worker owns it.',
       confidence: 0.9,
       evidenceCount: 0,
+      evidenceTypes: [],
       verifiedAt: '2026-08-10T00:04:00.000Z',
     },
     ...overrides,
@@ -66,14 +67,14 @@ function view(items: AgentMessage[], truncated = false) {
 }
 
 describe('MessagesView', () => {
-  it('insets controls and notes without adding padding around the table', () => {
+  it('insets the controls without adding padding around the table', () => {
     render(view([message()]));
 
     const panel = screen.getByRole('region', { name: 'Messages' });
     const filters = within(panel).getByLabelText('State').closest('.table-filters');
-    const note = within(panel).getByText(/message kinds and states/i);
     expect(filters?.parentElement?.classList.contains('panel__body')).toBe(true);
-    expect(note.closest('.panel__body')).toBeTruthy();
+    // The explanatory notes were removed to give the table the full drawer
+    // height; the table still spans the panel without inset padding.
     expect(within(panel).getByRole('table').closest('.panel__body')).toBeNull();
   });
 
@@ -174,6 +175,7 @@ describe('MessagesView', () => {
             status: 'answered',
             answer: 'Yes.',
             evidenceCount: 1,
+            evidenceTypes: ['test_result'],
             verifiedAt: '2026-08-10T00:04:00.000Z',
           },
         }),
@@ -207,10 +209,10 @@ describe('MessagesView', () => {
     expect(screen.queryByText(/no messages recorded between agents/i)).toBeNull();
   });
 
-  it('discloses truncation', () => {
+  it('discloses truncation in the header meta', () => {
     render(view([message()], true));
 
-    expect(screen.getByText(/more messages exist/i)).toBeTruthy();
+    expect(screen.getByText(/more exist/i)).toBeTruthy();
   });
 
   it('separates an empty message set from an unavailable read', () => {

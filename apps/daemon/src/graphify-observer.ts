@@ -21,7 +21,7 @@ import { z } from 'zod';
  * carries paths, counts, and a commit sha — never a symbol name, never text.
  */
 
-/** Where graphify writes by default. There is no override; add one when a project needs it. */
+/** Where graphify writes by default; `LUWI_GRAPHIFY_OUTPUT_PATH` overrides it for every project. */
 export const GRAPHIFY_OUTPUT_RELATIVE_PATH = 'graphify-out/graph.json';
 /** Identifies this reader on every record it produces; moves when what is read changes. */
 export const GRAPHIFY_PROVENANCE = 'graphify-graph-json@1';
@@ -111,6 +111,8 @@ export interface GraphifyObserver {
 export type GraphifyObserverOptions = {
   maximumFileBytes?: number;
   maximumFiles?: number;
+  /** Where graphify writes inside the project; the config's `graphifyOutputPath`, else the default. */
+  outputRelativePath?: string;
 };
 
 function isWithin(root: string, target: string): boolean {
@@ -149,7 +151,7 @@ export function createGraphifyObserver(options: GraphifyObserverOptions = {}): G
       } catch {
         return null;
       }
-      const outputPath = resolve(root, GRAPHIFY_OUTPUT_RELATIVE_PATH);
+      const outputPath = resolve(root, options.outputRelativePath ?? GRAPHIFY_OUTPUT_RELATIVE_PATH);
       let output;
       try {
         output = await stat(outputPath);

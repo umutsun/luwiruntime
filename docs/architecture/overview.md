@@ -635,6 +635,31 @@ an optimistic record: the bounded message read and normalized realtime events lo
 projection. The browser cannot acknowledge, process, answer, reject, fail, retry, cancel, or inject
 the request into a terminal.
 
+## Autopilot: goals, tasks and the orchestrator loop
+
+ADR 0035 adds the first orchestration layer, kept inside the existing planes. The daemon owns the
+state and the gates: a per-project autopilot record (`off | supervised | autopilot`, set only by the
+operator and never read from a manifest), a policy declared in `.luwi/manifest.json` and projected at
+every owned start, goals (objective, acceptance criteria, budgets, a versioned plan, at most one open
+question) and tasks (a brief that becomes one `instruction` message, declared paths, evidence
+requirements, an outcome copied from the worker's answer, a verification record). Every write is a
+compare-and-set through a Redis Function that also owns the index writes and the event; dispatch is
+the one choke point, evaluated by a pure `evaluateDispatch` and re-checked atomically for the
+in-flight limit, the hourly window and path overlap. A dispatch is two steps around the existing
+message request with `Idempotency-Key: task:<id>`, so a crash between them is repaired on the
+retention tick; a terminal message completes its task through a seam in the message service.
+
+The loop lives in `@luwi/cli` (`session bridge orchestrator`), not in the daemon: it registers the
+policy's coordinator session, wakes on its inbox — worker responses and `notice` items the daemon
+appends on mode changes, approvals, answers and completions — and on a tick, runs the pure
+`planCycle`, and applies its actions through the gated routes. The brain is a `BrainAdapter`:
+LuwiBot over its chat WebSocket, or one headless run of a native CLI with the LUWI session stripped
+from its environment. It is asked `plan`, `review`, `replan` and `summarize` as schema-validated
+questions over a context LUWI assembles and caps at 64 KiB; an invalid answer goes back once with
+the refusals and then escalates; a decision under the goal's `minConfidence` is never applied. The
+operator approves plans, answers questions and abandons goals from the CLI, or through a session
+whose agent the policy names as an operator proxy — the human behind the LuwiBot chat.
+
 ## Phase 4 retention
 
 The intelligence retention pass removes old raw usage JSON while keeping source-separated

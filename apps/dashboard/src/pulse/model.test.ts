@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildPulseSnapshot,
+  deriveClientKind,
   labelSessionStatus,
   scopePulseSnapshotToProjects,
   type PulseInput,
@@ -29,7 +30,103 @@ const baseInput = (): PulseInput => ({
   findings: { state: 'ready', data: [] },
 });
 
+describe('client kind derivation', () => {
+  it('takes an explicit marker only when it names a known kind', () => {
+    expect(deriveClientKind({ client: 'gui' })).toBe('gui');
+    expect(deriveClientKind({ client: 'ide' })).toBe('ide');
+    expect(deriveClientKind({ client: 'bridge' })).toBe('bridge');
+    // An unknown string is not honoured — it falls through to derivation.
+    expect(deriveClientKind({ client: 'nonsense' })).toBe('cli');
+  });
+
+  it('derives bridge, then gui (native title), then cli when unmarked', () => {
+    expect(deriveClientKind({ bridge: 'native-headless' })).toBe('bridge');
+    // An explicit marker still wins over a derivable signal.
+    expect(deriveClientKind({ bridge: 'native-headless', client: 'ide' })).toBe('ide');
+    expect(deriveClientKind({ title: 'Fix the router' })).toBe('gui');
+    expect(deriveClientKind({ model: 'claude-opus-4-8' })).toBe('cli');
+    expect(deriveClientKind(undefined)).toBe('cli');
+    // Empty strings state nothing.
+    expect(deriveClientKind({ bridge: '', title: '' })).toBe('cli');
+  });
+});
+
+describe('flow roles by project (ADR 0036)', () => {
+  it('keeps only enabled bindings that hold a role, keyed by project then agent', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      bindings: {
+        state: 'ready',
+        data: {
+          truncated: false,
+          entries: [
+            {
+              projectId: 'p',
+              bindings: {
+                state: 'ready',
+                data: [
+                  { agentId: 'a', enabled: true, flowRoles: ['implementer'] },
+                  { agentId: 'b', enabled: true, flowRoles: ['verifier', 'implementer'] },
+                  { agentId: 'c', enabled: false, flowRoles: ['verifier'] },
+                  { agentId: 'd', enabled: true, flowRoles: [] },
+                ],
+              },
+            },
+            { projectId: 'q', bindings: { state: 'unavailable' } },
+          ],
+        },
+      },
+    });
+
+    expect(snapshot.flowRolesByProject).toEqual({
+      p: { a: ['implementer'], b: ['verifier', 'implementer'] },
+    });
+    expect(snapshot.bindingsState).toBe('ready');
+    expect(snapshot.partial).toBe(false);
+  });
+
+  it('reads as none when the fan-out was not requested, and partial only when it failed', () => {
+    expect(buildPulseSnapshot(baseInput()).flowRolesByProject).toEqual({});
+    expect(buildPulseSnapshot(baseInput()).partial).toBe(false);
+    expect(buildPulseSnapshot({ ...baseInput(), bindings: { state: 'unavailable' } }).partial).toBe(
+      true,
+    );
+  });
+});
+
 describe('Pulse snapshot mapping', () => {
+  it('tags each session with its derived client kind', () => {
+    const snapshot = buildPulseSnapshot({
+      ...baseInput(),
+      sessions: {
+        state: 'ready',
+        data: [
+          {
+            id: 'b',
+            agentId: 'a',
+            projectId: 'p',
+            status: 'idle',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:50.000Z',
+            metadata: { bridge: 'native-headless' },
+          },
+          {
+            id: 'g',
+            agentId: 'a',
+            projectId: 'p',
+            status: 'idle',
+            presence: 'online',
+            startedAt: '2026-08-05T07:00:00.000Z',
+            lastHeartbeatAt: '2026-08-05T07:59:50.000Z',
+            metadata: { title: 'A task' },
+          },
+        ],
+      },
+    });
+    expect(snapshot.sessions.map((session) => session.clientKind)).toEqual(['bridge', 'gui']);
+  });
+
   it('distinguishes empty projects and no active sessions from unavailable data', () => {
     const empty = buildPulseSnapshot(baseInput());
     const unavailable = buildPulseSnapshot({
@@ -176,6 +273,7 @@ describe('Pulse snapshot mapping', () => {
                   clean: false,
                   untrackedCount: 3,
                   tagCount: 2,
+                  recentCommitCount: 5,
                   observedAt: '2026-08-05T08:00:00.000Z',
                 },
               },
@@ -189,7 +287,7 @@ describe('Pulse snapshot mapping', () => {
     expect(snapshot.repositoryFacts[0]).toMatchObject({
       projectId: 'p1',
       name: 'LUWI',
-      git: { state: 'ready', data: { branch: 'main', untrackedCount: 3 } },
+      git: { state: 'ready', data: { branch: 'main', untrackedCount: 3, recentCommitCount: 5 } },
     });
     expect(snapshot.repositoryFacts[1]).toMatchObject({
       projectId: 'p2',
@@ -205,7 +303,7 @@ describe('Pulse snapshot mapping', () => {
         state: 'ready',
         data: {
           workspaceId: 'local',
-          version: '0.1.0',
+          version: '0.2.0',
           protocolVersion: 1,
           runtimeState: 'ready',
           runtimeInstanceId: 'r1',

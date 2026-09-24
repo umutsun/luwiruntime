@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const runtimeResponse = {
-  version: '0.1.0',
+  version: '0.2.0',
   protocolVersion: 1,
   runtimeState: 'ready',
   runtimeInstanceId: 'runtime-1',
@@ -248,6 +248,81 @@ describe('LUWI CLI', () => {
     await expect(runCli(['runtime'], dependencies)).rejects.toEqual(
       new ApplicationError('DAEMON_REQUEST_FAILED', 'Daemon request failed with status 503', 503),
     );
+  });
+
+  it('unregisters a project only with --yes, through DELETE, and relays the daemon refusal', async () => {
+    const project = {
+      id: 'project-1',
+      name: 'Alpha',
+      localPath: 'C:/work/alpha',
+      canonicalPath: 'C:/work/alpha',
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    };
+    const calls: Array<{ url: string; method: string | undefined }> = [];
+    const fetch = (
+      answerDelete: () => { ok: boolean; status: number; json: () => Promise<unknown> },
+    ) =>
+      (async (url: string, init?: FetchInitLike) => {
+        calls.push({ url, method: init?.method });
+        return init?.method === 'DELETE' ? answerDelete() : response(project);
+      }) as CliDependencies['fetch'];
+    const noContent = () => ({
+      ok: true,
+      status: 204,
+      json: async () => {
+        throw new Error('no body');
+      },
+    });
+
+    let printed = '';
+    await expect(
+      runCli(['project', 'unregister', 'project-1'], {
+        fetch: fetch(noContent),
+        stdout: {
+          write: (text) => {
+            printed += text;
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'CLI_CONFIRMATION_REQUIRED' });
+    expect(JSON.parse(printed)).toMatchObject({ project, confirmWith: '--yes' });
+    expect(calls.map(({ method }) => method)).toEqual([undefined]);
+
+    printed = '';
+    await runCli(['project', 'unregister', 'project-1', '--yes'], {
+      fetch: fetch(noContent),
+      stdout: {
+        write: (text) => {
+          printed += text;
+        },
+      },
+    });
+    expect(calls.at(-1)).toEqual({
+      url: 'http://127.0.0.1:4782/api/v1/projects/project-1',
+      method: 'DELETE',
+    });
+    expect(JSON.parse(printed)).toEqual({ unregistered: 'project-1' });
+
+    await expect(
+      runCli(['project', 'unregister', 'project-1', '--yes'], {
+        fetch: fetch(() => ({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            error: {
+              code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+              message: 'The project still has sessions that are not terminal.',
+              details: { count: 1, sessions: 's-1' },
+            },
+          }),
+        })),
+        stdout: { write: () => undefined },
+      }),
+    ).rejects.toMatchObject({
+      code: 'PROJECT_HAS_ACTIVE_SESSIONS',
+      details: { count: 1, sessions: 's-1' },
+    });
   });
 
   it('sends AgentDefinition mutations only through the daemon HTTP API', async () => {
@@ -920,6 +995,8 @@ describe('LUWI CLI', () => {
         'Status?',
         '--idempotency-key',
         'retry-1',
+        '--retry-of',
+        'correlation-0',
         '--wait-ms',
         '25',
       ],
@@ -933,6 +1010,7 @@ describe('LUWI CLI', () => {
                 selectedTargetSessionId: 'target',
                 selectedTargetAgentId: 'gemini-sim',
                 selectionReason: 'selected target',
+                delivery: 'live',
                 idempotent: false,
               });
         },
@@ -943,6 +1021,9 @@ describe('LUWI CLI', () => {
     expect(requests[0]?.init?.headers).toMatchObject({
       'content-type': 'application/json',
       'idempotency-key': 'retry-1',
+    });
+    expect(JSON.parse(String(requests[0]?.init?.body))).toMatchObject({
+      retryOf: 'correlation-0',
     });
     expect(requests[1]?.url).toContain('/api/v1/messages/correlation-1/wait?waitMs=25');
     expect(JSON.parse(output)).toMatchObject({ state: 'responded' });
@@ -2344,6 +2425,46 @@ describe('session attach', () => {
       native: { adapterId: 'claude-code', nativeSessionId: 'abc-123' },
     });
   });
+
+  it('stamps a valid --client kind into the declared metadata', async () => {
+    let output = '';
+    const dependencies: Partial<CliDependencies> = {
+      environment: { CLAUDE_CODE_SESSION_ID: 'abc-123' },
+      fetch: async () => response(registered),
+      stdout: {
+        write: (text) => {
+          output += text;
+        },
+      },
+    };
+
+    await runCli(
+      [
+        'session',
+        'attach',
+        '--project',
+        'project-1',
+        '--agent',
+        'claude-code',
+        '--client',
+        'gui',
+        '--dry-run',
+      ],
+      dependencies,
+    );
+
+    expect(JSON.parse(output)).toMatchObject({ metadata: { client: 'gui' } });
+  });
+
+  it('rejects an unknown --client kind', async () => {
+    await expect(
+      runCli(['session', 'attach', '--project', 'project-1', '--client', 'nope', '--dry-run'], {
+        environment: { CLAUDE_CODE_SESSION_ID: 'abc-123' },
+        stdout: { write: () => undefined },
+        stderr: { write: () => undefined },
+      }),
+    ).rejects.toMatchObject({ code: 'CLI_OPTION_INVALID' });
+  });
 });
 
 describe('agent run', () => {
@@ -2449,6 +2570,7 @@ describe('agent run', () => {
         projectId: 'project-app',
         agentId: 'codex-main',
         workingDirectory: 'C:/work/app',
+        metadata: { client: 'cli' },
       },
     });
     expect(setExitCode).toHaveBeenCalledWith(0);
@@ -3266,5 +3388,156 @@ describe('session bridge native', () => {
     // Antigravity binds through the inherited env like claude — no codex-style -c injection.
     expect(args.some((a) => a.includes('mcp_servers.luwi-runtime'))).toBe(false);
     expect(recorded?.environment.LUWI_SESSION_ID).toBe('agy-session-1');
+  });
+});
+
+describe('autopilot commands (ADR 0035)', () => {
+  const record = {
+    projectId: 'p1',
+    mode: 'off',
+    policy: {
+      coordinatorAgentId: 'luwibot',
+      workerAgentIds: ['claude-code'],
+      operatorProxyAgentIds: [],
+      protectedPaths: [],
+      maxInFlight: 2,
+      maxDispatchesPerHour: 20,
+      defaultTaskTimeoutMs: 1_800_000,
+      maxJudgmentsPerHour: 30,
+      maxConcurrentGoals: 1,
+      goalDefaults: {
+        maxTasks: 12,
+        maxReworksPerTask: 1,
+        maxReplans: 2,
+        maxWallClockMs: 14_400_000,
+        minConfidence: 0.6,
+      },
+      retrospectives: 5,
+    },
+    version: 1,
+    changedAt: '2026-09-17T10:00:00.000Z',
+  };
+
+  it('declares a policy with PUT, mapping the variadic worker and protect options', async () => {
+    let requestedUrl = '';
+    let requestedMethod = '';
+    let requestedBody: unknown;
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url, init) => {
+        requestedUrl = url;
+        requestedMethod = init?.method ?? '';
+        requestedBody = JSON.parse(init?.body ?? '{}');
+        return response(record);
+      },
+      stdout: { write: () => undefined },
+    };
+
+    await runCli(
+      [
+        'autopilot',
+        'policy',
+        '--project',
+        'p1',
+        '--coordinator',
+        'luwibot',
+        '--worker',
+        'claude-code',
+        'codex',
+        '--protect',
+        'AGENTS.md',
+        '--max-in-flight',
+        '3',
+      ],
+      dependencies,
+    );
+
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/projects/p1/autopilot/policy');
+    expect(requestedMethod).toBe('PUT');
+    expect(requestedBody).toEqual({
+      coordinatorAgentId: 'luwibot',
+      workerAgentIds: ['claude-code', 'codex'],
+      operatorProxyAgentIds: [],
+      protectedPaths: ['AGENTS.md'],
+      maxInFlight: 3,
+    });
+  });
+
+  it('refuses an unknown mode before any request, and posts a known one', async () => {
+    let requestedUrl = '';
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (url) => {
+        requestedUrl = url;
+        return response({
+          record: { ...record, mode: 'supervised', version: 2 },
+          changed: true,
+          coordinatorNotified: false,
+        });
+      },
+      stdout: { write: () => undefined },
+    };
+    await expect(
+      runCli(['autopilot', 'mode', 'turbo', '--project', 'p1'], dependencies),
+    ).rejects.toMatchObject({
+      code: 'CLI_OPTION_INVALID',
+    });
+    expect(requestedUrl).toBe('');
+    await runCli(['autopilot', 'mode', 'supervised', '--project', 'p1'], dependencies);
+    expect(requestedUrl).toBe('http://127.0.0.1:4782/api/v1/projects/p1/autopilot/mode');
+  });
+
+  it('creates a goal with its criteria and answers a blocked one', async () => {
+    const bodies: unknown[] = [];
+    const goal = {
+      id: 'g1',
+      projectId: 'p1',
+      title: 'Ship',
+      objective: 'Ship it.',
+      acceptanceCriteria: ['tests pass'],
+      createdBy: { kind: 'operator' },
+      budget: {
+        maxTasks: 12,
+        maxReworksPerTask: 1,
+        maxReplans: 2,
+        maxWallClockMs: 14_400_000,
+        minConfidence: 0.6,
+      },
+      state: 'proposed',
+      planVersion: 0,
+      taskIds: [],
+      usage: { tasks: 0, reworks: 0, replans: 0, judgments: 0, invalidJudgments: 0 },
+      version: 1,
+      createdAt: '2026-09-17T10:00:00.000Z',
+      updatedAt: '2026-09-17T10:00:00.000Z',
+    };
+    const dependencies: Partial<CliDependencies> = {
+      fetch: async (_url, init) => {
+        bodies.push(JSON.parse(init?.body ?? '{}'));
+        return response(goal);
+      },
+      stdout: { write: () => undefined },
+    };
+    await runCli(
+      [
+        'goal',
+        'create',
+        '--project',
+        'p1',
+        '--title',
+        'Ship',
+        '--objective',
+        'Ship it.',
+        '--criterion',
+        'tests pass',
+      ],
+      dependencies,
+    );
+    await runCli(
+      ['goal', 'answer', 'g1', '--text', 'use the other module', '--session', 'chat-1'],
+      dependencies,
+    );
+    expect(bodies).toEqual([
+      { title: 'Ship', objective: 'Ship it.', acceptanceCriteria: ['tests pass'] },
+      { text: 'use the other module', sessionId: 'chat-1' },
+    ]);
   });
 });

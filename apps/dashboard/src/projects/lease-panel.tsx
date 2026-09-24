@@ -46,6 +46,7 @@ export function LeasePanel({
     <ResourcePanel<Bounded<ProjectLease>>
       title="Work leases"
       meta={leases?.state === 'ready' ? `${String(held.length)} held` : undefined}
+      collapsible
       resource={leases}
       loading={loading}
       emptyMessage="No paths are claimed in this project"

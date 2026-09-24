@@ -5,6 +5,20 @@ import {
   mcpAskAgentInputSchema,
   mcpLeaseIdInputSchema,
   mcpListLeasesInputSchema,
+  mcpGetAutopilotInputSchema,
+  mcpGetAutopilotOutputSchema,
+  mcpListGoalsInputSchema,
+  mcpGoalIdInputSchema,
+  mcpCreateGoalInputSchema,
+  mcpGoalNoteInputSchema,
+  mcpAnswerGoalInputSchema,
+  mcpAbandonGoalInputSchema,
+  mcpGoalOutputSchema,
+  mcpGoalCollectionOutputSchema,
+  mcpListTasksInputSchema,
+  mcpTaskIdInputSchema,
+  mcpTaskOutputSchema,
+  mcpTaskCollectionOutputSchema,
   mcpReleaseLeaseInputSchema,
   mcpAcquireLeaseOutputSchema,
   mcpLeaseCollectionOutputSchema,
@@ -66,6 +80,7 @@ import {
   mcpRespondToMessageInputSchema,
   mcpRequestOptimizationAnalysisInputSchema,
   mcpRequestOptimizationAnalysisOutputSchema,
+  LUWI_RUNTIME_VERSION,
 } from '@luwi/protocol';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ZodError } from 'zod';
@@ -142,7 +157,7 @@ async function toolResult<T extends object>(
 export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
   const server = new McpServer({
     name: 'luwi-runtime',
-    version: '0.1.0',
+    version: LUWI_RUNTIME_VERSION,
   });
 
   server.registerTool(
@@ -558,20 +573,186 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
       ),
   );
   server.registerTool(
+    'luwi_get_autopilot',
+    {
+      description:
+        'The bound project’s autopilot: mode, policy and whether a coordinator session is online. The mode and the policy are the operator’s and cannot be changed from here.',
+      inputSchema: mcpGetAutopilotInputSchema,
+      outputSchema: mcpGetAutopilotOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpGetAutopilotOutputSchema,
+        ({ record, coordinatorOnline }) =>
+          record === null
+            ? 'No autopilot policy is declared for this project.'
+            : `Autopilot ${record.mode}; coordinator ${record.policy?.coordinatorAgentId ?? 'unset'} is ${coordinatorOnline ? 'online' : 'absent'}.`,
+        () => handlers.getAutopilot(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_list_goals',
+    {
+      description: 'List autopilot goals of the bound project, newest first, optionally by state.',
+      inputSchema: mcpListGoalsInputSchema,
+      outputSchema: mcpGoalCollectionOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpGoalCollectionOutputSchema,
+        ({ goals, truncated }) =>
+          `${goals.length} goals returned${truncated ? ' (result truncated)' : ''}: ${goals
+            .slice(0, 5)
+            .map((goal) => `${goal.id} [${goal.state}] ${goal.title}`)
+            .join('; ')}`,
+        () => handlers.listGoals(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_get_goal',
+    {
+      description:
+        'One goal of the bound project: objective, plan, budget, usage, and the question it is waiting on when blocked.',
+      inputSchema: mcpGoalIdInputSchema,
+      outputSchema: mcpGoalOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpGoalOutputSchema,
+        (goal) =>
+          `Goal ${goal.id} [${goal.state}] ${goal.title}; ${goal.taskIds.length} planned tasks${goal.escalation === undefined ? '' : `; waiting on: ${goal.escalation.question}`}.`,
+        () => handlers.getGoal(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_create_goal',
+    {
+      description:
+        'Create an autopilot goal in the bound project on the operator’s behalf: an objective in their words, acceptance criteria, and optionally a lower budget. The orchestrator plans it; in supervised mode the operator approves the plan.',
+      inputSchema: mcpCreateGoalInputSchema,
+      outputSchema: mcpGoalOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpGoalOutputSchema,
+        (goal) => `Goal ${goal.id} created (${goal.state}): ${goal.title}.`,
+        () => handlers.createGoal(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_approve_plan',
+    {
+      description:
+        'Approve the plan under review for a goal, on the operator’s behalf. Refused unless this session’s agent is an operator proxy in the project’s autopilot policy.',
+      inputSchema: mcpGoalNoteInputSchema,
+      outputSchema: mcpGoalOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpGoalOutputSchema,
+        (goal) => `Plan approved; goal ${goal.id} is ${goal.state}.`,
+        () => handlers.approvePlan(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_reject_plan',
+    {
+      description:
+        'Reject the plan under review for a goal, on the operator’s behalf; the note guides the next plan. Refused unless this session is an operator proxy.',
+      inputSchema: mcpGoalNoteInputSchema,
+      outputSchema: mcpGoalOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpGoalOutputSchema,
+        (goal) => `Plan rejected; goal ${goal.id} is ${goal.state}.`,
+        () => handlers.rejectPlan(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_answer_goal',
+    {
+      description:
+        'Answer the question a blocked goal is waiting on, on the operator’s behalf. Refused unless this session is an operator proxy.',
+      inputSchema: mcpAnswerGoalInputSchema,
+      outputSchema: mcpGoalOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpGoalOutputSchema,
+        (goal) => `Answer recorded; goal ${goal.id} is ${goal.state}.`,
+        () => handlers.answerGoal(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_abandon_goal',
+    {
+      description:
+        'Abandon a goal on the operator’s behalf. Refused unless this session is an operator proxy.',
+      inputSchema: mcpAbandonGoalInputSchema,
+      outputSchema: mcpGoalOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpGoalOutputSchema,
+        (goal) => `Goal ${goal.id} abandoned.`,
+        () => handlers.abandonGoal(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_list_tasks',
+    {
+      description:
+        'List autopilot tasks of the bound project, optionally of one goal or in one state.',
+      inputSchema: mcpListTasksInputSchema,
+      outputSchema: mcpTaskCollectionOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpTaskCollectionOutputSchema,
+        ({ tasks, truncated }) =>
+          `${tasks.length} tasks returned${truncated ? ' (result truncated)' : ''}: ${tasks
+            .slice(0, 5)
+            .map((task) => `${task.id} [${task.state}] ${task.title}`)
+            .join('; ')}`,
+        () => handlers.listTasks(input),
+      ),
+  );
+  server.registerTool(
+    'luwi_get_task',
+    {
+      description:
+        'One autopilot task of the bound project: brief, paths, state, outcome and verification.',
+      inputSchema: mcpTaskIdInputSchema,
+      outputSchema: mcpTaskOutputSchema,
+    },
+    (input) =>
+      toolResult(
+        mcpTaskOutputSchema,
+        (task) =>
+          `Task ${task.id} [${task.state}] ${task.title}${task.verification?.verdict === undefined ? '' : `; verdict ${task.verification.verdict}`}.`,
+        () => handlers.getTask(input),
+      ),
+  );
+  server.registerTool(
     'luwi_ask_agent',
     {
-      description: 'Persist a request to an online session in the bound project.',
+      description:
+        'Persist a request to a session in the bound project. `delivery` reports how the reply comes back: `live` when the target continuously reads its inbox (a bridge worker), or `deferred` when it is a turn-based GUI that only reads on its next turn. A deferred ask returns immediately without waiting — collect the reply later with luwi_await_response rather than treating the absence of an immediate answer as a timeout.',
       inputSchema: mcpAskAgentInputSchema,
       outputSchema: mcpAskAgentOutputSchema,
     },
     (input) =>
       toolResult(
         mcpAskAgentOutputSchema,
-        ({ correlationId, selectedTargetSessionId, state, idempotent, response }) => {
-          const base = `Message ${correlationId} is ${state}; selected target ${selectedTargetSessionId}${
+        ({ correlationId, selectedTargetSessionId, delivery, state, idempotent, response }) => {
+          const base = `Message ${correlationId} is ${state}; selected target ${selectedTargetSessionId} (${delivery} delivery)${
             idempotent ? ' (idempotent retry)' : ''
           }.`;
-          return response ? `${base}\nResponse (${response.status}): ${response.answer}` : base;
+          if (response) return `${base}\nResponse (${response.status}): ${response.answer}`;
+          return delivery === 'deferred'
+            ? `${base}\nDeferred: the target reads its inbox on its next turn — call luwi_await_response to collect the reply.`
+            : base;
         },
         () => handlers.askAgent(input),
         MAX_MESSAGE_SUMMARY_CHARACTERS,
@@ -638,7 +819,9 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
             .map((item) =>
               item.itemKind === 'request'
                 ? `Task [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nSubject: ${item.payload.subject ?? '(no subject)'}\nContent: ${item.payload.content}`
-                : `Response [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nState: ${item.payload.state}${item.payload.response ? `\nAnswer: ${item.payload.response.answer}` : ''}`,
+                : item.itemKind === 'notice'
+                  ? `Autopilot notice: ${item.payload.kind}${item.payload.goalId === undefined ? '' : ` (goal ${item.payload.goalId})`} — read the goals and tasks and act on what the store says.`
+                  : `Response [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nState: ${item.payload.state}${item.payload.response ? `\nAnswer: ${item.payload.response.answer}` : ''}`,
             )
             .join('\n\n');
           return `Joined project ${session.projectId}; claimed ${String(inbox.items.length)} inbox item(s) to handle:\n\n${itemsText}`;
@@ -665,7 +848,9 @@ export function createLuwiMcpServer(handlers: McpToolHandlers): McpServer {
             .map((item) =>
               item.itemKind === 'request'
                 ? `Task [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nSubject: ${item.payload.subject ?? '(no subject)'}\nContent: ${item.payload.content}`
-                : `Response [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nState: ${item.payload.state}${item.payload.response ? `\nAnswer: ${item.payload.response.answer}` : ''}`,
+                : item.itemKind === 'notice'
+                  ? `Autopilot notice: ${item.payload.kind}${item.payload.goalId === undefined ? '' : ` (goal ${item.payload.goalId})`} — read the goals and tasks and act on what the store says.`
+                  : `Response [correlationId: ${item.correlationId}, source: ${item.sourceSessionId}]:\nState: ${item.payload.state}${item.payload.response ? `\nAnswer: ${item.payload.response.answer}` : ''}`,
             )
             .join('\n\n');
           return `${String(items.length)} inbox item(s) claimed:\n\n${itemsText}`;

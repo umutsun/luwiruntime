@@ -101,6 +101,12 @@ const messageBaseFields = {
     .min(1)
     .max(MESSAGE_MAX_TIMEOUT_MS)
     .default(MESSAGE_DEFAULT_TIMEOUT_MS),
+  /**
+   * The correlation id of the message this one re-asks (a re-dispatch after a
+   * previous exchange ended without a usable answer). Declared by the caller,
+   * recorded as a fact; the runtime never re-dispatches on its own.
+   */
+  retryOf: identifierSchema.optional(),
 } as const;
 
 export const messageCreateRequestSchema = z
@@ -132,6 +138,7 @@ export const agentMessageSchema = z.strictObject({
   subject: z.string().min(1).optional(),
   content: z.string().min(1),
   evidenceRequirements: z.array(evidenceTypeSchema).max(MESSAGE_MAX_EVIDENCE_ITEMS).optional(),
+  retryOf: identifierSchema.optional(),
   state: messageStateSchema,
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
@@ -142,11 +149,22 @@ export const agentMessageSchema = z.strictObject({
   response: agentMessageResponseSchema.optional(),
 });
 
+/**
+ * How the selected target will actually receive the message (ADR 0006 / turn-based-GUI gap):
+ * `live` — the target continuously claims its inbox (a native-bridge worker), so a prompt reply is
+ * expected; `deferred` — the target is a turn-based reader (an interactive GUI) whose inbox is only
+ * claimed during its own turn, so the durable message waits until that next turn rather than being
+ * answered now. It lets a caller stop presenting a deferred delivery as a live-reader timeout.
+ */
+export const messageDeliverySchema = z.enum(['live', 'deferred']);
+export type MessageDelivery = z.infer<typeof messageDeliverySchema>;
+
 export const messageCreateResponseSchema = z.strictObject({
   message: agentMessageSchema,
   selectedTargetSessionId: identifierSchema,
   selectedTargetAgentId: agentIdSchema,
   selectionReason: z.string().min(1).max(1024),
+  delivery: messageDeliverySchema,
   idempotent: z.boolean(),
 });
 
@@ -229,9 +247,43 @@ export const inboxResponseEnvelopeSchema = z.strictObject({
   }),
 });
 
+/**
+ * A wake-up for a coordinator session (ADR 0035): the mode changed, a plan was
+ * approved, the operator answered, a dispatched task completed, or the
+ * operator pressed "wake". It carries no work of its own and is acknowledged
+ * on claim; the coordinator re-reads the goal and task store on every wake, so
+ * a lost or duplicated notice costs latency and never correctness.
+ */
+export const inboxNoticeKindSchema = z.enum([
+  'mode_changed',
+  'goal_created',
+  'plan_approved',
+  'plan_rejected',
+  'goal_answered',
+  'goal_abandoned',
+  'task_completed',
+  'kick',
+]);
+
+export const inboxNoticeEnvelopeSchema = z.strictObject({
+  streamId: redisStreamIdSchema,
+  itemKind: z.literal('notice'),
+  targetSessionId: identifierSchema,
+  createdAt: timestampSchema,
+  payload: z.strictObject({
+    kind: inboxNoticeKindSchema,
+    projectId: identifierSchema,
+    goalId: identifierSchema.optional(),
+    taskId: identifierSchema.optional(),
+    correlationId: identifierSchema.optional(),
+    mode: z.enum(['off', 'supervised', 'autopilot']).optional(),
+  }),
+});
+
 export const inboxEnvelopeSchema = z.discriminatedUnion('itemKind', [
   inboxRequestEnvelopeSchema,
   inboxResponseEnvelopeSchema,
+  inboxNoticeEnvelopeSchema,
 ]);
 
 export const inboxClaimResponseSchema = z.strictObject({
@@ -270,5 +322,7 @@ export type MessageTransitionRequest = z.infer<typeof messageTransitionRequestSc
 export type MessageRespondRequest = z.infer<typeof messageRespondRequestSchema>;
 export type InboxClaimRequest = z.infer<typeof inboxClaimRequestSchema>;
 export type InboxEnvelope = z.infer<typeof inboxEnvelopeSchema>;
+export type InboxNoticeKind = z.infer<typeof inboxNoticeKindSchema>;
+export type InboxNoticeEnvelope = z.infer<typeof inboxNoticeEnvelopeSchema>;
 export type InboxClaimResponse = z.infer<typeof inboxClaimResponseSchema>;
 export type MessageErrorCode = z.infer<typeof messageErrorCodeSchema>;

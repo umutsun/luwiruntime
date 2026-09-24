@@ -29,6 +29,15 @@ describe('dashboard production assets', () => {
     await expect(readDashboardAsset(root, '/assets/../index.html')).resolves.toBeNull();
   });
 
+  it('serves the web app manifest with its own type, so Chrome can install the dashboard as an app', async () => {
+    root = await mkdtemp(join(tmpdir(), 'luwi-dashboard-manifest-'));
+    await mkdir(join(root, 'assets'));
+    await writeFile(join(root, 'assets', 'manifest.webmanifest'), '{}');
+    await expect(readDashboardAsset(root, '/assets/manifest.webmanifest')).resolves.toMatchObject({
+      contentType: 'application/manifest+json; charset=utf-8',
+    });
+  });
+
   it('returns null when the dashboard bundle is not present', async () => {
     root = await mkdtemp(join(tmpdir(), 'luwi-dashboard-missing-'));
     await expect(readDashboardAsset(root, '/')).resolves.toBeNull();

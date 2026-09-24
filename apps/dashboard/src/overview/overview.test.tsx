@@ -3,6 +3,8 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { CoordinatorMutations } from '../api/coordinator-mutations.js';
+import { ToastProvider } from '../components/toast.js';
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 import { RUNTIME_FOCUS, type Focus } from './model.js';
@@ -113,6 +115,101 @@ function subject(
   );
   return { onFocus, onInspect };
 }
+
+describe('coordinator switch in the drill-down (ADR 0035)', () => {
+  const sessionFocus: Focus = { kind: 'session', id: 's1' };
+  const mutations = (claim: CoordinatorMutations['claim']): CoordinatorMutations =>
+    ({ claim, release: vi.fn() }) as unknown as CoordinatorMutations;
+
+  it('claims for the focused session, states the outcome, and re-reads the snapshot', async () => {
+    const claim = vi.fn<CoordinatorMutations['claim']>().mockResolvedValue({
+      state: 'ok',
+      httpStatus: 201,
+      data: {
+        projectId: 'p1',
+        sessionId: 's1',
+        agentId: 'a1',
+        claimId: 'claim-1',
+        claimedAt: minutesAgo(0),
+        version: 1,
+      },
+    });
+    const onCoordinatorMutated = vi.fn();
+    render(
+      <ToastProvider>
+        <Overview
+          snapshot={buildPulseSnapshot(input())}
+          events={events}
+          nowMs={NOW}
+          view="radial"
+          focus={sessionFocus}
+          following
+          pendingCount={0}
+          realtime="live"
+          onFocus={vi.fn()}
+          onInspect={vi.fn()}
+          coordinatorMutations={mutations(claim)}
+          onCoordinatorMutated={onCoordinatorMutated}
+        />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Make coordinator for session s1' }));
+    expect(await screen.findByText('Coordinator assigned.')).toBeTruthy();
+    expect(claim).toHaveBeenCalledWith('p1', 's1');
+    expect(onCoordinatorMutated).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the daemon refusal in words and does not re-read', async () => {
+    const claim = vi.fn<CoordinatorMutations['claim']>().mockResolvedValue({
+      state: 'failed',
+      reason: 'http',
+      httpStatus: 409,
+      code: 'COORDINATOR_CONFLICT',
+      message: 'Session s9 holds the coordinator role.',
+    });
+    const onCoordinatorMutated = vi.fn();
+    render(
+      <ToastProvider>
+        <Overview
+          snapshot={buildPulseSnapshot(input())}
+          events={events}
+          nowMs={NOW}
+          view="radial"
+          focus={sessionFocus}
+          following
+          pendingCount={0}
+          realtime="live"
+          onFocus={vi.fn()}
+          onInspect={vi.fn()}
+          coordinatorMutations={mutations(claim)}
+          onCoordinatorMutated={onCoordinatorMutated}
+        />
+      </ToastProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Make coordinator for session s1' }));
+    expect(await screen.findByText('Session s9 holds the coordinator role.')).toBeTruthy();
+    expect(onCoordinatorMutated).not.toHaveBeenCalled();
+  });
+
+  it('shows no switch when the shell wires no mutation', () => {
+    render(
+      <Overview
+        snapshot={buildPulseSnapshot(input())}
+        events={events}
+        nowMs={NOW}
+        view="radial"
+        focus={sessionFocus}
+        following
+        pendingCount={0}
+        realtime="live"
+        onFocus={vi.fn()}
+        onInspect={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /Make coordinator/ })).toBeNull();
+    expect(screen.getByText('Coordinator').nextElementSibling?.textContent).toBe('none');
+  });
+});
 
 describe('Overview lenses', () => {
   it('renders the Board with a tile per project and reports a tile click as a focus', () => {

@@ -153,6 +153,58 @@
   pointer-events: none;
 }
 
+/* A soft halo behind each disc, breathing so the canvas reads as live rather
+   than a static chart; the global reduced-motion rule stills it. */
+.knowledge__project-halo {
+  fill: none;
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  opacity: 0.3;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: kg-halo 3.6s ease-in-out infinite;
+}
+
+/* The picker's empty centre carries the count and the one instruction. */
+.knowledge__picker-hint {
+  pointer-events: none;
+  animation: ov-fade 0.8s 0.2s both;
+}
+
+.knowledge__picker-count {
+  fill: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-3xl);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.knowledge__picker-label {
+  fill: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.knowledge__picker-sub {
+  fill: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-2xs);
+}
+
+@keyframes kg-halo {
+  0%,
+  100% {
+    opacity: 0.22;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.07);
+  }
+}
+
 /* A slow, dashed ring framing the graph — the Radial lens's orbit, echoed. */
 .knowledge__orbit {
   fill: none;

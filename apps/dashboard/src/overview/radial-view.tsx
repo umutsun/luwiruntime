@@ -170,7 +170,11 @@ export function RadialView({
                   aria-pressed={node.selected}
                   aria-label={`Focus ${node.kind} ${node.label}`}
                   title={node.hint}
-                  onClick={() => onFocus(node.selected ? { kind: 'runtime' } : node.focus)}
+                  onClick={() =>
+                    onFocus(
+                      node.selected ? (layout.projectFocus ?? { kind: 'runtime' }) : node.focus,
+                    )
+                  }
                 >
                   {node.initials}
                 </button>
@@ -178,8 +182,11 @@ export function RadialView({
                   className="radial__label"
                   style={{ left: pct(node.x), top: pct(node.below ? node.y + 62 : node.y - 58) }}
                 >
-                  <span className="radial__label-name">{node.label}</span>
-                  <span className="radial__label-sub">{node.sub}</span>
+                  <span className="radial__label-head">
+                    <span className="radial__label-name">{node.label}</span>
+                    <span className="radial__label-sub">{node.sub}</span>
+                  </span>
+                  {node.name ? <span className="radial__label-title">{node.name}</span> : null}
                 </span>
               </div>
             ))}

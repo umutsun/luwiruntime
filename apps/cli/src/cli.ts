@@ -1,6 +1,15 @@
 import {
   agentDefinitionCollectionSchema,
   agentKindSchema,
+  autopilotKickResponseSchema,
+  autopilotModeResponseSchema,
+  autopilotRecordSchema,
+  autopilotStatusResponseSchema,
+  goalCollectionSchema,
+  goalSchema,
+  taskCollectionSchema,
+  taskDispatchResponseSchema,
+  taskSchema,
   agentMessageResponseSchema,
   evidenceTypeSchema,
   eventListResponseSchema,
@@ -45,7 +54,11 @@ import {
 } from '@luwi/adapters';
 import {
   ApplicationError,
+  createProjectDiscoveryService,
   createSessionBootstrap,
+  type ProjectCandidate,
+  type ProjectDiscoveryPlan,
+  type ProjectDiscoveryService,
   type SessionBootstrapChange,
 } from '@luwi/runtime';
 import { Command } from 'commander';
@@ -53,6 +66,17 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * LUWI's own claude bound-session MCP launcher, resolved from this module so a
+ * claude worker's `--mcp-config` is generated rather than hand-configured per
+ * project. `apps/cli/{src,dist}` both sit three levels under the repo root, so
+ * this resolves in dev and in the built CLI alike.
+ */
+const CLAUDE_MCP_LAUNCH_SCRIPT = fileURLToPath(
+  new URL('../../../scripts/claude-mcp-launch.mjs', import.meta.url),
+);
 import { createInterface } from 'node:readline/promises';
 
 import { registerControlPlaneCli } from './control-plane-cli.js';
@@ -71,6 +95,7 @@ import {
   type DeepSeekBridgeDaemonClient,
 } from './deepseek-bridge.js';
 import {
+  claudeMcpBindingArgs,
   codexMcpBindingArgs,
   createNativeBridge,
   nativeHeadlessArguments,
@@ -79,19 +104,19 @@ import {
 } from './native-bridge.js';
 import { registerIntelligenceCli } from './intelligence-cli.js';
 import {
+  createNativeBrain,
+  createWebSocketBrain,
+  type BrainAdapter,
+  type BrainSocket,
+} from './brain-adapter.js';
+import { createOrchestratorBridge, type OrchestratorDaemonClient } from './orchestrator-bridge.js';
+import {
   createNodeLifecycleService,
   type DoctorReport,
   type LifecycleService,
   type LifecycleStatus,
   type RuntimeResetResult,
 } from './lifecycle.js';
-import {
-  createProjectDiscoveryService,
-  type ProjectCandidate,
-  type ProjectDiscoveryPlan,
-  type ProjectDiscoveryService,
-} from './project-discovery.js';
-
 export type FetchInitLike = {
   method?: string;
   headers?: Record<string, string>;
@@ -116,6 +141,8 @@ export interface CliWebSocket {
     event: 'open' | 'message' | 'error' | 'close',
     listener: (event: unknown) => void,
   ): void;
+  /** Present on a real socket; the orchestrator's LuwiBot brain needs it, event watching does not. */
+  send?(data: string): void;
   close(code?: number, reason?: string): void;
 }
 
@@ -238,6 +265,37 @@ async function request<Output>(
   return parser.parse(body);
 }
 
+/** A request whose success is `204` with no body; anything else is the daemon's named error. */
+async function noContentRequest(
+  dependencies: CliDependencies,
+  base: string,
+  path: string,
+  init?: FetchInitLike,
+): Promise<void> {
+  const response = await dependencies.fetch(endpoint(base, path), init);
+  if (response.status === 204) return;
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  const parsed = publicErrorResponseSchema.safeParse(body);
+  if (parsed.success) {
+    throw new ApplicationError(
+      parsed.data.error.code,
+      parsed.data.error.message,
+      response.status,
+      parsed.data.error.details,
+    );
+  }
+  throw new ApplicationError(
+    'DAEMON_REQUEST_FAILED',
+    `Daemon request failed with status ${response.status}`,
+    response.status,
+  );
+}
+
 async function boundedRequest<Output>(
   dependencies: CliDependencies,
   base: string,
@@ -311,6 +369,22 @@ function positiveIntegerOption(
     );
   }
   return parsed;
+}
+
+// Client shapes a session can declare at attach, kept in step with the
+// dashboard's own list. Free-form metadata, no protocol schema — a launcher hook
+// stamps its kind so the dashboard tells a GUI/IDE attach from a CLI worker
+// without guessing from a title.
+const CLIENT_KINDS = ['cli', 'gui', 'ide', 'bridge'] as const;
+function clientKindOption(value: string): (typeof CLIENT_KINDS)[number] {
+  if ((CLIENT_KINDS as readonly string[]).includes(value)) {
+    return value as (typeof CLIENT_KINDS)[number];
+  }
+  throw new ApplicationError(
+    'CLI_OPTION_INVALID',
+    `--client must be one of ${CLIENT_KINDS.join(', ')}.`,
+    400,
+  );
 }
 
 function safeErrorCode(error: unknown): string {
@@ -694,6 +768,10 @@ function printableInboxItem(item: InboxEnvelope, includeContent: boolean): unkno
   if (includeContent) {
     return item;
   }
+  // A notice carries no message and no content worth redacting (ADR 0035).
+  if (item.itemKind === 'notice') {
+    return item;
+  }
   const identity = {
     streamId: item.streamId,
     itemKind: item.itemKind,
@@ -1045,6 +1123,13 @@ function createBridgeDaemonClient(
         daemonUrl,
         `/api/v1/messages/${encodeURIComponent(correlationId)}`,
         messageResponseSchema,
+      ),
+    listLeases: async (projectId) =>
+      request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/leases?projectId=${encodeURIComponent(projectId)}&limit=200`,
+        leaseCollectionSchema,
       ),
     transitionMessage: async (action, sessionId, correlationId) =>
       request(
@@ -1484,6 +1569,7 @@ async function runNativeBridge(
     agentId: context.agentId,
     workingDirectory,
     metadata: {
+      client: 'bridge',
       bridge: 'native-headless',
       provider: provider.name,
       ...(options.model === undefined ? {} : { model: options.model }),
@@ -1572,12 +1658,17 @@ async function runNativeBridge(
       delete inherited['LUWI_DAEMON_URL'];
       delete inherited['LUWI_SESSION_ID'];
       let tail = '';
-      // codex needs the LUWI session injected into its MCP server's env and its tool
-      // calls auto-approved; claude/gemini bind through the inherited LUWI_SESSION_ID.
+      // Each provider's LUWI wiring + permission profile is GENERATED, so the
+      // fleet config carries no project-specific args: codex gets its session
+      // injected and tool calls auto-approved; claude gets an inline MCP config
+      // and a project-independent allowlist. Caller `nativeArgs` still append,
+      // for the rare per-run override.
       const providerNativeArgs =
         provider.name === 'codex' && bootstrap.sessionId !== undefined
           ? [...codexMcpBindingArgs(bootstrap.sessionId, daemonUrl), ...nativeArgs]
-          : nativeArgs;
+          : provider.name === 'claude'
+            ? [...claudeMcpBindingArgs(process.execPath, CLAUDE_MCP_LAUNCH_SCRIPT), ...nativeArgs]
+            : nativeArgs;
       // codex learns its id only after the first run, so it passes nothing until
       // then; claude forces its minted id, creating on the first run and resuming
       // after. Everything else stays a fresh, unbound run.
@@ -1629,6 +1720,7 @@ async function runNativeBridge(
     executor,
     currentSessionId: () => bootstrap.sessionId,
     agentId: context.agentId,
+    projectId: context.projectId,
     bridgeInstanceId: options.bridgeInstance,
     claimLimit: options.limit,
     claimBlockMs: options.blockMs,
@@ -1663,6 +1755,215 @@ async function runNativeBridge(
         // must not kill the bridge: exiting here makes the manager retire and relaunch the
         // worker (respawn storm). Back off and retry so the session rides out brief daemon
         // unavailability. A genuine stop is never swallowed — we break as soon as it is set.
+        if (stopped) break;
+        const code = error instanceof ApplicationError ? error.code : 'BRIDGE_POLL_FAILED';
+        dependencies.stderr.write(
+          `${JSON.stringify({
+            error: { code, message: error instanceof Error ? error.message : String(error) },
+            retryInMs: pollBackoffMs,
+          })}\n`,
+        );
+        await dependencies.wait(pollBackoffMs);
+        pollBackoffMs = Math.min(pollBackoffMs * 2, 5_000);
+      }
+    }
+  } finally {
+    dependencies.signals.off('SIGINT', stop);
+    dependencies.signals.off('SIGTERM', stop);
+    await bootstrap.stop();
+  }
+}
+
+/** The daemon surface the orchestrator bridge drives (ADR 0035): reads of one project, gated writes. */
+function createOrchestratorDaemonClient(
+  dependencies: CliDependencies,
+  daemonUrl: string,
+  connectTimeoutMs: number,
+): OrchestratorDaemonClient {
+  const e = encodeURIComponent;
+  const get = <Output>(path: string, parser: Parser<Output>) =>
+    boundedRequest(dependencies, daemonUrl, path, parser, connectTimeoutMs);
+  const post = <Output>(path: string, parser: Parser<Output>, body: unknown) =>
+    boundedRequest(dependencies, daemonUrl, path, parser, connectTimeoutMs, jsonBody(body));
+  return {
+    getAutopilot: (projectId) =>
+      get(`/api/v1/projects/${e(projectId)}/autopilot`, autopilotStatusResponseSchema),
+    listProjectAgentBindings: async (projectId) =>
+      (
+        await get(`/api/v1/projects/${e(projectId)}/agents`, projectAgentBindingCollectionSchema)
+      ).bindings.map((binding) => ({ agentId: binding.agentId, enabled: binding.enabled })),
+    listGoals: async (projectId) =>
+      (await get(`/api/v1/projects/${e(projectId)}/goals?limit=200`, goalCollectionSchema)).goals,
+    listTasks: async (projectId) =>
+      (await get(`/api/v1/projects/${e(projectId)}/tasks?limit=1000`, taskCollectionSchema)).tasks,
+    listSessions: async (projectId) =>
+      (await get(`/api/v1/projects/${e(projectId)}/sessions`, sessionCollectionResponseSchema))
+        .sessions,
+    listLeases: async (projectId) =>
+      (await get(`/api/v1/leases?projectId=${e(projectId)}&limit=100`, leaseCollectionSchema))
+        .leases,
+    transitionGoal: (goalId, body) =>
+      post(`/api/v1/goals/${e(goalId)}/transition`, goalSchema, body),
+    submitPlan: (goalId, body) => post(`/api/v1/goals/${e(goalId)}/plan`, goalSchema, body),
+    dispatchTask: (taskId, sessionId) =>
+      post(`/api/v1/tasks/${e(taskId)}/dispatch`, taskDispatchResponseSchema, { sessionId }),
+    recordVerdict: (taskId, body) => post(`/api/v1/tasks/${e(taskId)}/verdict`, taskSchema, body),
+    createReviewTask: (taskId, sessionId) =>
+      post(`/api/v1/tasks/${e(taskId)}/review`, taskSchema, { sessionId }),
+    createReworkTask: (taskId, sessionId) =>
+      post(`/api/v1/tasks/${e(taskId)}/rework`, taskSchema, { sessionId }),
+    // A claim blocks for up to `blockMs` by design, so it is not bounded by the connect timeout.
+    claimInbox: (sessionId, input) =>
+      request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/sessions/${e(sessionId)}/inbox/claim`,
+        inboxClaimResponseSchema,
+        jsonBody(input),
+      ),
+    setSessionStatus: async (sessionId, status) => {
+      await post(`/api/v1/sessions/${e(sessionId)}/status`, sessionResponseSchema, { status });
+    },
+  };
+}
+
+/**
+ * ADR 0035: `luwi session bridge orchestrator --project <id> --brain <…>` runs the
+ * autopilot loop for one project. The session it registers is the policy's
+ * coordinator agent; the brain — LuwiBot over its WebSocket, or a native CLI
+ * headless — only answers questions and is handed no LUWI session or tool.
+ */
+async function runOrchestratorBridge(
+  dependencies: CliDependencies,
+  brainArgs: string[],
+  options: {
+    project: string;
+    brain: string;
+    brainUrl: string;
+    executable?: string;
+    tickMs: number;
+    judgmentTimeoutMs: number;
+    bridgeInstance: string;
+    blockMs: number;
+    heartbeatMs: number;
+    leaseRenewMs: number;
+    connectTimeoutMs: number;
+    url: string;
+  },
+): Promise<void> {
+  const daemonUrl = loopbackDaemonUrl(options.url);
+  const client = createOrchestratorDaemonClient(dependencies, daemonUrl, options.connectTimeoutMs);
+  const status = await client.getAutopilot(options.project);
+  if (status.record === null || status.record.policy === null) {
+    throw new ApplicationError(
+      'AUTOPILOT_NOT_CONFIGURED',
+      'Declare an autopilot policy for this project first: luwi autopilot policy --project <id> --coordinator <agentId> …',
+      409,
+    );
+  }
+  const policy = status.record.policy;
+  const project = await boundedRequest(
+    dependencies,
+    daemonUrl,
+    `/api/v1/projects/${encodeURIComponent(options.project)}`,
+    projectResponseSchema,
+    options.connectTimeoutMs,
+  );
+  let workingDirectory: string;
+  try {
+    workingDirectory = await dependencies.canonicalizePath(project.localPath);
+  } catch {
+    throw new ApplicationError(
+      'AGENT_WORKING_DIRECTORY_INVALID',
+      'The project path could not be canonicalized.',
+      400,
+    );
+  }
+
+  let brain: BrainAdapter;
+  if (options.brain === 'luwibot-ws') {
+    brain = createWebSocketBrain({
+      url: options.brainUrl,
+      createSocket: (url) => {
+        const socket = dependencies.createWebSocket(url);
+        if (typeof socket.send !== 'function') {
+          throw new ApplicationError(
+            'CLI_OPTION_INVALID',
+            'The WebSocket implementation cannot send; the luwibot-ws brain needs one that can.',
+            500,
+          );
+        }
+        return socket as BrainSocket;
+      },
+      setTimeout: dependencies.setTimeout,
+      clearTimeout: dependencies.clearTimeout,
+    });
+  } else {
+    const provider = agentProvider(options.brain);
+    brain = createNativeBrain({
+      provider: provider.name,
+      executable: options.executable ?? provider.executable,
+      workingDirectory,
+      nativeArgs: brainArgs,
+      runner: dependencies.agentProcessRunner,
+      environment: dependencies.environment,
+      setTimeout: dependencies.setTimeout,
+      clearTimeout: dependencies.clearTimeout,
+      onDiagnostic: (error) =>
+        printAgentDiagnostic(dependencies, 'AGENT_PROCESS_DIAGNOSTIC', error),
+    });
+  }
+
+  const bootstrap = createSessionBootstrap({
+    client: createBootstrapSessionClient(dependencies, daemonUrl, options.connectTimeoutMs),
+    projectId: options.project,
+    agentId: policy.coordinatorAgentId,
+    workingDirectory,
+    metadata: { bridge: 'orchestrator', brain: brain.name },
+    heartbeatIntervalMs: options.heartbeatMs,
+    leaseRenewIntervalMs: options.leaseRenewMs,
+    leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, options.connectTimeoutMs),
+    onError: (error) => printAgentDiagnostic(dependencies, 'LUWI_OBSERVATION_DEGRADED', error),
+    setInterval: dependencies.setInterval,
+    clearInterval: dependencies.clearInterval,
+  });
+  await bootstrap.start();
+
+  const bridge = createOrchestratorBridge({
+    daemon: client,
+    brain,
+    projectId: options.project,
+    currentSessionId: () => bootstrap.sessionId,
+    bridgeInstanceId: options.bridgeInstance,
+    claimBlockMs: options.blockMs,
+    tickMs: options.tickMs,
+    judgmentTimeoutMs: options.judgmentTimeoutMs,
+    report: (line) => printJson(dependencies, { bridge: 'orchestrator', ...line }),
+  });
+
+  let stopped = false;
+  const stop = (): void => {
+    stopped = true;
+    void bridge.stop();
+  };
+  dependencies.signals.once('SIGINT', stop);
+  dependencies.signals.once('SIGTERM', stop);
+  printJson(dependencies, {
+    bridge: 'orchestrator',
+    brain: brain.name,
+    sessionId: bootstrap.sessionId,
+    agentId: policy.coordinatorAgentId,
+    projectId: options.project,
+    mode: status.record.mode,
+  });
+  let pollBackoffMs = 250;
+  try {
+    while (!stopped) {
+      try {
+        await bridge.pollOnce();
+        pollBackoffMs = 250;
+        if (options.blockMs === 0 && !stopped) await dependencies.wait(100);
+      } catch (error) {
         if (stopped) break;
         const code = error instanceof ApplicationError ? error.code : 'BRIDGE_POLL_FAILED';
         dependencies.stderr.write(
@@ -1764,6 +2065,8 @@ function registerAgentRunCli(agents: Command, dependencies: CliDependencies): vo
                 projectId: context.projectId,
                 agentId: context.agentId,
                 workingDirectory,
+                // A headless CLI worker wrapping a native agent (`agent run`).
+                metadata: { client: 'cli' },
                 heartbeatIntervalMs: heartbeatMs,
                 leaseRenewIntervalMs: leaseRenewMs,
                 leaseClient: createBootstrapLeaseClient(dependencies, daemonUrl, connectTimeoutMs),
@@ -2008,6 +2311,31 @@ export function createCli(dependencies: CliDependencies): Command {
         ),
       );
     });
+  projects
+    .command('unregister <projectId>')
+    .description(
+      'Forget a registered project and the evidence LUWI collected about it; its files and .luwi stay',
+    )
+    .option('--yes', 'Confirm the unregister')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (projectId: string, options: { yes?: boolean; url: string }) => {
+      const path = `/api/v1/projects/${encodeURIComponent(projectId)}`;
+      const project = await request(dependencies, options.url, path, projectResponseSchema);
+      if (options.yes !== true) {
+        // The `reset` precedent: show what would go, and stop.
+        printJson(dependencies, { project, keeps: ['files', '.luwi'], confirmWith: '--yes' });
+        throw new ApplicationError(
+          'CLI_CONFIRMATION_REQUIRED',
+          'Re-run with --yes to unregister this project. Its files and .luwi directory are never touched.',
+          400,
+        );
+      }
+      await noContentRequest(dependencies, options.url, path, {
+        method: 'DELETE',
+        headers: { accept: 'application/json' },
+      });
+      printJson(dependencies, { unregistered: projectId });
+    });
 
   const agents = registerControlPlaneCli(program, projects, dependencies);
   registerAgentRunCli(agents, dependencies);
@@ -2177,6 +2505,10 @@ export function createCli(dependencies: CliDependencies): Command {
     )
     .option('--model <model>', 'Model the agent runs, recorded as session metadata')
     .option(
+      '--client <kind>',
+      `How the session reached the runtime (${CLIENT_KINDS.join('|')}); a launcher hook stamps its kind`,
+    )
+    .option(
       '--native-adapter <adapterId>',
       'Adapter namespace of a native session reference the launcher already knows',
     )
@@ -2198,6 +2530,7 @@ export function createCli(dependencies: CliDependencies): Command {
         workingDirectory: string;
         agentKind?: string;
         model?: string;
+        client?: string;
         nativeAdapter?: string;
         nativeSession?: string;
         nativeSubagent?: string;
@@ -2290,12 +2623,15 @@ export function createCli(dependencies: CliDependencies): Command {
           },
           dependencies.platform,
         );
+        const metadata: Record<string, string> = {};
+        if (options.model !== undefined) metadata.model = options.model;
+        if (options.client !== undefined) metadata.client = clientKindOption(options.client);
         const request_ = {
           projectId,
           agentId: options.agent ?? kind,
           workingDirectory,
           ...(native === undefined ? {} : { native }),
-          ...(options.model === undefined ? {} : { metadata: { model: options.model } }),
+          ...(Object.keys(metadata).length === 0 ? {} : { metadata }),
         };
 
         if (options.dryRun === true) {
@@ -2684,6 +3020,72 @@ export function createCli(dependencies: CliDependencies): Command {
         }),
     );
 
+  sessionBridge
+    .command('orchestrator [brainArgs...]')
+    .description(
+      'Run the autopilot orchestrator for one project: a LUWI-owned loop around a pluggable brain',
+    )
+    .requiredOption('--project <projectId>', 'Registered project ID')
+    .option('--brain <brain>', 'luwibot-ws, claude, codex, gemini, or antigravity', 'luwibot-ws')
+    .option('--brain-url <url>', 'LuwiBot chat WebSocket URL', 'ws://127.0.0.1:3100/chat')
+    .option('--executable <path>', 'Explicit native brain executable')
+    .option('--tick-ms <milliseconds>', 'Cycle interval while the inbox is quiet', '60000')
+    .option('--judgment-timeout-ms <milliseconds>', 'Wall-time bound for one judgment', '300000')
+    .option('--bridge-instance <id>', 'Stable inbox consumer identity', 'orchestrator')
+    .option('--block-ms <milliseconds>', 'Bounded claim block interval', '30000')
+    .option('--heartbeat-ms <milliseconds>', 'Session heartbeat interval', '5000')
+    .option('--lease-renew-ms <milliseconds>', 'Held work-lease renewal interval', '150000')
+    .option('--connect-timeout-ms <milliseconds>', 'Per-request LUWI connection timeout', '2000')
+    .option('-u, --url <url>', 'LUWI daemon loopback URL', 'http://127.0.0.1:4782')
+    .action(
+      async (
+        brainArgs: string[] | undefined,
+        options: {
+          project: string;
+          brain: string;
+          brainUrl: string;
+          executable?: string;
+          tickMs: string;
+          judgmentTimeoutMs: string;
+          bridgeInstance: string;
+          blockMs: string;
+          heartbeatMs: string;
+          leaseRenewMs: string;
+          connectTimeoutMs: string;
+          url: string;
+        },
+      ) =>
+        runOrchestratorBridge(dependencies, brainArgs ?? [], {
+          project: options.project,
+          brain: options.brain,
+          brainUrl: options.brainUrl,
+          ...(options.executable === undefined ? {} : { executable: options.executable }),
+          tickMs: positiveIntegerOption(options.tickMs, '--tick-ms', 1_000, 3_600_000),
+          judgmentTimeoutMs: positiveIntegerOption(
+            options.judgmentTimeoutMs,
+            '--judgment-timeout-ms',
+            5_000,
+            3_600_000,
+          ),
+          bridgeInstance: options.bridgeInstance,
+          blockMs: positiveIntegerOption(options.blockMs, '--block-ms', 0, MESSAGE_MAX_WAIT_MS),
+          heartbeatMs: positiveIntegerOption(options.heartbeatMs, '--heartbeat-ms', 100, 10_000),
+          leaseRenewMs: positiveIntegerOption(
+            options.leaseRenewMs,
+            '--lease-renew-ms',
+            1_000,
+            3_600_000,
+          ),
+          connectTimeoutMs: positiveIntegerOption(
+            options.connectTimeoutMs,
+            '--connect-timeout-ms',
+            100,
+            30_000,
+          ),
+          url: options.url,
+        }),
+    );
+
   const messages = program.command('message').description('Exchange durable session messages');
   messages
     .command('ask')
@@ -2696,6 +3098,10 @@ export function createCli(dependencies: CliDependencies): Command {
     .option('--evidence <types>', 'Comma-separated evidence requirements')
     .option('--timeout-ms <milliseconds>', 'Message deadline')
     .option('--idempotency-key <key>', 'Retry idempotency key')
+    .option(
+      '--retry-of <correlationId>',
+      'Record this ask as a re-dispatch of an earlier, terminal exchange',
+    )
     .option('--wait-ms <milliseconds>', 'Wait up to 30000 ms for terminal state', '0')
     .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
     .action(
@@ -2709,6 +3115,7 @@ export function createCli(dependencies: CliDependencies): Command {
         evidence?: string;
         timeoutMs?: string;
         idempotencyKey?: string;
+        retryOf?: string;
         waitMs: string;
         url: string;
       }) => {
@@ -2729,6 +3136,7 @@ export function createCli(dependencies: CliDependencies): Command {
               content: options.content,
               evidenceRequirements: parseEvidenceRequirements(options.evidence),
               ...(options.timeoutMs === undefined ? {} : { timeoutMs: Number(options.timeoutMs) }),
+              ...(options.retryOf === undefined ? {} : { retryOf: options.retryOf }),
             },
             options.idempotencyKey === undefined
               ? {}
@@ -3037,6 +3445,346 @@ export function createCli(dependencies: CliDependencies): Command {
           options.url,
           `/api/v1/leases/${encodeURIComponent(leaseId)}`,
           workLeaseSchema,
+        ),
+      );
+    });
+
+  const autopilot = program
+    .command('autopilot')
+    .description('Per-project autopilot: the operator-held mode and the coordination policy');
+  autopilot
+    .command('show')
+    .requiredOption('--project <projectId>', 'Project ID')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (options: { project: string; url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/projects/${encodeURIComponent(options.project)}/autopilot`,
+          autopilotStatusResponseSchema,
+        ),
+      );
+    });
+  autopilot
+    .command('policy')
+    .description('Declare who coordinates, who works, who speaks for the operator, and the budgets')
+    .requiredOption('--project <projectId>', 'Project ID')
+    .requiredOption('--coordinator <agentId>', 'The coordinator AgentDefinition ID')
+    .option(
+      '--worker <agentId...>',
+      'Worker AgentDefinition IDs (default: every other enabled binding)',
+    )
+    .option('--reviewer <agentId>', 'A read-only reviewer for verification')
+    .option(
+      '--operator-proxy <agentId...>',
+      'Agents whose sessions may approve and answer for the operator',
+    )
+    .option('--protect <path...>', 'Project-relative paths that always wait for approval')
+    .option('--max-in-flight <count>', 'Tasks in flight at once (1-8)')
+    .option('--max-per-hour <count>', 'Dispatches per hour (1-120)')
+    .option('--task-timeout-ms <milliseconds>', 'Default task timeout')
+    .option('--max-judgments-per-hour <count>', 'Brain judgments per hour (1-600)')
+    .option('--max-concurrent-goals <count>', 'Goals running at once (1-8)')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        project: string;
+        coordinator: string;
+        worker?: string[];
+        reviewer?: string;
+        operatorProxy?: string[];
+        protect?: string[];
+        maxInFlight?: string;
+        maxPerHour?: string;
+        taskTimeoutMs?: string;
+        maxJudgmentsPerHour?: string;
+        maxConcurrentGoals?: string;
+        url: string;
+      }) => {
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            `/api/v1/projects/${encodeURIComponent(options.project)}/autopilot/policy`,
+            autopilotRecordSchema,
+            {
+              ...jsonBody({
+                coordinatorAgentId: options.coordinator,
+                workerAgentIds: options.worker ?? [],
+                ...(options.reviewer === undefined ? {} : { reviewerAgentId: options.reviewer }),
+                operatorProxyAgentIds: options.operatorProxy ?? [],
+                protectedPaths: options.protect ?? [],
+                ...(options.maxInFlight === undefined
+                  ? {}
+                  : { maxInFlight: Number(options.maxInFlight) }),
+                ...(options.maxPerHour === undefined
+                  ? {}
+                  : { maxDispatchesPerHour: Number(options.maxPerHour) }),
+                ...(options.taskTimeoutMs === undefined
+                  ? {}
+                  : { defaultTaskTimeoutMs: Number(options.taskTimeoutMs) }),
+                ...(options.maxJudgmentsPerHour === undefined
+                  ? {}
+                  : { maxJudgmentsPerHour: Number(options.maxJudgmentsPerHour) }),
+                ...(options.maxConcurrentGoals === undefined
+                  ? {}
+                  : { maxConcurrentGoals: Number(options.maxConcurrentGoals) }),
+              }),
+              method: 'PUT',
+            },
+          ),
+        );
+      },
+    );
+  autopilot
+    .command('mode <mode>')
+    .description('Set the mode: off, supervised, or autopilot')
+    .requiredOption('--project <projectId>', 'Project ID')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (mode: string, options: { project: string; url: string }) => {
+      if (mode !== 'off' && mode !== 'supervised' && mode !== 'autopilot') {
+        throw new ApplicationError(
+          'CLI_OPTION_INVALID',
+          'mode must be off, supervised, or autopilot.',
+          400,
+        );
+      }
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/projects/${encodeURIComponent(options.project)}/autopilot/mode`,
+          autopilotModeResponseSchema,
+          jsonBody({ mode }),
+        ),
+      );
+    });
+  autopilot
+    .command('kick')
+    .description('Wake the coordinator now')
+    .requiredOption('--project <projectId>', 'Project ID')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (options: { project: string; url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/projects/${encodeURIComponent(options.project)}/autopilot/kick`,
+          autopilotKickResponseSchema,
+          jsonBody({}),
+        ),
+      );
+    });
+
+  const goals = program.command('goal').description('Autopilot goals: the unit of autonomy');
+  goals
+    .command('list')
+    .requiredOption('--project <projectId>', 'Project ID')
+    .option('--state <state>', 'Only goals in this state')
+    .option('-l, --limit <limit>', 'Newest goal count', '100')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (options: { project: string; state?: string; limit: string; url: string }) => {
+      const query = new URLSearchParams({ limit: options.limit });
+      if (options.state !== undefined) query.set('state', options.state);
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/projects/${encodeURIComponent(options.project)}/goals?${query.toString()}`,
+          goalCollectionSchema,
+        ),
+      );
+    });
+  goals
+    .command('show <goalId>')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (goalId: string, options: { url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/goals/${encodeURIComponent(goalId)}`,
+          goalSchema,
+        ),
+      );
+    });
+  goals
+    .command('create')
+    .requiredOption('--project <projectId>', 'Project ID')
+    .requiredOption('--title <title>', 'Goal title')
+    .option('--objective <text>', 'What done means, in your words')
+    .option('--objective-file <path>', 'Read the objective from a file')
+    .option('--criterion <text...>', 'Acceptance criteria')
+    .option(
+      '--session <sessionId>',
+      'Create on behalf of a session (its budgets may only be lowered)',
+    )
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        project: string;
+        title: string;
+        objective?: string;
+        objectiveFile?: string;
+        criterion?: string[];
+        session?: string;
+        url: string;
+      }) => {
+        let objective = options.objective;
+        if (objective === undefined && options.objectiveFile !== undefined) {
+          const { readFile } = await import('node:fs/promises');
+          objective = await readFile(options.objectiveFile, 'utf8');
+        }
+        if (objective === undefined || objective.trim() === '') {
+          throw new ApplicationError(
+            'CLI_OPTION_INVALID',
+            'Provide --objective or --objective-file.',
+            400,
+          );
+        }
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            `/api/v1/projects/${encodeURIComponent(options.project)}/goals`,
+            goalSchema,
+            jsonBody({
+              title: options.title,
+              objective,
+              acceptanceCriteria: options.criterion ?? [],
+              ...(options.session === undefined ? {} : { sessionId: options.session }),
+            }),
+          ),
+        );
+      },
+    );
+  const goalDecision = (
+    name: 'approve-plan' | 'reject-plan',
+    path: 'approve' | 'reject',
+    description: string,
+  ) =>
+    goals
+      .command(`${name} <goalId>`)
+      .description(description)
+      .option('--note <text>', 'A note for the record')
+      .option('--session <sessionId>', 'Act as an operator-proxy session')
+      .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+      .action(async (goalId: string, options: { note?: string; session?: string; url: string }) => {
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            `/api/v1/goals/${encodeURIComponent(goalId)}/plan/${path}`,
+            goalSchema,
+            jsonBody({
+              ...(options.note === undefined ? {} : { note: options.note }),
+              ...(options.session === undefined ? {} : { sessionId: options.session }),
+            }),
+          ),
+        );
+      });
+  goalDecision(
+    'approve-plan',
+    'approve',
+    'Approve the plan under review; every task in it is approved',
+  );
+  goalDecision(
+    'reject-plan',
+    'reject',
+    'Reject the plan under review; the note guides the next plan',
+  );
+  goals
+    .command('answer <goalId>')
+    .description('Answer the question a blocked goal is waiting on')
+    .requiredOption('--text <text>', 'The answer')
+    .option('--session <sessionId>', 'Act as an operator-proxy session')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (goalId: string, options: { text: string; session?: string; url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/goals/${encodeURIComponent(goalId)}/answer`,
+          goalSchema,
+          jsonBody({
+            text: options.text,
+            ...(options.session === undefined ? {} : { sessionId: options.session }),
+          }),
+        ),
+      );
+    });
+  goals
+    .command('abandon <goalId>')
+    .option('--reason <text>', 'Why')
+    .option('--session <sessionId>', 'Act as an operator-proxy session')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (goalId: string, options: { reason?: string; session?: string; url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/goals/${encodeURIComponent(goalId)}/abandon`,
+          goalSchema,
+          jsonBody({
+            ...(options.reason === undefined ? {} : { reason: options.reason }),
+            ...(options.session === undefined ? {} : { sessionId: options.session }),
+          }),
+        ),
+      );
+    });
+
+  const tasks = program.command('task').description('Autopilot tasks: dispatched units of a goal');
+  tasks
+    .command('list')
+    .requiredOption('--project <projectId>', 'Project ID')
+    .option('--goal <goalId>', 'Only tasks of this goal')
+    .option('--state <state>', 'Only tasks in this state')
+    .option('-l, --limit <limit>', 'Newest task count', '200')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(
+      async (options: {
+        project: string;
+        goal?: string;
+        state?: string;
+        limit: string;
+        url: string;
+      }) => {
+        const query = new URLSearchParams({ limit: options.limit });
+        if (options.goal !== undefined) query.set('goalId', options.goal);
+        if (options.state !== undefined) query.set('state', options.state);
+        printJson(
+          dependencies,
+          await request(
+            dependencies,
+            options.url,
+            `/api/v1/projects/${encodeURIComponent(options.project)}/tasks?${query.toString()}`,
+            taskCollectionSchema,
+          ),
+        );
+      },
+    );
+  tasks
+    .command('show <taskId>')
+    .option('-u, --url <url>', 'LUWI daemon base URL', 'http://127.0.0.1:4782')
+    .action(async (taskId: string, options: { url: string }) => {
+      printJson(
+        dependencies,
+        await request(
+          dependencies,
+          options.url,
+          `/api/v1/tasks/${encodeURIComponent(taskId)}`,
+          taskSchema,
         ),
       );
     });

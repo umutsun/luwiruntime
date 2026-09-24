@@ -10,12 +10,16 @@ import {
   createDaemonOwnershipLease,
   createFunctionRegistry,
   createManagedRedisConnection,
+  createAutopilotRepository,
   createLeaseRepository,
+  createCoordinatorRepository,
   createMessageRepository,
   createControlPlaneRepository,
   createIntelligenceRepository,
+  createProjectPurge,
   createRedisKeys,
   createRuntimeRepository,
+  purgeTerminalSessionLeaves,
   ensureRealtimeStreamGroup,
   readLatestRuntimeEvents,
   REALTIME_CONSUMER_GROUP,
@@ -37,6 +41,7 @@ import {
   createPresenceSweeper,
   createRuntimeReadiness,
   createStartingSessionReaper,
+  createTerminalSessionRetentionSweeper,
   NATIVE_DECLARATION_MAX_ATTEMPTS,
   type NativeLinkRetentionRepository,
   type PresenceSweeperRepository,
@@ -71,12 +76,18 @@ import { createCanonicalStore } from './canonical-store.js';
 import { createConfigControlService } from './config-control-service.js';
 import { clearStaleConfigFileLocks } from './config-file-engine.js';
 import { createControlPlaneService } from './control-plane-service.js';
+import { createAutopilotService, type AutopilotService } from './autopilot-service.js';
 import { createLeaseService } from './lease-service.js';
+import { createCoordinatorService } from './coordinator-service.js';
 import { createMessageService } from './message-service.js';
 import { createIntelligenceService, type IntelligenceService } from './intelligence-service.js';
 import { createGitObserver } from './git-observer.js';
+import { readGraphifyKnowledge } from './graphify-knowledge.js';
+import { createGraphifyObserver, GRAPHIFY_OUTPUT_RELATIVE_PATH } from './graphify-observer.js';
 import { createHostResourcesReader } from './host-resources.js';
 import { createProjectService } from './project-service.js';
+import { createProjectUnregisterService } from './project-unregister-service.js';
+import { forEachSpaced } from './scan-spacing.js';
 import { createRealtimeRelay } from './realtime-relay.js';
 import { createSessionService, isVersionConflict } from './session-service.js';
 import {
@@ -90,6 +101,9 @@ import {
   type SignalSource,
 } from './shutdown.js';
 import { createWebSocketHub } from './websocket-hub.js';
+
+/** Keys the retention tick's orphan graph generation sweep may UNLINK per tick. */
+const GRAPH_ORPHAN_PURGE_MAX_KEYS_PER_TICK = 20_000;
 
 /**
  * The open native link a lapsing session holds, if it holds one.
@@ -140,12 +154,32 @@ async function resolveExpiringNativeUnlink(
  * presence path that can make a session terminal with no caller to answer to,
  * and it is therefore the one worth exercising without a Redis stack behind it.
  */
+/** A terminal transition must never fail because its message cleanup did. */
+async function failLostTargetMessagesSafely(
+  fail: ((sessionId: string) => Promise<void>) | undefined,
+  sessionId: string,
+): Promise<void> {
+  try {
+    await fail?.(sessionId);
+  } catch {
+    // Best-effort: the message deadline sweep is the backstop.
+  }
+}
+
 export function createPresenceSweeperRepository(options: {
   repository: RuntimeRepository;
   workspaceId: string;
   createId: () => string;
+  /**
+   * Frees the work-leases a disconnected session held (P12). Best-effort and
+   * must not throw — the deadline sweep stays the backstop for anything left.
+   */
+  releaseSessionLeases?: (sessionId: string) => Promise<void>;
+  /** Fails the disconnected session's in-flight target messages; a throw is swallowed. */
+  failLostTargetMessages?: (sessionId: string) => Promise<void>;
 }): PresenceSweeperRepository {
-  const { repository, workspaceId, createId } = options;
+  const { repository, workspaceId, createId, releaseSessionLeases, failLostTargetMessages } =
+    options;
   return {
     findExpiredHeartbeatDeadlines: (nowMs, limit) =>
       repository.findExpiredHeartbeatDeadlines(nowMs, limit),
@@ -182,10 +216,16 @@ export function createPresenceSweeperRepository(options: {
             eventId,
             ...(native === undefined ? {} : { native: { ...native, unlinkedEventId } }),
           });
-          if (result.status === 'disconnected') {
-            return 'disconnected';
+          if (result.status === 'disconnected' || result.status === 'reconciled') {
+            // The session is now terminal, so free the work-leases it held
+            // rather than leaving them under a dead holder until the deadline
+            // sweep (P12) — where an overlapping acquire is refused and the
+            // successor cannot release them. Best-effort; the sweep backstops.
+            await releaseSessionLeases?.(deadline.sessionId);
+            await failLostTargetMessagesSafely(failLostTargetMessages, deadline.sessionId);
+            return result.status === 'disconnected' ? 'disconnected' : 'reconciled';
           }
-          return result.status === 'reconciled' ? 'reconciled' : 'unchanged';
+          return 'unchanged';
         } catch (error) {
           if (!isVersionConflict(error)) throw error;
         }
@@ -217,8 +257,16 @@ export function createStartingSessionReaperRepository(options: {
   repository: RuntimeRepository;
   workspaceId: string;
   createId: () => string;
+  /**
+   * Frees the work-leases a reaped session held (P12). Best-effort and must not
+   * throw — the deadline sweep stays the backstop for anything left.
+   */
+  releaseSessionLeases?: (sessionId: string) => Promise<void>;
+  /** Fails the reaped session's in-flight target messages; a throw is swallowed. */
+  failLostTargetMessages?: (sessionId: string) => Promise<void>;
 }): StartingSessionReaperRepository {
-  const { repository, workspaceId, createId } = options;
+  const { repository, workspaceId, createId, releaseSessionLeases, failLostTargetMessages } =
+    options;
   return {
     findStartingSessionsPastGrace: (nowMs, graceMs, limit) =>
       repository.findStartingSessionsPastGrace(nowMs, graceMs, limit),
@@ -236,7 +284,13 @@ export function createStartingSessionReaperRepository(options: {
             eventId,
             ...(native === undefined ? {} : { native: { ...native, unlinkedEventId } }),
           });
-          return result.status === 'disconnected' ? 'reaped' : 'skipped';
+          if (result.status === 'disconnected') {
+            // Reaped, so it is terminal: free the leases it held (P12).
+            await releaseSessionLeases?.(candidate.sessionId);
+            await failLostTargetMessagesSafely(failLostTargetMessages, candidate.sessionId);
+            return 'reaped';
+          }
+          return 'skipped';
         } catch (error) {
           if (!isVersionConflict(error)) throw error;
         }
@@ -339,6 +393,8 @@ const defaults = {
   deadLetterStreamMaxLength: 10_000,
   retentionIntervalMs: 60_000,
   nativeLinkRetentionMax: 1_000,
+  terminalSessionRetentionMs: 86_400_000,
+  terminalSessionSweepBatchSize: 500,
   messageTimeoutSweepIntervalMs: 1_000,
   messageTimeoutBatchSize: 100,
   messageMaxContentBytes: 32_768,
@@ -538,6 +594,18 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     void projectId;
     void reason;
   };
+  // Frees a terminating session's work-leases immediately, instead of leaving
+  // them under a dead holder until the deadline sweep (P12). Assigned once the
+  // lease service exists; a no-op until then, and best-effort by contract (it
+  // never throws), so lease cleanup can never block or lose a terminal
+  // transition. Late-bound like `refreshProject` because the lease service is
+  // built after the session service and the two sweep adapters that call this.
+  let releaseSessionLeases: (sessionId: string) => Promise<void> = async () => undefined;
+
+  // Fails a terminating session's in-flight target messages with
+  // TARGET_SESSION_LOST at once. Late-bound like `releaseSessionLeases` (the
+  // message service is built after the session service); never throws.
+  let failLostTargetMessages: (sessionId: string) => Promise<void> = async () => undefined;
 
   const hub = createWebSocketHub({
     maxQueueSize: setting(config, 'websocketQueueLimit'),
@@ -555,6 +623,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     functions: registry,
   });
   const leaseRepository = createLeaseRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const coordinatorRepository = createCoordinatorRepository({
+    client: connections.command,
+    keys,
+    functions: registry,
+  });
+  const autopilotRepository = createAutopilotRepository({
     client: connections.command,
     keys,
     functions: registry,
@@ -588,13 +666,28 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     presenceTtlMs: setting(config, 'sessionPresenceTtlMs'),
     heartbeatEventIntervalMs: setting(config, 'heartbeatEventIntervalMs'),
     onRegistered: (session) => refreshProject(session.projectId, 'session-started'),
-    onClosed: (session) => refreshProject(session.projectId, 'session-closed'),
+    onClosed: (session) => {
+      refreshProject(session.projectId, 'session-closed');
+      // A clean close is terminal too, so free its leases now rather than
+      // letting them lapse on the deadline sweep (P12).
+      // Then fail its in-flight target messages instead of letting them wait
+      // for their deadline.
+      void releaseSessionLeases(session.id).then(() => failLostTargetMessages(session.id));
+    },
   });
+  // Filled once the autopilot service exists; the message service's seams
+  // read it lazily so neither side depends on construction order.
+  const autopilotRef: { current?: AutopilotService } = {};
   const messageService = createMessageService({
     repository: messageRepository,
     sessions: sessionService,
     workspaceId: config.workspaceId,
     runtimeState: () => readiness.state,
+    autopilotPolicy: async (projectId) =>
+      (await autopilotRef.current?.get(projectId))?.policy ?? null,
+    onTerminal: async (message) => {
+      await autopilotRef.current?.completeFromMessage(message);
+    },
     idempotencyRetentionMs: setting(config, 'messageIdempotencyRetentionMs'),
     maxContentBytes: setting(config, 'messageMaxContentBytes'),
     maxSubjectBytes: setting(config, 'messageMaxSubjectBytes'),
@@ -631,6 +724,17 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         },
       }),
   });
+  failLostTargetMessages = (sessionId) =>
+    messageService.failForLostTarget(sessionId).then(
+      ({ failed, skipped }) => {
+        if (failed > 0) {
+          app?.log.info({ sessionId, failed, skipped }, 'Lost target session messages failed');
+        }
+      },
+      (error) => {
+        app?.log.error({ err: error, sessionId }, 'Lost target session message cleanup failed');
+      },
+    );
   const controlPlaneService = createControlPlaneService({
     repository: controlPlaneRepository,
     canonicalStore,
@@ -660,6 +764,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       await service.recordConfigPlanApplied(plan.id);
     },
   });
+  const gitObserver = createGitObserver({
+    timeoutMs: setting(config, 'gitCommandTimeoutMs'),
+  });
   const intelligenceService = createIntelligenceService({
     repository: intelligenceRepository,
     projects: projectService,
@@ -667,8 +774,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     controlPlane: controlPlaneService,
     configControl: configControlService,
     workspaceId: config.workspaceId,
-    gitObserver: createGitObserver({
-      timeoutMs: setting(config, 'gitCommandTimeoutMs'),
+    gitObserver,
+    graphifyObserver: createGraphifyObserver({
+      outputRelativePath: config.graphifyOutputPath ?? GRAPHIFY_OUTPUT_RELATIVE_PATH,
     }),
     optimizationMinimumBaselineSessions: setting(config, 'optimizationMinimumBaselineSessions'),
     optimizationMinimumPostSessions: setting(config, 'optimizationMinimumPostSessions'),
@@ -691,6 +799,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     // Readiness leaves `ready` the moment shutdown begins, so this is the same
     // signal every background tick already gates on.
     projectionStopped: () => readiness.state !== 'ready',
+    onProjectionFailure: (error, operation) =>
+      app?.log.error({ err: error, operation }, 'Operational graph projection failed'),
     deferProjection: (run) => {
       const scheduled = backgroundWork.run(run, (error) =>
         app?.log.error({ err: error }, 'Operational graph projection failed'),
@@ -750,6 +860,12 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     }
     await controlPlaneService.reconcileCanonicalState();
     await configControlService.reconcile();
+    // Every manifest-declared autopilot policy is projected; the mode is never
+    // read from a manifest and stays whatever Redis holds (default off).
+    const reconciled = await autopilot.reconcileManifests(await projectService.list());
+    if (reconciled.failed.length > 0) {
+      app?.log.warn({ projects: reconciled.failed }, 'Autopilot manifest policies refused');
+    }
   };
 
   const transitionDegraded = (): void => {
@@ -783,6 +899,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       repository,
       workspaceId: config.workspaceId,
       createId: randomUUID,
+      releaseSessionLeases: (sessionId) => releaseSessionLeases(sessionId),
+      failLostTargetMessages: (sessionId) => failLostTargetMessages(sessionId),
     }),
   });
   const reaper = createStartingSessionReaper({
@@ -793,6 +911,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       repository,
       workspaceId: config.workspaceId,
       createId: randomUUID,
+      releaseSessionLeases: (sessionId) => releaseSessionLeases(sessionId),
+      failLostTargetMessages: (sessionId) => failLostTargetMessages(sessionId),
     }),
   });
   const leaseService = createLeaseService({
@@ -800,6 +920,62 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     sessions: sessionService,
     workspaceId: config.workspaceId,
   });
+  // The sweep adapters and the session-close hook above hold this indirectly
+  // (a no-op until now); wire it to the real release, logging a failure rather
+  // than letting it escape into a terminal transition.
+  releaseSessionLeases = (sessionId) =>
+    leaseService.releaseForSession(sessionId).then(
+      () => undefined,
+      (error) => {
+        app?.log.error({ err: error, sessionId }, 'Session lease release on terminal failed');
+      },
+    );
+  const projectUnregisterService = createProjectUnregisterService({
+    repository,
+    leases: leaseRepository,
+    messages: messageRepository,
+    coordinator: coordinatorRepository,
+    purge: createProjectPurge({ client: connections.command, keys }),
+    canonicalStore,
+    // A session close schedules a background git/package scan for its project
+    // (`refreshProject`); one still running would write evidence after the
+    // project is gone, where no re-run can reach it. Wait it out, bounded.
+    awaitQuiescence: async (projectId) => {
+      for (let waited = 0; waited < 10_000 && projectRefreshes.has(projectId); waited += 100) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    },
+    workspaceId: config.workspaceId,
+  });
+  const coordinatorService = createCoordinatorService({
+    repository: coordinatorRepository,
+    sessions: sessionService,
+    workspaceId: config.workspaceId,
+  });
+  const autopilot = createAutopilotService({
+    repository: autopilotRepository,
+    sessions: sessionService,
+    projects: projectService,
+    messages: messageService,
+    bindings: controlPlaneService,
+    leases: leaseService,
+    commits: intelligenceRepository,
+    refreshGitObservation: (projectId) =>
+      intelligenceService.scanGit(projectId).then(() => undefined),
+    // A lane worktree commits on a `lane/<role>` branch of the same
+    // repository, which the observed log never reaches (that log stays
+    // bounded to the root checkout's HEAD history on purpose). Read-only,
+    // fails closed on any error, including no such project.
+    commitExists: async (projectId, sha) => {
+      const project = await projectService.get(projectId);
+      if (project === null) return false;
+      return gitObserver.commitExists(project.localPath, sha);
+    },
+    manifest: canonicalStore,
+    workspaceId: config.workspaceId,
+    report: (line) => app?.log.warn(line, 'Autopilot manifest policy refused'),
+  });
+  autopilotRef.current = autopilot;
   const leaseExpirySweeper = createLeaseExpirySweeper({
     now: Date.now,
     batchSize: setting(config, 'messageTimeoutBatchSize'),
@@ -811,6 +987,16 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   const nativeLinkRetentionSweeper = createNativeLinkRetentionSweeper({
     repository: createNativeLinkRetentionRepository({ repository }),
     retentionMax: setting(config, 'nativeLinkRetentionMax'),
+  });
+  // Terminal sessions are never trimmed on their own; this purges the old ones in
+  // bounded batches, riding the retention tick's already-read session list. The
+  // key removal is the same one project unregister uses (purgeTerminalSessionLeaves).
+  const terminalSessionRetentionSweeper = createTerminalSessionRetentionSweeper({
+    now: () => Date.now(),
+    retentionMs: setting(config, 'terminalSessionRetentionMs'),
+    batchSize: setting(config, 'terminalSessionSweepBatchSize'),
+    purge: ({ id, projectId, agentId }) =>
+      purgeTerminalSessionLeaves(connections.command, keys, id, agentId, projectId),
   });
   // Reads the developer's native transcripts and attributes each request's
   // tokens to the session that held the native session at that instant. The
@@ -1078,6 +1264,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       messageTimeoutSweeper.stop();
       leaseExpirySweeper.stop();
       nativeLinkRetentionSweeper.stop();
+      terminalSessionRetentionSweeper.stop();
       if (sweepTimer !== undefined) {
         clearInterval(sweepTimer);
       }
@@ -1175,6 +1362,12 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       config,
       redis: new ConnectionHealthGateway(connections.command),
       resources: () => hostResources.read(),
+      // The Knowledge lens reads the same graphify output the rebuild does.
+      readKnowledgeGraph: (localPath) =>
+        readGraphifyKnowledge({
+          localPath,
+          outputRelativePath: config.graphifyOutputPath ?? GRAPHIFY_OUTPUT_RELATIVE_PATH,
+        }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       runtimeInstanceId,
       runtimeState: () => readiness.state,
@@ -1193,6 +1386,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         sessions: sessionService,
         messages: messageService,
         leases: leaseService,
+        coordinator: coordinatorService,
+        projectUnregister: projectUnregisterService,
+        autopilot,
         controlPlane: controlPlaneService,
         configControl: configControlService,
         intelligence: intelligenceService,
@@ -1359,12 +1555,27 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
               // already read: a timer of its own would be a second thing to
               // clear on shutdown for no gain.
               await nativeLinkRetentionSweeper.sweepOnce(sessions.map(({ id }) => id));
+              // Same tick, same session list: purge the sessions that have been
+              // terminal past the retention age so the observed set stops growing.
+              await terminalSessionRetentionSweeper.sweepOnce(sessions);
+              // The autopilot reconciliation rides here too (ADR 0035): it repairs
+              // a dispatch interrupted between its steps and closes a task whose
+              // message ended while the inline seam was not there to see it.
+              await autopilot.reconcileOnce();
               await intelligenceRepository.runRetention({
                 now: new Date(),
                 usageRetentionDays: setting(config, 'usageRetentionDays'),
                 gitObservationRetentionCount: setting(config, 'gitObservationRetentionCount'),
                 graphGenerationRetentionCount: setting(config, 'graphGenerationRetentionCount'),
               });
+              // Shadows of rebuilds that failed or died, which nothing indexes or
+              // reads. Bounded per tick; the next tick drains what is left.
+              const orphans = await intelligenceRepository.purgeOrphanGraphGenerations({
+                maxKeys: GRAPH_ORPHAN_PURGE_MAX_KEYS_PER_TICK,
+              });
+              if (orphans.keysRemoved > 0) {
+                app?.log.info(orphans, 'Purged orphan graph generation keys');
+              }
             } finally {
               retaining = false;
             }
@@ -1384,9 +1595,20 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
         if (readiness.state !== 'ready') return;
         const scheduled = backgroundWork.run(
           async () => {
-            for (const project of await projectService.list()) {
-              refreshProject(project.id, 'periodic');
-            }
+            // Spread the per-project scans so the loop keeps servicing
+            // heartbeats between them; running all of them back-to-back blocked
+            // it long enough (≈20-30 s across the fleet) to lapse session
+            // presence and churn the workers. 2 s between projects; stop early
+            // when the runtime is draining.
+            await forEachSpaced(
+              await projectService.list(),
+              (project) => refreshProject(project.id, 'periodic'),
+              {
+                spacingMs: 2_000,
+                wait: (ms) => delay(ms),
+                keepGoing: () => readiness.state === 'ready',
+              },
+            );
           },
           (error) => app?.log.error({ err: error }, 'Periodic repository scan failed'),
         );

@@ -316,9 +316,24 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       });
       const received = new Promise<string>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error('WebSocket event timeout')), 2_000);
-        socket.once('message', (data) => {
-          clearTimeout(timeout);
-          resolve(data.toString());
+        // Background graph projections broadcast graph.node.projected on the same
+        // realtime stream, so wait for this session's status event specifically
+        // instead of grabbing whichever frame arrives first.
+        socket.on('message', (data) => {
+          const text = data.toString();
+          let frame: { event?: { type?: string; sessionId?: string } };
+          try {
+            frame = JSON.parse(text);
+          } catch {
+            return;
+          }
+          if (
+            frame.event?.type === 'session.status.changed' &&
+            frame.event?.sessionId === session.id
+          ) {
+            clearTimeout(timeout);
+            resolve(text);
+          }
         });
       });
       const status = await runtime.app.inject({
@@ -359,6 +374,82 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       expect(
         (await runtime.app.inject({ method: 'GET', url: '/api/v1/projects' })).statusCode,
       ).toBe(200);
+
+      // P12: closing a session releases the work-leases it held, so an
+      // overlapping acquire from another session succeeds at once instead of
+      // being refused by a dead holder until the five-minute deadline sweep.
+      const holder = (
+        await runtime.app.inject({
+          method: 'POST',
+          url: '/api/v1/sessions',
+          payload: {
+            projectId: project.id,
+            agentId: 'lease-holder',
+            workingDirectory: projectRoot,
+          },
+        })
+      ).json<{ id: string }>();
+      const acquired = await runtime.app.inject({
+        method: 'POST',
+        url: '/api/v1/leases',
+        payload: {
+          projectId: project.id,
+          sessionId: holder.id,
+          path: 'apps/daemon/src',
+          reason: 'p12 close release',
+        },
+      });
+      expect(acquired.statusCode).toBe(201);
+
+      const contender = (
+        await runtime.app.inject({
+          method: 'POST',
+          url: '/api/v1/sessions',
+          payload: {
+            projectId: project.id,
+            agentId: 'lease-contender',
+            workingDirectory: projectRoot,
+          },
+        })
+      ).json<{ id: string }>();
+      const overlap = {
+        projectId: project.id,
+        sessionId: contender.id,
+        path: 'apps/daemon/src/app.ts',
+        reason: 'p12 overlap',
+      };
+      const refused = await runtime.app.inject({
+        method: 'POST',
+        url: '/api/v1/leases',
+        payload: overlap,
+      });
+      expect(refused.statusCode).toBe(200);
+      expect(refused.json()).toMatchObject({
+        status: 'denied',
+        conflict: { sessionId: holder.id },
+      });
+
+      expect(
+        (
+          await runtime.app.inject({
+            method: 'POST',
+            url: `/api/v1/sessions/${holder.id}/close`,
+            payload: {},
+          })
+        ).statusCode,
+      ).toBe(200);
+
+      // The release runs just after the close returns (holder-side, fire and
+      // forget), so poll the overlapping path until it is free.
+      let regrantStatus = 0;
+      const releaseDeadline = Date.now() + 1_000;
+      while (regrantStatus !== 201 && Date.now() < releaseDeadline) {
+        await delay(10);
+        regrantStatus = (
+          await runtime.app.inject({ method: 'POST', url: '/api/v1/leases', payload: overlap })
+        ).statusCode;
+      }
+      expect(regrantStatus).toBe(201);
 
       await runtime.shutdown.shutdown('SIGTERM');
       runtime.shutdown.dispose();

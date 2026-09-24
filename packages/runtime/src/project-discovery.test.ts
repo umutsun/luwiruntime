@@ -48,6 +48,22 @@ const existingProjects: Project[] = Object.entries(names).map(([directory, name]
 }));
 
 describe('project discovery', () => {
+  it('refuses a root it cannot read as a caller error, not a crash', async () => {
+    const service = createProjectDiscoveryService({
+      platform: 'win32',
+      pathApi: posix,
+      fileSystem: {
+        canonicalize: async () => {
+          throw new Error('ENOENT');
+        },
+        listDirectory: async () => [],
+      },
+    });
+    await expect(
+      service.createPlan({ root, excludes: [], names: {}, existingProjects: [] }),
+    ).rejects.toMatchObject({ code: 'PROJECT_DISCOVERY_ROOT_INVALID', statusCode: 400 });
+  });
+
   it('selects the approved ten immediate projects and preserves canonical display names', async () => {
     const service = createProjectDiscoveryService({
       platform: 'win32',

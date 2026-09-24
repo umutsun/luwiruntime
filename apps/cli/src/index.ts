@@ -16,7 +16,9 @@ export type {
   RuntimeResetResult,
   SetupResult,
 } from './lifecycle.js';
-export { createProjectDiscoveryService } from './project-discovery.js';
+// Discovery moved to @luwi/runtime so the daemon can share it; re-exported here
+// so the CLI package's surface is unchanged.
+export { createProjectDiscoveryService } from '@luwi/runtime';
 export type {
   ProjectCandidate,
   ProjectDiscoveryEntry,
@@ -24,4 +26,4 @@ export type {
   ProjectDiscoveryPlan,
   ProjectDiscoveryService,
   ProjectDiscoveryServiceOptions,
-} from './project-discovery.js';
+} from '@luwi/runtime';

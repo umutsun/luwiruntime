@@ -1,4 +1,4 @@
-import type { SessionView, WorkLease } from '@luwi/protocol';
+import { LEASE_MAX_ACTIVE_PER_PROJECT, type SessionView, type WorkLease } from '@luwi/protocol';
 import type { LeaseRepository } from '@luwi/redis';
 import { ApplicationError } from '@luwi/runtime';
 import { describe, expect, it, vi } from 'vitest';
@@ -261,5 +261,71 @@ describe('createLeaseService list and expire', () => {
     });
 
     expect(await service.expire('lease-1')).toBe('expired');
+  });
+});
+
+describe('createLeaseService releaseForSession', () => {
+  const heldTwo: WorkLease = {
+    ...held,
+    id: 'lease-2',
+    path: 'apps/dashboard/src',
+    matchPath: 'apps/dashboard/src/',
+  };
+  const byId = (leases: WorkLease[]) => {
+    const map = new Map(leases.map((lease) => [lease.id, lease]));
+    return vi.fn().mockImplementation((id: string) => Promise.resolve(map.get(id) ?? null));
+  };
+
+  it('expires every lease a terminating session held, so a rotation orphans none', async () => {
+    const expireLease = vi.fn().mockResolvedValue({ status: 'updated', lease: held });
+    const listSessionLeases = vi.fn().mockResolvedValue([held, heldTwo]);
+    const service = build({ listSessionLeases, getLease: byId([held, heldTwo]), expireLease });
+
+    expect(await service.releaseForSession('session-a')).toBe(2);
+    expect(listSessionLeases).toHaveBeenCalledWith('session-a', LEASE_MAX_ACTIVE_PER_PROJECT);
+    expect(expireLease).toHaveBeenCalledTimes(2);
+    expect(expireLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lease: expect.objectContaining({ id: 'lease-1', state: 'expired' }),
+        event: expect.objectContaining({ type: 'lease.expired' }),
+      }),
+    );
+  });
+
+  it('is a no-op for a session that holds no leases', async () => {
+    const expireLease = vi.fn();
+    const service = build({ listSessionLeases: vi.fn().mockResolvedValue([]), expireLease });
+
+    expect(await service.releaseForSession('session-a')).toBe(0);
+    expect(expireLease).not.toHaveBeenCalled();
+  });
+
+  it('keeps releasing the rest when one lease fails, best-effort', async () => {
+    const expireLease = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('redis blip'))
+      .mockResolvedValueOnce({ status: 'updated', lease: heldTwo });
+    const service = build({
+      listSessionLeases: vi.fn().mockResolvedValue([held, heldTwo]),
+      getLease: byId([held, heldTwo]),
+      expireLease,
+    });
+
+    expect(await service.releaseForSession('session-a')).toBe(1);
+    expect(expireLease).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips a lease already gone between the list and the release, counting only real expiries', async () => {
+    const expireLease = vi.fn().mockResolvedValue({ status: 'updated', lease: held });
+    const service = build({
+      listSessionLeases: vi.fn().mockResolvedValue([held, heldTwo]),
+      // The second lease was released by its holder between the SMEMBERS and the
+      // re-read, so it is no longer 'held' and must not be expired a second time.
+      getLease: byId([held, { ...heldTwo, state: 'released' }]),
+      expireLease,
+    });
+
+    expect(await service.releaseForSession('session-a')).toBe(1);
+    expect(expireLease).toHaveBeenCalledTimes(1);
   });
 });

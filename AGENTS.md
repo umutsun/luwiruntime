@@ -314,7 +314,28 @@ luwi:v1:index:session:{sessionId}:messages:source
 luwi:v1:index:session:{sessionId}:messages:target
 ```
 
-Future tasks, leases, activity, lifecycle progress, and rankings may use additional sorted
+Autopilot (ADR 0035) adds, per project, a record hash, goal and task hashes, and their indexes:
+
+```text
+luwi:v1:project:{projectId}:autopilot
+luwi:v1:index:autopilot:projects
+luwi:v1:goal:{goalId}
+luwi:v1:index:project:{projectId}:goals
+luwi:v1:index:project:{projectId}:retrospectives
+luwi:v1:task:{taskId}
+luwi:v1:index:project:{projectId}:tasks
+luwi:v1:index:project:{projectId}:tasks:active
+luwi:v1:index:project:{projectId}:tasks:dispatches
+luwi:v1:index:goal:{goalId}:tasks
+```
+
+Every write is a compare-and-set on the record's own `version` through `luwi_autopilot_put_v1`,
+`luwi_goal_write_v1` or `luwi_task_write_v1`; `luwi_task_dispatch_v1` re-checks the in-flight
+count, the hourly window (`ZCOUNT`, never trimming) and path overlap atomically with the limits
+passed as arguments; `luwi_inbox_notice_v1` appends a coordinator wake-up to an existing session
+inbox, which the claim path returns once and acknowledges on delivery.
+
+Future activity, lifecycle progress, and rankings may use additional sorted
 sets only when their phases are approved.
 
 ### TTL state
@@ -455,6 +476,11 @@ message.rejected
 message.failed
 message.timed_out
 ```
+
+ADR 0035 added `autopilot.mode.changed`, `autopilot.policy.updated`, `autopilot.notice.queued`,
+`task.created|updated|gated|approved|rejected|dispatch.denied|dispatched|completed|cancelled|verified|rework.created`,
+`goal.created|planned|plan.approved|plan.rejected|started|replanned|escalated|answered|achieved|failed|abandoned|retrospective.written`
+and `orchestrator.judgment.decided`.
 
 Add event types only with a real transition, schema, persistence path, and tests.
 
@@ -599,6 +625,13 @@ long-lived LUWI session, and one headless native run per claimed message (`claud
 completes the message. The bridge writes only what the child left unfinished, and never `answered`.
 Everything after `--` is passed to the native CLI unchanged as its whole permission model; the
 bridge starts a new process and injects nothing into any terminal.
+
+`session bridge orchestrator --project <id> --brain <luwibot-ws|claude|codex|gemini|antigravity>`
+(ADR 0035) runs the autopilot loop for one project as the policy's coordinator session: it wakes on
+its inbox and a tick, computes the next actions with the pure `planCycle`, and applies them through
+the daemon's gated goal and task routes. The brain is asked bounded, schema-validated judgments
+(`plan`, `review`, `replan`, `summarize`) and is handed no LUWI session and no tool; a native brain
+run strips `LUWI_SESSION_ID` from its environment. The orchestrator never edits, tests or commits.
 
 `@luwi/mcp-server` is a thin stdio adapter bound to one registered online session. It
 validates daemon responses, derives source/responder identity from `LUWI_SESSION_ID`, and
@@ -1256,6 +1289,46 @@ output and never runs graphify or builds a graph of its own. This is **not** the
 knowledge graph the prohibition below still forbids: nothing here computes embeddings, similarity, or
 a LUWI-owned semantic index.
 
+**Built after ADR 0034 (2026-09-16).** ADR 0035 added the **per-project coordinator role**: an
+enforced single holder in `luwi:v1:project:{id}:coordinator`, two Functions (`coordinator_claim`,
+`coordinator_release`) with a read/decide/validate CAS on a per-claim `claimId` nonce — a version
+number alone is a reused token after a release and would let a stale takeover evict a newer live
+holder — behind `POST`/`DELETE`/`GET /api/v1/projects/:projectId/coordinator`; a live holder answers
+`409 COORDINATOR_CONFLICT`, a terminal one is taken over, and release is holder-only. The library
+version stays 12 (a new Function reloads on its own), so a daemon started before it needs one
+restart. The sessions view claims and releases it through `api/coordinator-mutations.ts`, the fourth
+allowlisted write module. The same tranche gave the native bridge lease-aware prompts (leases held by
+other sessions are prepended, best-effort, never a reason to fail a message), classified every ask's
+`delivery` as `live` (bridge target) or `deferred` (turn-based GUI) so `luwi_ask_agent` no longer
+blocks on a target that cannot answer before its next turn, reported delivery facts (never a score)
+on the overview, and stamped a session's client kind (`cli`/`gui`/`ide`/`bridge`) in free-form
+metadata with a dashboard-side derive fallback. Task orchestration remains outside the daemon: the
+implement → verify chain is a repository-external script that sends independent correlated messages
+as the coordinator holder and stops before any merge (the ADR 0031 precedent) — nothing here adds a
+daemon-side flow engine, scheduler, or auto-advance. The 2026-09-17 tranche then put the coordinator
+switch in the overview drill-down, gave the dashboard a served-build watch (`NEW BUILD · RELOAD`),
+logged the heartbeat and inbox-claim routes at warn, made graphify's output path configurable
+(`LUWI_GRAPHIFY_OUTPUT_PATH`, relative and inside the project), and added
+`GET /api/v1/projects/discover?root=` — one directory level, read-only, the CLI's discovery moved to
+`@luwi/runtime` so daemon and CLI share it — behind a "Scan a folder" flow that registers each ticked
+directory through the existing `POST /projects`. Nothing there writes outside the four allowlisted
+dashboard modules. F3 then added `DELETE /api/v1/projects/:projectId` (`luwi project unregister
+--yes`, "Unregister…" in the project drawer): unregister only, never a file; refused with the
+blocker named while a session is not terminal, a lease is held, a coordinator is live or a message
+is in flight; the canonical manifest is untracked before Redis so a restart cannot re-register the
+project; the leaves are purged in re-runnable batches by `createProjectPurge`; and
+`luwi_project_unregister_v1` ends it atomically — refusing while the project's session set still has
+a member — appending `project.unregistered` to the global stream only (library version still 12).
+F5 (ADR 0036) then added `flowRoles` (`implementer` / `verifier`, unique) to the project-agent
+binding — configuration the daemon records and the external flow script decides on, with no
+uniqueness rule and the coordinator deliberately excluded — and a fifth allowlisted dashboard write
+module, `api/capability-mutations.ts`, over the capability endpoints that already existed (enable,
+assign, unassign, scan). No new key, event type, Function or endpoint; LUWI still writes no
+`SKILL.md`. ADR 0037 then put `retryOf` on the message record (a declared re-dispatch link the
+daemon validates and records, never acts on) and moved `luwi_v1` to v13 for the record-shape
+change; the Delivery tile states re-dispatched and evidence-backed exchanges as facts, with the
+repository-external flow script as the only producer.
+
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers
 `POST /api/v1/config/reconcile`), lifecycle/release scoring, task orchestration, a semantic or
@@ -1263,3 +1336,17 @@ vector knowledge graph, memory federation, GitHub
 integration, prompt injection, automatic optimization apply, cloud accounts, authentication, or
 remote control-plane work until that specific scope is explicitly approved. Shipping one phase does
 not authorize the rest.
+
+### Built: per-project autopilot (ADR 0035, 2026-09-17)
+
+The owner's directive of 2026-09-17 ("let this session solve the multi-worker agent orchestration
+problem") approved and built the task-orchestration scope this section had held back, as ADR 0035
+records: a per-project autopilot record (`off | supervised | autopilot`, operator-only, never
+canonical), a filesystem-canonical policy in `.luwi/manifest.json`, goals as the unit of autonomy,
+tasks dispatched as ordinary `instruction` messages through one choke point, a LUWI-owned
+orchestrator loop in `@luwi/cli` with a pluggable brain, bounded verification, rework, escalation
+and a capped retrospective memory. `luwi_v1` is at **v13** with five new Functions. Ten MCP tools
+let a bound session read goals and tasks, create a goal, and — only when the policy names its agent
+as an operator proxy — approve, reject, answer and abandon on the operator's behalf. Not built: a
+dashboard section, a `hermes` brain provider, `luwi autopilot up`, terminal-task retention, the
+`proactive` level, and the transcript-based `scope_exceeded` check. Each remains new scope.

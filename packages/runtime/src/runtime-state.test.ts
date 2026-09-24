@@ -15,7 +15,7 @@ describe('runtime state', () => {
         startedAt: new Date('2026-07-28T08:00:00.000Z'),
       }),
     ).toEqual({
-      version: '0.1.0',
+      version: '0.2.0',
       protocolVersion: 1,
       workspaceId: 'workspace-1',
       startedAt: '2026-07-28T08:00:00.000Z',

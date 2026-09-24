@@ -151,7 +151,9 @@ describe('resourcesOf', () => {
     expect(Object.keys(resourcesOf(input())).sort()).toEqual([
       'activity',
       'agents',
+      'bindings',
       'context',
+      'coordinator',
       'findings',
       'git',
       'health',

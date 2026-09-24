@@ -4,6 +4,7 @@ import {
   type AgentMessageResponse,
   type InboxClaimResponse,
   type SessionStatusTarget,
+  type WorkLease,
 } from '@luwi/protocol';
 
 /**
@@ -31,6 +32,8 @@ export interface BridgeDaemonClient {
     },
   ): Promise<InboxClaimResponse>;
   getMessage(correlationId: string): Promise<AgentMessage>;
+  /** Advisory work leases in the bridge's project (ADR 0020), for prompt coordination context. */
+  listLeases(projectId: string): Promise<{ leases: readonly WorkLease[]; truncated: boolean }>;
   transitionMessage(
     action: 'acknowledge' | 'processing',
     sessionId: string,

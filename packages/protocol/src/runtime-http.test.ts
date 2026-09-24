@@ -22,7 +22,7 @@ describe('runtime HTTP response schemas', () => {
     const response: HealthResponse = {
       status: 'ok',
       runtimeState: 'ready',
-      version: '0.1.0',
+      version: '0.2.0',
       uptimeMs: 2500,
       redis: {
         connected: true,
@@ -40,7 +40,7 @@ describe('runtime HTTP response schemas', () => {
       healthResponseSchema.parse({
         status: 'ok',
         runtimeState: 'ready',
-        version: '0.1.0',
+        version: '0.2.0',
         uptimeMs: 2500,
         redis: {
           connected: false,
@@ -60,7 +60,7 @@ describe('runtime HTTP response schemas', () => {
       healthResponseSchema.parse({
         status: 'degraded',
         runtimeState: 'recovering',
-        version: '0.1.0',
+        version: '0.2.0',
         uptimeMs: 2500,
         redis: {
           connected: true,
@@ -80,7 +80,7 @@ describe('runtime HTTP response schemas', () => {
 
   it('validates versioned runtime information without exposing a Redis URL', () => {
     const response: RuntimeInfoResponse = {
-      version: '0.1.0',
+      version: '0.2.0',
       protocolVersion: 1,
       runtimeState: 'ready',
       runtimeInstanceId: 'runtime-1',

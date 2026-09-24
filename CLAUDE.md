@@ -72,6 +72,10 @@ History is short and every commit is a large checkpoint:
 | `5f1bd98` | ADR 0023 B0: post-registration native session declaration      |
 | `0411b53` | ADR 0023 B1: transcript reader and usage session attribution   |
 
+The table stops at ADR 0023 B1. The checkpoints since — ADR 0024 through 0035, the overview
+redesign, the Faz 2/3 fleet coordination, the client kind — are in `git log` and summarised under
+**Current implementation status** below and in `README.md`.
+
 Phases 2 through 5C landed as one commit because they are not separable at file level: protocol
 schemas, Redis repositories, and daemon services each carry several phases' concerns in the same
 modules, and the intermediate states never existed. Do not try to reconstruct them.
@@ -112,7 +116,7 @@ Verified, and different from what `AGENTS.md` §17 assumes:
 | Docker | **not installed** — `docker compose up -d redis` does not work here      |
 | jq     | not installed — do not write hooks or scripts that depend on it          |
 
-Memurai supports Redis Functions fully; `luwi_v1` (30 functions since ADR 0033; a daemon started earlier still holds 29) is already loaded on the server.
+Memurai supports Redis Functions fully; `luwi_v1` (39 registered Functions and library **v14** since the autopilot merge — the fleet line's `project_unregister`/`retryOf` set plus ADR 0035's five autopilot Functions `autopilot_put`/`goal_write`/`task_write`/`task_dispatch`/`inbox_notice`; a record-shape change moves the version, a new Function alone reloads without a bump, and either way a daemon started before it needs one restart) is already loaded on the server.
 
 ## Tools and shells
 
@@ -160,9 +164,24 @@ rendered the branch, tag, and worktree evidence the Git observation was already 
 
 Not implemented, and per §21 still explicitly out of scope without approval: automatic drift
 reconciliation (distinct from the implemented `POST /api/v1/config/reconcile`, which recovers
-interrupted apply operations at daemon start), lifecycle/release scoring, task orchestration,
-semantic or vector knowledge graph, memory federation, GitHub integration, prompt injection,
-cloud accounts, authentication, remote control-plane work.
+interrupted apply operations at daemon start), lifecycle/release scoring, semantic or vector
+knowledge graph, memory federation, GitHub integration, prompt injection, cloud accounts,
+authentication, remote control-plane work. Task orchestration is **built** as per-project autopilot
+(ADR 0035, below).
+
+**ADR 0035 (2026-09-17) built per-project autopilot.** `luwi autopilot policy` declares the
+coordinator agent, the workers, a read-only reviewer, the operator-proxy agents (the LuwiBot chat,
+so the human there can approve and answer), protected paths and budgets — written to the project's
+`.luwi/manifest.json` and projected into Redis at every owned start. `luwi autopilot mode
+off|supervised|autopilot` is operator-only and never canonical. `luwi goal create` (or the bot's
+`luwi_create_goal`) opens a goal; `luwi session bridge orchestrator --project <id> --brain
+<luwibot-ws|claude|codex|gemini|antigravity>` runs the LUWI-owned loop that plans it through the brain,
+dispatches tasks to the ADR 0031 bridge workers as ordinary `instruction` messages, verifies
+completions (evidence, commits, test claim, then a reviewer task, then a `review` judgment), reworks
+once, and parks a goal `blocked` with one question the operator answers. Read
+`docs/guides/autopilot.md` before running it. Three traps: **the daemon must be restarted once** for
+`luwi_v1` v13; a coordinator `instruction` outside a task is refused (`AUTOPILOT_DISPATCH_REQUIRED`);
+and a task with no declared paths counts as the whole project, so it gates on any protected path.
 
 ADR 0018 then removed the reason those domains were deferred. `pnpm seed` populates an isolated
 fixture runtime, and three of them were built on it: `#/messages`, effective agent configuration,
@@ -189,7 +208,8 @@ time-bounded link per LUWI session. Identity carries no presence, project or age
 refused rather than evicted; a conflict writes nothing; missing evidence is
 `NATIVE_BINDING_INCONSISTENT`. Policy is a pure `@luwi/runtime` function and Lua only validates a
 CAS on a monotonic `version`, **before `XGROUP CREATE`** so a refusal leaves no inbox stream.
-`luwi_v1` is at **v12** (B1 moved it; see below).
+`luwi_v1` is at **v14** (the autopilot merge combined ADR 0037's `retryOf` and ADR 0035's
+autopilot/goal/task records, each of which independently reached 13; see below).
 
 ADR 0023 then approved the next item in the sequence — **native transcript ingestion** — and
 specified it as B0 / B1 / B2. **B0, B1 and B2 are all built.**
@@ -271,10 +291,13 @@ Two consequences to know before touching the daemon or the dashboard:
   `403 REQUEST_ORIGIN_REJECTED`. `PUT`, `PATCH` and `DELETE` are unaffected — a cross-site one of
   those always preflights and the daemon answers no preflight. A test that injects a bodyless POST
   now fails; real callers pass `{}`, which is what makes Fastify's `inject` set the header.
-- **Three dashboard modules may write, and only those:** `api/config-mutations.ts` (ADR 0021),
-  `api/message-mutations.ts` (ADR 0018) and `api/project-mutations.ts` (ADR 0033: register a
-  project, edit its name/remote/default branch — never its path).
-  `product-independence.test.ts` is an allowlist of exactly those three and fails if one goes
+- **Five dashboard modules may write, and only those:** `api/config-mutations.ts` (ADR 0021),
+  `api/message-mutations.ts` (ADR 0018), `api/project-mutations.ts` (ADR 0033: register a
+  project, edit its name/remote/default branch — never its path; ADR 0036: the flow roles on a
+  project-agent binding), `api/coordinator-mutations.ts` (ADR 0035: claim or release the
+  per-project coordinator role) and `api/capability-mutations.ts` (ADR 0036: enable/disable,
+  assign/unassign and rescan capabilities through the daemon's existing endpoints).
+  `product-independence.test.ts` is an allowlist of exactly those five and fails if one goes
   missing, so it cannot pass vacuously. A mutation anywhere else is a test failure by design.
   ADR 0033 also added the first project _update_ transition — `luwi_project_update_v1`, one
   atomic Function for the hash fields and the `project.updated` event, behind
@@ -450,6 +473,179 @@ the dropped record and the MCP server keeps it alive with its own bootstrap (`se
 the session file supersedes the successor. A running `session attach` and a running MCP server
 both keep the code they started with, so a GUI gets the fix only after both restart.
 
+**ADR 0035 (2026-09-16) added the per-project coordinator role, and the same tranche the fleet
+coordination it serves.** One enforced holder per project in `luwi:v1:project:{id}:coordinator`:
+`coordinator_claim`/`coordinator_release` are read/decide/validate CAS Functions like ADR 0022,
+behind `POST`/`DELETE`/`GET /api/v1/projects/:projectId/coordinator` — a live holder answers
+`409 COORDINATOR_CONFLICT`, a terminal holder is taken over, release is holder-only. **Trap both
+reviews caught:** a release `DEL`s the key, so `version` restarts at 1 and is a _reused_ token; the
+takeover CAS therefore asserts a per-claim `claimId` nonce, never the version alone. The library
+version stays 12, so **a daemon started before it must be restarted once** before a claim can
+succeed. The sessions view claims and releases through `api/coordinator-mutations.ts` (the fourth
+write module). The native bridge prepends the leases _other_ sessions hold to each worker prompt
+(best-effort; dropped, never failed, when it would push the prompt past the 30 KB cap). Every ask
+carries `delivery: 'live' | 'deferred'` — `live` only when the target has a non-empty
+`metadata.bridge` **and** is online and non-terminal (a dead bridge once read `live` and produced
+false timeouts); `luwi_ask_agent` returns immediately for a deferred target. Sessions carry a client
+kind (`cli`/`gui`/`ide`/`bridge`): `deriveClientKind` in `pulse/model.ts` honours `metadata.client`,
+else `bridge` → title→`gui` → `cli`; `agent run`, the native bridge and the Antigravity hook stamp
+theirs, while the claude/codex hooks deliberately do not (threading a flag through their
+dry-run→launcher plumbing is not worth the risk to live attribution) and derive `gui` from their
+title. Implement→verify orchestration is a repository-external script (`flow.mjs` in the Albanoosh
+scaffold) that chains correlated messages as the coordinator and stops before any merge — §21 still
+forbids a daemon-side flow engine.
+
+**The 2026-09-17 gap-closing tranche, built while a parallel session piloted LUWI on Albanoosh (so
+the live daemon was never restarted).** The coordinator switch now also lives in the overview's
+session drill-down (`Overview.coordinatorByProject`, `coordinatorFact`, a `coordinator` panel link
+the drill-down renders only when the shell wires the mutation). **Stale-tab trap, fixed:** the
+daemon serves `index.html` with `no-store` and hashed assets `immutable`, so a reload always gets the
+current build — but an open tab never learns of one; twice the owner read a stale tab as feedback
+being ignored. `use-build-watch.ts` polls `index.html` (mount, 60 s, tab visible), compares the
+hashed bundle to the running module script, and the header shows `NEW BUILD · RELOAD`. **Version
+bump trap:** `LUWI_RUNTIME_VERSION` (`packages/protocol/src/version.ts`) is a `z.literal` in the
+health/runtime response schemas, so a bumped CLI or dashboard dist _rejects_ an older daemon's
+`/health` — bump, build and restart are one atomic step, and even `tsc -b` from `pnpm typecheck`
+leaks a bump into dist. **Measured on the 0.2.0 deploy:** the freshly built CLI could not even
+_stop_ the old daemon — it read the old `/health`, failed the literal, and reported
+`DAEMON_PORT_CONFLICT` ("occupied by an incompatible listener") for both `stop` and `start`. The way
+through is the same endpoint the CLI uses, called directly: `POST /api/v1/runtime/stop` with
+`x-luwi-lifecycle-token` from `~/.luwi/runtime/daemon-owner.json` (`token` field) and
+`content-type: application/json`, then `luwi start` with the new dist. And `luwi start` reporting
+`DAEMON_START_TIMEOUT` is not proof the daemon died: the readiness deadline is shorter than a cold
+start with a warm Redis, so check `/health` before retrying (the 0.2.0 daemon was up ten seconds
+after that message). **And the mirror trap (2026-09-17): a `luwi stop` that returns
+`DAEMON_PORT_CONFLICT` may have left the daemon running** — it is a transient lifecycle-lock race
+with the albanoosh manager, and the following `luwi start` then reports the still-running old process
+as "ready". The build is on `dist/` but the live process never reloaded it, and a `200` from a route
+proves nothing. After any restart, confirm the process actually cycled: `GET /api/v1/runtime` and
+check `uptimeMs` is small and `runtimeInstanceId` changed. Re-running `luwi stop` cleared the lock;
+the manager's `ensureDaemon` then brought it back fresh. **Prepared, not deployed** (a lifecycle restart is needed): the heartbeat
+and inbox-claim routes log at `warn` (the in-run driver of the 979 MB `daemon.log`; `buildDaemon`'s
+`logger` option takes a `stream` so a test can read what would have been written),
+`LUWI_GRAPHIFY_OUTPUT_PATH` (relative, no `..`/absolute/drive/UNC, refused at config time), and
+`GET /api/v1/projects/discover?root=` — one directory level, read-only, the CLI's discovery moved to
+`@luwi/runtime` so both share it — behind the `PROJECTS` menu's "Scan a folder…" (typed root, no
+folder picker; each ticked folder registered through the existing `project-mutations.register`, so
+no fifth write module). Until that restart the live daemon answers the discover route with 404 and
+the panel shows the daemon's words.
+
+**F3 (2026-09-17) added project unregister** — `DELETE /api/v1/projects/:projectId`, `luwi project
+unregister <id> --yes`, "Unregister…" in the project drawer behind a `ConfirmDialog`; spec at
+`docs/superpowers/specs/2026-09-17-project-unregister-design.md`. Unregister only: the files and
+`.luwi` stay. `project-unregister-service.ts` refuses (409, scalar `details`) while a session is not
+terminal, a lease is held, a coordinator is live or a message is in flight — **no force** — then
+untracks the manifest first (`canonicalStore.untrackProject`; the opposite order lets a restart
+re-register the project under a new id), purges the leaves through `packages/redis/src/project-purge.ts`
+(plain commands, re-runnable, every key from `redis-keys.ts`), and ends with
+`luwi_project_unregister_v1` (7 declared keys; refuses `raced` while the project's session set has a
+member; appends `project.unregistered` to the global stream only). Three traps measured while
+building it: `ApplicationError.details` admits scalars only — blocker id lists travel as one
+comma-separated string; a one-pass purge that checked each session as it went deleted the first
+terminal session before refusing on the second (the db15 zero-residue test caught it) — every
+family now reads all its blockers before writing anything; and the usage metric counters are
+**not** all aggregate — `metrics:project:<id>:…` and `metrics:session:<id>:…` (all-time and per
+`day:`) carry the id in the key and go with the project, while agent- and workspace-scoped ones
+stay. Released lease records were never indexed by project and stay (a retention concern).
+The §7 review then added four guards: message hashes are **field-based** (`message_request` HSETs
+them; a `json` read is always null), so the purge reads them with `HMGET` and refuses on a
+non-terminal `state`; a blocker the purge meets after the untrack re-tracks the manifest and
+answers the same 409 (not a 500 with the project silently untracked); the service waits, bounded
+(10 s), for the background project refresh a session close schedules, so no scan writes evidence
+after the project is gone; and an index member that fails `isSafeKeyPart` is removed from its index
+and counted (`unsafeMembersDropped`) rather than interpolated into a key. Only `luwi_v1` stays
+loaded on this server: integration runs load a per-run `luwi_test_run_<id>_v1` library and delete
+it at teardown, so the live daemon keeps the Function set it started with.
+
+**F5 (2026-09-17, ADR 0036) added flow roles and dashboard skill management.** The project-agent
+binding gained `flowRoles?: ['implementer' | 'verifier']` (unique, ≤2) beside its free-text `role`
+— which the pilot already used as an area description (`"backend/migrations/infra/CI"`) and which
+nothing rendered. No new key, event type or Function: the field rides on the create/patch schemas,
+`<project>/.luwi/agent-bindings.json` and the Redis record, and `project.agent.updated` carries it.
+**The coordinator is not a flow role** (a session claim, ADR 0035) and **the daemon enforces no
+verifier uniqueness** — the repo-external `flow.mjs` reads `GET /projects/:id/agents` and refuses
+to dispatch on none / two / not-a-worker / same-agent. The project drawer's "Bound agents" table
+shows the role and toggles the flow roles through `project-mutations.updateAgentBinding`; its Skills
+panel enables/disables (hidden for an `observed` package — the daemon refuses, `SKILL.md` is the
+truth), assigns/unassigns to the project or the selected agent, and rescans, all through the new
+fifth allowlisted `api/capability-mutations.ts` over endpoints that already existed on HTTP and the
+CLI. Declined on purpose: LUWI writing a `SKILL.md`, a `.luwi/roles.md`, MCP capability writes. A
+PATCH carrying `flowRoles` is refused by a daemon started before this (strict schema) until it is
+restarted; the capability mutations need no restart. The same afternoon the roles reached the
+overview: the pulse gained a `bindings` fan-out (`GET /projects/:id/agents` per project, the same
+bounded shape as git and the coordinator; `project.agent.*` invalidates it), the snapshot carries
+`flowRolesByProject` (enabled bindings with at least one role, by project then agent), the sessions
+table chips a row with its agent's roles beside the Coordinator badge, and the drill-down states
+`Flow roles` on a project and `Flow role` on a session beside the coordinator fact.
+
+**ADR 0037 (2026-09-17) built the two Delivery facts Faz 3.2 deferred.** The message record gained
+`retryOf` (the correlation id of the exchange this one re-asks): the daemon checks it exists, is
+the source's project and is terminal (`RETRY_OF_NOT_FOUND` / `RETRY_OF_PROJECT_MISMATCH` /
+`RETRY_OF_NOT_TERMINAL`), `message_request` HSETs it and carries it in the `message.requested`
+payload, the projection returns it, the fingerprint includes it **only when present** (the §7
+review caught `retryOf: null` in the canonical object — that changes every pre-deploy fingerprint,
+so an idempotent replay straddling the restart would answer `IDEMPOTENCY_KEY_CONFLICT` against its
+own message; a golden fingerprint test now pins the old shape); **`luwi_v1` moved to v13** because
+a stored record's shape changed (the registry's rule — a new Function alone never moves it). `luwi
+message ask --retry-of`, `luwi_ask_agent` `retryOf`. The dashboard's message read keeps
+`evidenceTypes`, and the Delivery tile's sub-line states `N re-dispatched` and `verified X%`
+(answered exchanges carrying `test_result`/`build_result` evidence) — facts, never a score. The
+producer is `flow.mjs`: a re-run after a receipt that did not pass declares `--retry-of`
+(`redispatch.mjs`), and the verify prompt asks for `test_result` evidence through
+`luwi_respond_to_message`. **Three traps while building it:** the repository's `parseStoredMessage`
+whitelists optional string fields (`subject`, `acknowledgedAt`, …) — a new optional field must be
+added there or `getMessage` silently drops it while the Function's own return carries it; an
+integration run started while `prettier --write` or `tsc -b` was still touching a source can
+transform a stale module (a "missing field" that a re-run does not reproduce); and the message
+integration fixtures share one idempotency-key namespace across tests, so a new test must pick
+hashes no later test reuses (`'d'.repeat(64)` was taken) or the later test reads `existing`. **And
+one found by the deploy check:** `POST /api/v1/messages` parsed its body with a raw
+`schema.parse`, so every malformed ask (blank source, unknown kind, blank `retryOf`) answered
+`500 INTERNAL_ERROR` — an agent reads that as "daemon down". A route body goes through
+`parseRequestInput` (→ `400 REQUEST_VALIDATION_FAILED`), never a raw parse; `app-phase2.test.ts`
+pins it.
+
+**A bulk read must not let one poison record abort the batch (2026-09-17, live-measured).** The
+pilot's daemon logged `Redis contains an invalid session projection` — thrown by `getSession` —
+which then failed `listSessions`, and through it the retention sweep, native-title resolution, the
+starting-session reaper and the message-target list, because `listSessions` assembled with
+`Promise.all(getSession)`: one rejected read rejects the whole batch. No record was permanently
+corrupt (a db0 sweep of all 2595 indexed sessions found zero); the record was caught mid-lifecycle
+in the `SMEMBERS`→`HGETALL` window (a session being registered or closed sits in the project set
+while its hash is partial or gone). `listSessions` now uses `Promise.allSettled` and drops a
+rejected or null read; the single-lookup `getSession(id)` stays strict, because a caller that named
+one session must hear the truth about it, not a silent null. The rule generalises: a bulk listing
+tolerates one unreadable member and stays race-consistent; a targeted read does not.
+
+**A scan-time stamp is not a change (2026-09-19, live-measured).** The pilot's coordinator session
+expired on every five-minute tick and the daemon logged Redis `TimeoutError`s; Redis, its BGSAVE and
+the transcript scans were each measured and exonerated. The incremental projection had failed 1008
+times in a row and never stopped running: `replaceGraphSnapshot` diffed by full JSON equality while
+observers stamp `observedAt` with the scan time, so an unchanged project produced ~566 000 batch
+operations against `transitionWithEvent`'s 100 000 limit, and `runProjection`'s bare `catch {}` kept
+the reason. The diff now ignores `observedAt` (an unchanged record keeps the time it was first seen),
+and `onProjectionFailure` hands the reason to the daemon's log. Two costs rode along: the
+projection's structure scan walked the filesystem — 443 s across the registered projects, 350 s of
+it 20 000 untracked `temp/worktrees/` files where git tracks 250 — and now takes the git-tracked
+list the package inventory already used (31 s, walk as fallback); and `transitionWithEvent` found
+each operation's key with `indexOf`, 5 985 ms synchronous for a 30 000-node batch, now a map. The
+rule generalises: before comparing two observations, drop the field that says when you looked.
+`scanPackages` still rewrites the inventory and reprojects on every tick (`detectedAt` is a scan
+time too) — a candidate if a post-deploy probe still shows stalls. No `luwi_v1` bump; **a
+daemon started before it must be restarted once**.
+
+**And the diff baseline read must be batched (2026-09-19, live-measured after the first deploy).**
+With the writes fixed and the graph halved, one residual ~2.3 s event-loop stall per tick remained
+and still rotated the fleet coordinator, because the manager heartbeats it through a CLI call with a
+2 s timeout. Measured: it was not the diff (168 ms synchronous, zero ops on a quiet tick) but
+`readGraphGeneration` reading the whole active generation one sequential `HGET` at a time to build
+the diff baseline — 52 000 round trips, 8.7 s of interleaved I/O that kept the loop busy. The reads
+now go through `readMany`, chunked `Promise.all` of 500 (node-redis pipelines a chunk into one round
+trip): the same generation read dropped from 8.7 s to ~0.6 s (29 806 node records 4096 ms → 311 ms
+measured standalone). Order, the node/edge caps, the null-skip and the per-record `parse` throw are
+all preserved, so the read API that shares this path only gets faster. This is a second restart
+after the first deploy.
+
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.
 
@@ -460,11 +656,14 @@ There is deliberately **no `.mcp.json`**. `apps/mcp-server/src/main.ts` calls
 unless the daemon is running and `LUWI_SESSION_ID` names a live, non-terminal session. Session IDs
 are runtime identity, not configuration — they go stale on every daemon restart.
 
-The server exposes 36 `luwi_*` tools, and "read-only" was never accurate for all of them: by the
-daemon method each one calls, **25 are reads and 11 write** coordination state — the messaging
-transitions, a bounded optimization analysis request, and since ADR 0020 three of the four
-work-lease tools. Counting the messaging, optimization and lease families whole gives 14, but three
-of their members only read: `luwi_await_response` and `luwi_get_message` are `GET
+The server exposes 47 `luwi_*` tools, and "read-only" was never accurate for all of them: by the
+daemon method each one calls, **30 are reads and 17 write** coordination state — the messaging
+transitions, a bounded optimization analysis request, since ADR 0020 three of the four work-lease
+tools, since ADR 0034 `luwi_join` (which registers a successor for a dropped session), and since
+ADR 0035 `luwi_create_goal` plus the four operator-proxy tools (`luwi_approve_plan`,
+`luwi_reject_plan`, `luwi_answer_goal`, `luwi_abandon_goal`), which the daemon refuses unless the
+project's policy names the bound session's agent as an operator proxy. Three of the messaging,
+optimization and lease members only read: `luwi_await_response` and `luwi_get_message` are `GET
 /api/v1/messages/…`, and `luwi_list_leases` is `GET /api/v1/leases`. Control-plane writes (config
 approval/apply, rollback, graph rebuild, Git mutation) are never exposed, per `AGENTS.md` §12.
 

@@ -97,6 +97,13 @@ const GRAPH_REBUILD_MAX_INPUTS = 100_000;
  */
 const DEFAULT_GRAPH_REBUILD_RENEW_INTERVAL_MS = 60_000;
 
+/**
+ * How many of its shadow's keys a failed rebuild deletes before it rethrows. A
+ * full shadow on this machine is ~60 000 keys; what a bound leaves is
+ * unindexed, so the retention tick's orphan sweep drains the rest.
+ */
+const GRAPH_SHADOW_DISCARD_MAX_KEYS = 100_000;
+
 export type IntelligenceServiceOptions = {
   repository: IntelligenceRepository;
   projects: ProjectService;
@@ -147,6 +154,13 @@ export type IntelligenceServiceOptions = {
    * safely.
    */
   projectionStopped?: () => boolean;
+  /**
+   * Hears why a reprojection failed. The failure record carries a constant
+   * code, so without this the reason is lost: 1008 projections once failed in
+   * a row on the batch operation limit and nothing said so. Not called during
+   * shutdown, where a closing connection fails the run in flight by design.
+   */
+  onProjectionFailure?: (error: unknown, operation: string) => void;
 };
 
 export type ContextIntelligence = {
@@ -234,6 +248,44 @@ function scopedGraphEntityId(projectId: string, entityId: string): string {
     .slice(0, 40)}`;
 }
 
+function inventoryFingerprint(
+  packages: readonly PackageRecord[],
+  technologies: readonly TechnologyRecord[],
+): string {
+  const withoutDetectedAt = (record: PackageRecord | TechnologyRecord): Record<string, unknown> => {
+    const clone: Record<string, unknown> = { ...record };
+    delete clone.detectedAt;
+    return clone;
+  };
+  const byId = (left: { id: string }, right: { id: string }): number =>
+    left.id.localeCompare(right.id);
+  return JSON.stringify({
+    packages: [...packages].sort(byId).map(withoutDetectedAt),
+    technologies: [...technologies].sort(byId).map(withoutDetectedAt),
+  });
+}
+
+/**
+ * Whether a fresh package scan matches the stored inventory. A scan runs on every
+ * git-scan tick, but packages rarely change between scans, and replacing the
+ * inventory then reprojecting is pure waste when nothing changed — the
+ * reprojection reads the whole active generation, and that Redis work is a driver
+ * of the tick contention that times out heartbeats. `detectedAt` is a scan-time
+ * stamp, so it is stripped before comparing, exactly the field the graph
+ * projection diff already ignores. Exported for its own unit test.
+ */
+export function samePackageInventory(
+  storedPackages: readonly PackageRecord[],
+  storedTechnologies: readonly TechnologyRecord[],
+  freshPackages: readonly PackageRecord[],
+  freshTechnologies: readonly TechnologyRecord[],
+): boolean {
+  return (
+    inventoryFingerprint(storedPackages, storedTechnologies) ===
+    inventoryFingerprint(freshPackages, freshTechnologies)
+  );
+}
+
 /**
  * Provenance for a `SESSION_CHANGED_FILE` edge (B2). It marks the transcript
  * observer so its edges stay distinguishable from the event-derived and
@@ -288,11 +340,44 @@ export function createIntelligenceService(
    * any time and needs no second source of truth. A project whose path is gone
    * simply contributes no structural layer.
    */
-  const observeCodeStructure = async (
-    localPath: string,
-  ): Promise<CodeStructureObservation | null> => {
+  /**
+   * The last structural scan per project, keyed on the git state hash it was
+   * scanned at. A whole-fleet reprojection fires on any one project's git flip
+   * (or a transcript tick), but re-parsing every project's tracked files each
+   * time is the ~31s loop-blocking cost that starves heartbeats. Keyed on the
+   * same `repositoryStateHash` scanGit uses to decide a project changed, only
+   * the project whose git state actually flipped re-parses; the rest reuse
+   * their last scan. A project with no git observation has no stable key and so
+   * always scans (unchanged from before).
+   */
+  const codeStructureCache = new Map<
+    string,
+    { hash: string; observation: CodeStructureObservation | null }
+  >();
+  const observeCodeStructure = async (project: {
+    id: string;
+    localPath: string;
+  }): Promise<CodeStructureObservation | null> => {
+    const hash = (await options.repository.getCurrentGitObservation(project.id).catch(() => null))
+      ?.repositoryStateHash;
+    if (hash !== undefined) {
+      const cached = codeStructureCache.get(project.id);
+      if (cached !== undefined && cached.hash === hash) return cached.observation;
+    }
     try {
-      return await codeStructureObserver.scan({ localPath });
+      // The files git tracks, as the package inventory reads them. A walk also
+      // follows untracked worktree copies and build output: on one registered
+      // project that was 20 000 files and 350 s where git tracks 250. A path
+      // that is no repository, or a listing that fails, still gets the walk.
+      const trackedPaths = await gitObserver
+        .listTrackedFiles(project.localPath)
+        .catch(() => undefined);
+      const observation = await codeStructureObserver.scan({
+        localPath: project.localPath,
+        ...(trackedPaths === undefined ? {} : { trackedPaths }),
+      });
+      if (hash !== undefined) codeStructureCache.set(project.id, { hash, observation });
+      return observation;
     } catch {
       return null;
     }
@@ -857,7 +942,7 @@ export function createIntelligenceService(
       // Structural projection (ADR 0012). A failed or absent scan leaves the
       // structural layer out entirely rather than degrading the operational
       // one — the graph is allowed to be incomplete, never wrong.
-      const structure = await observeCodeStructure(project.localPath);
+      const structure = await observeCodeStructure(project);
       if (structure !== null) {
         const structuralFiles = new Map<string, string>();
         // Counted once, not filtered per file: on a 20 000-file project the
@@ -1315,7 +1400,8 @@ export function createIntelligenceService(
           },
         ),
       );
-    } catch {
+    } catch (error) {
+      if (options.projectionStopped?.() !== true) options.onProjectionFailure?.(error, operation);
       await options.repository.recordGraphProjectionFailure({
         id: createId(),
         operation,
@@ -1793,24 +1879,42 @@ export function createIntelligenceService(
           localPath: project.canonicalPath,
           ...(trackedPaths === undefined ? {} : { trackedPaths }),
         });
-        await options.repository.replacePackageInventory(
-          projectId,
-          result.packages,
-          result.technologies,
-          result.workspaceLocations,
-          event(
-            'package.inventory.updated',
-            { projectId },
-            {
-              packageCount: result.packages.length,
-              technologyCount: result.technologies.length,
-              manifestCount: result.manifestCount,
-              truncated: result.truncated,
-              evidenceScope: result.evidenceScope,
-            },
-          ),
-        );
-        projectIncrementally('package-scan', projectId);
+        // Skip the write, the event, and the reprojection when the inventory is
+        // unchanged: this scan runs every git-scan tick but packages rarely change
+        // between scans, and the reprojection it triggers reads the whole active
+        // generation. A truncated scan always writes — its comparison is partial.
+        const [storedPackages, storedTechnologies] = await Promise.all([
+          options.repository.listPackages(projectId),
+          options.repository.listTechnologies(projectId),
+        ]);
+        const changed =
+          result.truncated ||
+          !samePackageInventory(
+            storedPackages,
+            storedTechnologies,
+            result.packages,
+            result.technologies,
+          );
+        if (changed) {
+          await options.repository.replacePackageInventory(
+            projectId,
+            result.packages,
+            result.technologies,
+            result.workspaceLocations,
+            event(
+              'package.inventory.updated',
+              { projectId },
+              {
+                packageCount: result.packages.length,
+                technologyCount: result.technologies.length,
+                manifestCount: result.manifestCount,
+                truncated: result.truncated,
+                evidenceScope: result.evidenceScope,
+              },
+            ),
+          );
+          projectIncrementally('package-scan', projectId);
+        }
         return {
           packages: result.packages,
           technologies: result.technologies,
@@ -2095,22 +2199,32 @@ export function createIntelligenceService(
           failureSummary: [reason],
           completedAt: now().toISOString(),
         });
+        let refused: string | undefined;
         try {
           await options.repository.failGraphRebuild(
             failed,
             event('graph.rebuild.failed', {}, { operationId, failureCount: 1 }),
           );
         } catch (transition) {
-          const detail = transition instanceof Error ? transition.message : 'unknown';
-          throw new ApplicationError(
-            'GRAPH_REBUILD_FAILED',
-            `The graph rebuild failed: ${reason} (recording the failure was refused: ${detail})`,
-            503,
+          refused = transition instanceof Error ? transition.message : 'unknown';
+        }
+        // The write loop has stopped, so nothing writes this shadow any more and
+        // nothing will read it: it was never activated. Left behind, failed
+        // shadows once held 44 % of all keys. Best-effort — the failure reason
+        // is what the caller needs, and the orphan sweep finishes the rest.
+        try {
+          await options.repository.discardGraphGeneration(
+            shadowGeneration,
+            GRAPH_SHADOW_DISCARD_MAX_KEYS,
           );
+        } catch {
+          // The retention tick's orphan sweep removes what this could not.
         }
         throw new ApplicationError(
           'GRAPH_REBUILD_FAILED',
-          `The graph rebuild failed: ${reason}`,
+          refused === undefined
+            ? `The graph rebuild failed: ${reason}`
+            : `The graph rebuild failed: ${reason} (recording the failure was refused: ${refused})`,
           503,
         );
       } finally {

@@ -10,3 +10,4 @@ temp/
 # git worktrees Claude Code creates for isolated sessions
 .claude/worktrees/
 .worktrees/
+

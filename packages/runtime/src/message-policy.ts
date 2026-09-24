@@ -11,6 +11,7 @@ export type MessageRequestFingerprintInput = {
   content: string;
   evidenceRequirements: readonly EvidenceType[];
   timeoutMs: number;
+  retryOf?: string | undefined;
 };
 
 export function utf8ByteLength(value: string): number {
@@ -44,6 +45,12 @@ export function createMessageRequestFingerprint(input: MessageRequestFingerprint
     content: input.content,
     evidenceRequirements: normalizedEvidence,
     timeoutMs: input.timeoutMs,
+    // A re-ask that declares a link to an earlier exchange is a different
+    // request from the same words sent fresh; the fingerprint tells them apart.
+    // Only when present: a request without the link must hash exactly as it
+    // did before the field existed, or every idempotent replay that straddles
+    // the deploy answers IDEMPOTENCY_KEY_CONFLICT against its own fingerprint.
+    ...(input.retryOf === undefined ? {} : { retryOf: input.retryOf }),
   });
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }

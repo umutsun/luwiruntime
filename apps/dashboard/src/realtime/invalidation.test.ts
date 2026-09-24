@@ -67,6 +67,8 @@ describe('realtime snapshot invalidation', () => {
       'findings',
       'runtime',
       'git',
+      'coordinator',
+      'bindings',
     ]);
   });
 
@@ -112,6 +114,8 @@ describe('realtime snapshot invalidation', () => {
       findings: { state: 'ready', data: [] },
       runtime: { state: 'unavailable' },
       git: { state: 'unavailable' },
+      coordinator: { state: 'unavailable' },
+      bindings: { state: 'unavailable' },
     };
     const onChange = vi.fn();
     const refreshController = createPulseRefreshController({
@@ -167,7 +171,8 @@ describe('realtime snapshot invalidation', () => {
     ['project.registered', ['projects', 'git']],
     ['session.heartbeat', ['sessions']],
     ['agent.definition.updated', ['agents']],
-    ['project.agent.bound', ['agents']],
+    ['project.agent.bound', ['agents', 'bindings']],
+    ['project.agent.updated', ['agents', 'bindings']],
     ['usage.reported', ['usage']],
     ['context.capability.loaded', ['context']],
     ['optimization.finding.detected', ['findings']],

@@ -1,4 +1,4 @@
-import type { SessionView } from '@luwi/protocol';
+import type { AgentMessage, SessionView } from '@luwi/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createMcpToolHandlers, McpDaemonError, type McpDaemonClient } from './index.js';
@@ -138,14 +138,52 @@ function client(): McpDaemonClient {
       selectedTargetSessionId: 'target',
       selectedTargetAgentId: 'gemini-sim',
       selectionReason: 'selected target',
+      delivery: 'live' as const,
       idempotent: false,
     })),
     getMessage: vi.fn(),
     waitForMessage: vi.fn(),
     claimInbox: vi.fn(async () => ({ items: [] })),
     transitionMessage: vi.fn(),
+    getAutopilot: vi.fn(async () => ({
+      record: null,
+      coordinatorOnline: false,
+      coordinatorSessionIds: [],
+    })),
+    listGoals: vi.fn(async () => ({ goals: [], truncated: false })),
+    getGoal: vi.fn(async (goalId: string) => ({ ...fixtureGoal, id: goalId })),
+    createGoal: vi.fn(async () => fixtureGoal),
+    approvePlan: vi.fn(async () => fixtureGoal),
+    rejectPlan: vi.fn(async () => fixtureGoal),
+    answerGoal: vi.fn(async () => fixtureGoal),
+    abandonGoal: vi.fn(async () => fixtureGoal),
+    listTasks: vi.fn(async () => ({ tasks: [], truncated: false })),
+    getTask: vi.fn(),
   };
 }
+
+const fixtureGoal = {
+  id: 'goal-1',
+  projectId: 'project-1',
+  title: 'Ship',
+  objective: 'Ship it.',
+  acceptanceCriteria: [],
+  createdBy: { kind: 'operator' as const },
+  budget: {
+    maxTasks: 12,
+    maxReworksPerTask: 1,
+    maxReplans: 2,
+    maxWallClockMs: 14_400_000,
+    minConfidence: 0.6,
+  },
+  state: 'proposed' as const,
+  planVersion: 0,
+  taskIds: [],
+  usage: { tasks: 0, reworks: 0, replans: 0, judgments: 0, invalidJudgments: 0 },
+  version: 1,
+  createdAt: '2026-09-17T10:00:00.000Z',
+  updatedAt: '2026-09-17T10:00:00.000Z',
+};
 
 describe('MCP tool handlers', () => {
   it('derives the message source from the bound session', async () => {
@@ -156,9 +194,10 @@ describe('MCP tool handlers', () => {
       targetAgentId: 'gemini-sim',
       kind: 'question',
       content: 'Status?',
+      retryOf: 'correlation-0',
     });
     expect(daemon.askAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ sourceSessionId: 'source' }),
+      expect.objectContaining({ sourceSessionId: 'source', retryOf: 'correlation-0' }),
       undefined,
     );
     await expect(
@@ -209,6 +248,58 @@ describe('MCP tool handlers', () => {
     await expect(tools.getSession({ sessionId: 'other' })).rejects.toMatchObject({
       code: 'BOUND_PROJECT_MISMATCH',
     });
+  });
+
+  it('separates a same-project not-participant read from a project mismatch (LRT-P07)', async () => {
+    const daemon = client();
+    const message = (over: Partial<AgentMessage>): AgentMessage => ({
+      id: 'm',
+      correlationId: 'c',
+      projectId: 'project-1',
+      sourceSessionId: 'someone-else',
+      sourceAgentId: 'a',
+      targetSessionId: 'another',
+      targetAgentId: 'b',
+      selectionReason: 'x',
+      kind: 'question',
+      content: 'q',
+      evidenceRequirements: [],
+      state: 'responded',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      deadlineAt: timestamp,
+      ...over,
+    });
+    // Same project, bound 'source' is neither source nor target.
+    daemon.getMessage = vi.fn(async () => message({}));
+    await expect(
+      createMcpToolHandlers(daemon, boundSession).getMessage({ correlationId: 'c' }),
+    ).rejects.toMatchObject({ code: 'BOUND_SESSION_NOT_PARTICIPANT', statusCode: 403 });
+    // A different project is still a project mismatch.
+    daemon.getMessage = vi.fn(async () => message({ projectId: 'project-2' }));
+    await expect(
+      createMcpToolHandlers(daemon, boundSession).getMessage({ correlationId: 'c' }),
+    ).rejects.toMatchObject({ code: 'BOUND_PROJECT_MISMATCH' });
+  });
+
+  it('lists the most recently active sessions first so the cap keeps live workers (LRT-P08)', async () => {
+    const daemon = client();
+    const at = (iso: string, id: string): SessionView => ({
+      ...boundSession,
+      id,
+      lastHeartbeatAt: iso,
+    });
+    daemon.listProjectSessions = vi.fn(async () => ({
+      sessions: [
+        at('2026-07-29T10:00:00.000Z', 'oldest'),
+        at('2026-07-29T13:00:00.000Z', 'newest'),
+        at('2026-07-29T11:00:00.000Z', 'middle'),
+      ],
+    }));
+    const result = (await createMcpToolHandlers(daemon, boundSession).listSessions({})) as {
+      sessions: SessionView[];
+    };
+    expect(result.sessions.map((session) => session.id)).toEqual(['newest', 'middle', 'oldest']);
   });
 
   it('revalidates the bound session before every operation', async () => {
@@ -264,6 +355,46 @@ describe('MCP tool handlers', () => {
       expect.objectContaining({ sourceSessionId: rotated.id }),
       undefined,
     );
+  });
+
+  it('does not wait on a deferred (turn-based GUI) target, returning delivery immediately', async () => {
+    const daemon = client();
+    daemon.askAgent = vi.fn(async (body) => ({
+      message: {
+        id: 'message-1',
+        correlationId: 'correlation-1',
+        projectId: 'project-1',
+        sourceSessionId: body.sourceSessionId,
+        sourceAgentId: 'claude-sim',
+        targetSessionId: 'gui-1',
+        targetAgentId: 'gemini-sim',
+        selectionReason: 'selected target',
+        kind: body.kind,
+        content: body.content,
+        evidenceRequirements: body.evidenceRequirements,
+        state: 'queued' as const,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        deadlineAt: '2026-07-29T12:02:00.000Z',
+      },
+      selectedTargetSessionId: 'gui-1',
+      selectedTargetAgentId: 'gemini-sim',
+      selectionReason: 'selected target',
+      delivery: 'deferred' as const,
+      idempotent: false,
+    }));
+    daemon.waitForMessage = vi.fn();
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await expect(
+      tools.askAgent({
+        targetAgentId: 'gemini-sim',
+        kind: 'question',
+        content: 'Status?',
+        waitMs: 5_000,
+      }),
+    ).resolves.toMatchObject({ delivery: 'deferred', state: 'queued' });
+    expect(daemon.waitForMessage).not.toHaveBeenCalled();
   });
 
   it('resolves a fresh verified session for consecutive operations', async () => {
@@ -508,5 +639,36 @@ describe('join revival (ADR 0034)', () => {
     );
     await expect(tools.join({})).rejects.toBe(offline);
     expect(revive).not.toHaveBeenCalled();
+  });
+});
+
+describe('autopilot tools (ADR 0035)', () => {
+  it('creates a goal for the bound session and answers with it as the actor', async () => {
+    const daemon = client();
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await tools.createGoal({ title: 'Ship', objective: 'Ship it.' });
+    await tools.answerGoal({ goalId: 'goal-1', text: 'the other module' });
+
+    expect(daemon.createGoal).toHaveBeenCalledWith(
+      boundSession.projectId,
+      expect.objectContaining({
+        title: 'Ship',
+        sessionId: boundSession.id,
+        acceptanceCriteria: [],
+      }),
+    );
+    expect(daemon.answerGoal).toHaveBeenCalledWith('goal-1', boundSession.id, 'the other module');
+  });
+
+  it('refuses to touch a goal outside the bound project before any write', async () => {
+    const daemon = client();
+    daemon.getGoal = vi.fn(async () => ({ ...fixtureGoal, projectId: 'project-2' }));
+    const tools = createMcpToolHandlers(daemon, boundSession);
+
+    await expect(tools.approvePlan({ goalId: 'goal-1' })).rejects.toMatchObject({
+      code: 'BOUND_PROJECT_MISMATCH',
+    });
+    expect(daemon.approvePlan).not.toHaveBeenCalled();
   });
 });

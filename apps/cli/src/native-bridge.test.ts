@@ -1,12 +1,15 @@
-import type { AgentMessage, InboxClaimResponse } from '@luwi/protocol';
+import type { AgentMessage, InboxClaimResponse, WorkLease } from '@luwi/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { BridgeDaemonClient } from './bridge-daemon.js';
 import {
+  claudeMcpBindingArgs,
   codexMcpBindingArgs,
   createNativeBridge,
+  detectUsageLimit,
   framePrompt,
   nativeHeadlessArguments,
+  renderLeaseCoordination,
   type NativeBridgeExecutor,
   type NativeBridgeRunResult,
 } from './native-bridge.js';
@@ -57,6 +60,21 @@ function requestInbox(content = 'Do the thing.'): InboxClaimResponse {
   };
 }
 
+function lease(over: Partial<WorkLease> = {}): WorkLease {
+  return {
+    id: 'lease-1',
+    sessionId: 'other-session',
+    agentId: 'codex',
+    path: 'src/a.ts',
+    matchPath: 'src/a.ts',
+    reason: 'editing',
+    state: 'held',
+    acquiredAt: now,
+    expiresAt: '2026-09-08T00:05:00.000Z',
+    ...over,
+  };
+}
+
 function daemon(log: string[], states: AgentMessage['state'][], inbox: InboxClaimResponse) {
   let index = 0;
   let content = 'Do the thing.';
@@ -73,6 +91,7 @@ function daemon(log: string[], states: AgentMessage['state'][], inbox: InboxClai
       index += 1;
       return message(state, content);
     }),
+    listLeases: vi.fn(async () => ({ leases: [] as WorkLease[], truncated: false })),
     transitionMessage: vi.fn(async (action) => {
       log.push(`transition:${action}`);
       return message(action === 'acknowledge' ? 'acknowledged' : 'processing', content);
@@ -101,6 +120,7 @@ const options = (over: Partial<Parameters<typeof createNativeBridge>[0]> = {}) =
   executor: executor({ result: 'completed' as const, exitCode: 0, outputTail: '' }),
   currentSessionId: () => 'session-1',
   agentId: 'claude-code',
+  projectId: 'project-1',
   bridgeInstanceId: 'native-bridge',
   claimLimit: 1,
   claimBlockMs: 30_000,
@@ -173,6 +193,45 @@ describe('codexMcpBindingArgs', () => {
   });
 });
 
+describe('claudeMcpBindingArgs', () => {
+  it('generates a project-independent claude profile: inline MCP config, dontAsk, a safe allowlist', () => {
+    const args = claudeMcpBindingArgs('C:/node.exe', 'C:/luwi/scripts/claude-mcp-launch.mjs');
+    // The LUWI MCP server is wired inline, pointing at LUWI's own launcher — no per-project file.
+    expect(args).toContain('--strict-mcp-config');
+    const config = args[args.indexOf('--mcp-config') + 1];
+    expect(JSON.parse(config ?? '')).toEqual({
+      mcpServers: {
+        'luwi-runtime': { command: 'C:/node.exe', args: ['C:/luwi/scripts/claude-mcp-launch.mjs'] },
+      },
+    });
+    // Non-bypass auto-approve over a fixed, generic allowlist.
+    expect(args).toContain('--permission-mode');
+    expect(args).toContain('dontAsk');
+    expect(args).toContain('Read(/**)');
+    expect(args).toContain('Edit(/**)');
+    expect(args).toContain('Bash(git commit *)');
+    expect(args).toContain('Bash(git -C * commit *)');
+    expect(args).toContain('Bash(pnpm *)');
+    expect(args).toContain('mcp__luwi-runtime__luwi_respond_to_message');
+  });
+
+  it('bakes in no project path and never allows push or merge', () => {
+    const joined = claudeMcpBindingArgs('node', '/opt/luwi/scripts/claude-mcp-launch.mjs').join(
+      ' ',
+    );
+    expect(joined).not.toMatch(/albanoosh|xampp/i);
+    expect(joined).not.toMatch(/git (?:-C \S+ )?(?:push|merge)/);
+  });
+
+  it('includes the Flutter toolchain for mobile tasks', () => {
+    const args = claudeMcpBindingArgs('node', '/opt/luwi/scripts/claude-mcp-launch.mjs');
+    expect(args).toContain('Bash(flutter *)');
+    expect(args).toContain('Bash(flutter.bat *)');
+    expect(args).toContain('Bash(dart *)');
+    expect(args).toContain('Bash(dart.bat *)');
+  });
+});
+
 describe('framePrompt', () => {
   it('names the correlation, agents, session, reply tool, evidence and content', () => {
     const prompt = framePrompt({
@@ -192,6 +251,100 @@ describe('framePrompt', () => {
     expect(prompt).toContain('file_reference');
     expect(prompt).toContain('Do the thing.');
   });
+
+  it('adds a coordination section before the content when provided, and omits it otherwise', () => {
+    const base = {
+      correlationId: 'c',
+      kind: 'instruction' as const,
+      sourceAgentId: 'codex',
+      sessionId: 's',
+      agentId: 'claude-code',
+      evidenceRequirements: [],
+      content: 'TASK-BODY',
+    };
+    expect(framePrompt(base)).not.toContain('Fleet coordination');
+    const framed = framePrompt({ ...base, coordination: 'Fleet coordination (LUWI): x' });
+    expect(framed).toContain('Fleet coordination (LUWI): x');
+    expect(framed.indexOf('Fleet coordination')).toBeLessThan(framed.indexOf('TASK-BODY'));
+  });
+});
+
+describe('renderLeaseCoordination', () => {
+  it('lists held leases from other sessions, sorted by path, excluding own and non-held', () => {
+    const out = renderLeaseCoordination(
+      [
+        lease({ path: 'src/b.ts', agentId: 'antigravity', sessionId: 'other-2' }),
+        lease({ path: 'src/a.ts', agentId: 'codex', sessionId: 'other-1', reason: 'refactor' }),
+        lease({ path: 'src/own.ts', sessionId: 'session-1' }),
+        lease({ path: 'src/released.ts', sessionId: 'other-3', state: 'released' }),
+      ],
+      'session-1',
+    );
+    expect(out).toBeDefined();
+    expect(out).toContain('src/a.ts — held by agent codex until');
+    expect(out).toContain('src/b.ts — held by agent antigravity until');
+    expect(out).not.toContain('src/own.ts');
+    expect(out).not.toContain('src/released.ts');
+    expect(out!.indexOf('src/a.ts')).toBeLessThan(out!.indexOf('src/b.ts'));
+  });
+
+  it('returns undefined when no other session holds a lease', () => {
+    expect(renderLeaseCoordination([], 'session-1')).toBeUndefined();
+    expect(
+      renderLeaseCoordination([lease({ sessionId: 'session-1' })], 'session-1'),
+    ).toBeUndefined();
+  });
+
+  it('caps the list and reports the remainder', () => {
+    const many = Array.from({ length: 20 }, (_, index) =>
+      lease({ path: `src/f${String(index).padStart(2, '0')}.ts`, sessionId: `other-${index}` }),
+    );
+    expect(renderLeaseCoordination(many, 'session-1')).toContain('…and 5 more');
+  });
+});
+
+describe('detectUsageLimit', () => {
+  it('matches a codex usage-limit line and captures the "try again at" hint', () => {
+    const line =
+      'ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 27th, 2026 11:48 AM.';
+    expect(detectUsageLimit(`some noise\n${line}\nmore noise`)).toEqual({
+      retryAt: 'Sep 27th, 2026 11:48 AM',
+      line,
+    });
+  });
+
+  it('matches a claude usage-limit line and captures the "resets at" hint', () => {
+    const line = 'Claude usage limit reached. Your limit resets at 2pm (America/Los_Angeles).';
+    expect(detectUsageLimit(line)).toEqual({ retryAt: '2pm (America/Los_Angeles)', line });
+  });
+
+  it('matches a bare rate-limit line with no retry hint', () => {
+    expect(detectUsageLimit('Error: rate limited, please retry later.')).toEqual({
+      line: 'Error: rate limited, please retry later.',
+    });
+  });
+
+  it('matches a 429 line only when it reads like an HTTP error', () => {
+    expect(detectUsageLimit('Request failed with status code 429')).toEqual({
+      line: 'Request failed with status code 429',
+    });
+    expect(detectUsageLimit('Found 429 matching files in the repo')).toBeUndefined();
+  });
+
+  it('matches quota-exceeded lines', () => {
+    expect(detectUsageLimit('quota exceeded for this billing period')).toEqual({
+      line: 'quota exceeded for this billing period',
+    });
+  });
+
+  it('is conservative: a line merely containing "limit" does not match', () => {
+    expect(detectUsageLimit('Reached the file size limit for this repo.')).toBeUndefined();
+  });
+
+  it('returns undefined for empty or unrelated output', () => {
+    expect(detectUsageLimit('')).toBeUndefined();
+    expect(detectUsageLimit('Traceback (most recent call last):\n  File "x.py"')).toBeUndefined();
+  });
 });
 
 describe('createNativeBridge', () => {
@@ -210,6 +363,59 @@ describe('createNativeBridge', () => {
     expect(log).toContain('status:session-1:tool_running');
     expect(log).toContain('status:session-1:idle');
     expect(log.some((line) => line.startsWith('complete:'))).toBe(false);
+  });
+
+  it('injects held-lease coordination from other sessions into the worker prompt', async () => {
+    const d = daemon([], ['delivered', 'responded'], requestInbox());
+    (d.client.listLeases as ReturnType<typeof vi.fn>).mockResolvedValue({
+      leases: [lease({ path: 'src/locked.ts', agentId: 'codex', sessionId: 'other-1' })],
+      truncated: false,
+    });
+    const exec = executor({ result: 'completed', exitCode: 0, outputTail: '' });
+    const bridge = createNativeBridge(options({ daemon: d.client, executor: exec }));
+
+    await bridge.pollOnce();
+
+    expect(d.client.listLeases).toHaveBeenCalledWith('project-1');
+    const { prompt } = exec.run.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toContain('Fleet coordination');
+    expect(prompt).toContain('src/locked.ts — held by agent codex');
+  });
+
+  it('runs the worker even when the lease fetch fails (coordination is best-effort)', async () => {
+    const d = daemon([], ['delivered', 'responded'], requestInbox());
+    (d.client.listLeases as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('daemon down'));
+    const exec = executor({ result: 'completed', exitCode: 0, outputTail: '' });
+    const bridge = createNativeBridge(options({ daemon: d.client, executor: exec }));
+
+    await bridge.pollOnce();
+
+    expect(exec.run).toHaveBeenCalledTimes(1);
+    const { prompt } = exec.run.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).not.toContain('Fleet coordination');
+    expect(prompt).toContain('Do the thing.');
+  });
+
+  it('drops the coordination block instead of failing a message when the two together exceed the byte cap', async () => {
+    // The message content alone frames under the 30KB cap; a large coordination block would tip it
+    // over. Coordination is best-effort, so it must be dropped and the message must still run.
+    const big = 'y'.repeat(29_000);
+    const d = daemon([], ['delivered', 'responded'], requestInbox(big));
+    (d.client.listLeases as ReturnType<typeof vi.fn>).mockResolvedValue({
+      leases: Array.from({ length: 15 }, (_, i) =>
+        lease({ path: `src/locked-${i}.ts`, sessionId: `other-${i}`, reason: 'r'.repeat(400) }),
+      ),
+      truncated: false,
+    });
+    const exec = executor({ result: 'completed', exitCode: 0, outputTail: '' });
+    const bridge = createNativeBridge(options({ daemon: d.client, executor: exec }));
+
+    await bridge.pollOnce();
+
+    expect(exec.run).toHaveBeenCalledTimes(1);
+    const { prompt } = exec.run.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).not.toContain('Fleet coordination');
+    expect(prompt).toContain(big);
   });
 
   it('fails a message the child left processing after a clean exit', async () => {
@@ -233,6 +439,24 @@ describe('createNativeBridge', () => {
     await bridge.pollOnce();
 
     expect(log.find((line) => line.startsWith('complete:fail'))).toContain('code 3');
+  });
+
+  it('names a usage-limit exit instead of the generic reason, and keeps the output tail', async () => {
+    const log: string[] = [];
+    const d = daemon(log, ['delivered', 'processing'], requestInbox());
+    const tail =
+      'ERROR: You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 27th, 2026 11:48 AM.';
+    const exec = executor({ result: 'completed', exitCode: 1, outputTail: tail });
+    const bridge = createNativeBridge(options({ daemon: d.client, executor: exec }));
+
+    await bridge.pollOnce();
+
+    const failure = log.find((line) => line.startsWith('complete:fail'));
+    expect(failure).toContain(
+      'AGENT_USAGE_LIMIT: claude-code is out of usage until Sep 27th, 2026 11:48 AM',
+    );
+    expect(failure).toContain('[native output tail]');
+    expect(failure).not.toContain('without completing the message');
   });
 
   it('fails with a deadline reason when the run hit the deadline', async () => {

@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import type { AutopilotStatus } from '../api/autopilot-status.js';
+import type { AutopilotMutations } from '../api/autopilot-mutations.js';
+import type { CoordinatorMutations } from '../api/coordinator-mutations.js';
 import type { KnowledgeGraph } from '../api/knowledge-scope.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
+import { ProjectAutopilot } from '../components/project-autopilot.js';
+import { useToast } from '../components/toast.js';
 import type { InspectorSelection } from '../inspectors/inspector-panel.js';
 import type { PulseSnapshot } from '../pulse/model.js';
 import type { DashboardEvent } from '../realtime/schema.js';
 import { BoardView } from './board-view.js';
-import { DrillDown } from './drill-down.js';
+import { DrillDown, type AutopilotLink, type CoordinatorLink } from './drill-down.js';
 import { FlowView } from './flow-view.js';
 import { KnowledgeInspector, KnowledgeView, type KnowledgeState } from './knowledge-view.js';
 import {
@@ -17,6 +22,7 @@ import {
   focusProject,
   panelFor,
   resolveFocus,
+  type AutopilotStatusState,
   type Focus,
   type SessionUsageState,
 } from './model.js';
@@ -47,10 +53,15 @@ export function Overview({
   realtime,
   hiddenProjects = 0,
   messages = [],
+  messagesUnavailable = false,
   onFocus,
   onInspect,
   loadSessionUsage,
   loadKnowledge,
+  loadAutopilot,
+  coordinatorMutations,
+  onCoordinatorMutated,
+  autopilotMutations,
 }: {
   snapshot: PulseSnapshot;
   events: readonly DashboardEvent[];
@@ -65,6 +76,7 @@ export function Overview({
   hiddenProjects?: number;
   /** The bounded message list, so the stream can show what each exchange answered. */
   messages?: readonly AgentMessage[];
+  messagesUnavailable?: boolean;
   onFocus: (focus: Focus) => void;
   onInspect: (selection: InspectorSelection) => void;
   /** Reads a focused session's usage (model, tokens); absent leaves those facts as dashes. */
@@ -77,10 +89,21 @@ export function Overview({
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<KnowledgeGraph>>;
+  /** Reads a focused project's autopilot mode (ADR 0035); absent leaves the fact a dash. */
+  loadAutopilot?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<AutopilotStatus>>;
+  /** Both present wires the drill-down's coordinator switch (ADR 0035); either absent hides it. */
+  coordinatorMutations?: CoordinatorMutations;
+  onCoordinatorMutated?: () => void;
+  /** With `loadAutopilot`, wires the drill-down's autopilot mode switch (ADR 0035). */
+  autopilotMutations?: AutopilotMutations;
 }) {
+  const pushToast = useToast();
   const overview = useMemo(
-    () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages),
-    [snapshot, events, nowMs, hiddenProjects, messages],
+    () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable),
+    [snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable],
   );
   const resolved = resolveFocus(overview, focus);
   const focusedSessionId = resolved.kind === 'session' ? resolved.id : undefined;
@@ -107,11 +130,105 @@ export function Overview({
     });
     return () => controller.abort();
   }, [loadSessionUsage, focusedSessionId, snapshot.snapshotAt]);
+  // The autopilot mode read (ADR 0035), for the project the owner drills into.
+  // Re-read on refresh like usage — the mode changes on operator action, and the
+  // coordinator's presence changes as sessions come and go.
+  const focusedProjectId = resolved.kind === 'project' ? resolved.id : undefined;
+  const [autopilot, setAutopilot] = useState<{
+    projectId: string;
+    state: AutopilotStatusState;
+  }>();
+  useEffect(() => {
+    if (loadAutopilot === undefined || focusedProjectId === undefined) {
+      setAutopilot(undefined);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setAutopilot((current) =>
+      current?.projectId === focusedProjectId
+        ? current
+        : { projectId: focusedProjectId, state: { state: 'loading' } },
+    );
+    void loadAutopilot(focusedProjectId, { signal: controller.signal }).then((state) => {
+      if (controller.signal.aborted) return;
+      setAutopilot({ projectId: focusedProjectId, state });
+    });
+    return () => controller.abort();
+  }, [loadAutopilot, focusedProjectId, snapshot.snapshotAt]);
   const panel = useMemo(
     () =>
-      panelFor(overview, resolved, realtime, sessionUsage === undefined ? {} : { sessionUsage }),
-    [overview, resolved, realtime, sessionUsage],
+      panelFor(overview, resolved, realtime, {
+        ...(sessionUsage === undefined ? {} : { sessionUsage }),
+        ...(autopilot === undefined ? {} : { autopilot }),
+      }),
+    [overview, resolved, realtime, sessionUsage, autopilot],
   );
+  // The coordinator switch (ADR 0035), from the session panel the owner drills
+  // into. One request at a time; the outcome is stated in words and cleared
+  // when the focus moves, and a success re-reads the snapshot so the fact and
+  // the badge follow the daemon rather than the click.
+  const [coordinatorBusy, setCoordinatorBusy] = useState(false);
+  const coordinatorEnabled =
+    coordinatorMutations !== undefined && onCoordinatorMutated !== undefined;
+  const runCoordinator = async (link: CoordinatorLink): Promise<void> => {
+    if (coordinatorMutations === undefined || onCoordinatorMutated === undefined) return;
+    if (coordinatorBusy) return;
+    setCoordinatorBusy(true);
+    const result =
+      link.action === 'claim'
+        ? await coordinatorMutations.claim(link.projectId, link.sessionId)
+        : await coordinatorMutations.release(link.projectId, link.sessionId);
+    setCoordinatorBusy(false);
+    if (result.state === 'ok') {
+      pushToast(
+        link.action === 'claim' ? 'Coordinator assigned.' : 'Coordinator released.',
+        'info',
+      );
+      onCoordinatorMutated();
+      return;
+    }
+    pushToast(
+      result.reason === 'http' ? result.message : 'The coordinator update could not be completed.',
+      'error',
+    );
+  };
+  // The autopilot mode switch (ADR 0035), from the project panel. One request at
+  // a time; the daemon returns the new record, so the fact follows the response
+  // without a re-read — autopilot is not in the pulse, so nothing else needs it.
+  const [autopilotBusy, setAutopilotBusy] = useState(false);
+  const autopilotEnabled = autopilotMutations !== undefined && loadAutopilot !== undefined;
+  const runAutopilot = async (link: AutopilotLink): Promise<void> => {
+    if (autopilotMutations === undefined || autopilotBusy) return;
+    setAutopilotBusy(true);
+    const result = await autopilotMutations.setMode(link.projectId, link.mode);
+    setAutopilotBusy(false);
+    if (result.state === 'ok') {
+      setAutopilot((current) => ({
+        projectId: link.projectId,
+        state: {
+          state: 'ready',
+          data: {
+            mode: result.data.record.mode,
+            configured: result.data.record.policy !== null,
+            coordinatorOnline:
+              result.data.coordinatorNotified ||
+              (current?.projectId === link.projectId && current.state.state === 'ready'
+                ? current.state.data.coordinatorOnline
+                : false),
+          },
+        },
+      }));
+      pushToast(
+        result.data.changed ? `Autopilot set to ${link.mode}.` : `Autopilot already ${link.mode}.`,
+        'info',
+      );
+      return;
+    }
+    pushToast(
+      result.reason === 'http' ? result.message : 'The autopilot update could not be completed.',
+      'error',
+    );
+  };
   // Each hero tile opens its own detail drawer over the overview, the owner's
   // opener for the folded routes.
   const openStat = (stat: { route: string }) => {
@@ -184,13 +301,47 @@ export function Overview({
       </div>
       {view === 'knowledge' ? (
         <KnowledgeInspector
+          projects={overview.projects}
           {...(knowledgeProject === undefined ? {} : { projectName: knowledgeProject.name })}
           {...(knowledgeState === undefined ? {} : { graph: knowledgeState })}
           {...(knowledgeNode === undefined ? {} : { selectedId: knowledgeNode })}
           onSelectNode={setKnowledgeNode}
+          onFocus={onFocus}
         />
       ) : (
-        <DrillDown panel={panel} nowMs={nowMs} onFocus={onFocus} onInspect={onInspect} />
+        <DrillDown
+          panel={panel}
+          nowMs={nowMs}
+          onFocus={onFocus}
+          onInspect={onInspect}
+          {...(coordinatorEnabled
+            ? {
+                onCoordinator: (link: CoordinatorLink) => {
+                  void runCoordinator(link);
+                },
+              }
+            : {})}
+          {...(autopilotEnabled
+            ? {
+                onAutopilot: (link: AutopilotLink) => {
+                  void runAutopilot(link);
+                },
+              }
+            : {})}
+          {...(focusedProjectId !== undefined &&
+          loadAutopilot !== undefined &&
+          autopilotMutations !== undefined
+            ? {
+                autopilotControl: (
+                  <ProjectAutopilot
+                    projectId={focusedProjectId}
+                    loadAutopilot={loadAutopilot}
+                    autopilotMutations={autopilotMutations}
+                  />
+                ),
+              }
+            : {})}
+        />
       )}
     </div>
   );

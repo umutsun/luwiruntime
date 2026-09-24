@@ -7,17 +7,25 @@ import type { ConfigMutations } from './api/config-mutations.js';
 import type { ConfigResources } from './api/config-scope.js';
 import type { GraphRoot, Subgraph, SubgraphBounds } from './api/graph-explorer.js';
 import type { IntelligenceResources } from './api/intelligence-scope.js';
+import type { AutopilotMutations } from './api/autopilot-mutations.js';
+import type { AutopilotStatus } from './api/autopilot-status.js';
+import type { CapabilityMutations } from './api/capability-mutations.js';
+import type { CoordinatorMutations } from './api/coordinator-mutations.js';
 import type { KnowledgeGraph } from './api/knowledge-scope.js';
 import type { LeaseResources } from './api/lease-scope.js';
 import type { MessageMutations } from './api/message-mutations.js';
 import type { MessageResources } from './api/messages-scope.js';
 import type { ProjectMutations } from './api/project-mutations.js';
 import type { ProjectScopeResources } from './api/project-scope.js';
+import type { SessionMutations } from './api/session-mutations.js';
 import type { PulseFreshness } from './api/refresh-state.js';
 import type { RuntimeResources } from './api/runtime-resources.js';
+import type { ProjectDiscoveryResult } from './api/project-discovery.js';
 import type { SessionUsage } from './api/session-usage.js';
 import { BrandMark } from './components/brand-mark.js';
+import { ConfirmDialog } from './components/confirm-dialog.js';
 import { DetailDrawer } from './components/detail-drawer.js';
+import { ProjectDiscoveryPanel } from './components/project-discovery-panel.js';
 import { ProjectForm } from './components/project-form.js';
 import type { ResourceState } from './components/panel.js';
 import { THEME_OPTIONS, useTheme, type ThemeChoice } from './components/use-theme.js';
@@ -30,7 +38,9 @@ import { formatClock, RUNTIME_FOCUS, sessionBadge, toneOf, type Focus } from './
 import { Overview } from './overview/overview.js';
 import { useProjectFilter, visibleProjectIds } from './overview/use-project-filter.js';
 import { useViewChoice, VIEW_CHOICES, VIEW_LABELS } from './overview/use-view-choice.js';
+import { useBuildWatch } from './use-build-watch.js';
 import { ProjectDetail, ProjectsView } from './projects/projects-view.js';
+import { ToastProvider } from './components/toast.js';
 import { scopePulseSnapshotToProjects, type PulseSnapshot } from './pulse/model.js';
 import {
   acceptActivityEvent,
@@ -75,13 +85,17 @@ const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string
   graph: { eyebrow: 'Operational graph', heading: 'Graph' },
 };
 
-/** The routes whose tables run six to eight columns take the wide drawer. */
+/**
+ * The routes whose tables run six to eight columns take the wide drawer. The
+ * projects registry is not one of them any more: it is a lean three-column
+ * picker (project, commits, active sessions), so it uses the normal width. The
+ * project detail drawer has its own branch and never used this set.
+ */
 const WIDE_DRAWER_ROUTES: ReadonlySet<DashboardRouteName> = new Set<DashboardRouteName>([
   'sessions',
   'messages',
   'capabilities',
   'config',
-  'projects',
 ]);
 
 /** The project a `#/pulse/<projectId>` hash names; anything else is the runtime. */
@@ -235,6 +249,12 @@ export function DashboardApp({
   onConfigMutated,
   projectMutations,
   onProjectMutated,
+  coordinatorMutations,
+  onCoordinatorMutated,
+  sessionMutations,
+  onSessionMutated,
+  autopilotMutations,
+  capabilityMutations,
   agentPairResources = {},
   agentPairLoading = false,
   leaseResources = {},
@@ -243,6 +263,8 @@ export function DashboardApp({
   loadResources,
   loadSessionUsage,
   loadKnowledge,
+  loadAutopilot,
+  loadProjectDiscovery,
   onRetry,
   onActivityStateChange,
   now = wallClock,
@@ -279,6 +301,18 @@ export function DashboardApp({
   projectMutations?: ProjectMutations | undefined;
   /** Called after a project was registered or changed, so the snapshot can be re-read. */
   onProjectMutated?: (() => void) | undefined;
+  /** Absent keeps the sessions route free of coordinator assignment (ADR 0035). */
+  coordinatorMutations?: CoordinatorMutations | undefined;
+  /** Called after a coordinator claim/release, so the snapshot can be re-read. */
+  onCoordinatorMutated?: (() => void) | undefined;
+  /** Absent keeps the sessions route observational — no End session control. */
+  sessionMutations?: SessionMutations | undefined;
+  /** Called after a session is ended, so the snapshot (and overview) can be re-read. */
+  onSessionMutated?: (() => void) | undefined;
+  /** With `loadAutopilot`, wires the overview's autopilot mode switch (ADR 0035). */
+  autopilotMutations?: AutopilotMutations | undefined;
+  /** Absent keeps the project drawer's Skills panel read-only (ADR 0036). */
+  capabilityMutations?: CapabilityMutations | undefined;
   agentPairResources?: Partial<AgentPairResources>;
   /** The pair-scoped reads have not returned yet. */
   agentPairLoading?: boolean;
@@ -300,6 +334,16 @@ export function DashboardApp({
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<KnowledgeGraph>>;
+  /** Reads a focused project's autopilot mode for the overview's mode switch (ADR 0035). */
+  loadAutopilot?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<AutopilotStatus>>;
+  /** Lists one directory level under a root for "Scan a folder"; absent hides that menu item. */
+  loadProjectDiscovery?: (
+    root: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ProjectDiscoveryResult>;
   onRetry: () => void;
   onActivityStateChange?: (state: ActivityState) => void;
   /** Injectable clock, so tests can pin the header clock and every age. */
@@ -310,7 +354,13 @@ export function DashboardApp({
   const [focus, setFocus] = useState<Focus>(() => focusOfRoute(parseRoute(window.location.hash)));
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [discovering, setDiscovering] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<string>();
+  // The unregister gate (F3): which project the confirm is open for, whether
+  // the call is in flight, and the daemon's refusal in its own words.
+  const [unregistering, setUnregistering] = useState<string>();
+  const [unregisterBusy, setUnregisterBusy] = useState(false);
+  const [unregisterError, setUnregisterError] = useState<string>();
   // Leaving the in-place form returns focus to the control that opened it, so
   // a keyboard reader is not dropped on the body behind the drawer.
   const editButton = useRef<HTMLButtonElement>(null);
@@ -437,6 +487,8 @@ export function DashboardApp({
   };
 
   const realtime = realtimeFace(websocketState, following, displayedActivity.pendingCount);
+  // An open tab never learns that a newer build is being served; this does.
+  const staleBuild = useBuildWatch();
   const snapshotTag =
     freshness === 'refreshing'
       ? { word: 'REFRESHING', title: 'Refreshing snapshot' }
@@ -568,6 +620,10 @@ export function DashboardApp({
             onMessageCreated={(correlationId) => {
               window.location.hash = routeHref({ name: 'messages', correlationId });
             }}
+            {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
+            {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
+            {...(sessionMutations === undefined ? {} : { sessionMutations })}
+            {...(onSessionMutated === undefined ? {} : { onSessionMutated })}
             onOpenSession={(session) => openInspector({ kind: 'session', sessionId: session.id })}
           />
         );
@@ -625,340 +681,457 @@ export function DashboardApp({
   };
 
   return (
-    <div className="app-shell">
-      {/*
-       * The href keeps the link meaningful without JavaScript, but the click is
-       * handled here: `#main-content` is not a route, so letting it reach the
-       * hash would send `parseRoute` to its overview fallback.
-       */}
-      <a
-        className="skip-link"
-        href="#main-content"
-        onClick={(event) => {
-          event.preventDefault();
-          mainRegion.current?.focus();
-        }}
-      >
-        Skip to overview
-      </a>
-
-      <header className="topbar">
+    <ToastProvider>
+      <div className="app-shell">
+        {/*
+         * The href keeps the link meaningful without JavaScript, but the click is
+         * handled here: `#main-content` is not a route, so letting it reach the
+         * hash would send `parseRoute` to its overview fallback.
+         */}
         <a
-          className="topbar__identity"
-          href={routeHref({ name: 'pulse' })}
-          aria-label="Luwi Runtime overview"
+          className="skip-link"
+          href="#main-content"
+          onClick={(event) => {
+            event.preventDefault();
+            mainRegion.current?.focus();
+          }}
         >
-          <span className="identity__mark">
-            <BrandMark size={24} />
-          </span>
-          <span className="topbar__name">Luwi Runtime</span>
+          Skip to overview
         </a>
-        {/* One switch for the whole console: pressed follows the feed, released
+
+        <header className="topbar">
+          <a
+            className="topbar__identity"
+            href={routeHref({ name: 'pulse' })}
+            aria-label="Luwi Runtime overview"
+          >
+            <span className="identity__mark">
+              <BrandMark size={24} />
+            </span>
+            <span className="topbar__name">Luwi Runtime</span>
+          </a>
+          {/* One switch for the whole console: pressed follows the feed, released
             holds it and counts what arrives. Its word follows the socket; the
             clock is wall time. */}
-        <button
-          type="button"
-          className={`live live--${realtime.tone}`}
-          aria-pressed={following}
-          aria-label={realtime.label}
-          title={
-            following
-              ? `${realtime.label} — pause the realtime feed; new events are counted until you resume`
-              : 'Resume the realtime feed'
-          }
-          onClick={() => setFollowing(!following)}
-        >
-          <span className="live__dot" aria-hidden="true" />
-          <span aria-hidden="true">
-            {realtime.word}
-            {!following && displayedActivity.pendingCount > 0
-              ? ` · ${String(displayedActivity.pendingCount)} NEW`
-              : ''}
-            {' · '}
-            {formatClock(nowMs)}
-          </span>
-        </button>
-        {snapshotTag === undefined ? null : (
           <button
             type="button"
-            className="snapshot-tag"
-            aria-label="Retry snapshot"
-            title={`${snapshotTag.title} — retry`}
-            onClick={onRetry}
+            className={`live live--${realtime.tone}`}
+            aria-pressed={following}
+            aria-label={realtime.label}
+            title={
+              following
+                ? `${realtime.label} — pause the realtime feed; new events are counted until you resume`
+                : 'Resume the realtime feed'
+            }
+            onClick={() => setFollowing(!following)}
           >
-            {snapshotTag.word}
-          </button>
-        )}
-        {invalidEventCount > 0 ? (
-          <span className="sr-only" role="status">
-            {invalidEventCount} invalid realtime messages ignored
-          </span>
-        ) : null}
-
-        <span className="topbar__spacer" />
-
-        <div className="menu">
-          <button
-            type="button"
-            className="menu__trigger"
-            aria-label="Project scope"
-            aria-haspopup="true"
-            aria-expanded={projectMenuOpen}
-            onClick={() => setProjectMenuOpen((open) => !open)}
-          >
-            <span className="menu__eyebrow">PROJECTS</span>
-            <span className="menu__value">
-              {hiddenProjects === 0
-                ? 'All projects'
-                : `${String(visibleSnapshot.projects.length)} of ${String(snapshot.projects.length)}`}
+            <span className="live__dot" aria-hidden="true" />
+            <span aria-hidden="true">
+              {realtime.word}
+              {!following && displayedActivity.pendingCount > 0
+                ? ` · ${String(displayedActivity.pendingCount)} NEW`
+                : ''}
+              {' · '}
+              {formatClock(nowMs)}
             </span>
-            <svg
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              aria-hidden="true"
-            >
-              <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
           </button>
-          <Popover
-            open={projectMenuOpen}
-            onClose={() => setProjectMenuOpen(false)}
-            className="menu__list"
-          >
-            <div role="group" aria-label="Projects">
-              <button
-                type="button"
-                className="menu__item menu__item--switch"
-                aria-pressed={filter.hideQuiet}
-                onClick={() => filter.setHideQuiet(!filter.hideQuiet)}
+          {snapshotTag === undefined ? null : (
+            <button
+              type="button"
+              className="snapshot-tag"
+              aria-label="Retry snapshot"
+              title={`${snapshotTag.title} — retry`}
+              onClick={onRetry}
+            >
+              {snapshotTag.word}
+            </button>
+          )}
+          {staleBuild ? (
+            <button
+              type="button"
+              className="snapshot-tag"
+              aria-label="Reload to the newer dashboard build"
+              title="The daemon serves a newer dashboard build than this tab loaded — reload to get it"
+              onClick={() => window.location.reload()}
+            >
+              NEW BUILD · RELOAD
+            </button>
+          ) : null}
+          {invalidEventCount > 0 ? (
+            <span className="sr-only" role="status">
+              {invalidEventCount} invalid realtime messages ignored
+            </span>
+          ) : null}
+
+          <span className="topbar__spacer" />
+
+          <div className="menu">
+            <button
+              type="button"
+              className="menu__trigger"
+              aria-label="Project scope"
+              aria-haspopup="true"
+              aria-expanded={projectMenuOpen}
+              onClick={() => setProjectMenuOpen((open) => !open)}
+            >
+              <span className="menu__eyebrow">PROJECTS</span>
+              <span className="menu__value">
+                {hiddenProjects === 0
+                  ? 'All projects'
+                  : `${String(visibleSnapshot.projects.length)} of ${String(snapshot.projects.length)}`}
+              </span>
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                aria-hidden="true"
               >
-                <span className="menu__label">Hide quiet projects</span>
-                <span className="switch" aria-hidden="true">
-                  <span className="switch__knob" />
-                </span>
-              </button>
-              <button
-                type="button"
-                className="menu__item"
-                aria-pressed={filter.hidden.size === 0}
-                aria-label="All projects"
-                onClick={() => filter.showAll()}
-              >
-                <span className="menu__glyph">ALL</span>
-                <span className="menu__label">All projects</span>
-                <span className="menu__hint">
-                  {snapshot.projectCount.state === 'unavailable'
-                    ? 'UNAVAILABLE'
-                    : `${String(snapshot.projectCount.value)} REGISTERED`}
-                </span>
-              </button>
-              <div className="menu__divider" role="separator" />
-              {menuProjects.map((project) => {
-                const on = !filter.hidden.has(project.id);
-                const quietHidden = filter.hideQuiet && !activeProjectIds.has(project.id);
-                return (
-                  <div
-                    key={project.id}
-                    className={`menu__row${on ? '' : ' menu__row--off'}${quietHidden ? ' menu__row--quiet' : ''}`}
-                  >
+                <path d="M4 6l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <Popover
+              open={projectMenuOpen}
+              onClose={() => setProjectMenuOpen(false)}
+              className="menu__list"
+            >
+              <div role="group" aria-label="Projects">
+                <button
+                  type="button"
+                  className="menu__item menu__item--switch"
+                  aria-pressed={filter.hideQuiet}
+                  onClick={() => filter.setHideQuiet(!filter.hideQuiet)}
+                >
+                  <span className="menu__label">Hide quiet projects</span>
+                  <span className="switch" aria-hidden="true">
+                    <span className="switch__knob" />
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="menu__item"
+                  aria-pressed={filter.hidden.size === 0}
+                  aria-label="All projects"
+                  onClick={() => filter.showAll()}
+                >
+                  <span className="menu__glyph">ALL</span>
+                  <span className="menu__label">All projects</span>
+                  <span className="menu__hint">
+                    {snapshot.projectCount.state === 'unavailable'
+                      ? 'UNAVAILABLE'
+                      : `${String(snapshot.projectCount.value)} REGISTERED`}
+                  </span>
+                </button>
+                <div className="menu__divider" role="separator" />
+                {menuProjects.map((project) => {
+                  const on = !filter.hidden.has(project.id);
+                  const quietHidden = filter.hideQuiet && !activeProjectIds.has(project.id);
+                  return (
+                    <div
+                      key={project.id}
+                      className={`menu__row${on ? '' : ' menu__row--off'}${quietHidden ? ' menu__row--quiet' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        className="menu__item menu__item--switch"
+                        aria-pressed={on}
+                        aria-label={`Show ${project.name}`}
+                        title={
+                          quietHidden ? 'Quiet: hidden while quiet projects are hidden' : undefined
+                        }
+                        onClick={() => filter.toggle(project.id)}
+                      >
+                        <span className="menu__glyph">{monogramInitials(project.name)}</span>
+                        <span className="menu__label">{project.name}</span>
+                        <span className="menu__hint">{projectBadge(project.id)}</span>
+                        <span className="switch" aria-hidden="true">
+                          <span className="switch__knob" />
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        className="menu__only"
+                        aria-label={`Show only ${project.name}`}
+                        onClick={() => filter.only(project.id, allIds)}
+                      >
+                        only
+                      </button>
+                    </div>
+                  );
+                })}
+                {projectMutations === undefined ? null : (
+                  <>
+                    <div className="menu__divider" role="separator" />
                     <button
                       type="button"
-                      className="menu__item menu__item--switch"
-                      aria-pressed={on}
-                      aria-label={`Show ${project.name}`}
-                      title={
-                        quietHidden ? 'Quiet: hidden while quiet projects are hidden' : undefined
-                      }
-                      onClick={() => filter.toggle(project.id)}
+                      className="menu__item"
+                      onClick={() => {
+                        setProjectMenuOpen(false);
+                        setRegistering(true);
+                      }}
                     >
-                      <span className="menu__glyph">{monogramInitials(project.name)}</span>
-                      <span className="menu__label">{project.name}</span>
-                      <span className="menu__hint">{projectBadge(project.id)}</span>
-                      <span className="switch" aria-hidden="true">
-                        <span className="switch__knob" />
-                      </span>
+                      <span className="menu__glyph">+</span>
+                      <span className="menu__label">Register a project</span>
                     </button>
-                    <button
-                      type="button"
-                      className="menu__only"
-                      aria-label={`Show only ${project.name}`}
-                      onClick={() => filter.only(project.id, allIds)}
-                    >
-                      only
-                    </button>
-                  </div>
-                );
-              })}
-              {projectMutations === undefined ? null : (
-                <>
-                  <div className="menu__divider" role="separator" />
-                  <button
-                    type="button"
-                    className="menu__item"
-                    onClick={() => {
-                      setProjectMenuOpen(false);
-                      setRegistering(true);
-                    }}
-                  >
-                    <span className="menu__glyph">+</span>
-                    <span className="menu__label">Register a project</span>
-                  </button>
-                </>
-              )}
-            </div>
-          </Popover>
-        </div>
-        <div className="segmented segmented--mono" role="group" aria-label="View">
-          {VIEW_CHOICES.map((choice) => (
-            <button
-              key={choice}
-              type="button"
-              className="segmented__option"
-              aria-pressed={view === choice}
-              onClick={() => setView(choice)}
-            >
-              {VIEW_LABELS[choice]}
-            </button>
-          ))}
-        </div>
+                    {loadProjectDiscovery === undefined ? null : (
+                      <button
+                        type="button"
+                        className="menu__item"
+                        onClick={() => {
+                          setProjectMenuOpen(false);
+                          setDiscovering(true);
+                        }}
+                      >
+                        <span className="menu__glyph">/</span>
+                        <span className="menu__label">Scan a folder…</span>
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            </Popover>
+          </div>
+          <div className="segmented segmented--mono" role="group" aria-label="View">
+            {VIEW_CHOICES.map((choice) => (
+              <button
+                key={choice}
+                type="button"
+                className="segmented__option"
+                aria-pressed={view === choice}
+                onClick={() => setView(choice)}
+              >
+                {VIEW_LABELS[choice]}
+              </button>
+            ))}
+          </div>
 
-        <div className="segmented segmented--icons" role="group" aria-label="Theme">
-          {THEME_OPTIONS.map((option) => (
-            <button
-              key={option.choice}
-              type="button"
-              className="segmented__option"
-              aria-pressed={themeChoice === option.choice}
-              aria-label={option.label}
-              title={option.title}
-              onClick={() => setThemeChoice(option.choice)}
-            >
-              <ThemeGlyph choice={option.choice} />
-            </button>
-          ))}
-        </div>
-      </header>
+          <div className="segmented segmented--icons" role="group" aria-label="Theme">
+            {THEME_OPTIONS.map((option) => (
+              <button
+                key={option.choice}
+                type="button"
+                className="segmented__option"
+                aria-pressed={themeChoice === option.choice}
+                aria-label={option.label}
+                title={option.title}
+                onClick={() => setThemeChoice(option.choice)}
+              >
+                <ThemeGlyph choice={option.choice} />
+              </button>
+            ))}
+          </div>
+        </header>
 
-      {/* `tabIndex={-1}` makes the region focusable by the skip link without
+        {/* `tabIndex={-1}` makes the region focusable by the skip link without
           adding a tab stop of its own. */}
-      <main id="main-content" className="page" ref={mainRegion} tabIndex={-1}>
-        <Overview
-          snapshot={visibleSnapshot}
-          events={overviewEvents}
-          hiddenProjects={hiddenProjects}
-          nowMs={nowMs}
-          view={view}
-          focus={focus}
-          following={following}
-          pendingCount={displayedActivity.pendingCount}
-          realtime={realtime.word.toLowerCase()}
-          {...(messageResources.messages?.state === 'ready'
-            ? { messages: messageResources.messages.data.items }
-            : {})}
-          onFocus={changeFocus}
-          onInspect={openInspector}
-          {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
-          {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
-        />
-      </main>
+        <main id="main-content" className="page" ref={mainRegion} tabIndex={-1}>
+          <Overview
+            snapshot={visibleSnapshot}
+            events={overviewEvents}
+            hiddenProjects={hiddenProjects}
+            nowMs={nowMs}
+            view={view}
+            focus={focus}
+            following={following}
+            pendingCount={displayedActivity.pendingCount}
+            realtime={realtime.word.toLowerCase()}
+            {...(messageResources.messages?.state === 'ready'
+              ? { messages: messageResources.messages.data.items }
+              : {})}
+            messagesUnavailable={messageResources.messages?.state === 'unavailable'}
+            onFocus={changeFocus}
+            onInspect={openInspector}
+            {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
+            {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
+            {...(loadAutopilot === undefined ? {} : { loadAutopilot })}
+            {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}
+            {...(onCoordinatorMutated === undefined ? {} : { onCoordinatorMutated })}
+            {...(autopilotMutations === undefined ? {} : { autopilotMutations })}
+          />
+        </main>
 
-      {selection !== undefined ? (
-        <DetailDrawer
-          eyebrow="Read-only evidence"
-          title={inspectorTitle(selection)}
-          onClose={closeInspector}
-        >
-          <InspectorPanel
-            selection={selection}
-            activity={displayedActivity.events}
-            projects={snapshot.projects}
-            sessions={snapshot.sessions}
-            onNavigate={setSelection}
-          />
-        </DetailDrawer>
-      ) : registering && projectMutations !== undefined ? (
-        <DetailDrawer
-          eyebrow="Projects"
-          title="Register a project"
-          onClose={() => setRegistering(false)}
-        >
-          <ProjectForm
-            mode={{ kind: 'register' }}
-            mutations={projectMutations}
-            onCancel={() => setRegistering(false)}
-            onSuccess={(project) => {
-              setRegistering(false);
-              onProjectMutated?.();
-              // A project just registered is what the reader wants to look at next.
-              changeFocus({ kind: 'project', id: project.id });
-            }}
-          />
-        </DetailDrawer>
-      ) : detail !== undefined ? (
-        <DetailDrawer
-          key={detail.projectId}
-          eyebrow="Scoped evidence"
-          title="Project detail"
-          meta={detailProject?.name ?? detail.projectId}
-          onClose={() => {
-            window.location.hash =
-              detail.origin === 'projects'
-                ? routeHref({ name: 'projects' })
-                : routeHref({ name: 'pulse', projectId: detail.projectId });
-          }}
-        >
-          {projectMutations === undefined ||
-          detailProject === undefined ? null : editingProjectId === detail.projectId ? (
+        {selection !== undefined ? (
+          <DetailDrawer
+            eyebrow="Read-only evidence"
+            title={inspectorTitle(selection)}
+            onClose={closeInspector}
+          >
+            <InspectorPanel
+              selection={selection}
+              activity={displayedActivity.events}
+              projects={snapshot.projects}
+              sessions={snapshot.sessions}
+              onNavigate={setSelection}
+            />
+          </DetailDrawer>
+        ) : registering && projectMutations !== undefined ? (
+          <DetailDrawer
+            eyebrow="Projects"
+            title="Register a project"
+            onClose={() => setRegistering(false)}
+          >
             <ProjectForm
-              mode={{ kind: 'edit', project: detailProject }}
+              mode={{ kind: 'register' }}
               mutations={projectMutations}
-              onCancel={() => setEditingProjectId(undefined)}
-              onSuccess={() => {
-                setEditingProjectId(undefined);
+              onCancel={() => setRegistering(false)}
+              onSuccess={(project) => {
+                setRegistering(false);
                 onProjectMutated?.();
+                // A project just registered is what the reader wants to look at next.
+                changeFocus({ kind: 'project', id: project.id });
               }}
             />
-          ) : (
-            <p className="project-edit">
-              <button
-                ref={editButton}
-                type="button"
-                className="link-button"
-                aria-label={`Edit project ${detailProject.name}`}
-                onClick={() => setEditingProjectId(detail.projectId)}
-              >
-                Edit project
-              </button>
-            </p>
-          )}
-          <ProjectDetail
-            snapshot={snapshot}
-            selectedProjectId={detail.projectId}
-            {...(detail.agentId === undefined ? {} : { selectedAgentId: detail.agentId })}
-            resources={projectResources}
-            scopeLoading={projectScopeLoading}
-            agentPairResources={agentPairResources}
-            agentPairLoading={agentPairLoading}
-            leaseResources={leaseResources}
-            onSelectAgent={(agentId) => {
-              window.location.hash = detailHref(agentId);
+          </DetailDrawer>
+        ) : discovering && projectMutations !== undefined && loadProjectDiscovery !== undefined ? (
+          <DetailDrawer
+            eyebrow="Projects"
+            title="Scan a folder"
+            onClose={() => setDiscovering(false)}
+          >
+            <ProjectDiscoveryPanel
+              load={loadProjectDiscovery}
+              mutations={projectMutations}
+              onCancel={() => setDiscovering(false)}
+              onRegistered={(ids) => {
+                if (ids.length === 0) return;
+                onProjectMutated?.();
+                // The panel stays open so each row's outcome is readable; the
+                // focus follows the first project just registered.
+                const first = ids[0];
+                if (first !== undefined) changeFocus({ kind: 'project', id: first });
+              }}
+            />
+          </DetailDrawer>
+        ) : detail !== undefined ? (
+          <DetailDrawer
+            key={detail.projectId}
+            eyebrow="Scoped evidence"
+            title="Project detail"
+            meta={detailProject?.name ?? detail.projectId}
+            onClose={() => {
+              window.location.hash =
+                detail.origin === 'projects'
+                  ? routeHref({ name: 'projects' })
+                  : routeHref({ name: 'pulse', projectId: detail.projectId });
             }}
-          />
-        </DetailDrawer>
-      ) : routeDrawer !== undefined ? (
-        <DetailDrawer
-          eyebrow={routeTitles[routeDrawer].eyebrow}
-          title={routeTitles[routeDrawer].heading}
-          wide={WIDE_DRAWER_ROUTES.has(routeDrawer)}
-          onClose={() => {
-            window.location.hash = hrefOfFocus(focus);
-          }}
-        >
-          {foldedRouteView(routeDrawer)}
-        </DetailDrawer>
-      ) : null}
-    </div>
+          >
+            {projectMutations === undefined ||
+            detailProject === undefined ? null : editingProjectId === detail.projectId ? (
+              <ProjectForm
+                mode={{ kind: 'edit', project: detailProject }}
+                mutations={projectMutations}
+                onCancel={() => setEditingProjectId(undefined)}
+                onSuccess={() => {
+                  setEditingProjectId(undefined);
+                  onProjectMutated?.();
+                }}
+              />
+            ) : (
+              <p className="project-edit">
+                <button
+                  ref={editButton}
+                  type="button"
+                  className="row-action"
+                  aria-label={`Edit project ${detailProject.name}`}
+                  onClick={() => setEditingProjectId(detail.projectId)}
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  className="row-action"
+                  aria-label={`Unregister project ${detailProject.name}`}
+                  onClick={() => {
+                    setUnregisterError(undefined);
+                    setUnregistering(detail.projectId);
+                  }}
+                >
+                  Unregister…
+                </button>
+              </p>
+            )}
+            {projectMutations === undefined ||
+            detailProject === undefined ||
+            unregistering !== detail.projectId ? null : (
+              <ConfirmDialog
+                title="Unregister project"
+                confirmLabel="Unregister"
+                busy={unregisterBusy}
+                onCancel={() => setUnregistering(undefined)}
+                onConfirm={() => {
+                  void (async () => {
+                    setUnregisterBusy(true);
+                    setUnregisterError(undefined);
+                    const result = await projectMutations.remove(detail.projectId);
+                    setUnregisterBusy(false);
+                    if (result.state === 'ok') {
+                      setUnregistering(undefined);
+                      onProjectMutated?.();
+                      changeFocus(RUNTIME_FOCUS);
+                      window.location.hash = routeHref({ name: 'projects' });
+                      return;
+                    }
+                    // The daemon names what blocks it; the scalar details ride along.
+                    const details =
+                      result.reason === 'http' && result.details !== undefined
+                        ? ` (${Object.entries(result.details)
+                            .map(([key, value]) => `${key}: ${String(value)}`)
+                            .join(', ')})`
+                        : '';
+                    setUnregisterError(
+                      result.reason === 'http' || result.reason === 'input'
+                        ? `${result.message}${details}`
+                        : result.reason === 'transport'
+                          ? 'The daemon could not be reached. Check runtime status and try again.'
+                          : 'The daemon returned an invalid response. The project was not unregistered.',
+                    );
+                  })();
+                }}
+              >
+                <p>
+                  LUWI forgets <strong>{detailProject.name}</strong> and the evidence it collected —
+                  sessions, leases, messages, usage, git observations, packages, findings. Nothing
+                  on disk changes: the project's files and its <code>.luwi</code> directory stay
+                  exactly as they are. The daemon refuses while a live session, a held lease, a live
+                  coordinator or a message in flight still points at the project.
+                </p>
+                {unregisterError === undefined ? null : (
+                  <p className="outcome outcome--bad" role="alert">
+                    {unregisterError}
+                  </p>
+                )}
+              </ConfirmDialog>
+            )}
+            <ProjectDetail
+              snapshot={snapshot}
+              selectedProjectId={detail.projectId}
+              {...(detail.agentId === undefined ? {} : { selectedAgentId: detail.agentId })}
+              resources={projectResources}
+              scopeLoading={projectScopeLoading}
+              agentPairResources={agentPairResources}
+              agentPairLoading={agentPairLoading}
+              leaseResources={leaseResources}
+              {...(projectMutations === undefined ? {} : { projectMutations })}
+              {...(capabilityMutations === undefined ? {} : { capabilityMutations })}
+              {...(onProjectMutated === undefined ? {} : { onMutated: onProjectMutated })}
+              onSelectAgent={(agentId) => {
+                window.location.hash = detailHref(agentId);
+              }}
+            />
+          </DetailDrawer>
+        ) : routeDrawer !== undefined ? (
+          <DetailDrawer
+            eyebrow={routeTitles[routeDrawer].eyebrow}
+            title={routeTitles[routeDrawer].heading}
+            wide={WIDE_DRAWER_ROUTES.has(routeDrawer)}
+            onClose={() => {
+              window.location.hash = hrefOfFocus(focus);
+            }}
+          >
+            {foldedRouteView(routeDrawer)}
+          </DetailDrawer>
+        ) : null}
+      </div>
+    </ToastProvider>
   );
 }

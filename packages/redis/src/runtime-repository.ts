@@ -333,12 +333,28 @@ export type ReapStartingSessionResult = Exclude<
   { status: 'reconciled' }
 >;
 
+export type UnregisterProjectInput = { projectId: string; event: RuntimeEvent };
+export type UnregisterProjectResult =
+  | { status: 'unregistered'; event: RuntimeEvent }
+  | { status: 'not_found' }
+  /** A session registered between the caller's read and the Function; the caller re-reads. */
+  | { status: 'raced'; sessions: number };
+
 export interface RuntimeRepository {
   registerProject(input: RegisterProjectInput): Promise<RegisterProjectResult>;
   /** One atomic Function: the projection fields and the `project.updated` event, or nothing. */
   updateProject(input: UpdateProjectInput): Promise<UpdateProjectResult>;
   getProject(projectId: string): Promise<Project | null>;
   listProjects(): Promise<Project[]>;
+  /**
+   * The atomic end of an unregister (F3). The leaves — sessions, leases,
+   * messages, evidence — are purged first by `createProjectPurge`; this
+   * refuses while the project's session set still has a member, then drops the
+   * project hash, its path identity, its id from the registry, its coordinator
+   * and its own event stream, and appends `project.unregistered` to the global
+   * stream only.
+   */
+  unregisterProject(input: UnregisterProjectInput): Promise<UnregisterProjectResult>;
   registerSession(input: RegisterSessionInput): Promise<RegisterSessionResult>;
   declareNativeSession(input: DeclareNativeSessionInput): Promise<DeclareNativeSessionResult>;
   getNativeBinding(bindingId: string): Promise<NativeSessionBinding | null>;
@@ -411,6 +427,30 @@ function decodeJsonReply(reply: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseUnregisterProjectResult(
+  value: unknown,
+  event: RuntimeEvent,
+): UnregisterProjectResult {
+  if (!isRecord(value) || typeof value.status !== 'string') {
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      'Redis returned an incompatible project unregister result.',
+    );
+  }
+  if (value.status === 'error' && typeof value.code === 'string' && value.code !== '') {
+    throw new RedisRepositoryError(value.code, 'Redis rejected the project unregister.');
+  }
+  if (value.status === 'not_found') return { status: 'not_found' };
+  if (value.status === 'raced' && typeof value.sessions === 'number') {
+    return { status: 'raced', sessions: value.sessions };
+  }
+  if (value.status === 'unregistered') return { status: 'unregistered', event };
+  throw new RedisRepositoryError(
+    'REDIS_DATA_INVALID',
+    'Redis returned an incompatible project unregister result.',
+  );
 }
 
 function parseProjectUpdateResult(value: unknown): UpdateProjectResult {
@@ -799,7 +839,7 @@ function parseDisconnectResult(value: unknown): DisconnectExpiredSessionResult {
   );
 }
 
-function hashRecord(reply: unknown, entity: string): Record<string, unknown> | null {
+export function hashRecord(reply: unknown, entity: string): Record<string, unknown> | null {
   if (Array.isArray(reply)) {
     if (reply.length === 0) {
       return null;
@@ -1032,13 +1072,59 @@ export function createRuntimeRepository(options: {
         'project',
       );
 
-      const projects = (
-        await Promise.all(projectIds.map(async (projectId) => this.getProject(projectId)))
-      ).filter((project): project is Project => project !== null);
+      // A bulk listing tolerates one unreadable record; it must not let it abort
+      // the whole snapshot. A project id sits in the index while its hash is being
+      // written or removed, so the SMEMBERS→HGETALL window can catch a partial or
+      // vanished hash and `getProject` throws `REDIS_DATA_INVALID`. Dropping that
+      // one id keeps the rest visible and is race-consistent — and, crucially, the
+      // daemon's recovery cycle reads every project here, so a strict `Promise.all`
+      // let one poison record fail recovery and leave the daemon permanently
+      // degraded after any transient Redis drop. The single-lookup `getProject`
+      // stays strict: a caller that named one project must hear the truth about it.
+      const settled = await Promise.allSettled(
+        projectIds.map(async (projectId) => this.getProject(projectId)),
+      );
+      const projects = settled.flatMap((result) =>
+        result.status === 'fulfilled' && result.value !== null ? [result.value] : [],
+      );
       return projects.sort(
         (left, right) =>
           left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
       );
+    },
+
+    async unregisterProject(input) {
+      // The path identity is part of the project hash, and the Function may not
+      // derive a key name, so the caller names the index key it must drop.
+      const pathIdentityHash = await client.sendCommand([
+        'HGET',
+        keys.project(input.projectId),
+        'pathIdentityHash',
+      ]);
+      if (pathIdentityHash === null || pathIdentityHash === undefined) {
+        return { status: 'not_found' };
+      }
+      if (typeof pathIdentityHash !== 'string' || pathIdentityHash === '') {
+        throw new RedisRepositoryError(
+          'REDIS_DATA_INVALID',
+          'Redis contains an invalid project projection.',
+        );
+      }
+      const reply = await client.sendCommand([
+        'FCALL',
+        functions.functions.projectUnregister,
+        '7',
+        keys.project(input.projectId),
+        keys.projectPathIndex(pathIdentityHash),
+        keys.projectsIndex,
+        keys.projectSessions(input.projectId),
+        keys.projectCoordinator(input.projectId),
+        keys.projectEvents(input.projectId),
+        keys.globalEvents,
+        input.projectId,
+        JSON.stringify(input.event),
+      ]);
+      return parseUnregisterProjectResult(decodeJsonReply(reply), input.event);
     },
 
     async registerSession(input) {
@@ -1340,9 +1426,22 @@ export function createRuntimeRepository(options: {
         );
         sessionIds = [...new Set(projectSessionIds.flat())];
       }
-      const sessions = (
-        await Promise.all(sessionIds.map(async (sessionId) => this.getSession(sessionId)))
-      ).filter((session): session is SessionView => session !== null);
+      // A bulk listing tolerates one unreadable record; it must not let it abort
+      // the whole snapshot. A session id sits in the project set while its hash
+      // is being written (registration) or removed (close/reap), so the
+      // SMEMBERS→HGETALL window can catch a partial or vanished hash and
+      // `getSession` throws `REDIS_DATA_INVALID`. Dropping that one id keeps the
+      // healthy fleet visible and is race-consistent — a session mid-transition
+      // is correctly absent from the snapshot. The single-lookup `getSession`
+      // stays strict: a caller that named one session must hear the truth about
+      // it, not a silent null. (Measured live: one such record failed retention,
+      // native-title resolution and the reaper alike through this one path.)
+      const settled = await Promise.allSettled(
+        sessionIds.map(async (sessionId) => this.getSession(sessionId)),
+      );
+      const sessions = settled.flatMap((result) =>
+        result.status === 'fulfilled' && result.value !== null ? [result.value] : [],
+      );
       return sessions.sort(
         (left, right) =>
           left.startedAt.localeCompare(right.startedAt) || left.id.localeCompare(right.id),

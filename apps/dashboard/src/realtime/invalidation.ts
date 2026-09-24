@@ -9,17 +9,23 @@ export const PULSE_RESOURCE_KEYS = [
   'findings',
   'runtime',
   'git',
+  'coordinator',
+  'bindings',
 ] as const;
 
 export type PulseResourceKey = (typeof PULSE_RESOURCE_KEYS)[number];
 
 export function resourcesForEvent(eventType: string): PulseResourceKey[] {
   if (eventType.startsWith('runtime.')) return [...PULSE_RESOURCE_KEYS];
-  if (eventType.startsWith('project.agent.') || eventType.startsWith('agent.definition.')) {
-    return ['agents'];
-  }
+  // A binding change moves the flow roles (ADR 0036) as well as the agent view.
+  if (eventType.startsWith('project.agent.')) return ['agents', 'bindings'];
+  if (eventType.startsWith('agent.definition.')) return ['agents'];
   if (eventType.startsWith('project.')) return ['projects', 'git'];
   if (eventType.startsWith('git.')) return ['git'];
+  // A coordinator claim/release is the only event that moves the role record; a
+  // session heartbeat does not, so session.* stays sessions-only (the realtime
+  // schema does not decode coordinator.* yet, so this is ready, not yet live).
+  if (eventType.startsWith('coordinator.')) return ['coordinator'];
   if (eventType.startsWith('session.')) return ['sessions'];
   if (eventType.startsWith('usage.')) return ['usage'];
   if (eventType.startsWith('context.')) return ['context'];

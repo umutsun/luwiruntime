@@ -6,6 +6,15 @@ export { createRuntimeState, getRuntimeUptimeMs } from './runtime-state.js';
 export type { CreateRuntimeStateInput, RuntimeState } from './runtime-state.js';
 export { canonicalizeProjectPath, canonicalizeWorkingDirectory } from './project-path.js';
 export type { CanonicalPath, PathDependencies } from './project-path.js';
+export { createProjectDiscoveryService } from './project-discovery.js';
+export type {
+  ProjectCandidate,
+  ProjectDiscoveryEntry,
+  ProjectDiscoveryFileSystem,
+  ProjectDiscoveryPlan,
+  ProjectDiscoveryService,
+  ProjectDiscoveryServiceOptions,
+} from './project-discovery.js';
 export { evaluateSessionStatusTransition } from './session-status.js';
 export type { SessionStatusTransitionResult } from './session-status.js';
 export {
@@ -23,6 +32,12 @@ export type {
   NativeDeclarationObservation,
   NativeOpenLinkObservation,
 } from './native-session-policy.js';
+export { COORDINATOR_CLAIM_MAX_ATTEMPTS, evaluateCoordinatorClaim } from './coordinator-policy.js';
+export type {
+  CoordinatorClaimDecision,
+  CoordinatorClaimObservation,
+  CoordinatorHolderObservation,
+} from './coordinator-policy.js';
 export {
   createSessionBootstrap,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -49,6 +64,18 @@ export type {
   PresenceSweeperOptions,
   PresenceSweeperRepository,
 } from './presence-sweeper.js';
+export {
+  createTerminalSessionRetentionSweeper,
+  evaluateSessionRetention,
+} from './terminal-session-retention-sweeper.js';
+export type {
+  SessionRetentionDecision,
+  SessionRetentionObservation,
+  TerminalSessionRetentionInput,
+  TerminalSessionRetentionSweepResult,
+  TerminalSessionRetentionSweeper,
+  TerminalSessionRetentionSweeperOptions,
+} from './terminal-session-retention-sweeper.js';
 export { createStartingSessionReaper } from './starting-session-reaper.js';
 export type {
   ReapStartingOutcome,
@@ -60,7 +87,7 @@ export type {
 } from './starting-session-reaper.js';
 export { evaluateMessageTransition } from './message-state.js';
 export type { MessageTransitionResult } from './message-state.js';
-export { selectMessageTarget } from './message-routing.js';
+export { rankAgentSessions, selectMessageTarget, deliveryForSession } from './message-routing.js';
 export type { MessageTargetSelection, SelectMessageTargetInput } from './message-routing.js';
 export {
   createMessageRequestFingerprint,
@@ -150,3 +177,28 @@ export type {
   GraphDirection,
   OperationalGraphQuery,
 } from './operational-graph.js';
+export {
+  coordinatorInstructionRefused,
+  effectiveWorkers,
+  evaluateModeChange,
+  isCoordinatorSession,
+  isOperatorProxySession,
+} from './autopilot-policy.js';
+export type { ModeChangeEvaluation } from './autopilot-policy.js';
+export { applyTaskTransition, isInFlightTaskState, isTerminalTaskState } from './task-state.js';
+export type { TaskTransition, TaskTransitionResult } from './task-state.js';
+export { evaluateDispatch, taskMatchPaths } from './task-dispatch-policy.js';
+export type { DispatchEvaluation, EvaluateDispatchInput } from './task-dispatch-policy.js';
+export { outcomeFromMessage, verifyTaskOutcome } from './task-verification.js';
+export type { VerificationInput } from './task-verification.js';
+export { applyGoalTransition, isTerminalGoalState } from './goal-state.js';
+export type { GoalTransition, GoalTransitionResult } from './goal-state.js';
+export {
+  assembleJudgmentContext,
+  frameJudgment,
+  parseJudgment,
+  validatePlannedTasks,
+} from './judgment.js';
+export type { JudgmentContextInput, ParsedJudgment } from './judgment.js';
+export { planCycle } from './orchestrator-cycle.js';
+export type { CycleAction, CycleState } from './orchestrator-cycle.js';

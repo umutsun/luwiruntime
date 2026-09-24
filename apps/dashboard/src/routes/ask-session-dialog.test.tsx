@@ -21,6 +21,7 @@ function row(id: string, agentId: string): SessionRow {
     statusLabel: 'thinking',
     agentName: agentId,
     agentKnown: false,
+    clientKind: 'cli',
     context: { state: 'unavailable' },
     presence: 'online',
     startedAt: '2026-08-24T00:00:00.000Z',

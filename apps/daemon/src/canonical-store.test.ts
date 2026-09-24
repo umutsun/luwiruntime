@@ -31,6 +31,29 @@ describe('canonical LUWI manifest store', () => {
     await expect(store.loadTrackedProjects()).resolves.toEqual([project]);
   });
 
+  it('untracks a project idempotently and leaves the others readable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'luwi-canonical-untrack-'));
+    roots.push(root);
+    const store = createCanonicalStore({ globalRoot: root });
+    const project = (id: string) => ({
+      id,
+      name: id,
+      localPath: `C:/workspace/${id}`,
+      canonicalPath: `C:/workspace/${id}`,
+      createdAt: '2026-08-01T10:00:00.000Z',
+      updatedAt: '2026-08-01T10:00:00.000Z',
+    });
+    await store.trackProject(project('keep'));
+    await store.trackProject(project('gone'));
+
+    await store.untrackProject('gone');
+    await store.untrackProject('gone');
+    await store.untrackProject('never-tracked');
+
+    // The manifest is rewritten with its content hash, so it still validates.
+    await expect(store.loadTrackedProjects()).resolves.toEqual([project('keep')]);
+  });
+
   it('writes stable, hashed, human-readable global agent manifests', async () => {
     const root = await mkdtemp(join(tmpdir(), 'luwi-canonical-'));
     roots.push(root);

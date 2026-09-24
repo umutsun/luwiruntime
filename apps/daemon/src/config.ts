@@ -46,6 +46,19 @@ const environmentSchema = z.object({
   LUWI_STREAM_MAXLEN_DEAD_LETTER: z.coerce.number().int().min(10).default(10_000),
   LUWI_RETENTION_INTERVAL_MS: z.coerce.number().int().min(1_000).default(60_000),
   LUWI_NATIVE_LINK_RETENTION_MAX: z.coerce.number().int().min(1).max(1_000_000).default(1_000),
+  // Terminal sessions are never trimmed on their own; purge them past this age.
+  // The floor IS the message max timeout, never below it: a session purged before
+  // an in-flight message to it could resolve would let the timeout branch XADD to
+  // its now-missing inbox and recreate it as a groupless orphan stream that leaks
+  // forever (§7). At or above 24h, every message that targeted the session has hit
+  // its deadline and been resolved before the session is eligible, so the UNLINK
+  // drops nothing recoverable. Default equals the floor.
+  LUWI_TERMINAL_SESSION_RETENTION_MS: z.coerce
+    .number()
+    .int()
+    .min(MESSAGE_MAX_TIMEOUT_MS)
+    .default(MESSAGE_MAX_TIMEOUT_MS),
+  LUWI_TERMINAL_SESSION_SWEEP_BATCH_SIZE: z.coerce.number().int().min(1).max(5_000).default(500),
   LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS: z.coerce.number().int().min(50).default(1_000),
   LUWI_MESSAGE_TIMEOUT_BATCH_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
   LUWI_MESSAGE_MAX_CONTENT_BYTES: z.coerce
@@ -129,6 +142,18 @@ const environmentSchema = z.object({
     .max(268_435_456)
     .default(16_777_216),
   LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN: z.coerce.number().int().min(1).max(100_000).default(2_000),
+  // Where graphify writes inside a project (ADR 0029). Relative to the project
+  // root and kept inside it: an absolute path or a `..` segment would let one
+  // setting read a file outside every registered project.
+  LUWI_GRAPHIFY_OUTPUT_PATH: z
+    .string()
+    .min(1)
+    .max(1_024)
+    .refine(
+      (value) => !/^([a-zA-Z]:|[\\/])/.test(value) && !value.split(/[\\/]+/).includes('..'),
+      'LUWI_GRAPHIFY_OUTPUT_PATH must be a relative path inside the project.',
+    )
+    .optional(),
   LUWI_USAGE_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
   LUWI_GIT_OBSERVATION_RETENTION_COUNT: z.coerce.number().int().min(1).max(10_000).default(100),
   LUWI_GRAPH_GENERATION_RETENTION_COUNT: z.coerce.number().int().min(2).max(100).default(2),
@@ -171,6 +196,8 @@ export type DaemonConfig = {
   deadLetterStreamMaxLength?: number;
   retentionIntervalMs?: number;
   nativeLinkRetentionMax?: number;
+  terminalSessionRetentionMs?: number;
+  terminalSessionSweepBatchSize?: number;
   messageTimeoutSweepIntervalMs?: number;
   messageTimeoutBatchSize?: number;
   messageMaxContentBytes?: number;
@@ -199,6 +226,8 @@ export type DaemonConfig = {
   transcriptScanIntervalMs?: number;
   transcriptMaxFileBytes?: number;
   transcriptMaxFilesPerScan?: number;
+  /** Graphify's output, relative to each project root; absent reads `graphify-out/graph.json`. */
+  graphifyOutputPath?: string;
   usageRetentionDays?: number;
   gitObservationRetentionCount?: number;
   graphGenerationRetentionCount?: number;
@@ -308,6 +337,8 @@ export function loadDaemonConfig(
     deadLetterStreamMaxLength: parsed.LUWI_STREAM_MAXLEN_DEAD_LETTER,
     retentionIntervalMs: parsed.LUWI_RETENTION_INTERVAL_MS,
     nativeLinkRetentionMax: parsed.LUWI_NATIVE_LINK_RETENTION_MAX,
+    terminalSessionRetentionMs: parsed.LUWI_TERMINAL_SESSION_RETENTION_MS,
+    terminalSessionSweepBatchSize: parsed.LUWI_TERMINAL_SESSION_SWEEP_BATCH_SIZE,
     capabilityRoots,
     messageTimeoutSweepIntervalMs: parsed.LUWI_MESSAGE_TIMEOUT_SWEEP_INTERVAL_MS,
     messageTimeoutBatchSize: parsed.LUWI_MESSAGE_TIMEOUT_BATCH_SIZE,
@@ -336,6 +367,9 @@ export function loadDaemonConfig(
     transcriptScanIntervalMs: parsed.LUWI_TRANSCRIPT_SCAN_INTERVAL_MS,
     transcriptMaxFileBytes: parsed.LUWI_TRANSCRIPT_MAX_FILE_BYTES,
     transcriptMaxFilesPerScan: parsed.LUWI_TRANSCRIPT_MAX_FILES_PER_SCAN,
+    ...(parsed.LUWI_GRAPHIFY_OUTPUT_PATH === undefined
+      ? {}
+      : { graphifyOutputPath: parsed.LUWI_GRAPHIFY_OUTPUT_PATH }),
     usageRetentionDays: parsed.LUWI_USAGE_RETENTION_DAYS,
     gitObservationRetentionCount: parsed.LUWI_GIT_OBSERVATION_RETENTION_COUNT,
     graphGenerationRetentionCount: parsed.LUWI_GRAPH_GENERATION_RETENTION_COUNT,

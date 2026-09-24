@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildPulseSnapshot, type PulseInput } from '../pulse/model.js';
@@ -104,7 +104,9 @@ describe('SessionsView', () => {
     expect(screen.queryByText(/no sessions/i)).toBeNull();
   });
 
-  it('filters by status without discarding the total count', () => {
+  it('lists every observed session without status/presence/client filter controls', () => {
+    // The filter row was removed on the owner's read (a cleaner drawer); status
+    // and presence now share one State column, and there are no filter controls.
     const snapshot = buildPulseSnapshot(
       baseInput({
         sessions: {
@@ -118,39 +120,11 @@ describe('SessionsView', () => {
     );
     render(<SessionsView snapshot={snapshot} />);
 
-    fireEvent.change(screen.getByLabelText('Status'), { target: { value: 'completed' } });
-
-    expect(screen.queryByText('s-active')).toBeNull();
+    expect(screen.getByText('s-active')).toBeTruthy();
     expect(screen.getByText('s-done')).toBeTruthy();
-    expect(screen.getByText('1 of 2 shown')).toBeTruthy();
-  });
-
-  it('filters by presence', () => {
-    const snapshot = buildPulseSnapshot(
-      baseInput({
-        sessions: {
-          state: 'ready',
-          data: [session('s-on'), session('s-off', { presence: 'offline' })],
-        },
-      }),
-    );
-    render(<SessionsView snapshot={snapshot} />);
-
-    fireEvent.change(screen.getByLabelText('Presence'), { target: { value: 'offline' } });
-
-    expect(screen.queryByText('s-on')).toBeNull();
-    expect(screen.getByText('s-off')).toBeTruthy();
-  });
-
-  it('reports a filter that matches nothing instead of looking empty', () => {
-    const snapshot = buildPulseSnapshot(
-      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
-    );
-    render(<SessionsView snapshot={snapshot} />);
-
-    fireEvent.change(screen.getByLabelText('Presence'), { target: { value: 'offline' } });
-
-    expect(screen.getByText(/no sessions match/i)).toBeTruthy();
+    expect(screen.queryByLabelText('Status')).toBeNull();
+    expect(screen.queryByLabelText('Presence')).toBeNull();
+    expect(screen.queryByLabelText('Client')).toBeNull();
   });
 
   it('sorts newest first by default and toggles on the started header', () => {
@@ -229,6 +203,241 @@ describe('SessionsView', () => {
     render(<SessionsView snapshot={snapshot} />);
 
     expect(screen.queryByRole('button', { name: /ask session/i })).toBeNull();
+  });
+
+  it('makes an online session the coordinator and re-reads the snapshot', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    const claim = vi
+      .fn()
+      .mockResolvedValue({ state: 'ok', httpStatus: 201, data: { sessionId: 's1' } });
+    const onCoordinatorMutated = vi.fn();
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        coordinatorMutations={{ claim, release: vi.fn() }}
+        onCoordinatorMutated={onCoordinatorMutated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make session s1 the coordinator' }));
+    // A plain Make sends no take-over; the live-holder override is a separate explicit gesture.
+    await waitFor(() => expect(claim).toHaveBeenCalledWith('p1', 's1', false));
+    await waitFor(() => expect(onCoordinatorMutated).toHaveBeenCalledOnce());
+  });
+
+  it('badges the live holder and offers Release rather than Make', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: { state: 'ready', data: [session('s-holder')] },
+        coordinator: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            entries: [
+              {
+                projectId: 'p1',
+                coordinator: { state: 'ready', data: { sessionId: 's-holder', live: true } },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        coordinatorMutations={{ claim: vi.fn(), release: vi.fn() }}
+        onCoordinatorMutated={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText('Coordinator')).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Release the coordinator role from session s-holder' }),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Make session .* the coordinator/i })).toBeNull();
+  });
+
+  it('offers an explicit take-over after a live-holder conflict (ADR 0035 amendment)', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: { state: 'ready', data: [session('s-holder'), session('s2')] },
+        coordinator: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            entries: [
+              {
+                projectId: 'p1',
+                coordinator: { state: 'ready', data: { sessionId: 's-holder', live: true } },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const claim = vi
+      .fn()
+      .mockResolvedValueOnce({
+        state: 'failed',
+        reason: 'http',
+        httpStatus: 409,
+        code: 'COORDINATOR_CONFLICT',
+        message: 'Project p1 is already coordinated by session s-holder.',
+      })
+      .mockResolvedValueOnce({ state: 'ok', httpStatus: 201, data: { sessionId: 's2' } });
+    const onCoordinatorMutated = vi.fn();
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        coordinatorMutations={{ claim, release: vi.fn() }}
+        onCoordinatorMutated={onCoordinatorMutated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make session s2 the coordinator' }));
+    // First a plain claim, refused; then a "Take over" appears and forces it.
+    await waitFor(() => expect(claim).toHaveBeenNthCalledWith(1, 'p1', 's2', false));
+    const takeOver = await screen.findByRole('button', { name: 'Take over' });
+    fireEvent.click(takeOver);
+    await waitFor(() => expect(claim).toHaveBeenNthCalledWith(2, 'p1', 's2', true));
+    await waitFor(() => expect(onCoordinatorMutated).toHaveBeenCalledOnce());
+  });
+
+  it('ends a non-terminal session through a confirm gate and re-reads', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    const close = vi.fn().mockResolvedValue({ state: 'ok', httpStatus: 200 });
+    const onSessionMutated = vi.fn();
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        sessionMutations={{ close }}
+        onSessionMutated={onSessionMutated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'End session s1' }));
+    // The row button's accessible name is its aria-label, so the plain
+    // "End session" name is the dialog's confirm control alone.
+    fireEvent.click(screen.getByRole('button', { name: 'End session' }));
+    await waitFor(() => expect(close).toHaveBeenCalledWith('s1'));
+    await waitFor(() => expect(onSessionMutated).toHaveBeenCalledOnce());
+  });
+
+  it('offers no End session on an already-terminal session', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [session('s-done', { status: 'completed', presence: 'offline' })],
+        },
+      }),
+    );
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        sessionMutations={{ close: vi.fn() }}
+        onSessionMutated={() => undefined}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'End session s-done' })).toBeNull();
+  });
+
+  it('shows a daemon refusal in the gate and does not re-read', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    const close = vi.fn().mockResolvedValue({
+      state: 'failed',
+      reason: 'http',
+      httpStatus: 404,
+      code: 'SESSION_NOT_FOUND',
+      message: 'No session s1.',
+    });
+    const onSessionMutated = vi.fn();
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        sessionMutations={{ close }}
+        onSessionMutated={onSessionMutated}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'End session s1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'End session' }));
+    expect(await screen.findByText('No session s1.')).toBeTruthy();
+    expect(onSessionMutated).not.toHaveBeenCalled();
+  });
+
+  it('chips the flow roles the row’s agent holds in its project (ADR 0036)', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({
+        sessions: {
+          state: 'ready',
+          data: [session('s-impl'), session('s-other', { agentId: 'a2', projectId: 'p2' })],
+        },
+        bindings: {
+          state: 'ready',
+          data: {
+            truncated: false,
+            entries: [
+              {
+                projectId: 'p1',
+                bindings: {
+                  state: 'ready',
+                  data: [{ agentId: 'a1', enabled: true, flowRoles: ['implementer', 'verifier'] }],
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    // a1 holds both roles in p1; a2's session in p2 has nothing bound.
+    expect(screen.getByText('implementer')).toBeTruthy();
+    expect(screen.getByText('verifier')).toBeTruthy();
+    expect(screen.getAllByText(/^(implementer|verifier)$/)).toHaveLength(2);
+  });
+
+  it('shows the daemon conflict message when a claim is refused', async () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    const claim = vi.fn().mockResolvedValue({
+      state: 'failed',
+      reason: 'http',
+      httpStatus: 409,
+      code: 'COORDINATOR_CONFLICT',
+      message: 'Project p1 is already coordinated by session s2.',
+    });
+    render(
+      <SessionsView
+        snapshot={snapshot}
+        coordinatorMutations={{ claim, release: vi.fn() }}
+        onCoordinatorMutated={() => undefined}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Make session s1 the coordinator' }));
+    expect(
+      await screen.findByText('Project p1 is already coordinated by session s2.'),
+    ).toBeTruthy();
+  });
+
+  it('renders no coordinator action when capability is absent', () => {
+    const snapshot = buildPulseSnapshot(
+      baseInput({ sessions: { state: 'ready', data: [session('s1')] } }),
+    );
+    render(<SessionsView snapshot={snapshot} />);
+
+    expect(screen.queryByRole('button', { name: /coordinator/i })).toBeNull();
   });
 
   it('shows a relative start time and keeps the absolute value accessible', () => {

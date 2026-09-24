@@ -9,6 +9,7 @@ export const runtimeEventTypeSchema = z.enum([
   'runtime.stopping',
   'project.registered',
   'project.updated',
+  'project.unregistered',
   'session.registered',
   'session.heartbeat',
   'session.status.changed',
@@ -37,6 +38,14 @@ export const runtimeEventTypeSchema = z.enum([
    * that a collision was prevented rather than merely not observed.
    */
   'lease.denied',
+  /**
+   * The single per-project coordinator role (ADR 0035) was claimed (a fresh
+   * grant or a take-over from a terminal holder) or released. Identity only:
+   * who coordinates, never any work state. A refused claim (a live holder
+   * already held it) writes nothing, following the native-binding precedent.
+   */
+  'coordinator.claimed',
+  'coordinator.released',
   'agent.definition.registered',
   'agent.definition.updated',
   'agent.definition.disabled',
@@ -97,6 +106,33 @@ export const runtimeEventTypeSchema = z.enum([
   'optimization.applied',
   'optimization.evaluation.started',
   'optimization.evaluation.completed',
+  'autopilot.mode.changed',
+  'autopilot.policy.updated',
+  'autopilot.notice.queued',
+  'task.created',
+  'task.updated',
+  'task.gated',
+  'task.approved',
+  'task.rejected',
+  'task.dispatch.denied',
+  'task.dispatched',
+  'task.completed',
+  'task.cancelled',
+  'task.verified',
+  'task.rework.created',
+  'goal.created',
+  'goal.planned',
+  'goal.plan.approved',
+  'goal.plan.rejected',
+  'goal.started',
+  'goal.replanned',
+  'goal.escalated',
+  'goal.answered',
+  'goal.achieved',
+  'goal.failed',
+  'goal.abandoned',
+  'goal.retrospective.written',
+  'orchestrator.judgment.decided',
 ]);
 
 export const runtimeEventSchema = z.object({

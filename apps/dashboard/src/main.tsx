@@ -6,10 +6,23 @@ import { createRoot } from 'react-dom/client';
 import { DashboardApp, type WebSocketState } from './app.js';
 import { createDaemonClient } from './api/client.js';
 import { createConfigMutations, type ConfigMutations } from './api/config-mutations.js';
+import { createCapabilityMutations, type CapabilityMutations } from './api/capability-mutations.js';
+import { createAutopilotMutations, type AutopilotMutations } from './api/autopilot-mutations.js';
+import { createGoalMutations, type GoalMutations } from './api/goal-mutations.js';
+import { loadAutopilotStatus } from './api/autopilot-status.js';
+import { loadAutopilotFlow } from './api/autopilot-flow.js';
+import { loadAutopilotProjects } from './api/autopilot-projects.js';
+import { loadAgentActivity } from './api/agent-activity.js';
+import {
+  createCoordinatorMutations,
+  type CoordinatorMutations,
+} from './api/coordinator-mutations.js';
 import { createMessageMutations, type MessageMutations } from './api/message-mutations.js';
 import { createProjectMutations, type ProjectMutations } from './api/project-mutations.js';
+import { createSessionMutations, type SessionMutations } from './api/session-mutations.js';
 import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-explorer.js';
 import { loadRuntimeResources } from './api/runtime-resources.js';
+import { loadProjectDiscovery } from './api/project-discovery.js';
 import { loadSessionUsage } from './api/session-usage.js';
 import {
   intelligenceResourceKeys,
@@ -113,6 +126,11 @@ const ACTIVITY_RENDER_THROTTLE_MS = 1_000;
 const configMutations: ConfigMutations = createConfigMutations();
 const messageMutations: MessageMutations = createMessageMutations();
 const projectMutations: ProjectMutations = createProjectMutations();
+const coordinatorMutations: CoordinatorMutations = createCoordinatorMutations();
+const autopilotMutations: AutopilotMutations = createAutopilotMutations();
+const goalMutations: GoalMutations = createGoalMutations();
+const capabilityMutations: CapabilityMutations = createCapabilityMutations();
+const sessionMutations: SessionMutations = createSessionMutations();
 
 /**
  * Bound once so the Graph explorer's load effect has a stable dependency; a new
@@ -132,6 +150,18 @@ const fetchSessionUsage = (sessionId: string, options?: { signal?: AbortSignal }
 /** Same reason: the Knowledge lens's read effect keys on this identity. */
 const fetchKnowledge = (projectId: string, options?: { signal?: AbortSignal }) =>
   loadKnowledgeScope(client, projectId, options);
+/** Same reason: the overview's autopilot effect keys on this identity. */
+const fetchAutopilotStatus = (projectId: string, options?: { signal?: AbortSignal }) =>
+  loadAutopilotStatus(client, projectId, options);
+/** Same reason: the overview's autopilot-flow effect keys on this identity. */
+const fetchAutopilotFlow = (projectId: string, options?: { signal?: AbortSignal }) =>
+  loadAutopilotFlow(client, projectId, options);
+/** Same reason: the LuwiBot widget's activity effect keys on this identity. */
+const fetchAgentActivity = (projectId: string, options?: { signal?: AbortSignal }) =>
+  loadAgentActivity(client, projectId, options);
+/** Stable identity so the widget's flow effect can key on it too. */
+const fetchAutopilotProjects = (options?: { signal?: AbortSignal }) =>
+  loadAutopilotProjects(client, options);
 
 function DashboardRoute() {
   const [input, setInput] = useState<PulseInput>();
@@ -525,9 +555,12 @@ function DashboardRoute() {
   );
   if (snapshot === undefined) {
     return (
-      <main className="route-loading" aria-busy="true">
-        <span className="identity__mark">
-          <BrandMark size={24} />
+      <main className="route-loading route-loading--splash" aria-busy="true">
+        <span className="splash__logo" aria-hidden="true">
+          <span className="splash__orbit" />
+          <span className="splash__mark">
+            <BrandMark size={54} />
+          </span>
         </span>
         <p className="eyebrow">LUWI Runtime</p>
         <h1>Loading validated Pulse snapshot</h1>
@@ -558,6 +591,12 @@ function DashboardRoute() {
       onConfigMutated={onConfigMutated}
       projectMutations={projectMutations}
       onProjectMutated={retry}
+      coordinatorMutations={coordinatorMutations}
+      onCoordinatorMutated={retry}
+      sessionMutations={sessionMutations}
+      onSessionMutated={retry}
+      autopilotMutations={autopilotMutations}
+      capabilityMutations={capabilityMutations}
       agentPairResources={agentPairResources}
       agentPairLoading={agentPairLoading}
       leaseResources={leaseResources}
@@ -565,6 +604,8 @@ function DashboardRoute() {
       loadResources={fetchResources}
       loadSessionUsage={fetchSessionUsage}
       loadKnowledge={fetchKnowledge}
+      loadAutopilot={fetchAutopilotStatus}
+      loadProjectDiscovery={loadProjectDiscovery}
       onRetry={retry}
       onActivityStateChange={(next) => {
         activityRef.current = next;
@@ -581,7 +622,12 @@ createRoot(root).render(
   <StrictMode>
     <DashboardErrorBoundary>
       <DashboardRoute />
-      <LuwiBotChat />
+      <LuwiBotChat
+        loadAutopilotFlow={fetchAutopilotFlow}
+        loadAgentActivity={fetchAgentActivity}
+        loadAutopilotProjects={fetchAutopilotProjects}
+        goalMutations={goalMutations}
+      />
     </DashboardErrorBoundary>
   </StrictMode>,
 );

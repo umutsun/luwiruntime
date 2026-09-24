@@ -54,6 +54,8 @@ export type {
   RegisterProjectResult,
   UpdateProjectInput,
   UpdateProjectResult,
+  UnregisterProjectInput,
+  UnregisterProjectResult,
   RegisterSessionInput,
   RegisterSessionResult,
   DeclareNativeSessionInput,
@@ -87,6 +89,14 @@ export type {
   LeaseRepository,
   LeaseTransitionResult,
 } from './lease-repository.js';
+export { createCoordinatorRepository } from './coordinator-repository.js';
+export type {
+  ClaimCoordinatorResult,
+  CoordinatorRepository,
+  ReleaseCoordinatorResult,
+} from './coordinator-repository.js';
+export { createProjectPurge, purgeTerminalSessionLeaves } from './project-purge.js';
+export type { ProjectPurge, ProjectPurgeSummary } from './project-purge.js';
 export { claimSessionInbox, ensureSessionInboxGroup } from './session-inbox.js';
 export type { ClaimSessionInboxInput } from './session-inbox.js';
 export { runMessageRetention } from './message-retention.js';
@@ -106,3 +116,11 @@ export type {
   UsageIngestResult,
 } from './intelligence-repository.js';
 export type { UsageListResult } from './intelligence-repository.js';
+export { createAutopilotRepository } from './autopilot-repository.js';
+export type {
+  ActiveTaskEntry,
+  AutopilotRepository,
+  CasWriteResult,
+  DispatchTaskResult,
+  QueueNoticeResult,
+} from './autopilot-repository.js';

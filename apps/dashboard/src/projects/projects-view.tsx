@@ -1,4 +1,8 @@
+import { useState } from 'react';
+
+import type { CapabilityMutations } from '../api/capability-mutations.js';
 import type { LeaseResources } from '../api/lease-scope.js';
+import type { ProjectMutations } from '../api/project-mutations.js';
 import { LeasePanel } from './lease-panel.js';
 import type {
   AgentPairResources,
@@ -8,6 +12,7 @@ import type {
 } from '../api/agent-pair-scope.js';
 import type {
   Bounded,
+  FlowRole,
   ProjectAttribution,
   ProjectBinding,
   ProjectCapability,
@@ -142,9 +147,47 @@ function WorktreeTable({ worktrees }: { worktrees: ProjectWorktree[] }) {
   );
 }
 
+/**
+ * A browsable commit URL from a git remote, or `undefined` when there is no usable remote (then the
+ * sha renders as plain text). Normalizes an scp-style `git@host:user/repo(.git)` to
+ * `https://host/user/repo` and strips a trailing `.git`.
+ * ponytail: emits the GitHub/GitLab web `/commit/<sha>` path; a Bitbucket remote would want
+ * `/commits/`. Add that branch only if a Bitbucket remote actually shows up.
+ */
+/**
+ * A browsable web URL for a git remote, or undefined when it is not one an owner
+ * can open: an scp-style `git@host:owner/repo` becomes `https://host/owner/repo`,
+ * a trailing `.git` and slash are dropped, and a non-http remote (a local path,
+ * ssh://, unknown) yields nothing rather than a broken link.
+ */
+export function remoteWebUrl(remote: string | undefined): string | undefined {
+  if (remote === undefined || remote.trim() === '') return undefined;
+  const scp = /^git@([^:]+):(.+)$/.exec(remote.trim());
+  const base = (scp ? `https://${scp[1]}/${scp[2]}` : remote.trim())
+    .replace(/\.git$/, '')
+    .replace(/\/$/, '');
+  return /^https?:\/\//.test(base) ? base : undefined;
+}
+
+export function commitUrl(remote: string | undefined, sha: string): string | undefined {
+  const base = remoteWebUrl(remote);
+  return base === undefined ? undefined : `${base}/commit/${encodeURIComponent(sha)}`;
+}
+
 function RepositoryBody({ git, project }: { git: ProjectGit; project: PulseProject }) {
+  // A clickable link to the repository home, from whichever remote resolves to a
+  // web URL (observed first, then the registered one). Absent for a local-only
+  // or non-http remote — no broken link.
+  const repoUrl = remoteWebUrl(git.remoteUrl ?? project.repositoryUrl);
   return (
     <div className="project-detail__body">
+      {repoUrl === undefined ? null : (
+        <p className="repo-link">
+          <a href={repoUrl} target="_blank" rel="noreferrer">
+            Open repository ↗
+          </a>
+        </p>
+      )}
       <dl className="key-values">
         <div>
           <dt>Branch</dt>
@@ -253,15 +296,24 @@ function RepositoryBody({ git, project }: { git: ProjectGit; project: PulseProje
                 </tr>
               </thead>
               <tbody>
-                {git.recentCommits.slice(0, RECENT_COMMIT_LIMIT).map((commit) => (
-                  <tr key={commit.sha}>
-                    <td>
-                      <code title={commit.sha}>{abbreviateSha(commit.sha)}</code>
-                    </td>
-                    <td>{commit.subject ?? <span className="unavailable">No subject</span>}</td>
-                    <td>{commit.changedPathCount}</td>
-                  </tr>
-                ))}
+                {git.recentCommits.slice(0, RECENT_COMMIT_LIMIT).map((commit) => {
+                  const url = commitUrl(git.remoteUrl ?? project.repositoryUrl, commit.sha);
+                  return (
+                    <tr key={commit.sha}>
+                      <td>
+                        {url === undefined ? (
+                          <code title={commit.sha}>{abbreviateSha(commit.sha)}</code>
+                        ) : (
+                          <a href={url} target="_blank" rel="noreferrer" title={commit.sha}>
+                            <code>{abbreviateSha(commit.sha)}</code>
+                          </a>
+                        )}
+                      </td>
+                      <td>{commit.subject ?? <span className="unavailable">No subject</span>}</td>
+                      <td>{commit.changedPathCount}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -346,119 +398,143 @@ function AgentPairPanels({
               </div>
             </dl>
 
-            <GroupLabel label="Capabilities" count={config.capabilities.length} />
-            {config.capabilities.length === 0 ? (
-              <p className="empty-state">No capabilities resolved for this pair</p>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <caption className="visually-hidden">Resolved capabilities</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Capability</th>
-                      <th scope="col">Kind</th>
-                      <th scope="col">Scope</th>
-                      <th scope="col">State</th>
-                      <th scope="col">Native support</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {config.capabilities.map((capability) => {
-                      const support = config.nativeCapabilitySupport.find(
-                        (entry) => entry.capabilityId === capability.id,
-                      );
-                      const unsupported = config.unsupportedCapabilities.includes(capability.id);
-                      return (
-                        <tr key={capability.id}>
-                          <td>
-                            {capability.name}
-                            <small title={capability.id}>{capability.id}</small>
-                          </td>
-                          <td>{capability.kind}</td>
-                          <td>{capability.scope}</td>
-                          <td>
-                            <StatusChip tone={capability.enabled ? 'success' : 'unknown'}>
-                              {capability.enabled ? 'Enabled' : 'Disabled'}
-                            </StatusChip>
-                          </td>
-                          <td>
-                            {support === undefined ? (
-                              <span className="unavailable">Not reported</span>
-                            ) : (
-                              <StatusChip
-                                tone={
-                                  support.supportLevel === 'full'
-                                    ? 'success'
-                                    : support.supportLevel === 'unsupported'
-                                      ? 'warning'
-                                      : 'info'
-                                }
-                              >
-                                {support.supportLevel}
+            {/* Each section folds (the effective config ran to four dense tables
+                at once); the panel opens to the summary above and these closed. */}
+            <details className="name-group">
+              <summary className="group-label">
+                <span>Capabilities</span>
+                <span className="group-label__count">{config.capabilities.length}</span>
+              </summary>
+              {config.capabilities.length === 0 ? (
+                <p className="empty-state">No capabilities resolved for this pair</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <caption className="visually-hidden">Resolved capabilities</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Capability</th>
+                        <th scope="col">Kind</th>
+                        <th scope="col">Scope</th>
+                        <th scope="col">State</th>
+                        <th scope="col">Native support</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {config.capabilities.map((capability) => {
+                        const support = config.nativeCapabilitySupport.find(
+                          (entry) => entry.capabilityId === capability.id,
+                        );
+                        const unsupported = config.unsupportedCapabilities.includes(capability.id);
+                        return (
+                          <tr key={capability.id}>
+                            <td>
+                              {capability.name}
+                              <small title={capability.id}>{capability.id}</small>
+                            </td>
+                            <td>{capability.kind}</td>
+                            <td>{capability.scope}</td>
+                            <td>
+                              <StatusChip tone={capability.enabled ? 'success' : 'unknown'}>
+                                {capability.enabled ? 'Enabled' : 'Disabled'}
                               </StatusChip>
+                            </td>
+                            <td>
+                              {support === undefined ? (
+                                <span className="unavailable">Not reported</span>
+                              ) : (
+                                <StatusChip
+                                  tone={
+                                    support.supportLevel === 'full'
+                                      ? 'success'
+                                      : support.supportLevel === 'unsupported'
+                                        ? 'warning'
+                                        : 'info'
+                                  }
+                                >
+                                  {support.supportLevel}
+                                </StatusChip>
+                              )}
+                              {unsupported ? <small>Not usable by this agent</small> : null}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </details>
+
+            <details className="name-group">
+              <summary className="group-label">
+                <span>Profiles</span>
+                <span className="group-label__count">{config.profileIds.length}</span>
+              </summary>
+              {config.profileIds.length === 0 ? (
+                <p className="empty-state">No profiles applied</p>
+              ) : (
+                <ul className="name-list">
+                  {config.profileIds.map((profileId) => (
+                    <li key={profileId}>{profileId}</li>
+                  ))}
+                </ul>
+              )}
+            </details>
+
+            <details className="name-group">
+              <summary className="group-label">
+                <span>Conflicts</span>
+                <span className="group-label__count">{config.conflicts.length}</span>
+              </summary>
+              {config.conflicts.length === 0 ? (
+                <p className="empty-state">No conflicts detected</p>
+              ) : (
+                <div className="table-wrap">
+                  <table>
+                    <caption className="visually-hidden">Configuration conflicts</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Code</th>
+                        <th scope="col">Detail</th>
+                        <th scope="col">Capability</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {config.conflicts.map((conflict, index) => (
+                        <tr key={`${conflict.code}-${String(index)}`}>
+                          <td>
+                            <code>{conflict.code}</code>
+                          </td>
+                          <td>{conflict.message}</td>
+                          <td>
+                            {conflict.capabilityId ?? (
+                              <span className="unavailable">Not scoped</span>
                             )}
-                            {unsupported ? <small>Not usable by this agent</small> : null}
                           </td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </details>
 
-            <GroupLabel label="Profiles" count={config.profileIds.length} />
-            {config.profileIds.length === 0 ? (
-              <p className="empty-state">No profiles applied</p>
-            ) : (
-              <ul className="name-list">
-                {config.profileIds.map((profileId) => (
-                  <li key={profileId}>{profileId}</li>
-                ))}
-              </ul>
-            )}
-
-            <GroupLabel label="Conflicts" count={config.conflicts.length} />
-            {config.conflicts.length === 0 ? (
-              <p className="empty-state">No conflicts detected</p>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <caption className="visually-hidden">Configuration conflicts</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Code</th>
-                      <th scope="col">Detail</th>
-                      <th scope="col">Capability</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {config.conflicts.map((conflict, index) => (
-                      <tr key={`${conflict.code}-${String(index)}`}>
-                        <td>
-                          <code>{conflict.code}</code>
-                        </td>
-                        <td>{conflict.message}</td>
-                        <td>
-                          {conflict.capabilityId ?? <span className="unavailable">Not scoped</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            <GroupLabel label="Missing dependencies" count={config.missingDependencies.length} />
-            {config.missingDependencies.length === 0 ? (
-              <p className="empty-state">No missing dependencies</p>
-            ) : (
-              <ul className="name-list">
-                {config.missingDependencies.map((dependency) => (
-                  <li key={dependency}>{dependency}</li>
-                ))}
-              </ul>
-            )}
+            <details className="name-group">
+              <summary className="group-label">
+                <span>Missing dependencies</span>
+                <span className="group-label__count">{config.missingDependencies.length}</span>
+              </summary>
+              {config.missingDependencies.length === 0 ? (
+                <p className="empty-state">No missing dependencies</p>
+              ) : (
+                <ul className="name-list">
+                  {config.missingDependencies.map((dependency) => (
+                    <li key={dependency}>{dependency}</li>
+                  ))}
+                </ul>
+              )}
+            </details>
 
             <p className="bounded-note">
               An unresolved configuration is reported, not hidden. It means the runtime could not
@@ -602,6 +678,9 @@ export function ProjectsView({
   onSelectProject,
   onSelectAgent,
   renderDetailInline = true,
+  projectMutations,
+  capabilityMutations,
+  onMutated,
 }: {
   snapshot: PulseSnapshot;
   selectedProjectId?: string | undefined;
@@ -617,11 +696,16 @@ export function ProjectsView({
   onSelectAgent?: (agentId: string | undefined) => void;
   /** The shell passes false and renders <ProjectDetail/> in the overlay drawer itself. */
   renderDetailInline?: boolean;
+  projectMutations?: ProjectMutations | undefined;
+  capabilityMutations?: CapabilityMutations | undefined;
+  onMutated?: (() => void) | undefined;
 }) {
   const projectsAvailable = snapshot.projectCount.state !== 'unavailable';
 
   return (
-    <div className="projects-stack">
+    <div
+      className={`projects-stack${selectedProjectId === undefined ? ' projects-stack--registry' : ''}`}
+    >
       <section className="panel panel--projects" aria-labelledby="projects-registry">
         <header className="panel__header">
           <h2 id="projects-registry">Registered projects</h2>
@@ -639,14 +723,13 @@ export function ProjectsView({
               <thead>
                 <tr>
                   <th scope="col">Project</th>
-                  <th scope="col">Agents</th>
                   {/*
-                   * The comp's Stage and Release columns are not here: no
-                   * lifecycle or release domain exists (section 21). HEAD is —
-                   * it comes from the bounded per-project Git read the Pulse
-                   * already pays for.
+                   * Agents and HEAD live in the project detail drawer, not here:
+                   * the registry is a lean picker — name, size, activity — so it
+                   * fits a normal-width drawer. Commits is the true
+                   * reachable-commit total (git rev-list --count), a size hint.
                    */}
-                  <th scope="col">HEAD</th>
+                  <th scope="col">Commits</th>
                   <th scope="col">Active sessions</th>
                 </tr>
               </thead>
@@ -682,23 +765,14 @@ export function ProjectsView({
                         </span>
                       </td>
                       <td>
-                        {project.activeAgents.state === 'unavailable' ? (
-                          <Unavailable />
-                        ) : (
-                          `${String(project.activeAgents.value)}a`
-                        )}
-                      </td>
-                      <td>
                         {facts === undefined || facts.git.state === 'unavailable' ? (
                           <Unavailable />
                         ) : facts.git.state === 'not-observed' ? (
                           <span className="table-dim">not scanned</span>
-                        ) : facts.git.data.headSha === undefined ? (
-                          <span className="table-dim">no HEAD</span>
+                        ) : facts.git.data.commitCount === undefined ? (
+                          <span className="table-dim">—</span>
                         ) : (
-                          <span title={facts.git.data.headSha}>
-                            {abbreviateSha(facts.git.data.headSha)}
-                          </span>
+                          facts.git.data.commitCount.toLocaleString()
                         )}
                       </td>
                       <td>
@@ -713,9 +787,15 @@ export function ProjectsView({
         )}
       </section>
 
-      {selectedProjectId === undefined ? (
+      {/*
+       * The registry (renderDetailInline=false) opens the detail in its own
+       * drawer, so nothing renders below the table — no "select a project"
+       * prompt eating vertical room. Only the inline mode shows the prompt and
+       * the docked detail.
+       */}
+      {!renderDetailInline ? null : selectedProjectId === undefined ? (
         <p className="empty-state">Select a project to load its scoped evidence.</p>
-      ) : renderDetailInline ? (
+      ) : (
         <ProjectDetail
           snapshot={snapshot}
           selectedProjectId={selectedProjectId}
@@ -727,8 +807,11 @@ export function ProjectsView({
           leaseResources={leaseResources}
           {...(nowMs === undefined ? {} : { nowMs })}
           {...(onSelectAgent === undefined ? {} : { onSelectAgent })}
+          {...(projectMutations === undefined ? {} : { projectMutations })}
+          {...(capabilityMutations === undefined ? {} : { capabilityMutations })}
+          {...(onMutated === undefined ? {} : { onMutated })}
         />
-      ) : null}
+      )}
     </div>
   );
 }
@@ -751,6 +834,9 @@ export function ProjectDetail({
   leaseResources = {},
   nowMs,
   onSelectAgent,
+  projectMutations,
+  capabilityMutations,
+  onMutated,
 }: {
   snapshot: PulseSnapshot;
   selectedProjectId: string;
@@ -762,8 +848,84 @@ export function ProjectDetail({
   leaseResources?: Partial<LeaseResources>;
   nowMs?: number;
   onSelectAgent?: (agentId: string | undefined) => void;
+  /** Absent keeps the bound agents' flow roles read-only (ADR 0036). */
+  projectMutations?: ProjectMutations | undefined;
+  /** Absent keeps the Skills panel read-only (ADR 0036). */
+  capabilityMutations?: CapabilityMutations | undefined;
+  /** Called after a role or capability change so the scope can be re-read. */
+  onMutated?: (() => void) | undefined;
 }) {
   const selected = snapshot.projects.find((project) => project.id === selectedProjectId);
+
+  // The two write surfaces this drawer carries (F5, ADR 0036). One busy marker
+  // and one note serve both: a change here is one gesture at a time, and the
+  // daemon's own refusal is what the reader should see.
+  const [busy, setBusy] = useState<string>();
+  const [note, setNote] = useState<{ tone: 'ok' | 'danger'; message: string }>();
+  const settle = (
+    result: { state: 'ok' } | { state: 'failed'; reason: string; message?: string },
+    done: string,
+  ): void => {
+    setBusy(undefined);
+    if (result.state === 'ok') {
+      setNote({ tone: 'ok', message: done });
+      onMutated?.();
+      return;
+    }
+    setNote({
+      tone: 'danger',
+      message:
+        result.reason === 'http' && result.message !== undefined
+          ? result.message
+          : 'The change could not be completed.',
+    });
+  };
+  const toggleFlowRole = async (binding: ProjectBinding, role: FlowRole): Promise<void> => {
+    if (projectMutations === undefined) return;
+    const held = binding.flowRoles ?? [];
+    const next = held.includes(role) ? held.filter((item) => item !== role) : [...held, role];
+    setBusy(binding.id);
+    setNote(undefined);
+    settle(
+      await projectMutations.updateAgentBinding(selectedProjectId, binding.id, {
+        flowRoles: next,
+      }),
+      `${binding.agentId}: ${next.length === 0 ? 'no flow role' : next.join(' + ')}.`,
+    );
+  };
+  // A skill is assigned to the project, or to the one agent selected in the
+  // bound-agents table; the daemon's assignment shape carries no other target.
+  const capabilityTarget =
+    selectedAgentId === undefined
+      ? { projectId: selectedProjectId }
+      : { projectId: selectedProjectId, agentId: selectedAgentId };
+  const targetLabel = selectedAgentId ?? 'project';
+  const runCapability = async (
+    capabilityId: string,
+    action: 'enable' | 'disable' | 'assign' | 'unassign' | 'rescan',
+  ): Promise<void> => {
+    if (capabilityMutations === undefined) return;
+    setBusy(action === 'rescan' ? 'rescan' : capabilityId);
+    setNote(undefined);
+    const result =
+      action === 'enable' || action === 'disable'
+        ? await capabilityMutations.setEnabled(capabilityId, action === 'enable')
+        : action === 'assign'
+          ? await capabilityMutations.assign(capabilityId, capabilityTarget)
+          : action === 'unassign'
+            ? await capabilityMutations.unassign(capabilityId, capabilityTarget)
+            : await capabilityMutations.rescan();
+    settle(
+      result,
+      action === 'rescan'
+        ? 'Capabilities rescanned.'
+        : action === 'assign'
+          ? `Assigned to ${targetLabel}.`
+          : action === 'unassign'
+            ? `Unassigned from ${targetLabel}.`
+            : `Capability ${action}d.`,
+    );
+  };
   const projectFindings = snapshot.findings.filter(
     (finding) => finding.projectId === selectedProjectId,
   );
@@ -792,6 +954,42 @@ export function ProjectDetail({
       >
         {(git) => <RepositoryBody git={git} project={selected} />}
       </ResourcePanel>
+
+      {/* Sessions sit high, right under the repository: they are the project's
+          live activity and the first thing a reader looks for. Open by default;
+          the evidence cards below start folded. */}
+      <Panel title="Sessions" meta={`${String(projectSessions.length)} recorded`} collapsible>
+        {projectSessions.length === 0 ? (
+          <p className="empty-state">No sessions recorded for this project</p>
+        ) : (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Session</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Presence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {projectSessions.map((session) => (
+                  <tr key={session.id}>
+                    <td>
+                      <code>{session.id}</code>
+                    </td>
+                    <td>{session.statusLabel}</td>
+                    <td>
+                      <StatusChip tone={session.presence === 'online' ? 'success' : 'unknown'}>
+                        {session.presence === 'online' ? 'Online' : 'Offline'}
+                      </StatusChip>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
 
       <ResourcePanel<Bounded<ProjectAttribution>>
         title="Commit attribution"
@@ -862,6 +1060,15 @@ export function ProjectDetail({
         nowMs={nowMs ?? Date.now()}
       />
 
+      {note === undefined ? null : (
+        <p
+          className={note.tone === 'ok' ? 'outcome outcome--ok' : 'outcome outcome--bad'}
+          role={note.tone === 'ok' ? 'status' : 'alert'}
+        >
+          {note.message}
+        </p>
+      )}
+
       <ResourcePanel<ProjectBinding[]>
         title="Bound agents"
         collapsible
@@ -875,36 +1082,71 @@ export function ProjectDetail({
               <thead>
                 <tr>
                   <th scope="col">Agent</th>
+                  {/*
+                   * The free-text role the owner bound the agent with, and the
+                   * flow roles (implementer / verifier) the external flow script
+                   * reads (ADR 0036). The coordinator is a session claim and
+                   * lives on the sessions route, not here.
+                   */}
+                  <th scope="col">Role</th>
                   <th scope="col">State</th>
                   <th scope="col">Profiles</th>
                   <th scope="col">Capabilities</th>
                 </tr>
               </thead>
               <tbody>
-                {bindings.map((binding) => (
-                  <tr key={binding.id} aria-selected={binding.agentId === selectedAgentId}>
-                    <td>
-                      <button
-                        type="button"
-                        className="link-button"
-                        onClick={() =>
-                          onSelectAgent?.(
-                            binding.agentId === selectedAgentId ? undefined : binding.agentId,
-                          )
-                        }
-                      >
-                        {binding.agentId}
-                      </button>
-                    </td>
-                    <td>
-                      <StatusChip tone={binding.enabled ? 'success' : 'unknown'}>
-                        {binding.enabled ? 'Enabled' : 'Disabled'}
-                      </StatusChip>
-                    </td>
-                    <td>{binding.profileCount}</td>
-                    <td>{binding.capabilityCount}</td>
-                  </tr>
-                ))}
+                {bindings.map((binding) => {
+                  const held = binding.flowRoles ?? [];
+                  return (
+                    <tr key={binding.id} aria-selected={binding.agentId === selectedAgentId}>
+                      <td>
+                        <button
+                          type="button"
+                          className="link-button"
+                          onClick={() =>
+                            onSelectAgent?.(
+                              binding.agentId === selectedAgentId ? undefined : binding.agentId,
+                            )
+                          }
+                        >
+                          {binding.agentId}
+                        </button>
+                      </td>
+                      <td>
+                        {binding.role === undefined ? null : (
+                          <small title={binding.role}>{binding.role}</small>
+                        )}
+                        {held.map((role) => (
+                          <StatusChip key={role} tone="info">
+                            {role}
+                          </StatusChip>
+                        ))}
+                        {projectMutations === undefined
+                          ? null
+                          : (['implementer', 'verifier'] as const).map((role) => (
+                              <button
+                                key={role}
+                                type="button"
+                                className="link-button"
+                                aria-pressed={held.includes(role)}
+                                disabled={busy === binding.id}
+                                onClick={() => void toggleFlowRole(binding, role)}
+                                aria-label={`${held.includes(role) ? 'Unset' : 'Set'} ${role} role for ${binding.agentId}`}
+                              >
+                                {held.includes(role) ? `Unset ${role}` : `Set ${role}`}
+                              </button>
+                            ))}
+                      </td>
+                      <td>
+                        <StatusChip tone={binding.enabled ? 'success' : 'unknown'}>
+                          {binding.enabled ? 'Enabled' : 'Disabled'}
+                        </StatusChip>
+                      </td>
+                      <td>{binding.profileCount}</td>
+                      <td>{binding.capabilityCount}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -920,10 +1162,23 @@ export function ProjectDetail({
       <ResourcePanel<Bounded<ProjectCapability>>
         title="Skills"
         meta={
-          resources.capabilities?.state === 'ready'
-            ? `${String(resources.capabilities.data.items.filter((item) => item.scope === 'project').length)} project · ${String(resources.capabilities.data.items.filter((item) => item.scope === 'global').length)} global`
-            : undefined
+          <>
+            {resources.capabilities?.state === 'ready'
+              ? `${String(resources.capabilities.data.items.filter((item) => item.scope === 'project').length)} project · ${String(resources.capabilities.data.items.filter((item) => item.scope === 'global').length)} global`
+              : null}
+            {capabilityMutations === undefined ? null : (
+              <button
+                type="button"
+                className="link-button"
+                disabled={busy === 'rescan'}
+                onClick={() => void runCapability('', 'rescan')}
+              >
+                Rescan
+              </button>
+            )}
+          </>
         }
+        collapsible
         resource={resources.capabilities}
         emptyMessage="No capabilities recorded — a capability scan registers them"
         isEmpty={(value) => value.items.length === 0}
@@ -939,6 +1194,7 @@ export function ProjectDetail({
                     <th scope="col">Scope</th>
                     <th scope="col">Source</th>
                     <th scope="col">State</th>
+                    {capabilityMutations === undefined ? null : <th scope="col">Actions</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -958,6 +1214,47 @@ export function ProjectDetail({
                           {record.enabled ? 'Enabled' : 'Disabled'}
                         </StatusChip>
                       </td>
+                      {capabilityMutations === undefined ? null : (
+                        <td>
+                          {/*
+                           * An observed package cannot be enabled or disabled
+                           * here: its SKILL.md is the truth and the daemon
+                           * refuses the update. Assignment is still the
+                           * runtime's own record, so it stays.
+                           */}
+                          {record.observed ? null : (
+                            <button
+                              type="button"
+                              className="link-button"
+                              disabled={busy === record.id}
+                              onClick={() =>
+                                void runCapability(record.id, record.enabled ? 'disable' : 'enable')
+                              }
+                              aria-label={`${record.enabled ? 'Disable' : 'Enable'} ${record.name}`}
+                            >
+                              {record.enabled ? 'Disable' : 'Enable'}
+                            </button>
+                          )}{' '}
+                          <button
+                            type="button"
+                            className="link-button"
+                            disabled={busy === record.id}
+                            onClick={() => void runCapability(record.id, 'assign')}
+                            aria-label={`Assign ${record.name} to ${targetLabel}`}
+                          >
+                            Assign to {targetLabel}
+                          </button>{' '}
+                          <button
+                            type="button"
+                            className="link-button"
+                            disabled={busy === record.id}
+                            onClick={() => void runCapability(record.id, 'unassign')}
+                            aria-label={`Unassign ${record.name} from ${targetLabel}`}
+                          >
+                            Unassign
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -975,6 +1272,7 @@ export function ProjectDetail({
       */}
       <ResourcePanel<PulseFinding[]>
         title="Optimization"
+        collapsible
         meta={
           snapshot.findingsState === 'ready'
             ? `${String(projectFindings.length)} for this project`
@@ -1118,44 +1416,6 @@ export function ProjectDetail({
           loading={agentPairLoading}
         />
       )}
-
-      <Panel
-        title="Sessions"
-        meta={`${String(projectSessions.length)} recorded`}
-        collapsible
-        defaultCollapsed
-      >
-        {projectSessions.length === 0 ? (
-          <p className="empty-state">No sessions recorded for this project</p>
-        ) : (
-          <div className="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Session</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Presence</th>
-                </tr>
-              </thead>
-              <tbody>
-                {projectSessions.map((session) => (
-                  <tr key={session.id}>
-                    <td>
-                      <code>{session.id}</code>
-                    </td>
-                    <td>{session.statusLabel}</td>
-                    <td>
-                      <StatusChip tone={session.presence === 'online' ? 'success' : 'unknown'}>
-                        {session.presence === 'online' ? 'Online' : 'Offline'}
-                      </StatusChip>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
     </div>
   );
 }

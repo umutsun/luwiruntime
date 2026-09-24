@@ -394,6 +394,8 @@ export const gitObservationSchema = z.strictObject({
   untrackedCount: z.number().int().nonnegative(),
   ahead: z.number().int().nonnegative().optional(),
   behind: z.number().int().nonnegative().optional(),
+  /** Reachable commits from HEAD (`git rev-list --count`); absent for an unborn HEAD. */
+  commitCount: z.number().int().nonnegative().optional(),
   branches: z.array(z.string().trim().min(1).max(512)).max(1000),
   tags: z.array(z.string().trim().min(1).max(512)).max(1000),
   worktrees: z.array(gitWorktreeSchema).max(1000),
@@ -598,6 +600,10 @@ export const graphNodeSchema = z.strictObject({
   kind: graphNodeKindSchema,
   entityId: identifierSchema,
   projectId: identifierSchema.optional(),
+  // On a node and on an edge alike: when this record was first seen with its
+  // current content, not when it was last scanned. The incremental projection
+  // leaves a record alone when only this field differs, so the neighbors
+  // route's `from`/`to` window selects by first sight; a full rebuild restamps.
   observedAt: timestampSchema,
   provenance: z.string().trim().min(1).max(256),
   confidence: intelligenceConfidenceSchema,

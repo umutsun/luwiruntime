@@ -1,4 +1,6 @@
 import {
+  projectAgentBindingPatchRequestSchema,
+  projectAgentBindingSchema,
   projectRegistrationRequestSchema,
   projectResponseSchema,
   projectUpdateRequestSchema,
@@ -7,10 +9,11 @@ import {
 import type { z } from 'zod';
 
 /**
- * The dashboard's third and last write surface (ADR 0033): registering a
- * project and editing its name, remote and default branch. Both go to the
- * daemon's own endpoints with the same bounded, validated shape the CLI sends;
- * the local path is identity and is never edited from here.
+ * The dashboard's third write surface (ADR 0033): registering a project and
+ * editing its name, remote and default branch, and — since ADR 0036 — the flow
+ * roles on a project-agent binding. All go to the daemon's own endpoints with
+ * the same bounded, validated shape the CLI sends; the local path is identity
+ * and is never edited from here.
  *
  * Kept in its own module for the same reason the other two are:
  * `product-independence.test.ts` allowlists exactly the modules that may
@@ -31,15 +34,40 @@ export type ProjectUpdateInput = {
 };
 
 export type ProjectRecord = z.infer<typeof projectResponseSchema>;
+export type ProjectBindingRecord = z.infer<typeof projectAgentBindingSchema>;
+export type FlowRole = NonNullable<ProjectBindingRecord['flowRoles']>[number];
 
-export type ProjectMutationResult =
-  | { state: 'ok'; data: ProjectRecord; httpStatus: number }
+export type MutationResult<T> =
+  | { state: 'ok'; data: T; httpStatus: number }
   | {
       state: 'failed';
       reason: 'input' | 'http';
       code: string;
       message: string;
       httpStatus?: number;
+    }
+  | { state: 'failed'; reason: 'transport' }
+  | { state: 'failed'; reason: 'invalid'; httpStatus: number };
+
+export type ProjectMutationResult = MutationResult<ProjectRecord>;
+export type ProjectBindingMutationResult = MutationResult<ProjectBindingRecord>;
+
+type Parser<T> = { safeParse(value: unknown): { success: true; data: T } | { success: false } };
+
+/**
+ * The outcome of an unregister (F3). `204` carries no record; a `409` carries
+ * the daemon's reason and its scalar `details` (which sessions, leases or
+ * messages still block it), shown to the reader as they are.
+ */
+export type ProjectRemoveResult =
+  | { state: 'ok'; httpStatus: 204 }
+  | {
+      state: 'failed';
+      reason: 'input' | 'http';
+      code: string;
+      message: string;
+      httpStatus?: number;
+      details?: Record<string, unknown>;
     }
   | { state: 'failed'; reason: 'transport' }
   | { state: 'failed'; reason: 'invalid'; httpStatus: number };
@@ -52,11 +80,12 @@ const inputFailure: ProjectMutationResult = {
 };
 
 export function createProjectMutations(fetchImpl: typeof fetch = fetch) {
-  const send = async (
+  const send = async <T>(
     path: string,
     method: 'POST' | 'PATCH',
     body: unknown,
-  ): Promise<ProjectMutationResult> => {
+    schema: Parser<T> = projectResponseSchema as unknown as Parser<T>,
+  ): Promise<MutationResult<T>> => {
     let response: Response;
     try {
       response = await fetchImpl(path, {
@@ -87,9 +116,9 @@ export function createProjectMutations(fetchImpl: typeof fetch = fetch) {
         : { state: 'failed', reason: 'invalid', httpStatus: response.status };
     }
 
-    let parsed: ReturnType<typeof projectResponseSchema.safeParse>;
+    let parsed: ReturnType<Parser<T>['safeParse']>;
     try {
-      parsed = projectResponseSchema.safeParse(value);
+      parsed = schema.safeParse(value);
     } catch {
       return { state: 'failed', reason: 'invalid', httpStatus: response.status };
     }
@@ -118,6 +147,81 @@ export function createProjectMutations(fetchImpl: typeof fetch = fetch) {
       });
       if (!request.success || projectId.trim() === '') return inputFailure;
       return send(`/api/v1/projects/${encodeURIComponent(projectId)}`, 'PATCH', request.data);
+    },
+
+    /**
+     * Flow roles on a project-agent binding (F5, ADR 0036): which bound agent
+     * implements and which verifies. The daemon records the roles and answers
+     * with the binding; the external flow script decides what a missing or
+     * ambiguous role means. An empty array clears them.
+     */
+    async updateAgentBinding(
+      projectId: string,
+      bindingId: string,
+      input: { flowRoles: FlowRole[] },
+    ): Promise<ProjectBindingMutationResult> {
+      const request = projectAgentBindingPatchRequestSchema.safeParse({
+        flowRoles: input.flowRoles,
+      });
+      if (!request.success || projectId.trim() === '' || bindingId.trim() === '') {
+        return {
+          state: 'failed',
+          reason: 'input',
+          code: 'REQUEST_VALIDATION_FAILED',
+          message: 'The flow roles do not match the bounded binding protocol.',
+        };
+      }
+      return send(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(bindingId)}`,
+        'PATCH',
+        request.data,
+        projectAgentBindingSchema,
+      );
+    },
+
+    /**
+     * Unregister (F3): the registry forgets the project and the evidence LUWI
+     * collected about it; nothing on disk changes. The daemon answers `204`, or
+     * a named `409` while anything live still points at the project.
+     */
+    async remove(projectId: string): Promise<ProjectRemoveResult> {
+      if (projectId.trim() === '') {
+        return {
+          state: 'failed',
+          reason: 'input',
+          code: 'REQUEST_VALIDATION_FAILED',
+          message: 'A project id is required.',
+        };
+      }
+      let response: Response;
+      try {
+        response = await fetchImpl(`/api/v1/projects/${encodeURIComponent(projectId)}`, {
+          method: 'DELETE',
+          headers: { accept: 'application/json' },
+        });
+      } catch {
+        return { state: 'failed', reason: 'transport' };
+      }
+      if (response.status === 204) return { state: 'ok', httpStatus: 204 };
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch {
+        return { state: 'failed', reason: 'invalid', httpStatus: response.status };
+      }
+      const error = publicErrorResponseSchema.safeParse(value);
+      return error.success
+        ? {
+            state: 'failed',
+            reason: 'http',
+            httpStatus: response.status,
+            code: error.data.error.code,
+            message: error.data.error.message,
+            ...(error.data.error.details === undefined
+              ? {}
+              : { details: error.data.error.details }),
+          }
+        : { state: 'failed', reason: 'invalid', httpStatus: response.status };
     },
   };
 }

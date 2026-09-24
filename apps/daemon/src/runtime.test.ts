@@ -9,7 +9,7 @@ import {
 import { NATIVE_DECLARATION_MAX_ATTEMPTS } from '@luwi/runtime';
 import { readFileSync } from 'node:fs';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { DaemonConfig } from './config.js';
 import {
@@ -217,13 +217,19 @@ function sweeperHarness(config: {
   link?: NativeSessionLink;
   reverseBindingId?: string;
   conflicts?: number;
+  failLostTargetMessages?: ReturnType<typeof vi.fn>;
 }): {
   disconnect: (deadline: { sessionId: string; deadlineMs: number }) => Promise<string>;
   calls: DisconnectExpiredSessionInput[];
   bindingReads: string[];
+  releaseSessionLeases: ReturnType<typeof vi.fn>;
+  failLostTargetMessages: ReturnType<typeof vi.fn>;
 } {
   const calls: DisconnectExpiredSessionInput[] = [];
   const bindingReads: string[] = [];
+  const releaseSessionLeases = vi.fn().mockResolvedValue(undefined);
+  const failLostTargetMessages =
+    config.failLostTargetMessages ?? vi.fn().mockResolvedValue(undefined);
   const ids = ['disconnect-event', 'unlinked-event'];
   let conflicts = config.conflicts ?? 0;
   const repository = {
@@ -255,12 +261,16 @@ function sweeperHarness(config: {
     repository,
     workspaceId: 'workspace-1',
     createId: () => ids.shift() ?? 'unexpected',
+    releaseSessionLeases,
+    failLostTargetMessages,
   });
 
   return {
     disconnect: (deadline) => adapter.disconnectExpiredSession(deadline),
     calls,
     bindingReads,
+    releaseSessionLeases,
+    failLostTargetMessages,
   };
 }
 
@@ -368,6 +378,40 @@ describe('presence sweeper native release', () => {
     );
     expect(harness.calls).toHaveLength(0);
   });
+
+  it('releases the lapsing session leases once it is disconnected (P12)', async () => {
+    const harness = sweeperHarness({ session: lapsingSession });
+
+    await expect(harness.disconnect({ sessionId: 'session-1', deadlineMs: 1_000 })).resolves.toBe(
+      'disconnected',
+    );
+    expect(harness.releaseSessionLeases).toHaveBeenCalledWith('session-1');
+  });
+
+  it('does not release leases when the sweep changed nothing', async () => {
+    const harness = sweeperHarness({ reverseBindingId: 'binding-1' });
+
+    await harness.disconnect({ sessionId: 'session-1', deadlineMs: 1_000 });
+    expect(harness.releaseSessionLeases).not.toHaveBeenCalled();
+    expect(harness.failLostTargetMessages).not.toHaveBeenCalled();
+  });
+
+  it('fails the lapsed session in-flight messages after its leases, and survives a throw', async () => {
+    const harness = sweeperHarness({ session: lapsingSession });
+    await harness.disconnect({ sessionId: 'session-1', deadlineMs: 1_000 });
+    expect(harness.failLostTargetMessages).toHaveBeenCalledWith('session-1');
+    expect(harness.releaseSessionLeases.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.failLostTargetMessages.mock.invocationCallOrder[0] ?? 0,
+    );
+
+    const throwing = sweeperHarness({
+      session: lapsingSession,
+      failLostTargetMessages: vi.fn().mockRejectedValue(new Error('redis down')),
+    });
+    await expect(throwing.disconnect({ sessionId: 'session-1', deadlineMs: 1_000 })).resolves.toBe(
+      'disconnected',
+    );
+  });
 });
 
 /**
@@ -384,13 +428,19 @@ function reapHarness(config: {
   reverseBindingId?: string;
   conflicts?: number;
   result?: 'disconnected' | 'unchanged';
+  failLostTargetMessages?: ReturnType<typeof vi.fn>;
 }): {
   reap: (candidate: { sessionId: string; projectId: string }) => Promise<string>;
   calls: ReapStartingSessionInput[];
   bindingReads: string[];
+  releaseSessionLeases: ReturnType<typeof vi.fn>;
+  failLostTargetMessages: ReturnType<typeof vi.fn>;
 } {
   const calls: ReapStartingSessionInput[] = [];
   const bindingReads: string[] = [];
+  const releaseSessionLeases = vi.fn().mockResolvedValue(undefined);
+  const failLostTargetMessages =
+    config.failLostTargetMessages ?? vi.fn().mockResolvedValue(undefined);
   const ids = ['reap-event', 'unlinked-event'];
   let conflicts = config.conflicts ?? 0;
   const repository = {
@@ -423,12 +473,16 @@ function reapHarness(config: {
     repository,
     workspaceId: 'workspace-1',
     createId: () => ids.shift() ?? 'unexpected',
+    releaseSessionLeases,
+    failLostTargetMessages,
   });
 
   return {
     reap: (candidate) => adapter.reapStartingSession(candidate),
     calls,
     bindingReads,
+    releaseSessionLeases,
+    failLostTargetMessages,
   };
 }
 
@@ -475,6 +529,32 @@ describe('starting session reaper native release', () => {
       'skipped',
     );
     expect(harness.calls).toHaveLength(1);
+  });
+
+  it('releases the reaped zombie leases, and none when it is only skipped (P12)', async () => {
+    const reaped = reapHarness({});
+    await expect(reaped.reap({ sessionId: 'session-1', projectId: 'project-1' })).resolves.toBe(
+      'reaped',
+    );
+    expect(reaped.releaseSessionLeases).toHaveBeenCalledWith('session-1');
+
+    const skipped = reapHarness({ result: 'unchanged' });
+    await skipped.reap({ sessionId: 'session-1', projectId: 'project-1' });
+    expect(skipped.releaseSessionLeases).not.toHaveBeenCalled();
+    expect(skipped.failLostTargetMessages).not.toHaveBeenCalled();
+  });
+
+  it('fails the reaped zombie in-flight messages, and survives a throw', async () => {
+    const reaped = reapHarness({});
+    await reaped.reap({ sessionId: 'session-1', projectId: 'project-1' });
+    expect(reaped.failLostTargetMessages).toHaveBeenCalledWith('session-1');
+
+    const throwing = reapHarness({
+      failLostTargetMessages: vi.fn().mockRejectedValue(new Error('redis down')),
+    });
+    await expect(throwing.reap({ sessionId: 'session-1', projectId: 'project-1' })).resolves.toBe(
+      'reaped',
+    );
   });
 
   it('gives up quietly on a contended reap, with the event ids unchanged', async () => {

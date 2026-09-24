@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+
+import { canonicalJsonStringify } from '@luwi/protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -38,6 +41,36 @@ describe('message policy', () => {
         content: 'Different question',
       }),
     ).not.toBe(createMessageRequestFingerprint(request));
+    // A declared re-dispatch link is part of the request, not a retry of the same one.
+    expect(createMessageRequestFingerprint({ ...request, retryOf: 'previous' })).not.toBe(
+      createMessageRequestFingerprint(request),
+    );
+    expect(createMessageRequestFingerprint({ ...request, retryOf: undefined })).toBe(
+      createMessageRequestFingerprint(request),
+    );
+  });
+
+  it('hashes a request without a re-dispatch link exactly as before the field existed', () => {
+    // Golden shape: no `retryOf` key at all. Stored fingerprints predate the
+    // field, and an idempotent replay across a deploy compares against them —
+    // a `retryOf: null` in the canonical object would turn every replay into
+    // IDEMPOTENCY_KEY_CONFLICT.
+    const golden = createHash('sha256')
+      .update(
+        canonicalJsonStringify({
+          sourceSessionId: 'source',
+          targetSessionId: null,
+          targetAgentId: 'gemini-sim',
+          kind: 'question',
+          subject: 'Project status',
+          content: 'Have you completed the work?',
+          evidenceRequirements: ['session_state'],
+          timeoutMs: 120_000,
+        }),
+        'utf8',
+      )
+      .digest('hex');
+    expect(createMessageRequestFingerprint(request)).toBe(golden);
   });
 
   it('normalizes evidence requirements without changing target selector semantics', () => {

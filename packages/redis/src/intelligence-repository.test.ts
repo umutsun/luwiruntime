@@ -425,6 +425,194 @@ describe('Redis intelligence repository', () => {
     ]);
   });
 
+  it('does not rewrite a graph record whose only difference is the scan time', async () => {
+    // Observers stamp `observedAt` with the scan time, so every record of an
+    // unchanged project differs on every projection. Counting that as a change
+    // rewrote the whole graph each time and, past the operation limit, made
+    // the incremental projection fail forever.
+    const keys = createRedisKeys('luwi:test:graph-observed-at:v1');
+    const generation = 'generation-active';
+    const node: GraphNode = {
+      id: 'node-1',
+      kind: 'file',
+      entityId: 'file-1',
+      projectId: 'project-1',
+      observedAt: timestamp,
+      provenance: 'code-structure-observer@1',
+      confidence: 'high',
+      evidenceIds: ['src/a.ts'],
+      metadata: { relativePath: 'src/a.ts' },
+    };
+    const edge: GraphEdge = {
+      id: 'edge-1',
+      source: { kind: 'file', id: 'file-1' },
+      target: { kind: 'module', id: 'module-1' },
+      kind: 'FILE_BELONGS_TO_MODULE',
+      projectId: 'project-1',
+      observedAt: timestamp,
+      provenance: 'code-structure-observer@1',
+      confidence: 'high',
+      evidenceIds: ['src/a.ts'],
+      metadata: {},
+    };
+    const client = new ScriptedClient((command) => {
+      const [name, key] = command;
+      if (name === 'SSCAN') {
+        if (key === keys.graphNodesByKind(generation, 'file')) return ['0', ['file-1']];
+        if (key === keys.graphEdgesByKind(generation, 'FILE_BELONGS_TO_MODULE')) {
+          return ['0', ['edge-1']];
+        }
+        return ['0', []];
+      }
+      if (name === 'HGET') {
+        if (key === keys.graphNode(generation, 'file', 'file-1')) return JSON.stringify(node);
+        if (key === keys.graphEdge(generation, 'edge-1')) return JSON.stringify(edge);
+      }
+      return null;
+    });
+    const repository = createIntelligenceRepository({
+      client,
+      keys,
+      functions: createFunctionRegistry(),
+    });
+    const rescannedAt = '2026-07-30T00:05:00.000Z';
+
+    await repository.replaceGraphSnapshot(
+      generation,
+      [{ ...node, observedAt: rescannedAt }],
+      [{ ...edge, observedAt: rescannedAt }],
+      usageEvent,
+    );
+
+    expect(client.commands.filter(([name]) => name === 'FCALL')).toEqual([]);
+  });
+
+  it('encodes a large batch without holding the event loop for seconds', async () => {
+    // Every operation used to look its key up with `indexOf` over all keys:
+    // quadratic and synchronous. This batch measured 5 985 ms that way and
+    // about 220 ms with a map; the budget sits between the two shapes, nine
+    // times above the linear cost, so load alone does not trip it.
+    const keys = createRedisKeys('luwi:test:graph-batch:v1');
+    const client = new ScriptedClient((command) => {
+      const [name] = command;
+      if (name === 'SSCAN') return ['0', []];
+      if (name === 'FCALL') return JSON.stringify({ status: 'updated', streamId: '1-0' });
+      return null;
+    });
+    const repository = createIntelligenceRepository({
+      client,
+      keys,
+      functions: createFunctionRegistry(),
+    });
+    const nodes: GraphNode[] = Array.from({ length: 30_000 }, (_, index) => ({
+      id: `node-${index}`,
+      kind: 'file',
+      entityId: `file-${index}`,
+      projectId: 'project-1',
+      observedAt: timestamp,
+      provenance: 'code-structure-observer@1',
+      confidence: 'high',
+      evidenceIds: [`src/${index}.ts`],
+      metadata: {},
+    }));
+
+    const startedAt = performance.now();
+    await repository.replaceGraphSnapshot('generation-active', nodes, [], usageEvent);
+    const elapsedMs = performance.now() - startedAt;
+
+    const call = client.commands.find(([name]) => name === 'FCALL');
+    const operations = JSON.parse(call?.at(-2) ?? '[]') as { key: number }[];
+    const declaredKeys = call?.slice(3, 3 + Number(call[2])) ?? [];
+    // The last node's hash is addressed by its position among the declared keys.
+    expect(declaredKeys[(operations.at(-2)?.key ?? 0) - 1]).toBe(
+      keys.graphNode('generation-active', 'file', 'file-29999'),
+    );
+    expect(elapsedMs).toBeLessThan(2_000);
+  });
+
+  it('fetches a generation with overlapping reads, not one record at a time', async () => {
+    // Reading 52 000 records one sequential HGET at a time took 8.7 s on the
+    // live runtime — longer than the 2 s window the coordinator heartbeat has,
+    // so it rotated every tick. The record fetches must overlap.
+    const keys = createRedisKeys('luwi:test:graph-read-concurrency:v1');
+    const generation = 'generation-active';
+    const node = (i: number): GraphNode => ({
+      id: `node-${i}`,
+      kind: 'file',
+      entityId: `file-${i}`,
+      projectId: 'project-1',
+      observedAt: timestamp,
+      provenance: 'code-structure-observer@1',
+      confidence: 'high',
+      evidenceIds: [`src/${i}.ts`],
+      metadata: {},
+    });
+    const ids = Array.from({ length: 200 }, (_, i) => `file-${i}`);
+    let inFlight = 0;
+    let peak = 0;
+    const client: RedisCommandClient = {
+      async sendCommand(argsRO) {
+        const args = [...argsRO];
+        const [name, key] = args;
+        if (name === 'GET') return generation;
+        if (name === 'SSCAN') {
+          return key === keys.graphNodesByKind(generation, 'file') ? ['0', ids] : ['0', []];
+        }
+        if (name === 'HGET') {
+          inFlight += 1;
+          peak = Math.max(peak, inFlight);
+          // Resolve on a later macrotask so every fetch issued in the same tick
+          // is counted in flight: a sequential reader awaits each before the
+          // next and never exceeds one, a batched reader piles the whole chunk.
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          inFlight -= 1;
+          const i = Number(String(key).split('file-').pop());
+          return JSON.stringify(node(i));
+        }
+        return null;
+      },
+    };
+    const repository = createIntelligenceRepository({
+      client,
+      keys,
+      functions: createFunctionRegistry(),
+    });
+
+    const result = await repository.readGraphGeneration(generation, 1000, 1000);
+
+    expect(result.nodes).toHaveLength(200);
+    expect(peak).toBeGreaterThan(1);
+  });
+
+  it('refuses a batch past the operation limit before anything is sent', async () => {
+    // The guard that failed 1008 live projections in a row. It must stay
+    // all-or-nothing: a diff too large for one atomic transition writes nothing
+    // and says so. Nothing retries it smaller — a full rebuild, which has no
+    // such cap, is what gets a generation past a diff this size.
+    const client = new ScriptedClient((command) => (command[0] === 'SSCAN' ? ['0', []] : null));
+    const repository = createIntelligenceRepository({
+      client,
+      keys: createRedisKeys('luwi:test:graph-limit:v1'),
+      functions: createFunctionRegistry(),
+    });
+    const nodes: GraphNode[] = Array.from({ length: 50_001 }, (_, index) => ({
+      id: `node-${index}`,
+      kind: 'file',
+      entityId: `file-${index}`,
+      projectId: 'project-1',
+      observedAt: timestamp,
+      provenance: 'code-structure-observer@1',
+      confidence: 'high',
+      evidenceIds: [`src/${index}.ts`],
+      metadata: {},
+    }));
+
+    await expect(
+      repository.replaceGraphSnapshot('generation-active', nodes, [], usageEvent),
+    ).rejects.toMatchObject({ code: 'REDIS_ARGUMENT_INVALID' });
+    expect(client.commands.filter(([name]) => name === 'FCALL')).toEqual([]);
+  });
+
   it('records graph projection failure and degraded health through one Function', async () => {
     const client = new RecordingClient();
     client.replies.push(JSON.stringify({ status: 'updated', streamId: '1-0' }));

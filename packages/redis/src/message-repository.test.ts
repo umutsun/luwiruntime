@@ -178,6 +178,59 @@ describe('message repository boundary', () => {
     expect(client.commands.map((command) => command[0])).toEqual(['FCALL', 'GET', 'HGETALL']);
   });
 
+  it('carries a stored re-dispatch link through the HGETALL read path', async () => {
+    // The Function's own return carried `retryOf` from the start; the hash read
+    // path whitelists optional string fields and once dropped it silently.
+    const client = new FakeCommandClient();
+    client.replies = [
+      'message-2',
+      [
+        'id',
+        'message-2',
+        'correlationId',
+        'correlation-2',
+        'projectId',
+        'project-1',
+        'sourceSessionId',
+        'session-source',
+        'sourceAgentId',
+        'claude-sim',
+        'targetSessionId',
+        'session-target',
+        'targetAgentId',
+        'gemini-sim',
+        'selectionReason',
+        'direct target session session-target',
+        'kind',
+        'question',
+        'content',
+        'Again?',
+        'evidenceRequirements',
+        '[]',
+        'retryOf',
+        'correlation-1',
+        'state',
+        'queued',
+        'createdAt',
+        '2026-07-29T12:00:00.000Z',
+        'updatedAt',
+        '2026-07-29T12:00:00.000Z',
+        'deadlineAt',
+        '2026-07-29T12:02:00.000Z',
+      ],
+    ];
+    const repository = createMessageRepository({
+      client,
+      keys: createRedisKeys(),
+      functions: createFunctionRegistry(),
+    });
+
+    await expect(repository.getMessage('correlation-2')).resolves.toMatchObject({
+      id: 'message-2',
+      retryOf: 'correlation-1',
+    });
+  });
+
   it('rejects malformed Function and stored projection data', async () => {
     const client = new FakeCommandClient();
     client.replies = [JSON.stringify({ status: 'created', message: { id: 'broken' } })];

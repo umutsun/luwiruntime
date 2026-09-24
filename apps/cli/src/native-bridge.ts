@@ -1,4 +1,4 @@
-import type { AgentMessageResponse, EvidenceType, MessageKind } from '@luwi/protocol';
+import type { AgentMessageResponse, EvidenceType, MessageKind, WorkLease } from '@luwi/protocol';
 
 import { boundedAnswer, isTerminalMessageState, type BridgeDaemonClient } from './bridge-daemon.js';
 import type { NativeAgentName } from './agent-runner.js';
@@ -30,6 +30,8 @@ export type NativeBridgeOptions = {
   /** The session the bootstrap currently owns; re-read every poll so a rotation is picked up. */
   currentSessionId: () => string | undefined;
   agentId: string;
+  /** The bridge's project; used to fetch advisory leases held by other agents for prompt context. */
+  projectId: string;
   bridgeInstanceId: string;
   claimLimit: number;
   claimBlockMs: number;
@@ -125,6 +127,109 @@ export function codexMcpBindingArgs(sessionId: string, daemonUrl: string): strin
   ];
 }
 
+/** The safe git subcommands a worker may run — never `push` or `merge`. */
+const CLAUDE_SAFE_GIT = [
+  'status',
+  'diff',
+  'add',
+  'commit',
+  'log',
+  'show',
+  'rev-parse',
+  'branch',
+  'check-ignore',
+  'worktree',
+];
+
+/**
+ * The claude worker's launch profile, GENERATED rather than hand-written per
+ * project (the mirror of {@link codexMcpBindingArgs}). Two things are made
+ * dynamic so the fleet config carries no project-specific `nativeArgs`:
+ *
+ *  - The LUWI MCP server is wired inline (`--mcp-config <json>`, which Claude
+ *    Code accepts as a JSON string), pointing at LUWI's own bound-session
+ *    launcher. That launcher recovers `LUWI_SESSION_ID` from the attach hook, so
+ *    the config needs neither a per-project file nor the session id.
+ *  - Permissions are `dontAsk` over a FIXED, project-independent allowlist:
+ *    read/edit anywhere, the safe git subcommands in both the plain and
+ *    `-C <worktree>` forms (never push or merge), the package manager and tests,
+ *    the Flutter and Dart toolchains for mobile tasks, and the coordination MCP
+ *    tools. No path is baked in — the worker's working directory, passed to the
+ *    process separately, is what scopes execution.
+ *
+ * `--strict-mcp-config` keeps the user's own `~/.claude.json` servers out, so a
+ * worker sees only LUWI's tools.
+ */
+export function claudeMcpBindingArgs(
+  nodeExecutable: string,
+  mcpLaunchScriptPath: string,
+): string[] {
+  const mcpConfig = JSON.stringify({
+    mcpServers: { 'luwi-runtime': { command: nodeExecutable, args: [mcpLaunchScriptPath] } },
+  });
+  const gitTools = CLAUDE_SAFE_GIT.flatMap((sub) => [
+    `Bash(git ${sub} *)`,
+    `Bash(git -C * ${sub} *)`,
+  ]);
+  return [
+    '--strict-mcp-config',
+    '--mcp-config',
+    mcpConfig,
+    '--permission-mode',
+    'dontAsk',
+    '--tools',
+    'Read,Glob,Grep,Write,Edit,Bash',
+    '--allowedTools',
+    'Read(/**)',
+    'Edit(/**)',
+    ...gitTools,
+    'Bash(pnpm *)',
+    'Bash(pnpm.cmd *)',
+    'Bash(npm *)',
+    'Bash(node --test *)',
+    'Bash(flutter *)',
+    'Bash(flutter.bat *)',
+    'Bash(dart *)',
+    'Bash(dart.bat *)',
+    'mcp__luwi-runtime__luwi_get_message',
+    'mcp__luwi-runtime__luwi_list_leases',
+    'mcp__luwi-runtime__luwi_acquire_lease',
+    'mcp__luwi-runtime__luwi_renew_lease',
+    'mcp__luwi-runtime__luwi_release_lease',
+    'mcp__luwi-runtime__luwi_respond_to_message',
+  ];
+}
+
+/** How many leased paths to name before collapsing the rest into a count; keeps the prompt bounded. */
+const MAX_COORDINATION_LEASES = 15;
+
+/**
+ * Advisory coordination context a headless worker cannot see from its working directory: the
+ * project paths OTHER sessions currently hold a work lease on (ADR 0020). Grounding the worker in
+ * these avoids a blind edit to a file another agent is mid-change on. Returns undefined when nothing
+ * is held by anyone else, so `framePrompt` adds no empty section.
+ */
+export function renderLeaseCoordination(
+  leases: readonly WorkLease[],
+  currentSessionId: string,
+): string | undefined {
+  const held = leases
+    .filter((lease) => lease.state === 'held' && lease.sessionId !== currentSessionId)
+    .sort((left, right) => left.path.localeCompare(right.path));
+  if (held.length === 0) return undefined;
+  const shown = held.slice(0, MAX_COORDINATION_LEASES);
+  const lines = shown.map(
+    (lease) =>
+      `- ${lease.path} — held by agent ${lease.agentId} until ${lease.expiresAt}: ${lease.reason}`,
+  );
+  if (held.length > shown.length) lines.push(`- …and ${held.length - shown.length} more`);
+  return [
+    'Fleet coordination (LUWI, advisory): other agents currently hold work leases on these project',
+    'paths. Avoid editing them, or acquire your own lease and coordinate before you do:',
+    ...lines,
+  ].join('\n');
+}
+
 export function framePrompt(input: {
   correlationId: string;
   kind: MessageKind;
@@ -134,6 +239,7 @@ export function framePrompt(input: {
   agentId: string;
   evidenceRequirements: readonly EvidenceType[];
   content: string;
+  coordination?: string;
 }): string {
   const evidence =
     input.evidenceRequirements.length === 0 ? 'none' : input.evidenceRequirements.join(', ');
@@ -143,6 +249,7 @@ export function framePrompt(input: {
     `through the luwi-runtime MCP tools: call luwi_respond_to_message with correlationId`,
     `"${input.correlationId}" and a status of answered, partially_answered, rejected or failed. If`,
     `those tools are unavailable, print your final answer as plain text. Evidence requested: ${evidence}.`,
+    ...(input.coordination === undefined ? [] : ['', input.coordination]),
     '',
     input.content,
   ].join('\n');
@@ -151,6 +258,50 @@ export function framePrompt(input: {
 function withTail(reason: string, tail: string): string {
   const trimmed = tail.trim();
   return trimmed === '' ? reason : `${reason}\n\n[native output tail]\n${trimmed}`;
+}
+
+export type UsageLimitDetection = { retryAt?: string; line: string };
+
+/** Phrases that clearly state a usage/rate limit, not any line merely containing "limit". */
+const USAGE_LIMIT_LINE_PATTERNS: readonly RegExp[] = [
+  /hit your usage limit/i,
+  /usage limit reached/i,
+  /\blimit reached\b/i,
+  /\brate limit(?:ed|ing)?\b/i,
+  /\bquota exceeded\b/i,
+];
+
+const RETRY_HINT_PATTERN = /\b(?:try again|resets?)\s+at\s+([^.\n]+)/i;
+
+/** "429" alone is too common a number to trust on its own; require it to read like an HTTP error. */
+function isRateLimitStatusLine(line: string): boolean {
+  return /\b429\b/.test(line) && /error|status|request|http/i.test(line);
+}
+
+/**
+ * A child that exits without completing its message sometimes says why in its own output — most
+ * often a provider usage/rate limit. Scanned line by line so an unrelated line elsewhere in the
+ * tail (e.g. a stack trace) cannot suppress a real match earlier in the output.
+ */
+export function detectUsageLimit(tail: string): UsageLimitDetection | undefined {
+  for (const raw of tail.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line === '') continue;
+    if (
+      !USAGE_LIMIT_LINE_PATTERNS.some((pattern) => pattern.test(line)) &&
+      !isRateLimitStatusLine(line)
+    )
+      continue;
+    const retryAt = RETRY_HINT_PATTERN.exec(line)?.[1]?.trim();
+    return retryAt === undefined ? { line } : { retryAt, line };
+  }
+  return undefined;
+}
+
+/** The failure reason when a usage-limit line was found, so the orchestrator can name it and escalate. */
+function usageLimitReason(agentId: string, detection: UsageLimitDetection): string {
+  const until = detection.retryAt === undefined ? '' : ` until ${detection.retryAt}`;
+  return `AGENT_USAGE_LIMIT: ${agentId} is out of usage${until} — ${detection.line}`;
 }
 
 export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
@@ -215,24 +366,40 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
       return;
     }
 
-    const prompt = framePrompt({
-      correlationId,
-      kind: current.kind,
-      sourceAgentId: current.sourceAgentId,
-      ...(current.subject === undefined ? {} : { subject: current.subject }),
-      sessionId: session,
-      agentId: options.agentId,
-      evidenceRequirements: current.evidenceRequirements ?? [],
-      content: payloadContent,
-    });
-    if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_BYTES) {
-      await completeSafely(
+    let coordination: string | undefined;
+    try {
+      const { leases } = await options.daemon.listLeases(options.projectId);
+      coordination = renderLeaseCoordination(leases, session);
+    } catch {
+      // Best-effort: lease context is a bonus for the worker, never a reason to fail the message.
+    }
+    const frame = (withCoordination: boolean): string =>
+      framePrompt({
         correlationId,
-        failure(
-          `The framed message prompt is too long for a headless native run (limit ${MAX_PROMPT_BYTES} bytes).`,
-        ),
-      );
-      return;
+        kind: current.kind,
+        sourceAgentId: current.sourceAgentId,
+        ...(current.subject === undefined ? {} : { subject: current.subject }),
+        sessionId: session,
+        agentId: options.agentId,
+        evidenceRequirements: current.evidenceRequirements ?? [],
+        content: payloadContent,
+        ...(withCoordination && coordination !== undefined ? { coordination } : {}),
+      });
+    // The coordination block is best-effort context and must NEVER fail a message: if it is only the
+    // prepended leases that push the prompt over the cap, drop the block and keep the message. Fail
+    // solely when the message's own framed content exceeds the limit.
+    let prompt = frame(true);
+    if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_BYTES) {
+      prompt = frame(false);
+      if (Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_BYTES) {
+        await completeSafely(
+          correlationId,
+          failure(
+            `The framed message prompt is too long for a headless native run (limit ${MAX_PROMPT_BYTES} bytes).`,
+          ),
+        );
+        return;
+      }
     }
 
     await options.daemon.setSessionStatus(session, 'tool_running');
@@ -258,7 +425,11 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
       } else if (run.result === 'deadline') {
         reason = 'The native agent was stopped at the message deadline before completing it.';
       } else {
-        reason = `The native agent exited (code ${run.exitCode}) without completing the message.`;
+        const usageLimit = detectUsageLimit(run.outputTail);
+        reason =
+          usageLimit === undefined
+            ? `The native agent exited (code ${run.exitCode}) without completing the message.`
+            : usageLimitReason(options.agentId, usageLimit);
       }
       await completeSafely(correlationId, failure(withTail(reason, run.outputTail)));
       options.report?.({ correlationId, completedBy: 'bridge', reason, exitCode: run.exitCode });
