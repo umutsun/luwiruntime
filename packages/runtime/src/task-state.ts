@@ -216,7 +216,9 @@ export function applyTaskTransition(
         task: next(
           task,
           {
-            state: 'ready',
+            // An approval already given is not asked for again: the gate passed, only
+            // the session carrying the work was lost.
+            state: task.approval?.decision === 'approved' ? 'approved' : 'ready',
             correlationId: undefined,
             targetSessionId: undefined,
             dispatchSourceSessionId: undefined,

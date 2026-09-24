@@ -154,6 +154,19 @@ describe('applyTaskTransition', () => {
     expect(requeued.dispatchedAt).toBeUndefined();
   });
 
+  it('requeues an operator-approved task straight to approved, so the gate is not asked twice', () => {
+    // Live 2026-09-24 (supervised): a requeued task went back to `ready` and was gated
+    // `awaiting_approval` again, although the owner had approved its plan.
+    const approved = task({
+      state: 'dispatched',
+      correlationId: 'corr-1',
+      approval: { decision: 'approved', at: now, by: 'operator' },
+    });
+    expect(
+      applyTaskTransition(approved, { kind: 'requeue', reason: 'target_session_lost' }, now),
+    ).toMatchObject({ status: 'ok', task: { state: 'approved' } });
+  });
+
   it('counts a second requeue as 2', () => {
     const firstRequeue = applyTaskTransition(
       task({
