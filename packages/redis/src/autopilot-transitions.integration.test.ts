@@ -261,6 +261,20 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       expect(denied).toMatchObject([{ reason: 'in_flight_limit' }]);
     });
 
+    it('dispatches a review over an in-flight path: it reads a commit and claims no path', async () => {
+      // t1 is still in flight over src/t1/; a work task over src/ was refused above.
+      const review = task('rv1', { kind: 'review', paths: ['src'], matchPaths: ['src/'] });
+      await repository.writeTask({
+        task: review,
+        event: event('task.created'),
+        expectedVersion: 0,
+        active: null,
+      });
+      expect(await dispatch(review, { maxInFlight: 10 })).toMatchObject({
+        status: 'dispatching',
+      });
+    });
+
     it('drops the in-flight entry when a task is written as terminal', async () => {
       const current = await repository.getTask('t1');
       expect(current).not.toBeNull();

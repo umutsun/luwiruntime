@@ -1131,6 +1131,15 @@ function createBridgeDaemonClient(
         `/api/v1/leases?projectId=${encodeURIComponent(projectId)}&limit=200`,
         leaseCollectionSchema,
       ),
+    releaseLease: async (leaseId, sessionId) => {
+      await request(
+        dependencies,
+        daemonUrl,
+        `/api/v1/leases/${encodeURIComponent(leaseId)}/release`,
+        workLeaseSchema,
+        jsonBody({ sessionId }),
+      );
+    },
     transitionMessage: async (action, sessionId, correlationId) =>
       request(
         dependencies,

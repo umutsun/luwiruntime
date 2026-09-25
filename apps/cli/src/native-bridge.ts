@@ -83,19 +83,10 @@ export function nativeHeadlessArguments(
     case 'codex':
       // `codex exec [OPTIONS] [PROMPT]`; `codex exec resume [OPTIONS] [SESSION_ID]
       // [PROMPT]` when resuming. The prompt is the final positional either way.
+      // `-c` overrides and `--skip-git-repo-check` are valid on both forms, so the
+      // generated binding (see codexMcpBindingArgs) passes through unchanged.
       if (session === undefined) return ['exec', ...nativeArgs, prompt];
-      // `--approve-for-me` is accepted by `codex exec` but NOT by `codex exec resume`
-      // (codex 0.154 dropped it from the resume subcommand — resume inherits the session's
-      // approval policy set on the initial `exec`). Passing it on resume makes codex exit 2
-      // with "unexpected argument '--approve-for-me'", killing every task after the first.
-      // Strip it here; the `-c` MCP bindings and `--skip-git-repo-check` stay valid on resume.
-      return [
-        'exec',
-        'resume',
-        ...nativeArgs.filter((arg) => arg !== '--approve-for-me'),
-        session.id,
-        prompt,
-      ];
+      return ['exec', 'resume', ...nativeArgs, session.id, prompt];
     case 'gemini':
       return ['--prompt', prompt, ...nativeArgs];
     case 'antigravity':
@@ -113,12 +104,18 @@ export function nativeHeadlessArguments(
  * forward the bridge's `LUWI_SESSION_ID` to an MCP server subprocess, and its default
  * `approval: never` policy denies MCP tool calls outright. So the session binding is
  * injected straight into the `luwi-runtime` MCP server's own env with `-c`, and
- * `--approve-for-me` auto-approves the tool call through codex's automatic review.
+ * `approvals_reviewer="auto_review"` auto-approves the tool call through codex's
+ * automatic review. That config key is what the `--approve-for-me` shortcut sets, but
+ * the flag is not in every build (codex 0.146 rejects it as an unexpected argument, and
+ * 0.154's `exec resume` did too) while a `-c` override is accepted on `exec` and
+ * `exec resume` alike (measured 2026-09-25: `codex exec -c approvals_reviewer="auto_review"`
+ * exits 0 on 0.146). Never a `--dangerously-*` bypass.
  * Requires a `[mcp_servers.luwi-runtime]` entry in the user's codex config.
  */
 export function codexMcpBindingArgs(sessionId: string, daemonUrl: string): string[] {
   return [
-    '--approve-for-me',
+    '-c',
+    'approvals_reviewer="auto_review"',
     '--skip-git-repo-check',
     '-c',
     `mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="${sessionId}"`,
@@ -339,6 +336,33 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
     return sessionForRequest;
   };
 
+  /**
+   * A child's work leases are held by the bridge's long-lived session, which the bootstrap
+   * renews (ADR 0026), so one the child left behind never lapses and blocks every other agent.
+   * Messages run serially, so after each one nothing of the bridge's is in flight: release
+   * them all. Best-effort — a failure is reported once and never fails the message.
+   */
+  const releaseSessionLeases = async (session: string): Promise<void> => {
+    let failure: unknown;
+    try {
+      const { leases } = await options.daemon.listLeases(options.projectId);
+      for (const lease of leases) {
+        if (lease.state !== 'held' || lease.sessionId !== session) continue;
+        await options.daemon.releaseLease(lease.id, session).catch((error: unknown) => {
+          failure ??= error;
+        });
+      }
+    } catch (error) {
+      failure = error;
+    }
+    if (failure !== undefined) {
+      options.report?.({
+        sessionId: session,
+        leaseReleaseFailed: failure instanceof Error ? failure.message : String(failure),
+      });
+    }
+  };
+
   const processRequest = async (
     session: string,
     correlationId: string,
@@ -434,6 +458,7 @@ export function createNativeBridge(options: NativeBridgeOptions): NativeBridge {
       await completeSafely(correlationId, failure(withTail(reason, run.outputTail)));
       options.report?.({ correlationId, completedBy: 'bridge', reason, exitCode: run.exitCode });
     } finally {
+      await releaseSessionLeases(session);
       if (!stopping) await options.daemon.setSessionStatus(session, 'idle');
     }
   };

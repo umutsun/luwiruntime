@@ -191,6 +191,9 @@ export function createNativeBrain(options: {
       const environment: Record<string, string | undefined> = { ...options.environment };
       delete environment['LUWI_SESSION_ID'];
       delete environment['LUWI_DAEMON_URL'];
+      // With LUWI_SESSION_ID gone the vendor attach hook would register this run as a
+      // fresh session that never becomes ready (a ghost `starting` session per judgment).
+      environment['LUWI_ATTACH_SKIP'] = '1';
       try {
         const result = await options.runner.run({
           executable: options.executable,

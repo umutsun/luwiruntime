@@ -123,7 +123,13 @@ export function evaluateDispatch(input: EvaluateDispatchInput): DispatchEvaluati
       detail: `${String(recent)} dispatches in the last hour reach the limit of ${String(policy.maxDispatchesPerHour)}.`,
     };
   }
-  const overlapping = input.inFlight.find((other) => overlaps(task.matchPaths, other.matchPaths));
+  // A review is read-only by policy (it checks the cited commit out detached and changes
+  // nothing), so no writer's path can conflict with it: measured live, a codex review waited
+  // 50 min on a worker's stale lease.
+  const writes = task.kind !== 'review';
+  const overlapping = writes
+    ? input.inFlight.find((other) => overlaps(task.matchPaths, other.matchPaths))
+    : undefined;
   if (overlapping !== undefined) {
     return {
       decision: 'deny',
@@ -138,6 +144,7 @@ export function evaluateDispatch(input: EvaluateDispatchInput): DispatchEvaluati
   );
   const leased = input.leases.find(
     (lease) =>
+      writes &&
       lease.state === 'held' &&
       !workerSessionIds.has(lease.sessionId) &&
       overlaps(task.matchPaths, [lease.matchPath]),

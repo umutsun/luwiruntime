@@ -92,6 +92,9 @@ function daemon(log: string[], states: AgentMessage['state'][], inbox: InboxClai
       return message(state, content);
     }),
     listLeases: vi.fn(async () => ({ leases: [] as WorkLease[], truncated: false })),
+    releaseLease: vi.fn(async (leaseId: string) => {
+      log.push(`release:${leaseId}`);
+    }),
     transitionMessage: vi.fn(async (action) => {
       log.push(`transition:${action}`);
       return message(action === 'acknowledge' ? 'acknowledged' : 'processing', content);
@@ -169,24 +172,26 @@ describe('nativeHeadlessArguments', () => {
     ]);
   });
 
-  it('strips --approve-for-me when resuming codex (exec resume rejects it)', () => {
-    // codex `exec` accepts --approve-for-me but `exec resume` (codex 0.154) does not, so it
-    // must be dropped on resume while the -c MCP bindings and --skip-git-repo-check remain.
-    expect(
-      nativeHeadlessArguments(
-        'codex',
-        'P',
-        ['--approve-for-me', '--skip-git-repo-check', '-c', 'k=v'],
-        { id: 'sess-1', resume: true },
-      ),
-    ).toEqual(['exec', 'resume', '--skip-git-repo-check', '-c', 'k=v', 'sess-1', 'P']);
+  it('passes the generated codex binding through unchanged on resume (-c is valid there)', () => {
+    const binding = codexMcpBindingArgs('sess-9', 'http://127.0.0.1:4782');
+    expect(nativeHeadlessArguments('codex', 'P', binding, { id: 'sess-1', resume: true })).toEqual([
+      'exec',
+      'resume',
+      ...binding,
+      'sess-1',
+      'P',
+    ]);
   });
 });
 
 describe('codexMcpBindingArgs', () => {
   it('injects the session into the codex MCP server env and auto-approves tool calls', () => {
     const args = codexMcpBindingArgs('sess-9', 'http://127.0.0.1:4782');
-    expect(args).toContain('--approve-for-me');
+    // codex 0.146 rejects `--approve-for-me`; the config key it stands for is accepted by
+    // every codex build, on `exec` and `exec resume` alike.
+    expect(args).not.toContain('--approve-for-me');
+    expect(args.join(' ')).toContain('-c approvals_reviewer="auto_review"');
+    expect(args.join(' ')).not.toContain('--dangerously');
     expect(args).toContain('-c');
     expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="sess-9"');
     expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_DAEMON_URL="http://127.0.0.1:4782"');
@@ -363,6 +368,54 @@ describe('createNativeBridge', () => {
     expect(log).toContain('status:session-1:tool_running');
     expect(log).toContain('status:session-1:idle');
     expect(log.some((line) => line.startsWith('complete:'))).toBe(false);
+  });
+
+  it.each([
+    ['the child completed it', ['delivered', 'responded']],
+    ['the bridge failed it', ['delivered', 'processing']],
+  ] as const)('releases only its own held leases after a message %s', async (_label, states) => {
+    const log: string[] = [];
+    const d = daemon(log, [...states], requestInbox());
+    (d.client.listLeases as ReturnType<typeof vi.fn>).mockResolvedValue({
+      leases: [
+        lease({ id: 'own-held', sessionId: 'session-1' }),
+        lease({ id: 'own-released', sessionId: 'session-1', state: 'released' }),
+        lease({ id: 'other-held', sessionId: 'other-session' }),
+      ],
+      truncated: false,
+    });
+    const bridge = createNativeBridge(options({ daemon: d.client }));
+
+    await bridge.pollOnce();
+
+    expect(d.client.releaseLease).toHaveBeenCalledTimes(1);
+    expect(d.client.releaseLease).toHaveBeenCalledWith('own-held', 'session-1');
+  });
+
+  it('reports a lease release failure once and never throws it', async () => {
+    const log: string[] = [];
+    const report = vi.fn();
+    const d = daemon(log, ['delivered', 'responded'], requestInbox());
+    (d.client.listLeases as ReturnType<typeof vi.fn>).mockResolvedValue({
+      leases: [
+        lease({ id: 'a', sessionId: 'session-1' }),
+        lease({ id: 'b', sessionId: 'session-1' }),
+      ],
+      truncated: false,
+    });
+    d.client.releaseLease = vi.fn(async () => {
+      throw new Error('LEASE_NOT_HELD');
+    });
+    const bridge = createNativeBridge(options({ daemon: d.client, report }));
+
+    await expect(bridge.pollOnce()).resolves.toBe(1);
+
+    expect(d.client.releaseLease).toHaveBeenCalledTimes(2);
+    const failures = report.mock.calls.filter(([line]) => 'leaseReleaseFailed' in line);
+    expect(failures).toHaveLength(1);
+    expect(log.some((line) => line.startsWith('complete:'))).toBe(false);
+    // First-seen idle plus the post-message idle: the failure did not skip the return to idle.
+    expect(log.filter((line) => line === 'status:session-1:idle')).toHaveLength(2);
   });
 
   it('injects held-lease coordination from other sessions into the worker prompt', async () => {

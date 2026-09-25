@@ -33,7 +33,8 @@ const LUWI_CLI = join(import.meta.dirname, '..', 'apps', 'cli', 'dist', 'main.js
 // ADR 0031: this Claude process was launched under a LUWI session (`agent run`,
 // the native inbox bridge), so it already has one. Registering a second — the
 // hook fires in `claude -p` mode too — created reader-less ghost sessions.
-if (process.env.LUWI_SESSION_ID) process.exit(0);
+// LUWI_ATTACH_SKIP marks an autopilot brain judgment: no session at all.
+if (process.env.LUWI_SESSION_ID || process.env.LUWI_ATTACH_SKIP) process.exit(0);
 
 const input = JSON.parse(readFileSync(0, 'utf8'));
 const pidFile = join(tmpdir(), `luwi-attach-${input.session_id}.pid`);

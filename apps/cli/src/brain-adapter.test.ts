@@ -104,7 +104,7 @@ describe('createNativeBrain', () => {
     expect(answer.text).toBe('{"verdict":"accept","confidence":0.9}');
     const input = run.mock.calls[0]?.[0];
     expect(input?.args).toEqual(['--print', 'question', '--allowedTools', 'Read']);
-    expect(input?.environment).toEqual({ HOME: '/h' });
+    expect(input?.environment).toEqual({ HOME: '/h', LUWI_ATTACH_SKIP: '1' });
     // The prompt rides on the command line (Windows: 32 767 characters, JSON
     // quotes escaped), so the brain declares a context budget well under it.
     expect(brain.maxContextBytes).toBe(20_000);

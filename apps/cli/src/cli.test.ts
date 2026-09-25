@@ -3298,7 +3298,8 @@ describe('session bridge native', () => {
 
     const args = recorded?.args ?? [];
     expect(args[0]).toBe('exec');
-    expect(args).toContain('--approve-for-me');
+    expect(args).toContain('approvals_reviewer="auto_review"');
+    expect(args).not.toContain('--approve-for-me');
     expect(args).toContain('mcp_servers.luwi-runtime.env.LUWI_SESSION_ID="codex-session-1"');
     expect(args.slice(-3)).toEqual([
       '--sandbox',

@@ -137,6 +137,32 @@ describe('evaluateDispatch', () => {
     ).toMatchObject({ decision: 'dispatch', targetSession: { id: 'reviewer-1' } });
   });
 
+  it('dispatches a read-only review over a leased or in-flight path, and still denies work there', () => {
+    const lease = {
+      matchPath: 'apps/daemon/',
+      sessionId: 'someone',
+      agentId: 'claude-code',
+      state: 'held',
+    } as const;
+    const inFlight = [task({ id: 'a', state: 'dispatched', paths: ['apps/daemon'] })];
+    const review = input({
+      policy: { ...policy, reviewerAgentId: 'gemini-cli' },
+      task: task({ kind: 'review', agentId: 'gemini-cli' }),
+      sessions: [session('reviewer-1', 'gemini-cli')],
+    });
+    const dispatched = { decision: 'dispatch', targetSession: { id: 'reviewer-1' } };
+    expect(evaluateDispatch({ ...review, leases: [lease] })).toMatchObject(dispatched);
+    expect(evaluateDispatch({ ...review, inFlight })).toMatchObject(dispatched);
+    expect(evaluateDispatch(input({ leases: [lease] }))).toMatchObject({
+      decision: 'deny',
+      reason: 'lease_overlap',
+    });
+    expect(evaluateDispatch(input({ inFlight }))).toMatchObject({
+      decision: 'deny',
+      reason: 'path_overlap',
+    });
+  });
+
   it('denies a review task whose agent is not the configured reviewer', () => {
     const reviewerPolicy: AutopilotPolicy = { ...policy, reviewerAgentId: 'gemini-cli' };
     expect(

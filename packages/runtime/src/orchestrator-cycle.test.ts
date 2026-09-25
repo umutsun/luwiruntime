@@ -180,52 +180,102 @@ describe('planCycle', () => {
     ]);
   });
 
-  it('escalates instead of judging when the reviewer itself is out of usage', () => {
-    const reviewing = task('t1', {
-      state: 'done',
-      verification: { checks: [], reviewTaskId: 'r1' },
-    });
-    const review = task('r1', {
+  // The exact shape `withTail` in apps/cli/src/native-bridge.ts gives a bridge-failed answer.
+  const bridgeFailure = (reason: string, tail: string): string =>
+    `${reason}\n\n[native output tail]\n${tail}`;
+  const failedReview = (id: string, answer?: string): Task =>
+    task(id, {
       kind: 'review',
       reviewOf: 't1',
       agentId: 'codex',
       state: 'failed',
       outcome: {
         messageState: 'failed',
-        status: 'failed',
-        answer:
-          'AGENT_USAGE_LIMIT: codex is out of usage until Sep 27th, 2026 11:48 AM — ERROR: usage limit hit.',
         evidenceCount: 0,
         evidenceTypes: [],
+        ...(answer === undefined ? {} : { answer }),
       },
     });
-    expect(
-      planCycle(state({ goals: [goal({ taskIds: ['t1'] })], tasks: [reviewing, review] })),
-    ).toMatchObject([
-      { type: 'escalate', goalId: 'goal-1', reason: 'worker_unavailable', taskId: 't1' },
+  const reviewing = (reviewTaskId: string): Task =>
+    task('t1', { state: 'done', verification: { checks: [], reviewTaskId } });
+  const reviewCycle = (tasks: Task[], cyclePolicy = policy) =>
+    planCycle(state({ policy: cyclePolicy, goals: [goal({ taskIds: ['t1'] })], tasks }));
+
+  it('escalates at once, without a retry, when the reviewer itself is out of usage', () => {
+    const answer = bridgeFailure(
+      'AGENT_USAGE_LIMIT: codex is out of usage until Sep 27th, 2026 11:48 AM — ERROR: usage limit hit',
+      "ERROR: You've hit your usage limit.",
+    );
+    expect(reviewCycle([reviewing('r1'), failedReview('r1', answer)])).toEqual([
+      {
+        type: 'escalate',
+        goalId: 'goal-1',
+        reason: 'worker_unavailable',
+        taskId: 't1',
+        question:
+          'The reviewer (codex) is out of usage and cannot verify task "t1": AGENT_USAGE_LIMIT: codex is out of usage until Sep 27th, 2026 11:48 AM — ERROR: usage limit hit. Answering replans the goal without this review; abandon the goal to stop.',
+      },
     ]);
   });
 
-  it('still judges a review task that failed for an unrelated reason', () => {
-    const reviewing = task('t1', {
-      state: 'done',
-      verification: { checks: [], reviewTaskId: 'r1' },
-    });
-    const review = task('r1', {
+  it('retries a review that failed once, and escalates the second failure with its real cause', () => {
+    // Measured live: codex exited in 2 s on "unexpected argument", and judging that review let
+    // the brain accept a goal whose code did not compile. An answer replans, so it cannot retry.
+    const crash = bridgeFailure(
+      'The native agent exited (code 2) without completing the message.',
+      "error: unexpected argument '--sandbox' found\n\nUsage: codex exec [OPTIONS] [PROMPT]",
+    );
+    expect(reviewCycle([reviewing('r1'), failedReview('r1', crash)])).toEqual([
+      { type: 'create_review_task', taskId: 't1', goalId: 'goal-1' },
+    ]);
+    expect(
+      reviewCycle([reviewing('r2'), failedReview('r1', crash), failedReview('r2', crash)]),
+    ).toEqual([
+      {
+        type: 'escalate',
+        goalId: 'goal-1',
+        reason: 'worker_unavailable',
+        taskId: 't1',
+        question:
+          'The reviewer (codex) failed to verify task "t1" 2 time(s): error: unexpected argument \'--sandbox\' found. Answering replans the goal without this review; abandon the goal to stop.',
+      },
+    ]);
+    // No reviewer distinct from the author any more: the daemon would refuse a retry.
+    expect(
+      reviewCycle([reviewing('r1'), failedReview('r1', crash)], {
+        ...policy,
+        reviewerAgentId: undefined,
+      }),
+    ).toMatchObject([{ type: 'escalate', reason: 'worker_unavailable', taskId: 't1' }]);
+
+    const questionOf = (answer?: string): string => {
+      const [action] = reviewCycle([
+        reviewing('r2'),
+        failedReview('r1'),
+        failedReview('r2', answer),
+      ]);
+      return action?.type === 'escalate' ? action.question : '';
+    };
+    expect(questionOf(bridgeFailure('exited', 'x'.repeat(2_000)))).toContain(
+      `: ${'x'.repeat(300)}. Answering`,
+    );
+    expect(questionOf('The reviewer gave up\nsecond line')).toContain(
+      ': The reviewer gave up. Answering',
+    );
+    expect(questionOf()).toContain(': no reason given. Answering');
+  });
+
+  it('judges a retried review that completed', () => {
+    const reviewed = task('r2', {
       kind: 'review',
       reviewOf: 't1',
       agentId: 'codex',
-      state: 'failed',
-      outcome: {
-        messageState: 'failed',
-        evidenceCount: 0,
-        evidenceTypes: [],
-        answer: 'The reviewer crashed on an unrelated error.',
-      },
+      state: 'done',
+      verification: { checks: [] },
     });
-    expect(
-      planCycle(state({ goals: [goal({ taskIds: ['t1'] })], tasks: [reviewing, review] })),
-    ).toEqual([{ type: 'judge', kind: 'review', goalId: 'goal-1', taskId: 't1' }]);
+    expect(reviewCycle([reviewing('r2'), failedReview('r1', 'crashed'), reviewed])).toEqual([
+      { type: 'judge', kind: 'review', goalId: 'goal-1', taskId: 't1' },
+    ]);
   });
 
   it('judges directly when no reviewer is configured', () => {

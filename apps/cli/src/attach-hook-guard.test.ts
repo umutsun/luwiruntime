@@ -143,6 +143,20 @@ describe('attach hooks under an inherited LUWI session', () => {
     expect(await readdir(scratch)).toEqual([]);
   });
 
+  it('claude-attach-hook start is a no-op for a brain judgment run (LUWI_ATTACH_SKIP)', async () => {
+    // The brain strips LUWI_SESSION_ID (a judgment must not get session tools), so
+    // without this marker every plan/judgment run registered an orphaned session.
+    const brainEnvironment: NodeJS.ProcessEnv = { ...environment(), LUWI_ATTACH_SKIP: '1' };
+    delete brainEnvironment.LUWI_SESSION_ID;
+    const { stdout } = await run(
+      process.execPath,
+      [join(scripts, 'claude-attach-hook.mjs'), 'start'],
+      { env: brainEnvironment, input: JSON.stringify({ session_id: 'brain-sid', cwd: scratch }) },
+    );
+    expect(stdout).toBe('');
+    expect(await readdir(scratch)).toEqual([]);
+  });
+
   it('codex-attach-hook start writes nothing and spawns no attach', async () => {
     const { stdout } = await run(
       process.execPath,

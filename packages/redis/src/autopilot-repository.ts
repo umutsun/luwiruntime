@@ -435,7 +435,10 @@ export function createAutopilotRepository(options: {
           String(input.windowMs),
           String(input.maxInFlight),
           String(input.maxPerHour),
-          JSON.stringify(input.task.matchPaths),
+          // A review reads a fixed commit and writes nothing, so it claims no path against
+          // in-flight work (a stale worker lease once held one back 50 min). Its stored active
+          // entry keeps its paths, so writers still wait while it reads them.
+          JSON.stringify(input.task.kind === 'review' ? [] : input.task.matchPaths),
           JSON.stringify(input.active),
         ]),
       );

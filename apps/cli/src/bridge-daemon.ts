@@ -34,6 +34,8 @@ export interface BridgeDaemonClient {
   getMessage(correlationId: string): Promise<AgentMessage>;
   /** Advisory work leases in the bridge's project (ADR 0020), for prompt coordination context. */
   listLeases(projectId: string): Promise<{ leases: readonly WorkLease[]; truncated: boolean }>;
+  /** Holder-only release (`POST /api/v1/leases/:leaseId/release`). */
+  releaseLease(leaseId: string, sessionId: string): Promise<void>;
   transitionMessage(
     action: 'acknowledge' | 'processing',
     sessionId: string,

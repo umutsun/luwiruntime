@@ -43,6 +43,9 @@ export type CycleAction =
   | { type: 'achieve'; goalId: string }
   | { type: 'fail'; goalId: string; reason: string };
 
+/** Review tasks a work task may burn through before a failed review is the operator's call. */
+const REVIEW_ATTEMPTS = 2;
+
 const ACTIVE: ReadonlySet<Goal['state']> = new Set([
   'planning',
   'plan_review',
@@ -171,12 +174,11 @@ export function planCycle(state: CycleState): CycleAction[] {
     );
     if (needsVerdict !== undefined) {
       const reviewTaskId = needsVerdict.verification?.reviewTaskId;
-      if (
-        reviewTaskId === undefined &&
+      const reviewable =
         needsVerdict.kind === 'work' &&
         state.policy.reviewerAgentId !== undefined &&
-        state.policy.reviewerAgentId !== needsVerdict.agentId
-      ) {
+        state.policy.reviewerAgentId !== needsVerdict.agentId;
+      if (reviewTaskId === undefined && reviewable) {
         actions.push({ type: 'create_review_task', taskId: needsVerdict.id, goalId: goal.id });
         continue;
       }
@@ -212,23 +214,43 @@ export function planCycle(state: CycleState): CycleAction[] {
         }
         continue;
       }
-      // A review task that failed because its own worker is out of usage is not a verdict on the
-      // work — judging it would let the brain accept the goal on deterministic checks alone, with
-      // the second pair of eyes silently gone (measured live: a codex reviewer hit its account
-      // limit). Park it for the operator instead, the same way `worker_unavailable` above does.
+      // A failed review is not a verdict on the work — judging it would let the brain accept the
+      // goal on deterministic checks alone, with the second pair of eyes silently gone (measured
+      // live: a codex reviewer out of usage, and one that exited in 2 s on "unexpected argument"
+      // before a goal whose code did not compile was accepted). Retry it once with a fresh review
+      // task, then park it for the operator. An answer cannot retry: it replans, and a replan
+      // keeps no done-but-unverdicted task, so the question says so. A usage limit parks at once.
       if (reviewTask !== undefined && reviewTask.state === 'failed') {
-        const usageAnswer = reviewTask.outcome?.answer;
-        if (usageAnswer?.startsWith('AGENT_USAGE_LIMIT:') === true) {
-          const summary = (usageAnswer.split('\n')[0] ?? usageAnswer).slice(0, 500);
-          actions.push({
-            type: 'escalate',
-            goalId: goal.id,
-            reason: 'worker_unavailable',
-            taskId: needsVerdict.id,
-            question: `The reviewer (${reviewTask.agentId ?? state.policy.reviewerAgentId ?? 'unassigned'}) is out of usage and cannot verify task "${needsVerdict.title}": ${summary}. Answer to accept the work without review, or abandon the goal.`,
-          });
+        const answer = reviewTask.outcome?.answer ?? '';
+        const usageLimit = answer.startsWith('AGENT_USAGE_LIMIT:');
+        const failedReviews = state.tasks.filter(
+          (task) =>
+            task.kind === 'review' && task.reviewOf === needsVerdict.id && task.state === 'failed',
+        ).length;
+        if (!usageLimit && reviewable && failedReviews < REVIEW_ATTEMPTS) {
+          actions.push({ type: 'create_review_task', taskId: needsVerdict.id, goalId: goal.id });
           continue;
         }
+        // A bridge-failed answer leads with a generic "exited (code N)" line; the real cause is
+        // the first line of the native output tail. No marker: indexOf's -1 + 1 reads from line 0.
+        const lines = answer.split('\n').map((line) => line.trim());
+        const from = usageLimit ? 0 : lines.indexOf('[native output tail]') + 1;
+        const cause = (lines.slice(from).find((line) => line !== '') ?? 'no reason given').slice(
+          0,
+          300,
+        );
+        const reviewer = reviewTask.agentId ?? state.policy.reviewerAgentId ?? 'unassigned';
+        const failure = usageLimit
+          ? `is out of usage and cannot verify task "${needsVerdict.title}"`
+          : `failed to verify task "${needsVerdict.title}" ${String(failedReviews)} time(s)`;
+        actions.push({
+          type: 'escalate',
+          goalId: goal.id,
+          reason: 'worker_unavailable',
+          taskId: needsVerdict.id,
+          question: `The reviewer (${reviewer}) ${failure}: ${cause}. Answering replans the goal without this review; abandon the goal to stop.`,
+        });
+        continue;
       }
       judge({ type: 'judge', kind: 'review', goalId: goal.id, taskId: needsVerdict.id });
       continue;
