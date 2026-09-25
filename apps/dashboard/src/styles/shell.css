@@ -1194,6 +1194,15 @@ select:focus-visible {
   color: var(--text-dim);
   font-size: var(--font-size-2xs);
 }
+/* Why a ready task has not gone out: one muted line, the full refusal on hover. */
+.luwibot-cockpit__task-wait {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-dim);
+  font-size: var(--font-size-2xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .luwibot-cockpit__task-brief {
   margin: 0;
   color: var(--text);

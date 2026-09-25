@@ -22,7 +22,7 @@ import type { PulseFreshness } from './api/refresh-state.js';
 import type { RuntimeResources } from './api/runtime-resources.js';
 import type { ProjectDiscoveryResult } from './api/project-discovery.js';
 import type { SessionUsage } from './api/session-usage.js';
-import type { SessionSubagentsResponse } from '@luwi/protocol/browser';
+import type { ProjectSubagentsResponse, SessionSubagentsResponse } from '@luwi/protocol/browser';
 import { BrandMark } from './components/brand-mark.js';
 import { ConfirmDialog } from './components/confirm-dialog.js';
 import { DetailDrawer } from './components/detail-drawer.js';
@@ -35,7 +35,15 @@ import {
   inspectorTitle,
   type InspectorSelection,
 } from './inspectors/inspector-panel.js';
-import { formatClock, RUNTIME_FOCUS, sessionBadge, toneOf, type Focus } from './overview/model.js';
+import {
+  formatClock,
+  RUNTIME_FOCUS,
+  runningSubagentsBySession,
+  sessionBadge,
+  toneOf,
+  type Focus,
+  type RunningSubagent,
+} from './overview/model.js';
 import { Overview } from './overview/overview.js';
 import { useProjectFilter, visibleProjectIds } from './overview/use-project-filter.js';
 import { useViewChoice, VIEW_CHOICES, VIEW_LABELS } from './overview/use-view-choice.js';
@@ -69,6 +77,14 @@ import { monogramInitials } from './components/format.js';
 export type WebSocketState = RealtimeConnectionState;
 
 const wallClock = (): number => Date.now();
+
+/** How often the overview re-reads the running sub-agents (ADR 0038). */
+const SUBAGENT_POLL_MS = 15_000;
+/** A session seen within this window may still be orchestrating sub-agents. */
+const SUBAGENT_RECENT_MS = 24 * 3_600_000;
+/** The most projects one poll reads, busiest (newest heartbeat) first. */
+const SUBAGENT_MAX_PROJECTS = 12;
+const NO_SUBAGENTS: ReadonlyMap<string, readonly RunningSubagent[]> = new Map();
 
 const routeTitles: Record<DashboardRouteName, { eyebrow: string; heading: string }> = {
   pulse: { eyebrow: 'Overview', heading: 'Overview' },
@@ -264,6 +280,7 @@ export function DashboardApp({
   loadResources,
   loadSessionUsage,
   loadSessionSubagents,
+  loadProjectSubagents,
   loadKnowledge,
   loadAutopilot,
   loadProjectDiscovery,
@@ -336,6 +353,11 @@ export function DashboardApp({
     sessionId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<SessionSubagentsResponse>>;
+  /** Absent draws no running sub-agents on the overview lenses (ADR 0038). */
+  loadProjectSubagents?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<ProjectSubagentsResponse>>;
   /** Reads one project's knowledge graph for the overview's Knowledge lens. */
   loadKnowledge?: (
     projectId: string,
@@ -412,14 +434,67 @@ export function DashboardApp({
     else setHeldEvents((current) => current ?? displayedActivity.events);
   }, [following, displayedActivity.events]);
   /*
+   * Running sub-agents (ADR 0038), polled over the full snapshot so the quiet
+   * filter below sees them. The projects read are those owning a session seen
+   * in the last day — an orchestrating GUI often reads disconnected while its
+   * sub-agents run — and the poll keys on their ids, not on the snapshot, which
+   * changes on every heartbeat. Each round replaces the whole map, so a project
+   * whose read failed drops its entries instead of keeping them stale.
+   */
+  const subagentProjectKey = useMemo(() => {
+    const cutoff = now() - SUBAGENT_RECENT_MS;
+    const newest = new Map<string, number>();
+    for (const session of snapshot.sessions) {
+      const heartbeat = Date.parse(session.lastHeartbeatAt);
+      if (!(heartbeat >= cutoff)) continue;
+      newest.set(session.projectId, Math.max(newest.get(session.projectId) ?? 0, heartbeat));
+    }
+    return [...newest.entries()]
+      .sort((left, right) => right[1] - left[1])
+      .slice(0, SUBAGENT_MAX_PROJECTS)
+      .map(([projectId]) => projectId)
+      .sort()
+      .join('\n');
+  }, [snapshot.sessions, now]);
+  const [subagentsBySession, setSubagentsBySession] = useState(NO_SUBAGENTS);
+  useEffect(() => {
+    if (loadProjectSubagents === undefined || subagentProjectKey === '') {
+      setSubagentsBySession(NO_SUBAGENTS);
+      return undefined;
+    }
+    const projectIds = subagentProjectKey.split('\n');
+    const controller = new AbortController();
+    const read = () => {
+      void Promise.all(
+        projectIds.map((projectId) =>
+          loadProjectSubagents(projectId, { signal: controller.signal }).catch(
+            (): ResourceState<ProjectSubagentsResponse> => ({ state: 'unavailable' }),
+          ),
+        ),
+      ).then((reads) => {
+        if (!controller.signal.aborted) setSubagentsBySession(runningSubagentsBySession(reads));
+      });
+    };
+    read();
+    const timer = setInterval(read, SUBAGENT_POLL_MS);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+    };
+  }, [loadProjectSubagents, subagentProjectKey]);
+  /*
    * The owner's project filter: the overview shows the projects switched on,
    * with quiet ones optionally dropped. The full snapshot still feeds the
-   * header, the palette and every detail route; only the overview narrows.
+   * header, the palette and every detail route; only the overview narrows. A
+   * project running a sub-agent is not quiet, whatever its sessions report.
    */
-  const activeProjectIds = useMemo(
-    () => new Set(snapshot.activeSessions.map((session) => session.projectId)),
-    [snapshot.activeSessions],
-  );
+  const activeProjectIds = useMemo(() => {
+    const ids = new Set(snapshot.activeSessions.map((session) => session.projectId));
+    for (const session of snapshot.sessions) {
+      if (subagentsBySession.has(session.id)) ids.add(session.projectId);
+    }
+    return ids;
+  }, [snapshot.activeSessions, snapshot.sessions, subagentsBySession]);
   const visibleIds = useMemo(
     () =>
       visibleProjectIds(
@@ -511,6 +586,7 @@ export function DashboardApp({
     (left, right) => Number(activeProjectIds.has(right.id)) - Number(activeProjectIds.has(left.id)),
   );
   const allIds = snapshot.projects.map((project) => project.id);
+  // The overview's own rule: with no active session, running sub-agents are not QUIET.
   const projectBadge = (projectId: string) =>
     sessionBadge(
       snapshot.activeSessions
@@ -519,6 +595,9 @@ export function DashboardApp({
           (session) =>
             ({ tone: toneOf(session.status) }) as Parameters<typeof sessionBadge>[0][number],
         ),
+      snapshot.sessions
+        .filter((session) => session.projectId === projectId)
+        .reduce((sum, session) => sum + (subagentsBySession.get(session.id)?.length ?? 0), 0),
     ).label;
 
   const openInspector = (next: InspectorSelection) => setSelection(next);
@@ -946,6 +1025,7 @@ export function DashboardApp({
               ? { messages: messageResources.messages.data.items }
               : {})}
             messagesUnavailable={messageResources.messages?.state === 'unavailable'}
+            subagentsBySession={subagentsBySession}
             onFocus={changeFocus}
             onInspect={openInspector}
             {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}

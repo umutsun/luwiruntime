@@ -137,3 +137,77 @@ describe('loadAutopilotFlow', () => {
     });
   });
 });
+
+describe('loadAutopilotFlow refused dispatch', () => {
+  it('carries the last refused dispatch on the task, and nothing when there was none', async () => {
+    // Live 2026-09-25: a review blocked 50 min on a lease overlap looked idle in the cockpit.
+    const goals = { goals: [goal({ id: 'g1', taskIds: ['w1', 'w2'] })], truncated: false };
+    const lastDenial = { reason: 'lease_overlap', detail: 'src/a.ts is held by s9', at: AT };
+    const tasks = {
+      tasks: [task({ id: 'w1', state: 'ready', lastDenial }), task({ id: 'w2', state: 'ready' })],
+      truncated: false,
+    };
+    const fetchImpl = vi.fn((url: string) =>
+      Promise.resolve(jsonResponse(String(url).includes('/tasks') ? tasks : goals)),
+    );
+    const result = await loadAutopilotFlow(
+      createDaemonClient(fetchImpl as unknown as typeof fetch),
+      'p1',
+    );
+    const flowTasks = result.state === 'ready' ? result.data.goals[0]?.tasks : [];
+    expect(flowTasks?.[0]?.lastDenial).toEqual({
+      reason: 'lease_overlap',
+      detail: 'src/a.ts is held by s9',
+      at: AT,
+    });
+    expect(flowTasks?.[1]).not.toHaveProperty('lastDenial');
+  });
+
+  it('drops a refusal older than the task’s approval, dispatch or requeue, and keeps a newer one', async () => {
+    // The daemon never clears `lastDenial`, so an old refusal read as the current reason.
+    const LATER = '2026-09-20T00:05:00.000Z';
+    const lastDenial = { reason: 'lease_overlap', detail: 'src/a.ts is held by s9', at: AT };
+    const goals = {
+      goals: [goal({ id: 'g1', taskIds: ['a1', 'd1', 'q1', 'n1'] })],
+      truncated: false,
+    };
+    const tasks = {
+      tasks: [
+        task({
+          id: 'a1',
+          state: 'approved',
+          lastDenial,
+          approval: { decision: 'approved', at: LATER, by: 'operator' },
+        }),
+        task({ id: 'd1', state: 'ready', lastDenial, dispatchedAt: LATER }),
+        task({
+          id: 'q1',
+          state: 'ready',
+          lastDenial,
+          lastRedispatch: { at: LATER, reason: 'target_session_lost' },
+        }),
+        task({
+          id: 'n1',
+          state: 'approved',
+          lastDenial: { ...lastDenial, at: LATER },
+          approval: { decision: 'approved', at: AT, by: 'operator' },
+        }),
+      ],
+      truncated: false,
+    };
+    const fetchImpl = vi.fn((url: string) =>
+      Promise.resolve(jsonResponse(String(url).includes('/tasks') ? tasks : goals)),
+    );
+    const result = await loadAutopilotFlow(
+      createDaemonClient(fetchImpl as unknown as typeof fetch),
+      'p1',
+    );
+    const flowTasks = result.state === 'ready' ? (result.data.goals[0]?.tasks ?? []) : [];
+    expect(flowTasks.map((flowTask) => [flowTask.id, flowTask.lastDenial?.at])).toEqual([
+      ['a1', undefined],
+      ['d1', undefined],
+      ['q1', undefined],
+      ['n1', LATER],
+    ]);
+  });
+});

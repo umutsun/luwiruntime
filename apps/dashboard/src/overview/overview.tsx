@@ -25,6 +25,7 @@ import {
   resolveFocus,
   type AutopilotStatusState,
   type Focus,
+  type RunningSubagent,
   type SessionSubagentsState,
   type SessionUsageState,
 } from './model.js';
@@ -33,6 +34,8 @@ import { StatsRow } from './stats-row.js';
 import { Ticker } from './ticker.js';
 import { TimelineView } from './timeline-view.js';
 import type { ViewChoice } from './use-view-choice.js';
+
+const NO_SUBAGENTS: ReadonlyMap<string, readonly RunningSubagent[]> = new Map();
 
 /**
  * The overview: one model, five lenses, one docked aside.
@@ -56,6 +59,7 @@ export function Overview({
   hiddenProjects = 0,
   messages = [],
   messagesUnavailable = false,
+  subagentsBySession = NO_SUBAGENTS,
   onFocus,
   onInspect,
   loadSessionUsage,
@@ -80,6 +84,8 @@ export function Overview({
   /** The bounded message list, so the stream can show what each exchange answered. */
   messages?: readonly AgentMessage[];
   messagesUnavailable?: boolean;
+  /** Running sub-agents by session (ADR 0038), polled by the shell; absent draws none. */
+  subagentsBySession?: ReadonlyMap<string, readonly RunningSubagent[]>;
   onFocus: (focus: Focus) => void;
   onInspect: (selection: InspectorSelection) => void;
   /** Reads a focused session's usage (model, tokens); absent leaves those facts as dashes. */
@@ -110,8 +116,17 @@ export function Overview({
 }) {
   const pushToast = useToast();
   const overview = useMemo(
-    () => buildOverview(snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable),
-    [snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable],
+    () =>
+      buildOverview(
+        snapshot,
+        events,
+        nowMs,
+        hiddenProjects,
+        messages,
+        messagesUnavailable,
+        subagentsBySession,
+      ),
+    [snapshot, events, nowMs, hiddenProjects, messages, messagesUnavailable, subagentsBySession],
   );
   const resolved = resolveFocus(overview, focus);
   const focusedSessionId = resolved.kind === 'session' ? resolved.id : undefined;

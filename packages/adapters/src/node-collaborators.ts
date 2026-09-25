@@ -235,7 +235,12 @@ export class NodeTranscriptFileSystem implements TranscriptFileSystem {
   async stat(path: string): Promise<TranscriptFileStat | undefined> {
     try {
       const stats = await stat(path);
-      return { modifiedAtMs: stats.mtimeMs, sizeBytes: stats.size };
+      return {
+        modifiedAtMs: stats.mtimeMs,
+        sizeBytes: stats.size,
+        // 0 where the filesystem keeps no birth time.
+        ...(stats.birthtimeMs > 0 ? { createdAtMs: stats.birthtimeMs } : {}),
+      };
     } catch (error) {
       if (isMissingOrForbidden(error)) return undefined;
       throw error;

@@ -10,7 +10,11 @@ import type { StatusTone } from '../components/status-chip.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
-import type { AutopilotMode, SessionSubagentsResponse } from '@luwi/protocol/browser';
+import type {
+  AutopilotMode,
+  ProjectSubagentsResponse,
+  SessionSubagentsResponse,
+} from '@luwi/protocol/browser';
 import type {
   ClientKind,
   CountValue,
@@ -148,9 +152,56 @@ export type OverviewSession = {
    * presence or lifecycle. Turn-based GUI agents never report `thinking`, so
    * a status alone leaves a busy session reading idle; this is the observed
    * signal the Flow lens animates on instead of a status it was never given.
+   * A running sub-agent (ADR 0038) is observed work too, so it sets this as well.
    */
   live: boolean;
+  /** The sub-agents its native transcript shows running (ADR 0038); empty when none or unread. */
+  subagents: readonly RunningSubagent[];
 };
+
+/** One sub-agent a session's native transcript shows running (ADR 0038), as the lenses draw it. */
+export type RunningSubagent = {
+  id: string;
+  title: string;
+  lastActivityMs: number;
+  /** When its transcript began; absent when the listing gave no readable start. */
+  startedMs?: number;
+};
+
+/**
+ * The project sub-agent listings folded by session: only `running` sub-agents,
+ * only from listings the daemon actually observed, and only sessions with at
+ * least one. An unavailable project contributes nothing, so a failed read
+ * drops what an earlier one showed rather than keeping it stale.
+ */
+export function runningSubagentsBySession(
+  reads: ReadonlyArray<ResourceState<ProjectSubagentsResponse>>,
+): ReadonlyMap<string, readonly RunningSubagent[]> {
+  const map = new Map<string, RunningSubagent[]>();
+  for (const read of reads) {
+    if (read.state !== 'ready') continue;
+    for (const listing of read.data.sessions) {
+      if (listing.status !== 'observed') continue;
+      const running = listing.subagents
+        .filter((agent) => agent.state === 'running')
+        .map((agent) => {
+          const startedMs = Date.parse(agent.startedAt ?? '');
+          return {
+            id: agent.agentId,
+            title: subagentTitle(agent),
+            lastActivityMs: Date.parse(agent.lastActivityAt),
+            ...(Number.isFinite(startedMs) ? { startedMs } : {}),
+          };
+        });
+      if (running.length > 0) map.set(listing.sessionId, running);
+    }
+  }
+  return map;
+}
+
+/** `1 sub-agent`, `3 sub-agents`. */
+export const subagentCount = (count: number): string =>
+  `${String(count)} sub-agent${count === 1 ? '' : 's'}`;
 
 /** The window a retained event keeps a session `live` for. */
 export const ACTIVITY_WINDOW_MS = 10 * 60_000;
@@ -176,10 +227,12 @@ function lastActivityMs(events: readonly DashboardEvent[] | undefined): number |
 /** A badge derived from sessions only; blocked outranks a count. */
 export type Badge = { label: string; tone: 'ink' | 'outline' | 'dim' };
 
-export function sessionBadge(sessions: readonly OverviewSession[]): Badge {
+export function sessionBadge(sessions: readonly OverviewSession[], subagents = 0): Badge {
   const blocked = sessions.filter((session) => session.tone === 'blocked').length;
   if (blocked > 0) return { label: `${String(blocked)} BLOCKED`, tone: 'ink' };
   if (sessions.length > 0) return { label: `${String(sessions.length)} ACTIVE`, tone: 'outline' };
+  // No active session, but sub-agents running (ADR 0038): that is work, not QUIET.
+  if (subagents > 0) return { label: subagentCount(subagents).toUpperCase(), tone: 'outline' };
   return { label: 'QUIET', tone: 'dim' };
 }
 
@@ -190,7 +243,7 @@ export type OverviewProject = {
   name: string;
   initials: string;
   localPath: string;
-  /** Active sessions — online and not terminal. */
+  /** Active sessions — online and not terminal — plus any running a sub-agent. */
   sessions: OverviewSession[];
   /** Every observed session, newest first. */
   allSessions: OverviewSession[];
@@ -202,6 +255,8 @@ export type OverviewProject = {
   buckets: number[];
   working: boolean;
   blocked: boolean;
+  /** Running sub-agents across the project's observed sessions (ADR 0038). */
+  subagentsRunning: number;
 };
 
 export type OverviewAgent = {
@@ -214,6 +269,8 @@ export type OverviewAgent = {
   working: number;
   waiting: number;
   blocked: number;
+  /** Running sub-agents across its sessions (ADR 0038). */
+  subagents: number;
   models: string[];
   eventCount: number;
   buckets: number[];
@@ -271,7 +328,7 @@ export type Overview = {
   projects: OverviewProject[];
   agents: OverviewAgent[];
   statuses: StatusNode[];
-  /** Active sessions, newest first. */
+  /** Active sessions plus those running a sub-agent, newest first. */
   sessions: OverviewSession[];
   allSessions: OverviewSession[];
   rate: Rate;
@@ -494,6 +551,7 @@ export function buildOverview(
   hiddenProjects = 0,
   messages: readonly AgentMessage[] = [],
   messagesUnavailable = false,
+  subagentsBySession: ReadonlyMap<string, readonly RunningSubagent[]> = new Map(),
 ): Overview {
   const events = [...retained].sort((left, right) =>
     compareStreamIds(left.streamId, right.streamId),
@@ -551,10 +609,16 @@ export function buildOverview(
         respondedAt !== undefined &&
         nowMs - respondedAt <= RESPONDED_WINDOW_MS;
       const activityMs = lastActivityMs(eventsBySession.get(session.id));
+      // A running sub-agent is work the session is doing even when its own LUWI
+      // status went terminal (the orchestrating GUI often reads disconnected), so
+      // it moves the session and tones it working — the status words stay its own.
+      const subagents = subagentsBySession.get(session.id) ?? [];
       const live =
-        activeIds.has(session.id) &&
-        activityMs !== undefined &&
-        nowMs - activityMs <= ACTIVITY_WINDOW_MS;
+        (activeIds.has(session.id) &&
+          activityMs !== undefined &&
+          nowMs - activityMs <= ACTIVITY_WINDOW_MS) ||
+        subagents.length > 0;
+      const tone = toneOf(session.status);
       return {
         id: session.id,
         agentId: session.agentId,
@@ -565,7 +629,7 @@ export function buildOverview(
         projectName: session.projectName,
         status: session.status,
         statusLabel: justResponded ? 'Responded' : session.statusLabel,
-        tone: justResponded ? 'working' : toneOf(session.status),
+        tone: tone !== 'blocked' && (subagents.length > 0 || justResponded) ? 'working' : tone,
         active: activeIds.has(session.id),
         startedAt: session.startedAt,
         lastHeartbeatAt: session.lastHeartbeatAt,
@@ -579,24 +643,33 @@ export function buildOverview(
         context: session.context,
         eventCount: eventsBySession.get(session.id)?.length ?? 0,
         live,
+        subagents,
       };
     })
     .sort((left, right) => (right.startedMs ?? 0) - (left.startedMs ?? 0));
-  const sessions = allSessions.filter((session) => session.active);
+  const sessions = allSessions.filter((session) => session.active || session.subagents.length > 0);
+  const subagentTotal = (list: readonly OverviewSession[]) =>
+    list.reduce((sum, session) => sum + session.subagents.length, 0);
 
   const gitByProject = new Map(snapshot.repositoryFacts.map((row) => [row.projectId, row.git]));
   const projects: OverviewProject[] = snapshot.projects.map((project) => {
     const own = sessions.filter((session) => session.projectId === project.id);
     const git = gitByProject.get(project.id) ?? { state: 'unavailable' as const };
     const projectEvents = eventsByProject.get(project.id) ?? [];
+    const observed = allSessions.filter((session) => session.projectId === project.id);
     return {
       id: project.id,
       name: project.name,
       initials: monogramInitials(project.name),
       localPath: project.localPath,
       sessions: own,
-      allSessions: allSessions.filter((session) => session.projectId === project.id),
-      badge: sessionBadge(own),
+      allSessions: observed,
+      // The badge counts LUWI's active sessions only; a promoted one is not active,
+      // so with none active it names the running sub-agents rather than QUIET.
+      badge: sessionBadge(
+        own.filter((session) => session.active),
+        subagentTotal(observed),
+      ),
       eyebrow:
         git.state === 'ready'
           ? (git.data.branch ?? 'detached').toUpperCase()
@@ -608,6 +681,7 @@ export function buildOverview(
       buckets: bucketsFor(projectEvents, TREND_BUCKETS, bounds),
       working: own.some((session) => session.tone === 'working'),
       blocked: own.some((session) => session.tone === 'blocked'),
+      subagentsRunning: subagentTotal(observed),
     };
   });
   // Active projects first, in every lens: blocked, then the busiest, then the
@@ -634,6 +708,7 @@ export function buildOverview(
         working: own.filter((session) => session.tone === 'working').length,
         waiting: own.filter((session) => session.tone === 'waiting').length,
         blocked: own.filter((session) => session.tone === 'blocked').length,
+        subagents: subagentTotal(own),
         models: [
           ...new Set(
             own.flatMap((session) => (session.model === undefined ? [] : [session.model])),
@@ -730,7 +805,9 @@ function statsOf(
     .reduce((sum, entry) => sum + entry.count, 0);
 
   const projectsUnavailable = snapshot.projectCount.state === 'unavailable';
-  const withSessions = projects.filter((project) => project.sessions.length > 0).length;
+  const withSessions = projects.filter((project) =>
+    project.sessions.some((session) => session.active),
+  ).length;
   const blockedProjects = projects.filter((project) => project.blocked).length;
 
   const usageRows = snapshot.usage;
@@ -1020,6 +1097,8 @@ export type FlowTaskView = {
   detail: { agent: string; brief: string; paths: string[]; doneCriteria?: string };
   state: FlowChip;
   verdict?: FlowChip;
+  /** `<reason> · <detail> · <age>` of the last refused dispatch, while the task still waits for one. */
+  waiting?: string;
 };
 export type FlowGoalView = {
   id: string;
@@ -1068,7 +1147,11 @@ const VERDICT_TONES: Record<NonNullable<FlowTask['verdict']>, StatusTone> = {
  * only paints chips. Absent (undefined) when the shell wired no flow read;
  * `empty` when the read succeeded but nothing is in flight.
  */
-export function autopilotFlowPanel(extras: PanelExtras, projectId: string): FlowPanel | undefined {
+export function autopilotFlowPanel(
+  extras: PanelExtras,
+  projectId: string,
+  nowMs: number,
+): FlowPanel | undefined {
   const read =
     extras.autopilotFlow?.projectId === projectId ? extras.autopilotFlow.state : undefined;
   if (read === undefined) return undefined;
@@ -1094,6 +1177,12 @@ export function autopilotFlowPanel(extras: PanelExtras, projectId: string): Flow
       ...(task.verdict === undefined
         ? {}
         : { verdict: { label: task.verdict, tone: VERDICT_TONES[task.verdict] } }),
+      // Only a task still waiting to be sent: once dispatched, an old refusal is history.
+      ...(task.lastDenial !== undefined && (task.state === 'ready' || task.state === 'approved')
+        ? {
+            waiting: `${task.lastDenial.reason} · ${task.lastDenial.detail} · ${formatRelativeTime(task.lastDenial.at, nowMs)}`,
+          }
+        : {}),
     })),
   }));
   return {
@@ -1388,7 +1477,7 @@ export function panelFor(
       eyebrow: project.eyebrow,
       title: project.name,
       badge: project.badge,
-      sub: `${String(project.sessions.length)} active · ${String(project.allSessions.length)} observed · ${sha}`,
+      sub: `${String(project.sessions.filter((session) => session.active).length)} active · ${String(project.allSessions.length)} observed · ${sha}`,
       ...(blocked === undefined ? {} : { block: blockedEvidence(blocked, events, nowMs) }),
       facts: [
         ...gitFacts(project),
@@ -1439,11 +1528,12 @@ export function panelFor(
   if (focus.kind === 'agent') {
     const agent = overview.agents.find((candidate) => candidate.id === focus.id);
     if (agent === undefined) return panelFor(overview, RUNTIME_FOCUS, realtime);
+    const active = agent.sessions.filter((session) => session.active);
     return {
       eyebrow: agent.known ? 'Agent' : 'Unregistered agent id',
       title: agent.name,
-      badge: sessionBadge(agent.sessions),
-      sub: `${String(agent.sessions.length)} active sessions across ${String(agent.projectCount)} project${agent.projectCount === 1 ? '' : 's'}`,
+      badge: sessionBadge(active, agent.subagents),
+      sub: `${String(active.length)} active sessions across ${String(agent.projectCount)} project${agent.projectCount === 1 ? '' : 's'}`,
       facts: [
         { k: 'Models', v: agent.models.length === 0 ? '—' : agent.models.join(', ') },
         { k: 'Waiting', v: String(agent.waiting) },
@@ -1586,7 +1676,11 @@ export function panelFor(
       { k: 'Version', v: health.version ?? 'unavailable' },
     ],
     trend: trendOf('Events · retained', events, overview),
-    list: { label: 'Active sessions', rows: overview.sessions, empty: sessionsEmpty(overview) },
+    list: {
+      label: 'Active sessions',
+      rows: overview.sessions.filter((session) => session.active),
+      empty: sessionsEmpty(overview),
+    },
     // The runtime-global drawers not already opened by a hero tile. Kept short,
     // not a menu: the hero stat strip covers usage/context/sessions/projects, and
     // Activity lives here now that the Delivery tile took the events tile's slot.
@@ -1670,13 +1764,35 @@ export type FlowRibbon = {
   sessionId: string;
 };
 
+/**
+ * One running sub-agent (ADR 0038), threaded inside its session's agent→project
+ * ribbon. It stops at the project: the status column is LUWI session status,
+ * and a sub-agent has none.
+ */
+export type FlowStrand = { key: string; d: string; title: string; dim: boolean; sessionId: string };
+
 export type FlowLayout = {
   agents: FlowNode[];
   projects: FlowNode[];
   statuses: FlowNode[];
   ribbons: FlowRibbon[];
+  strands: FlowStrand[];
   unit: number;
 };
+
+/** Beyond this many strands a ribbon's band is noise; the last one names the rest. */
+const FLOW_MAX_STRANDS = 6;
+
+/** The first `cap` entries, with the last one's title naming how many were left out. */
+function capped<T extends { title: string }>(list: readonly T[], cap: number): T[] {
+  const shown = list.slice(0, cap);
+  const rest = list.length - shown.length;
+  const last = shown.at(-1);
+  if (rest > 0 && last !== undefined) {
+    shown[shown.length - 1] = { ...last, title: `${last.title} · +${String(rest)} more` };
+  }
+  return shown;
+}
 
 function bezier(x1: number, y1: number, x2: number, y2: number): string {
   const mid = (x1 + x2) / 2;
@@ -1741,7 +1857,7 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
       h: box.h,
       label: agent.name,
       initials: agent.initials,
-      sub: `${String(agent.sessions.length)} session${agent.sessions.length === 1 ? '' : 's'} · ${String(agent.working)} working`,
+      sub: `${String(agent.sessions.length)} session${agent.sessions.length === 1 ? '' : 's'} · ${String(agent.working)} working${agent.subagents > 0 ? ` · ${subagentCount(agent.subagents)}` : ''}`,
       count: agent.sessions.length,
       focus: { kind: 'agent', id: agent.id },
       selected,
@@ -1805,6 +1921,7 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
   const projectIndex = new Map(overview.projects.map((project, index) => [project.id, index]));
   const statusIndex = new Map(overview.statuses.map((status, index) => [status.status, index]));
   const ribbons: FlowRibbon[] = [];
+  const strands: FlowStrand[] = [];
   const width = Math.max(2, unit - 8);
   for (const session of overview.sessions) {
     const agentAt = agentIndex.get(session.agentId);
@@ -1816,19 +1933,30 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
     const statusBox = statusBoxes[statusAt];
     if (agentBox === undefined || projectBox === undefined || statusBox === undefined) continue;
     const dim = anySelection && !related(session);
+    const agentX = FLOW_COLUMNS.agents.x + FLOW_COLUMNS.agents.w;
+    const agentY = agentBox.y + nextOffset(`agent:${session.agentId}`);
+    const projectY = projectBox.y + nextOffset(`in:${session.projectId}`);
     ribbons.push({
       key: `${session.id}:in`,
-      d: bezier(
-        FLOW_COLUMNS.agents.x + FLOW_COLUMNS.agents.w,
-        agentBox.y + nextOffset(`agent:${session.agentId}`),
-        FLOW_COLUMNS.projects.x,
-        projectBox.y + nextOffset(`in:${session.projectId}`),
-      ),
+      d: bezier(agentX, agentY, FLOW_COLUMNS.projects.x, projectY),
       width,
       tone: session.tone,
       dim,
       live: session.live,
       sessionId: session.id,
+    });
+    // Its running sub-agents, spread evenly across the same band.
+    const threads = capped(session.subagents, FLOW_MAX_STRANDS);
+    const spacing = Math.min(3, Math.max(1, (unit - 6) / threads.length));
+    threads.forEach((agent, index) => {
+      const offset = (index - (threads.length - 1) / 2) * spacing;
+      strands.push({
+        key: `${session.id}:strand:${agent.id}`,
+        d: bezier(agentX, agentY + offset, FLOW_COLUMNS.projects.x, projectY + offset),
+        title: agent.title,
+        dim,
+        sessionId: session.id,
+      });
     });
     ribbons.push({
       key: `${session.id}:out`,
@@ -1846,7 +1974,7 @@ export function layoutFlow(overview: Overview, focus: Focus): FlowLayout {
     });
   }
 
-  return { agents, projects, statuses, ribbons, unit };
+  return { agents, projects, statuses, ribbons, strands, unit };
 }
 
 // ---------------------------------------------------------------------------
@@ -1860,6 +1988,15 @@ export const RADIAL_NODE = 36;
 const RADIAL_DOT_RING = 29;
 const RADIAL_MAX_DOTS = 6;
 const RADIAL_MAX_PACKETS = 3;
+/** The ring running sub-agents orbit a node on, just outside its halo. */
+export const RADIAL_SAT_RING = 46;
+const RADIAL_MAX_SATS = 8;
+/**
+ * How much further out a node's label sits when satellites orbit it: the ring
+ * (46) plus a satellite's radius (2.5) clears the 36 node by 12.5, and a little
+ * air on top keeps a label from grazing a satellite as it turns.
+ */
+const RADIAL_SAT_LABEL_PUSH = 14;
 
 export type RadialDot = { x: number; y: number; tone: Tone };
 
@@ -1879,10 +2016,17 @@ export type RadialNode = {
   /** Retained events against the busiest node on the orbit, 0..1. */
   share: number;
   dots: RadialDot[];
+  /**
+   * One per running sub-agent (capped), relative to the node centre, on `RADIAL_SAT_RING`;
+   * the title names it, and the last one names any left out.
+   */
+  satellites: Array<{ x: number; y: number; title: string }>;
   packets: number;
   blocked: boolean;
   selected: boolean;
   below: boolean;
+  /** The label's centre: above the node, or below it, and clear of any satellites. */
+  labelY: number;
   focus: Focus;
 };
 
@@ -1911,9 +2055,12 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
     initials: string;
     events: number;
     sessions: OverviewSession[];
+    subagents: readonly RunningSubagent[];
     selected: boolean;
     focus: Focus;
   };
+  const running = (count: number): string =>
+    count > 0 ? ` · ${subagentCount(count)} running` : '';
   const items: Item[] =
     project === undefined
       ? overview.projects.map((candidate) => ({
@@ -1924,10 +2071,11 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
           name: '',
           hint: `${candidate.name} · ${String(candidate.sessions.length)} session${
             candidate.sessions.length === 1 ? '' : 's'
-          }`,
+          }${running(candidate.subagentsRunning)}`,
           initials: candidate.initials,
           events: candidate.eventCount,
           sessions: candidate.sessions,
+          subagents: candidate.allSessions.flatMap((session) => session.subagents),
           selected: false,
           focus: { kind: 'project', id: candidate.id },
         }))
@@ -1944,10 +2092,11 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
             label: session.agentName,
             sub: (session.branch ?? session.statusLabel).toUpperCase(),
             name: snippet(session.title ?? `Session ${abbreviateId(session.id)}`, 18),
-            hint: `${hintName} · ${session.clientKind}`,
+            hint: `${hintName} · ${session.clientKind}${running(session.subagents.length)}`,
             initials: session.initials,
             events: session.eventCount,
             sessions: [session],
+            subagents: session.subagents,
             selected: focus.kind === 'session' && focus.id === session.id,
             focus: { kind: 'session', id: session.id },
           };
@@ -1968,6 +2117,17 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
       };
     });
     const working = item.sessions.filter((session) => session.tone === 'working').length;
+    const orbiting = capped(item.subagents, RADIAL_MAX_SATS);
+    const satellites = orbiting.map((agent, satIndex) => {
+      const satAngle = -Math.PI / 2 + (satIndex * 2 * Math.PI) / orbiting.length;
+      return {
+        x: Number((RADIAL_SAT_RING * Math.cos(satAngle)).toFixed(1)),
+        y: Number((RADIAL_SAT_RING * Math.sin(satAngle)).toFixed(1)),
+        title: agent.title,
+      };
+    });
+    const below = Math.sin(angle) > 0.2;
+    const push = satellites.length > 0 ? RADIAL_SAT_LABEL_PUSH : 0;
     return {
       key: item.key,
       kind: item.kind,
@@ -1981,10 +2141,12 @@ export function layoutRadial(overview: Overview, focus: Focus): RadialLayout {
       angleDeg: Number(((angle * 180) / Math.PI).toFixed(2)),
       share: busiest === 0 ? 0 : item.events / busiest,
       dots,
+      satellites,
       packets: Math.min(RADIAL_MAX_PACKETS, working),
       blocked: item.sessions.some((session) => session.tone === 'blocked'),
       selected: item.selected,
-      below: Math.sin(angle) > 0.2,
+      below,
+      labelY: Number((below ? y + 62 + push : y - 58 - push).toFixed(1)),
       focus: item.focus,
     };
   });
@@ -2033,6 +2195,11 @@ const TIMELINE_MIN_WIDTH = 0.006;
  */
 const TIMELINE_FOLD_WIDTH = 0.06;
 const TIMELINE_GAP = 0.003;
+/**
+ * Sub-agent threads a bar stacks before the last one names the rest: three 1 px
+ * threads at a 2 px pitch fill the bar's bottom 5 px, under its centred label.
+ */
+const TIMELINE_MAX_THREADS = 3;
 
 /** Finer buckets for wider windows, so one burst is a spike and not a block. */
 function timelineBuckets(minutes: TimelineWindow): number {
@@ -2058,6 +2225,8 @@ export type TimelineBar = {
   duration: string;
   selected: boolean;
   dim: boolean;
+  /** One per running sub-agent with a known start (capped): its start to NOW, in lane fractions. */
+  threads: Array<{ key: string; x0: number; x1: number; title: string }>;
 };
 /** Terminal sessions too narrow to label, folded into one mark with a count. */
 export type TimelineCluster = {
@@ -2073,7 +2242,18 @@ export type TimelineCluster = {
   dim: boolean;
 };
 export type TimelineItem = TimelineBar | TimelineCluster;
-export type TimelineMark = { key: string; x: number; row: number; title: string };
+/**
+ * An instant on a lane: a lease denial, or a session's newest running
+ * sub-agent activity (ADR 0038) — the fallback when its bar carries no thread,
+ * because no sub-agent gave a start time or the session drew no bar.
+ */
+export type TimelineMark = {
+  key: string;
+  kind: 'denied' | 'subagent';
+  x: number;
+  row: number;
+  title: string;
+};
 export type TimelineLane = {
   project: OverviewProject;
   items: TimelineItem[];
@@ -2133,13 +2313,16 @@ export function layoutTimeline(
       focusedSession !== undefined &&
       !ids.includes(focusedSession) &&
       focusedProject?.id !== project.id;
+    // A session running a sub-agent is still going whatever its own status says.
+    const ongoing = (session: OverviewSession): boolean =>
+      session.active || session.subagents.length > 0;
     const spans: Span[] = project.allSessions
       .flatMap((session): Span[] => {
         if (session.startedMs === undefined) return [];
-        const endMs = session.active ? nowMs : (session.heartbeatMs ?? session.startedMs);
+        const endMs = ongoing(session) ? nowMs : (session.heartbeatMs ?? session.startedMs);
         if (endMs < startMs || session.startedMs > nowMs) return [];
         const left = xOf(Math.max(session.startedMs, startMs));
-        const right = session.active ? NOW_FRACTION : xOf(endMs);
+        const right = ongoing(session) ? NOW_FRACTION : xOf(endMs);
         // A tick at least, and the tick stays inside the window: a session at
         // the edge grows leftwards rather than past NOW.
         const width = Math.max(TIMELINE_MIN_WIDTH, right - left);
@@ -2157,6 +2340,21 @@ export function layoutTimeline(
       duration: formatDuration(span.endMs - span.startMs),
       selected: focusedSession === span.session.id,
       dim: dimFor([span.session.id]),
+      threads: capped(
+        span.session.subagents.flatMap((agent) =>
+          agent.startedMs === undefined
+            ? []
+            : [
+                {
+                  key: `${span.session.id}:thread:${agent.id}`,
+                  x0: xOf(agent.startedMs),
+                  x1: xOf(nowMs),
+                  title: `${agent.title} · running since ${formatHourMinute(agent.startedMs)}`,
+                },
+              ],
+        ),
+        TIMELINE_MAX_THREADS,
+      ),
     });
     const items: TimelineItem[] = [];
     let open: { members: Span[]; x0: number; x1: number } | undefined;
@@ -2188,7 +2386,7 @@ export function layoutTimeline(
     };
     for (const span of spans) {
       const wide = span.x1 - span.x0 >= TIMELINE_FOLD_WIDTH;
-      if (wide || span.session.active) {
+      if (wide || ongoing(span.session)) {
         items.push(bar(span));
         continue;
       }
@@ -2220,23 +2418,44 @@ export function layoutTimeline(
       item.row = row;
     }
 
-    const marks: TimelineMark[] = denials.flatMap((event) => {
-      const at = parseMs(event.occurredAt);
-      const item = items.find((candidate) =>
+    const itemOf = (sessionId: string | undefined) =>
+      items.find((candidate) =>
         candidate.kind === 'bar'
-          ? candidate.session.id === event.sessionId
-          : candidate.sessions.some((session) => session.id === event.sessionId),
+          ? candidate.session.id === sessionId
+          : candidate.sessions.some((session) => session.id === sessionId),
       );
+    const denied: TimelineMark[] = denials.flatMap((event) => {
+      const at = parseMs(event.occurredAt);
+      const item = itemOf(event.sessionId);
       if (item === undefined || at === undefined) return [];
       return [
         {
           key: event.streamId,
+          kind: 'denied' as const,
           x: xOf(at),
           row: item.row,
           title: `lease.denied ${eventDetail(event)}`.trim(),
         },
       ];
     });
+    // One mark per session with running sub-agents its bar does not thread, at the newest activity.
+    const threaded = (sessionId: string): boolean => {
+      const item = itemOf(sessionId);
+      return item?.kind === 'bar' && item.threads.length > 0;
+    };
+    const subagentMarks: TimelineMark[] = project.allSessions
+      .filter((session) => session.subagents.length > 0 && !threaded(session.id))
+      .map((session) => {
+        const newest = Math.max(...session.subagents.map((agent) => agent.lastActivityMs));
+        return {
+          key: `subagent:${session.id}`,
+          kind: 'subagent' as const,
+          x: xOf(newest),
+          row: itemOf(session.id)?.row ?? 0,
+          title: `${subagentCount(session.subagents.length)} running · last activity ${formatHourMinute(newest)}`,
+        };
+      });
+    const marks = [...denied, ...subagentMarks];
     const selected = focusedProject?.id === project.id;
     return {
       project,

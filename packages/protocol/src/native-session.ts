@@ -109,6 +109,8 @@ export const nativeSubagentSchema = z.strictObject({
   agentType: z.string().max(100).optional(),
   description: z.string().max(200).optional(),
   state: z.enum(['running', 'finished', 'quiet']),
+  /** The transcript's first record time — when the sub-agent began. */
+  startedAt: timestampSchema.optional(),
   lastActivityAt: timestampSchema,
   lastToolName: z.string().max(100).optional(),
   workingDirectory: z.string().max(1024).optional(),

@@ -13,7 +13,7 @@ const root = 'C:/home/.claude/projects';
 const nsid = '0f9d2c5e-1b47-4a3d-9f80-2c6b7e1a5d34';
 const now = Date.parse('2026-09-25T10:00:00.000Z');
 
-type FakeFile = { content: string; modifiedAtMs: number };
+type FakeFile = { content: string; modifiedAtMs: number; createdAtMs?: number };
 
 function memoryFileSystem(files: Record<string, FakeFile>) {
   const calls: string[] = [];
@@ -37,7 +37,11 @@ function memoryFileSystem(files: Record<string, FakeFile>) {
       const file = files[path];
       return file === undefined
         ? undefined
-        : { modifiedAtMs: file.modifiedAtMs, sizeBytes: file.content.length };
+        : {
+            modifiedAtMs: file.modifiedAtMs,
+            sizeBytes: file.content.length,
+            ...(file.createdAtMs === undefined ? {} : { createdAtMs: file.createdAtMs }),
+          };
     },
     async readLines(path, maxBytes) {
       calls.push(`readLines:${path}`);
@@ -213,6 +217,7 @@ describe('listNativeSubagents', () => {
           agentId: 'bbb222',
           state: 'running',
           lastActivityAt: new Date(now - 60_000).toISOString(),
+          startedAt: '2026-09-25T09:00:00.000Z',
           lastToolName: 'Bash',
           workingDirectory: 'C:/xampp/htdocs/app/.worktrees/backend',
           gitBranch: 'lane/backend',
@@ -223,6 +228,7 @@ describe('listNativeSubagents', () => {
           agentType: 'workflow-subagent',
           state: 'quiet',
           lastActivityAt: new Date(now - 3_600_000).toISOString(),
+          startedAt: '2026-09-25T09:00:00.000Z',
           lastToolName: 'Bash',
           workingDirectory: 'C:/xampp/htdocs/app',
           gitBranch: 'main',
@@ -233,6 +239,7 @@ describe('listNativeSubagents', () => {
           description: 'A0 admin prep refactor',
           state: 'finished',
           lastActivityAt: new Date(now - 60_000).toISOString(),
+          startedAt: '2026-09-25T09:00:00.000Z',
           lastToolName: 'Bash',
           workingDirectory: 'C:/wt/a0',
           gitBranch: 'lane/a0',
@@ -311,6 +318,7 @@ describe('listNativeSubagents', () => {
         agentId: 'aaa111',
         state: 'finished',
         lastActivityAt: new Date(now).toISOString(),
+        startedAt: '2026-09-25T09:00:00.000Z',
         lastToolName: 'Bash',
         workingDirectory: 'C:/wt/big',
         gitBranch: 'lane/big',
@@ -454,6 +462,115 @@ describe('listNativeSubagents', () => {
     expect(result.truncated).toBe(true);
     expect(result.subagents.map((subagent) => subagent.agentId)).toEqual(['new', 'mid']);
     expect(calls.filter((call) => call.startsWith('readTail:'))).toHaveLength(2);
+  });
+
+  it('reads the start from the first timestamped record of the head, else leaves it out', async () => {
+    const stamped = (at: string) =>
+      JSON.stringify({ type: 'user', timestamp: at, sessionId: nsid });
+    const { fileSystem } = memoryFileSystem({
+      [`${flat}/agent-late.jsonl`]: file(
+        [
+          '{broken',
+          JSON.stringify({ type: 'attachment' }),
+          stamped('2026-09-25T08:30:00+00:00'),
+          endTurn,
+        ],
+        now - 10_000,
+      ),
+      [`${flat}/agent-none.jsonl`]: file(
+        [JSON.stringify({ type: 'user', timestamp: 'not a time' })],
+        now - 20_000,
+      ),
+    });
+
+    const result = await listNativeSubagents({
+      fileSystem,
+      projectsRoot: root,
+      nativeSessionId: nsid,
+      nowMs: now,
+    });
+
+    const byId = new Map(result.subagents.map((subagent) => [subagent.agentId, subagent]));
+    expect(byId.get('late')?.startedAt).toBe('2026-09-25T08:30:00.000Z');
+    expect('startedAt' in (byId.get('none') ?? {})).toBe(false);
+  });
+
+  it('falls back to the file creation time when the first record outgrows the head read', async () => {
+    // A workflow agent's first record carries its whole prompt (24 KB measured) and the
+    // record's timestamp comes after it, past the head read.
+    const longFirst = JSON.stringify({
+      type: 'user',
+      message: { content: SECRET.repeat(2_000) },
+      timestamp: '2026-09-25T08:00:00.000Z',
+    });
+    const { fileSystem } = memoryFileSystem({
+      [`${flat}/agent-long.jsonl`]: {
+        content: `${longFirst}
+${endTurn}
+`,
+        modifiedAtMs: now,
+        createdAtMs: Date.parse('2026-09-25T08:00:03.000Z'),
+      },
+    });
+
+    const result = await listNativeSubagents({
+      fileSystem,
+      projectsRoot: root,
+      nativeSessionId: nsid,
+      nowMs: now,
+    });
+
+    expect(longFirst.length).toBeGreaterThan(16_384);
+    expect(result.subagents[0]?.startedAt).toBe('2026-09-25T08:00:03.000Z');
+  });
+
+  it('leaves out a start the timestamp schema cannot hold, and skips a file time it cannot', async () => {
+    // Years past 9999 or before 1970 serialise as `+010000-…`/`-000001-…` (or throw), which
+    // `z.iso.datetime` rejects — one such agent would 500 both subagent routes.
+    const stampedOnly = (at: string) =>
+      `${JSON.stringify({ type: 'user', timestamp: at, sessionId: nsid })}\n`;
+    const { fileSystem } = memoryFileSystem({
+      [`${flat}/agent-future.jsonl`]: {
+        content: stampedOnly('+010000-01-01T00:00:00.000Z'),
+        modifiedAtMs: now,
+        createdAtMs: 253_402_300_800_000,
+      },
+      [`${flat}/agent-past.jsonl`]: {
+        content: stampedOnly('-000001-01-01T00:00:00.000Z'),
+        modifiedAtMs: now,
+        createdAtMs: -1,
+      },
+      [`${flat}/agent-huge.jsonl`]: {
+        content: stampedOnly('not a time'),
+        modifiedAtMs: now,
+        createdAtMs: Number.MAX_SAFE_INTEGER,
+      },
+      [`${flat}/agent-edge.jsonl`]: {
+        content: stampedOnly('+010000-01-01T00:00:00.000Z'),
+        modifiedAtMs: now,
+        createdAtMs: 253_402_300_799_999,
+      },
+      [`${flat}/agent-zero.jsonl`]: {
+        content: stampedOnly('1970-01-01T00:00:00.000Z'),
+        modifiedAtMs: now,
+      },
+      [`${flat}/agent-mtime.jsonl`]: file([endTurn], 253_402_300_800_000),
+    });
+
+    const result = await listNativeSubagents({
+      fileSystem,
+      projectsRoot: root,
+      nativeSessionId: nsid,
+      nowMs: now,
+    });
+
+    const byId = new Map(result.subagents.map((subagent) => [subagent.agentId, subagent]));
+    expect([...byId.keys()].sort()).toEqual(['edge', 'future', 'huge', 'past', 'zero']);
+    for (const id of ['future', 'past', 'huge']) {
+      expect('startedAt' in (byId.get(id) ?? {})).toBe(false);
+    }
+    expect(byId.get('edge')?.startedAt).toBe('9999-12-31T23:59:59.999Z');
+    expect(byId.get('zero')?.startedAt).toBe('1970-01-01T00:00:00.000Z');
   });
 
   it('answers an empty listing when the session has no subagents directory', async () => {

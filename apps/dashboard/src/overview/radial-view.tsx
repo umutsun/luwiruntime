@@ -4,6 +4,7 @@ import {
   RADIAL_CENTRE,
   RADIAL_NODE,
   RADIAL_ORBIT,
+  RADIAL_SAT_RING,
   RADIAL_SIZE,
   type Focus,
   type Overview,
@@ -15,9 +16,11 @@ import {
  * A node's arc is its share of the retained events against the busiest node —
  * the comps' "7-day activity" ring, replaced by the one activity measure the
  * runtime actually retains, and labelled as such in the legend. Dots are the
- * node's active sessions by tone; packets on a spoke count its working ones.
+ * node's active sessions by tone; packets on a spoke count its working ones;
+ * satellites orbiting a node are its running sub-agents (ADR 0038).
  */
 const CIRCUMFERENCE = 2 * Math.PI * RADIAL_NODE;
+const SAT_RADIUS = 2.5;
 /**
  * The core rate gauge rides a ring OUTSIDE the core disc (r 58) and its centred
  * "N EVENTS / MIN" label, so the arc never crosses the text. It sits just past the
@@ -143,6 +146,27 @@ export function RadialView({
                     r={4.5}
                   />
                 ))}
+                {node.satellites.length > 0 ? (
+                  <g transform={`translate(${String(node.x)} ${String(node.y)})`}>
+                    {/* The invisible ring (wide enough to hold every satellite whole) centres
+                        the group's fill box on the node, so the spin turns the satellites
+                        around it rather than around their own middle. */}
+                    <g className="radial__sats">
+                      <circle r={RADIAL_SAT_RING + SAT_RADIUS} fill="none" stroke="none" />
+                      {node.satellites.map((satellite, satIndex) => (
+                        <circle
+                          key={satIndex}
+                          className="radial__sat"
+                          cx={satellite.x}
+                          cy={satellite.y}
+                          r={SAT_RADIUS}
+                        >
+                          <title>{satellite.title}</title>
+                        </circle>
+                      ))}
+                    </g>
+                  </g>
+                ) : null}
               </g>
             ))}
           </svg>
@@ -180,13 +204,21 @@ export function RadialView({
                 </button>
                 <span
                   className="radial__label"
-                  style={{ left: pct(node.x), top: pct(node.below ? node.y + 62 : node.y - 58) }}
+                  style={{ left: pct(node.x), top: pct(node.labelY) }}
                 >
                   <span className="radial__label-head">
-                    <span className="radial__label-name">{node.label}</span>
-                    <span className="radial__label-sub">{node.sub}</span>
+                    <span className="radial__label-name" title={node.label}>
+                      {node.label}
+                    </span>
+                    <span className="radial__label-sub" title={node.sub}>
+                      {node.sub}
+                    </span>
                   </span>
-                  {node.name ? <span className="radial__label-title">{node.name}</span> : null}
+                  {node.name ? (
+                    <span className="radial__label-title" title={node.name}>
+                      {node.name}
+                    </span>
+                  ) : null}
                 </span>
               </div>
             ))}
@@ -208,6 +240,10 @@ export function RadialView({
           <span className="radial__legend-row">
             <span className="radial__legend-dot tone--blocked" />
             blocked
+          </span>
+          <span className="radial__legend-row">
+            <span className="radial__legend-dot radial__legend-dot--sat" />
+            orbiting dots = sub-agents running
           </span>
           <span className="radial__legend-row radial__legend-row--ring">
             <span className="radial__legend-line" />

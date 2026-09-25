@@ -151,7 +151,7 @@ const fetchSessionUsage = (sessionId: string, options?: { signal?: AbortSignal }
 /** Same reason: the overview's sub-agent effect keys on this identity. */
 const fetchSessionSubagents = (sessionId: string, options?: { signal?: AbortSignal }) =>
   loadSessionSubagents(client, sessionId, options);
-/** Same reason: the LuwiBot widget's poll effect keys on this identity. */
+/** Same reason: the LuwiBot widget's and the overview's poll effects key on this identity. */
 const fetchProjectSubagents = (projectId: string, options?: { signal?: AbortSignal }) =>
   loadProjectSubagents(client, projectId, options);
 /** Same reason: the Knowledge lens's read effect keys on this identity. */
@@ -611,6 +611,7 @@ function DashboardRoute() {
       loadResources={fetchResources}
       loadSessionUsage={fetchSessionUsage}
       loadSessionSubagents={fetchSessionSubagents}
+      loadProjectSubagents={fetchProjectSubagents}
       loadKnowledge={fetchKnowledge}
       loadAutopilot={fetchAutopilotStatus}
       loadProjectDiscovery={loadProjectDiscovery}

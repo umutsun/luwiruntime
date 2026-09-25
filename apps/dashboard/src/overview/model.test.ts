@@ -10,6 +10,7 @@ import {
   eventDetail,
   formatClock,
   formatDuration,
+  formatHourMinute,
   formatTokens,
   layoutFlow,
   layoutRadial,
@@ -19,9 +20,11 @@ import {
   planTiles,
   resolveFocus,
   RUNTIME_FOCUS,
+  runningSubagentsBySession,
   sessionBadge,
   toneOf,
   type AutopilotFlowState,
+  type RunningSubagent,
   type TimelineBar,
   type TimelineLane,
 } from './model.js';
@@ -314,7 +317,38 @@ describe('autopilot mode switch in the drill-down (ADR 0035)', () => {
 // The drill-down no longer draws the flow (the LuwiBot cockpit does); the model is the cockpit's.
 describe('autopilotFlowPanel (ADR 0035)', () => {
   const flowOf = (state: AutopilotFlowState) =>
-    autopilotFlowPanel({ autopilotFlow: { projectId: 'p1', state } }, 'p1');
+    autopilotFlowPanel({ autopilotFlow: { projectId: 'p1', state } }, 'p1', NOW);
+
+  it('says how long ago a waiting task was refused', () => {
+    const flow = flowOf({
+      state: 'ready',
+      data: {
+        more: 0,
+        goals: [
+          {
+            id: 'g1',
+            title: 'g',
+            acceptanceCriteria: [],
+            state: 'running',
+            tasks: [
+              {
+                id: 't1',
+                kind: 'review',
+                title: 'Review it',
+                brief: 'Check it.',
+                paths: [],
+                agentId: 'reviewer',
+                state: 'ready',
+                verdict: undefined,
+                lastDenial: { reason: 'lease_overlap', detail: 'src/a.ts', at: minutesAgo(50) },
+              },
+            ],
+          },
+        ],
+      },
+    });
+    expect(flow?.goals[0]?.tasks[0]?.waiting).toBe('lease_overlap · src/a.ts · 50m ago');
+  });
 
   it('maps active goals and tasks to toned chips in plan order', () => {
     const flow = flowOf({
@@ -433,7 +467,7 @@ describe('autopilotFlowPanel (ADR 0035)', () => {
     expect(flowOf({ state: 'ready', data: { goals: [], more: 0 } })?.status).toBe('empty');
     expect(flowOf({ state: 'loading' })?.status).toBe('loading');
     expect(flowOf({ state: 'unavailable' })?.status).toBe('unavailable');
-    expect(autopilotFlowPanel({}, 'p1')).toBeUndefined();
+    expect(autopilotFlowPanel({}, 'p1', NOW)).toBeUndefined();
     expect(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live')).not.toHaveProperty('flow');
   });
 });
@@ -1423,5 +1457,383 @@ describe('responded transient', () => {
     ]);
     const session = model.allSessions.find((x) => x.id === 's-think');
     expect(session?.statusLabel).not.toBe('Responded');
+  });
+});
+
+describe('running sub-agents (ADR 0038)', () => {
+  /** A session whose LUWI status went terminal while its sub-agents keep running. */
+  const withGui = (): PulseInput => {
+    const value = input();
+    if (value.sessions.state === 'ready') {
+      value.sessions.data.push({
+        id: 's-gui',
+        agentId: 'a1',
+        projectId: 'p2',
+        status: 'disconnected',
+        presence: 'offline',
+        startedAt: minutesAgo(30),
+        lastHeartbeatAt: minutesAgo(20),
+      });
+    }
+    return value;
+  };
+  const sub = (id: string, minutes: number): RunningSubagent => ({
+    id,
+    title: `task ${id}`,
+    lastActivityMs: NOW - minutes * 60_000,
+  });
+  const model = (
+    map: ReadonlyMap<string, readonly RunningSubagent[]>,
+    value: PulseInput = withGui(),
+  ) => buildOverview(buildPulseSnapshot(value), events(), NOW, 0, [], false, map);
+  const running = new Map([['s-gui', [sub('x1', 3), sub('x2', 1)]]]);
+
+  it('folds only running sub-agents of observed listings, and drops an unavailable project', () => {
+    const agent = (agentId: string, state: 'running' | 'finished' | 'quiet', extra = {}) => ({
+      agentId,
+      state,
+      lastActivityAt: minutesAgo(2),
+      ...extra,
+    });
+    const map = runningSubagentsBySession([
+      {
+        state: 'ready',
+        data: {
+          projectId: 'p1',
+          truncated: false,
+          observedAt: minutesAgo(0),
+          sessions: [
+            {
+              sessionId: 's-a',
+              status: 'observed',
+              truncated: false,
+              observedAt: minutesAgo(0),
+              subagents: [
+                agent('r1', 'running', { description: 'Review the diff' }),
+                agent('f1', 'finished'),
+                agent('q1', 'quiet'),
+              ],
+            },
+            {
+              sessionId: 's-b',
+              status: 'observed',
+              truncated: false,
+              observedAt: minutesAgo(0),
+              subagents: [agent('f2', 'finished')],
+            },
+            {
+              sessionId: 's-c',
+              status: 'unbound',
+              truncated: false,
+              observedAt: minutesAgo(0),
+              subagents: [agent('r2', 'running')],
+            },
+          ],
+        },
+      },
+      { state: 'unavailable' },
+    ]);
+    expect([...map.entries()]).toEqual([
+      ['s-a', [{ id: 'r1', title: 'Review the diff', lastActivityMs: NOW - 2 * 60_000 }]],
+    ]);
+  });
+
+  it('promotes a disconnected session with a running sub-agent to working, keeping its words', () => {
+    const plain = model(new Map());
+    const promoted = model(running);
+    const before = plain.allSessions.find((session) => session.id === 's-gui');
+    const after = promoted.allSessions.find((session) => session.id === 's-gui');
+    expect(before?.tone).toBe('done');
+    expect(plain.sessions.some((session) => session.id === 's-gui')).toBe(false);
+
+    expect(after?.tone).toBe('working');
+    expect(after?.live).toBe(true);
+    expect(after?.active).toBe(false);
+    expect(after?.statusLabel).toBe(before?.statusLabel);
+    expect(after?.subagents.map((agent) => agent.id)).toEqual(['x1', 'x2']);
+    const beta = promoted.projects.find((project) => project.id === 'p2');
+    expect(beta?.sessions.map((session) => session.id)).toContain('s-gui');
+    expect(beta?.working).toBe(true);
+    expect(beta?.subagentsRunning).toBe(2);
+    const a1 = promoted.agents.find((agent) => agent.id === 'a1');
+    expect(a1?.working).toBe(2);
+    expect(a1?.subagents).toBe(2);
+    expect(plain.agents.find((agent) => agent.id === 'a1')?.subagents).toBe(0);
+
+    // The runtime's own counts stay on LUWI's active sessions.
+    expect(beta?.badge).toEqual({ label: '1 ACTIVE', tone: 'outline' });
+    const stat = (overview: typeof plain, key: string) =>
+      overview.stats.find((entry) => entry.key === key);
+    expect(stat(promoted, 'sessions')).toEqual(stat(plain, 'sessions'));
+    expect(stat(promoted, 'projects')).toEqual(stat(plain, 'projects'));
+    expect(panelFor(promoted, { kind: 'project', id: 'p2' }, 'live').sub).toMatch(/^1 active · /u);
+    expect(panelFor(promoted, { kind: 'agent', id: 'a1' }, 'live').badge.label).toBe('2 ACTIVE');
+  });
+
+  it('keeps a blocked session blocked, and ignores an empty listing', () => {
+    const promoted = model(
+      new Map([
+        ['s-blocked', [sub('x1', 1)]],
+        ['s-done', []],
+      ]),
+    );
+    expect(promoted.allSessions.find((session) => session.id === 's-blocked')?.tone).toBe(
+      'blocked',
+    );
+    const done = promoted.allSessions.find((session) => session.id === 's-done');
+    expect(done?.tone).toBe('done');
+    expect(promoted.sessions.some((session) => session.id === 's-done')).toBe(false);
+  });
+
+  it('adds the running sub-agents to the Flow agent card', () => {
+    const flow = (overview: ReturnType<typeof model>) =>
+      layoutFlow(overview, RUNTIME_FOCUS).agents.find((node) => node.key === 'agent:a1')?.sub;
+    expect(flow(model(new Map()))).toBe('2 sessions · 1 working');
+    expect(flow(model(running))).toBe('3 sessions · 2 working · 2 sub-agents');
+    expect(flow(model(new Map([['s-gui', [sub('x1', 1)]]])))).toBe(
+      '3 sessions · 2 working · 1 sub-agent',
+    );
+  });
+
+  it('orbits one satellite per running sub-agent, capped, and names the count in the hint', () => {
+    const plain = layoutRadial(model(new Map()), RUNTIME_FOCUS);
+    expect(plain.nodes.every((node) => node.satellites.length === 0)).toBe(true);
+
+    const projects = layoutRadial(model(running), RUNTIME_FOCUS);
+    const beta = projects.nodes.find((node) => node.key === 'p2');
+    expect(beta?.satellites).toHaveLength(2);
+    expect(beta?.hint).toBe('Beta · 2 sessions · 2 sub-agents running');
+    // A project node flattens its sessions' sub-agents.
+    expect(beta?.satellites.map((satellite) => satellite.title)).toEqual(['task x1', 'task x2']);
+    for (const satellite of beta?.satellites ?? []) {
+      expect(Math.hypot(satellite.x, satellite.y)).toBeCloseTo(46, 0);
+    }
+
+    const many = new Map([
+      ['s-gui', Array.from({ length: 11 }, (_, index) => sub(`m${String(index)}`, 1))],
+    ]);
+    const sessions = layoutRadial(model(many), { kind: 'project', id: 'p2' });
+    const gui = sessions.nodes.find((node) => node.key === 's-gui');
+    expect(gui?.satellites).toHaveLength(8);
+    expect(gui?.hint).toBe('Session s-gui · cli · 11 sub-agents running');
+    // Each satellite names its sub-agent; the last one names the ones left out.
+    expect(gui?.satellites[0]?.title).toBe('task m0');
+    expect(gui?.satellites.at(-1)?.title).toBe('task m7 · +3 more');
+    expect(sessions.nodes.find((node) => node.key === 's-wait')?.satellites).toEqual([]);
+  });
+
+  it('marks the newest sub-agent activity on its session bar, which runs to NOW', () => {
+    const layout = layoutTimeline(model(running), 90, RUNTIME_FOCUS);
+    const beta = layout.lanes.find((lane) => lane.project.id === 'p2');
+    const bar = beta?.items.find(
+      (item): item is TimelineBar => item.kind === 'bar' && item.session.id === 's-gui',
+    );
+    expect(bar?.x1).toBe(NOW_FRACTION);
+    const mark = beta?.marks.find((candidate) => candidate.kind === 'subagent');
+    expect(mark).toEqual({
+      key: 'subagent:s-gui',
+      kind: 'subagent',
+      x: NOW_FRACTION * (1 - 1 / 90),
+      row: bar?.row,
+      title: `2 sub-agents running · last activity ${formatHourMinute(NOW - 60_000)}`,
+    });
+    const alpha = layout.lanes.find((lane) => lane.project.id === 'p1');
+    expect(alpha?.marks.map((candidate) => candidate.kind)).toEqual(['denied']);
+  });
+
+  it('places the mark on the first row of the lane when the session draws no bar', () => {
+    const value = withGui();
+    if (value.sessions.state === 'ready') {
+      const gui = value.sessions.data.find((session) => session.id === 's-gui');
+      if (gui !== undefined) gui.startedAt = new Date(NOW + 5 * 60_000).toISOString();
+    }
+    const beta = layoutTimeline(model(running, value), 90, RUNTIME_FOCUS).lanes.find(
+      (lane) => lane.project.id === 'p2',
+    );
+    expect(beta?.items.some((item) => item.kind === 'bar' && item.session.id === 's-gui')).toBe(
+      false,
+    );
+    expect(beta?.marks.find((candidate) => candidate.kind === 'subagent')?.row).toBe(0);
+  });
+
+  it('never folds a session with running sub-agents into a cluster', () => {
+    const value = input();
+    const short = (id: string, startMinutesAgo: number) => ({
+      id,
+      agentId: 'a1',
+      projectId: 'p2',
+      status: 'completed',
+      presence: 'offline' as const,
+      startedAt: minutesAgo(startMinutesAgo),
+      lastHeartbeatAt: minutesAgo(startMinutesAgo - 5),
+    });
+    if (value.sessions.state === 'ready') {
+      value.sessions.data.push(short('c1', 200), short('c2', 194), short('c3', 188));
+    }
+    const beta = layoutTimeline(
+      model(new Map([['c2', [sub('x1', 1)]]]), value),
+      1440,
+      RUNTIME_FOCUS,
+    ).lanes.find((lane) => lane.project.id === 'p2');
+    const clustered = (beta?.items ?? []).flatMap((item) =>
+      item.kind === 'cluster' ? item.sessions.map((session) => session.id) : [],
+    );
+    expect(clustered).not.toContain('c2');
+    const c2 = beta?.items.find(
+      (item): item is TimelineBar => item.kind === 'bar' && item.session.id === 'c2',
+    );
+    expect(c2?.x1).toBe(NOW_FRACTION);
+  });
+
+  it('folds a readable start time, and leaves it out when the listing has none or a bad one', () => {
+    const agent = (agentId: string, startedAt?: string) => ({
+      agentId,
+      state: 'running' as const,
+      lastActivityAt: minutesAgo(1),
+      ...(startedAt === undefined ? {} : { startedAt }),
+    });
+    const map = runningSubagentsBySession([
+      {
+        state: 'ready',
+        data: {
+          projectId: 'p1',
+          truncated: false,
+          observedAt: minutesAgo(0),
+          sessions: [
+            {
+              sessionId: 's-a',
+              status: 'observed',
+              truncated: false,
+              observedAt: minutesAgo(0),
+              subagents: [agent('r1', minutesAgo(7)), agent('r2'), agent('r3', 'not a time')],
+            },
+          ],
+        },
+      },
+    ]);
+    const [r1, r2, r3] = map.get('s-a') ?? [];
+    expect(r1?.startedMs).toBe(NOW - 7 * 60_000);
+    expect(r2 !== undefined && 'startedMs' in r2).toBe(false);
+    expect(r3 !== undefined && 'startedMs' in r3).toBe(false);
+  });
+
+  /** The start and end points of a Flow bezier `M x0 y0 C … … x1 y1`. */
+  const ends = (d: string) => {
+    const n = (d.match(/-?\d+(?:\.\d+)?/gu) ?? []).map(Number);
+    return { x0: n[0] ?? NaN, y0: n[1] ?? NaN, x1: n[6] ?? NaN, y1: n[7] ?? NaN };
+  };
+
+  it('threads one Flow strand per running sub-agent inside its in-ribbon, stopping at the project', () => {
+    expect(layoutFlow(model(new Map()), RUNTIME_FOCUS).strands).toEqual([]);
+
+    const layout = layoutFlow(model(running), RUNTIME_FOCUS);
+    const ribbon = layout.ribbons.find((candidate) => candidate.key === 's-gui:in');
+    const band = ends(ribbon?.d ?? '');
+    const strands = layout.strands.filter((strand) => strand.sessionId === 's-gui');
+    expect(strands.map((strand) => strand.title)).toEqual(['task x1', 'task x2']);
+    expect(strands.every((strand) => !strand.dim)).toBe(true);
+    const spacing = Math.min(3, Math.max(1, (layout.unit - 6) / 2));
+    strands.forEach((strand, index) => {
+      const offset = (index - 0.5) * spacing;
+      const line = ends(strand.d);
+      expect(line.x0).toBe(band.x0);
+      expect(line.x1).toBe(band.x1);
+      expect(line.y0).toBeCloseTo(band.y0 + offset, 0);
+      expect(line.y1).toBeCloseTo(band.y1 + offset, 0);
+    });
+    // The project column's left edge: no strand reaches the status column.
+    expect(band.x1).toBe(395);
+
+    const dimmed = layoutFlow(model(running), { kind: 'agent', id: 'a2' });
+    expect(dimmed.strands.every((strand) => strand.dim)).toBe(true);
+  });
+
+  it('caps the Flow strands at six and names the rest on the last one', () => {
+    const many = new Map([
+      ['s-gui', Array.from({ length: 9 }, (_, index) => sub(`m${String(index)}`, 1))],
+    ]);
+    const strands = layoutFlow(model(many), RUNTIME_FOCUS).strands;
+    expect(strands).toHaveLength(6);
+    expect(strands.at(-1)?.title).toBe('task m5 · +3 more');
+    expect(strands[0]?.title).toBe('task m0');
+  });
+
+  const timed = (id: string, activeMinutes: number, startMinutes: number): RunningSubagent => ({
+    ...sub(id, activeMinutes),
+    startedMs: NOW - startMinutes * 60_000,
+  });
+  const guiBar = (map: ReadonlyMap<string, readonly RunningSubagent[]>) => {
+    const lane = layoutTimeline(model(map), 90, RUNTIME_FOCUS).lanes.find(
+      (candidate) => candidate.project.id === 'p2',
+    );
+    const bar = lane?.items.find(
+      (item): item is TimelineBar => item.kind === 'bar' && item.session.id === 's-gui',
+    );
+    return { lane, bar };
+  };
+
+  it('threads each timed sub-agent through its session bar from its start to NOW, with no dot', () => {
+    const { lane, bar } = guiBar(new Map([['s-gui', [timed('x1', 3, 10), timed('x2', 1, 4)]]]));
+    expect(bar?.threads).toEqual([
+      {
+        key: 's-gui:thread:x1',
+        x0: NOW_FRACTION * (1 - 10 / 90),
+        x1: NOW_FRACTION,
+        title: `task x1 · running since ${formatHourMinute(NOW - 10 * 60_000)}`,
+      },
+      {
+        key: 's-gui:thread:x2',
+        x0: NOW_FRACTION * (1 - 4 / 90),
+        x1: NOW_FRACTION,
+        title: `task x2 · running since ${formatHourMinute(NOW - 4 * 60_000)}`,
+      },
+    ]);
+    expect(lane?.marks.some((mark) => mark.kind === 'subagent')).toBe(false);
+
+    // No start time: no thread, and the round mark stays the fallback.
+    const untimed = guiBar(running);
+    expect(untimed.bar?.threads).toEqual([]);
+    expect(untimed.lane?.marks.some((mark) => mark.kind === 'subagent')).toBe(true);
+  });
+
+  it('caps the Timeline threads at three, under the bar label, and names the rest on the last one', () => {
+    const { bar } = guiBar(
+      new Map([
+        ['s-gui', Array.from({ length: 8 }, (_, index) => timed(`t${String(index)}`, 1, 5))],
+      ]),
+    );
+    expect(bar?.threads).toHaveLength(3);
+    expect(bar?.threads.at(-1)?.title).toBe(
+      `task t2 · running since ${formatHourMinute(NOW - 5 * 60_000)} · +5 more`,
+    );
+  });
+
+  it('names the running sub-agents on a project whose only session is promoted, never QUIET', () => {
+    const value = withGui();
+    if (value.sessions.state === 'ready') {
+      const gui = value.sessions.data.find((session) => session.id === 's-gui');
+      if (gui !== undefined) gui.projectId = 'p3';
+    }
+    const gamma = (map: ReadonlyMap<string, readonly RunningSubagent[]>) =>
+      model(map, value).projects.find((project) => project.id === 'p3');
+    expect(gamma(new Map())?.badge).toEqual({ label: 'QUIET', tone: 'dim' });
+    expect(gamma(running)?.badge).toEqual({ label: '2 SUB-AGENTS', tone: 'outline' });
+    expect(gamma(new Map([['s-gui', [sub('x1', 1)]]]))?.badge).toEqual({
+      label: '1 SUB-AGENT',
+      tone: 'outline',
+    });
+    // Only with no active session does the sub-agent count take the badge.
+    expect(sessionBadge([], 3)).toEqual({ label: '3 SUB-AGENTS', tone: 'outline' });
+    expect(sessionBadge([])).toEqual({ label: 'QUIET', tone: 'dim' });
+  });
+
+  it('pushes a Radial node label clear of the satellites orbiting it', () => {
+    const nodes = layoutRadial(model(running), RUNTIME_FOCUS).nodes;
+    expect(nodes.some((node) => node.satellites.length > 0)).toBe(true);
+    expect(nodes.some((node) => node.satellites.length === 0)).toBe(true);
+    for (const node of nodes) {
+      const push = node.satellites.length > 0 ? 14 : 0;
+      expect(node.labelY).toBeCloseTo(node.below ? node.y + 62 + push : node.y - 58 - push, 1);
+    }
   });
 });

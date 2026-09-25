@@ -32,6 +32,8 @@ export type TranscriptFileStat = {
   /** Modification time in epoch milliseconds. */
   modifiedAtMs: number;
   sizeBytes: number;
+  /** Creation (birth) time in epoch milliseconds, where the platform records one. */
+  createdAtMs?: number;
 };
 
 /**

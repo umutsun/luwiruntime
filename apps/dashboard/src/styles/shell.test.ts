@@ -87,3 +87,67 @@ describe('status tone dual encoding', () => {
     },
   );
 });
+
+/** A rule's declarations, by its exact selector at the start of a line. */
+const ruleBody = (css: string, selector: string): string => {
+  const start = css.indexOf(`\n${selector} {`);
+  expect(start, `${selector} must be styled`).toBeGreaterThan(-1);
+  return css.slice(css.indexOf('{', start), css.indexOf('}', start));
+};
+
+/**
+ * The Board session pill (ADR 0038 review): a long name plus a sub-agent count
+ * squeezed the dot to nothing and painted the count past the pill's border.
+ */
+describe('Board session pill', () => {
+  it('never shrinks its tone dot', () => {
+    expect(ruleBody(overview, '.chip__dot')).toContain('flex: none;');
+  });
+
+  it('never paints text past its own border', () => {
+    expect(ruleBody(overview, '.chip')).toContain('overflow: hidden;');
+  });
+
+  /** A long status/age suffix squeezed the agent name to nothing; the suffix gives way first. */
+  it('lets the status and age give way before the name, which keeps a floor', () => {
+    const age = ruleBody(overview, '.chip__age');
+    for (const declaration of [
+      'flex: 0 1 auto;',
+      'min-width: 0;',
+      'overflow: hidden;',
+      'text-overflow: ellipsis;',
+    ]) {
+      expect(age).toContain(declaration);
+    }
+    const name = ruleBody(overview, '.chip__name');
+    expect(name).toMatch(/min-width: [1-9]\d*ch;/u);
+    const shrink = (body: string) => Number(/flex: 0 ([\d.]+) auto;/u.exec(body)?.[1]);
+    expect(shrink(name)).toBeLessThan(shrink(age));
+  });
+});
+
+/**
+ * Radial node labels: only the name and title were capped, so a long status
+ * line still ran the head across its neighbours' nodes, where the clickable
+ * name could take a neighbour's click. The whole head is capped now.
+ */
+describe('Radial node label', () => {
+  it('caps the whole head, not only the name', () => {
+    const head = ruleBody(overview, '.radial__label-head');
+    expect(head).toContain('max-width: 22cqw;');
+    expect(head).toContain('min-width: 0;');
+  });
+
+  it('lets the status line shrink to an ellipsis', () => {
+    expect(overview).toMatch(
+      /\.radial__label-sub[^{}]*\{[^}]*min-width: 0;[^}]*overflow: hidden;[^}]*text-overflow: ellipsis;/u,
+    );
+  });
+});
+
+/** Timeline sub-agent threads (ADR 0038 review): three at a 2 px pitch stay under the label. */
+describe('Timeline sub-agent thread', () => {
+  it('is one pixel tall', () => {
+    expect(ruleBody(overview, '.bar__thread')).toContain('height: 1px;');
+  });
+});

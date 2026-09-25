@@ -238,6 +238,18 @@ describe('Overview lenses', () => {
     expect(onFocus).toHaveBeenCalledWith({ kind: 'project', id: 'p2' });
   });
 
+  it('truncates a long Radial label and keeps the full name on hover', () => {
+    subject('radial');
+    const names = [...document.querySelectorAll('.radial__label-name')];
+    expect(names.length).toBeGreaterThan(0);
+    // The truncating CSS clips the text; the title carries it in full.
+    for (const name of names) expect(name.getAttribute('title')).toBe(name.textContent);
+    // The status line truncates too, so it carries its full text the same way.
+    const subs = [...document.querySelectorAll('.radial__label-sub')];
+    expect(subs.length).toBe(names.length);
+    for (const sub of subs) expect(sub.getAttribute('title')).toBe(sub.textContent);
+  });
+
   it('renders the Timeline with a NOW marker and its own window control', () => {
     subject('timeline');
     expect(screen.getByText('NOW')).toBeTruthy();
@@ -252,6 +264,135 @@ describe('Overview lenses', () => {
     // The lane bar and the drill-down row both name the session; the bar is the lens's own.
     const bars = screen.getAllByRole('button', { name: 'Focus session s1' });
     expect(bars.some((button) => button.classList.contains('bar'))).toBe(true);
+  });
+});
+
+describe('Overview lenses with running sub-agents (ADR 0038)', () => {
+  const lens = (
+    view: ViewChoice,
+    subagents: Array<{ id: string; title: string; lastActivityMs: number; startedMs?: number }> = [
+      { id: 'x1', title: 'Review the diff', lastActivityMs: NOW - 60_000 },
+      { id: 'x2', title: 'Run the suite', lastActivityMs: NOW - 120_000 },
+    ],
+  ) =>
+    render(
+      <Overview
+        snapshot={buildPulseSnapshot(input())}
+        events={events}
+        nowMs={NOW}
+        view={view}
+        focus={RUNTIME_FOCUS}
+        following
+        pendingCount={0}
+        realtime="live"
+        onFocus={vi.fn()}
+        onInspect={vi.fn()}
+        subagentsBySession={new Map([['s1', subagents]])}
+      />,
+    );
+
+  it('writes the count on the Board session chip and its hover title', () => {
+    lens('board');
+    const age = screen.getByText(/· 2 sub-agents$/u);
+    expect(age.classList.contains('chip__age')).toBe(true);
+    expect(age.closest('.chip')?.getAttribute('title')).toMatch(/ · 2 sub-agents$/u);
+  });
+
+  it('keeps a Board chip on one line: the name truncates, the title keeps everything', () => {
+    const { container } = lens('board');
+    const name = [...container.querySelectorAll('.chip .chip__name')].find(
+      (candidate) => candidate.textContent === 'a1',
+    );
+    expect(name?.closest('.chip')?.getAttribute('title')).toBe(
+      'a1 · thinking · Refactor the tile grid · 2 sub-agents',
+    );
+  });
+
+  it('threads the Flow ribbon with one titled strand per sub-agent and says so in the note', () => {
+    const { container } = lens('flow');
+    const strands = [...container.querySelectorAll('path.flow__strand')];
+    expect(strands.map((strand) => strand.querySelector('title')?.textContent)).toEqual([
+      'Review the diff',
+      'Run the suite',
+    ]);
+    expect(screen.getByText(/threads = sub-agents running/u)).toBeTruthy();
+  });
+
+  it('threads a timed sub-agent through its Timeline bar and counts them on the bar label', () => {
+    const { container } = lens('timeline', [
+      {
+        id: 'x1',
+        title: 'Review the diff',
+        lastActivityMs: NOW - 60_000,
+        startedMs: NOW - 10 * 60_000,
+      },
+      {
+        id: 'x2',
+        title: 'Run the suite',
+        lastActivityMs: NOW - 120_000,
+        startedMs: NOW - 6 * 60_000,
+      },
+    ]);
+    const bar = container.querySelector('button.bar[aria-label="Focus session s1"]');
+    const threads = [...(bar?.querySelectorAll('.bar__thread') ?? [])];
+    expect(threads.map((thread) => thread.getAttribute('title'))).toEqual([
+      expect.stringMatching(/^Review the diff · running since /u),
+      expect.stringMatching(/^Run the suite · running since /u),
+    ]);
+    expect(bar?.querySelector('.bar__task')?.textContent).toBe(
+      'Refactor the tile grid · 2 sub-agents',
+    );
+    expect(container.querySelector('.mark--subagent')).toBeNull();
+  });
+
+  it('orbits the Radial node with one satellite each and names them in the hint and legend', () => {
+    const { container } = lens('radial');
+    expect(screen.getByText('orbiting dots = sub-agents running')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Focus project Alpha' }).getAttribute('title')).toBe(
+      'Alpha · 1 session · 2 sub-agents running',
+    );
+    expect(container.querySelectorAll('.radial__sat')).toHaveLength(2);
+  });
+
+  it('says in the Flow note that sub-agents move a ribbon, and marks them on the Timeline', () => {
+    lens('flow');
+    expect(
+      screen.getByText(
+        'moving ribbon = working status, running sub-agents, or an event in the last 10 min · threads = sub-agents running',
+      ),
+    ).toBeTruthy();
+    cleanup();
+    const { container } = lens('timeline');
+    const mark = container.querySelector('.mark--subagent');
+    expect(mark?.getAttribute('title')).toMatch(/^2 sub-agents running · last activity /u);
+    expect(container.querySelector('.mark--denied')).toBeTruthy();
+  });
+
+  it('stacks at most three Timeline threads along the bar foot, under its label', () => {
+    const { container } = lens(
+      'timeline',
+      ['a', 'b', 'c', 'd'].map((id) => ({
+        id,
+        title: `task ${id}`,
+        lastActivityMs: NOW - 60_000,
+        startedMs: NOW - 5 * 60_000,
+      })),
+    );
+    const bar = container.querySelector('button.bar[aria-label="Focus session s1"]');
+    const threads = [...(bar?.querySelectorAll<HTMLElement>('.bar__thread') ?? [])];
+    // 1 px threads at a 2 px pitch fill the bottom 5 px, below the centred label.
+    expect(threads.map((thread) => thread.style.bottom)).toEqual(['0px', '2px', '4px']);
+    expect(threads.at(-1)?.getAttribute('title')).toMatch(
+      /^task c · running since .* · \+1 more$/u,
+    );
+  });
+
+  it('names each Radial satellite in its own hover title', () => {
+    const { container } = lens('radial');
+    const titles = [...container.querySelectorAll('circle.radial__sat')].map(
+      (satellite) => satellite.querySelector('title')?.textContent,
+    );
+    expect(titles).toEqual(['Review the diff', 'Run the suite']);
   });
 });
 

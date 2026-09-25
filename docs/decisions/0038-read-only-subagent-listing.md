@@ -58,6 +58,7 @@ files; the tail read exists only for this listing.
   - `agentId`, and `workflowId` when the agent is nested;
   - `agentType` and `description` from `meta.json`;
   - `state`;
+  - `startedAt`, the first record's timestamp, from a 16 KiB head read;
   - `lastActivityAt`, the file's modification time;
   - `lastToolName`, the tool's name only;
   - `workingDirectory`, from the meta's worktree path or else the last record's `cwd`;
@@ -92,6 +93,24 @@ The overview's session drill-down gains a read-only **Sub-agents** section, read
 as session usage. The LuwiBot cockpit shows the focused project's active subagents beside its live
 activity strip, polled with the rest of the cockpit every five seconds. The dashboard stays
 vendor-neutral and gains no write.
+
+**Amended the same day: the lenses.** The shell polls the projects with recent sessions every 15
+seconds, at most 12 projects. It does not poll on heartbeats, because a heartbeat refreshes the
+snapshot twice a minute per session. A session with a running subagent then counts as working in
+every lens:
+
+- **Tone and animation.** Its tone and animation follow working, except that a blocked session
+  stays blocked.
+- **When its LUWI presence broke.** It is drawn with its real status label, which is exactly the
+  orchestrating GUI case. LUWI's own counts and "N ACTIVE" badges stay active-only, because a
+  subagent is not a LUWI session. A project whose only work is subagents reads "N SUB-AGENTS", not
+  "QUIET".
+- **Flow.** One thread per running subagent runs inside the session's ribbon, from the agent to the
+  project. Threads stop there, because the status column is LUWI session status.
+- **Radial.** Satellites orbit the session's node.
+- **Board.** The session's pill states the count.
+- **Timeline.** Each running subagent is a thread inside its session's bar, from `startedAt` to now.
+- **Titles.** Every thread and satellite carries the subagent's title as its tooltip.
 
 ## Consequences
 

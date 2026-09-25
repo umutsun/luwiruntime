@@ -297,7 +297,13 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       ]);
       if (cancelled) return;
       setActiveProjectId(projectId);
-      setFlow(autopilotFlowPanel({ autopilotFlow: { projectId, state: flowResult } }, projectId));
+      setFlow(
+        autopilotFlowPanel(
+          { autopilotFlow: { projectId, state: flowResult } },
+          projectId,
+          Date.now(),
+        ),
+      );
       setFlowGoals(flowResult.state === 'ready' ? flowResult.data.goals : []);
       const goal =
         flowResult.state === 'ready' ? pickCockpitTarget(flowResult.data.goals) : undefined;
@@ -720,6 +726,11 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                           )}
                         </div>
                       </details>
+                      {task.waiting === undefined ? null : (
+                        <p className="luwibot-cockpit__task-wait" title={task.waiting}>
+                          {task.waiting}
+                        </p>
+                      )}
                     </li>
                   ))}
                 </ul>

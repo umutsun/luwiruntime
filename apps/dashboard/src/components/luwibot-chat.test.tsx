@@ -609,3 +609,44 @@ describe('LuwiBotChat cockpit', () => {
     );
   });
 });
+
+describe('LuwiBotChat cockpit waiting tasks', () => {
+  const task = (over: Partial<FlowGoal['tasks'][number]>): FlowGoal['tasks'][number] => ({
+    id: 't',
+    kind: 'work',
+    title: 'Task',
+    brief: 'Do it.',
+    paths: [],
+    agentId: 'worker-a',
+    state: 'ready',
+    verdict: undefined,
+    ...over,
+  });
+
+  it('says why a ready or approved task waits, and only for those states', async () => {
+    const detail = 'src/a.ts is held by session s9 until the review finishes';
+    const at = new Date(Date.now() - 5 * 60_000).toISOString();
+    const lastDenial = { reason: 'lease_overlap', detail, at };
+    const line = `lease_overlap · ${detail} · 5m ago`;
+    open({
+      loadAutopilotFlow: flowReady(
+        oneGoal({
+          tasks: [
+            task({ id: 't1', title: 'Review it', kind: 'review', lastDenial }),
+            task({ id: 't2', title: 'Approved one', state: 'approved', lastDenial }),
+            task({ id: 't3', title: 'Running one', state: 'dispatched', lastDenial }),
+            task({ id: 't4', title: 'Plain ready' }),
+          ],
+        }),
+      ),
+    });
+    await waitFor(() => expect(screen.getByText('Review it')).toBeTruthy());
+    const lines = [...document.querySelectorAll('.luwibot-cockpit__task-wait')];
+    expect(lines.map((wait) => wait.textContent)).toEqual([line, line]);
+    // The line truncates in CSS; the title keeps the whole reason, detail and age.
+    for (const wait of lines) expect(wait.getAttribute('title')).toBe(line);
+    // Visible without expanding the task: it sits beside its <details>, not inside it.
+    expect(lines[0]?.closest('details')).toBeNull();
+    expect(lines[0]?.closest('li')?.textContent).toContain('Review it');
+  });
+});

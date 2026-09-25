@@ -92,6 +92,15 @@ export function FlowView({
               <path className="flow__ribbon-flow" d={ribbon.d} strokeWidth={ribbon.width} />
             </g>
           ))}
+          {layout.strands.map((strand) => (
+            <path
+              key={strand.key}
+              className={`flow__strand${strand.dim ? ' flow__strand--dim' : ''}`}
+              d={strand.d}
+            >
+              <title>{strand.title}</title>
+            </path>
+          ))}
         </svg>
         <div className="flow__nodes">
           {layout.agents.map((node, index) => (
@@ -172,7 +181,8 @@ export function FlowView({
           ))}
         </div>
         <p className="flow__note" aria-hidden="true">
-          moving ribbon = working status, or an event in the last 10 min
+          moving ribbon = working status, running sub-agents, or an event in the last 10 min ·
+          threads = sub-agents running
         </p>
       </div>
     </div>

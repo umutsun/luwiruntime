@@ -402,10 +402,16 @@
   margin-top: var(--space-2h);
   padding-top: var(--space-2h);
 }
+/* One line always: the status and age give way first, then the name; the title keeps it all.
+   What still does not fit is clipped at the border, never painted past it. */
 .chip {
   display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
   height: 24px;
   align-items: center;
+  overflow: hidden;
+  white-space: nowrap;
   gap: var(--space-1h);
   padding: 0 var(--space-2);
   border: 1px solid var(--border-strong);
@@ -434,13 +440,26 @@
   background: var(--paper);
 }
 .chip__dot {
+  flex: none;
   width: 5px;
   height: 5px;
   border-radius: 50%;
   background: currentColor;
   animation: var(--tone-anim);
 }
+/* A long status/age suffix squeezed the name to nothing. The suffix now gives way first
+   (ten times the shrink weight) and the name keeps a floor of a few characters. */
+.chip__name {
+  flex: 0 0.1 auto;
+  min-width: 6ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .chip__age {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 400;
   opacity: 0.7;
 }
@@ -560,6 +579,18 @@
 .flow__ribbon--dim .flow__ribbon-flow {
   opacity: 0.05;
   animation: none;
+}
+/* A running sub-agent (ADR 0038): a thin dashed thread inside its session's ribbon. */
+.flow__strand {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-dasharray: 3 5;
+  animation: ov-flow 1.1s linear infinite;
+}
+.flow__strand--dim {
+  opacity: 0.25;
 }
 .flow__nodes {
   position: absolute;
@@ -854,6 +885,17 @@
   fill: var(--paper);
   stroke: var(--ink);
 }
+/* Running sub-agents (ADR 0038) orbit their node; the reduced-motion rule parks them in place. */
+.radial__sats {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ov-spin 9s linear infinite;
+}
+.radial__sat {
+  fill: var(--ink);
+  stroke: var(--paper);
+  stroke-width: 1;
+}
 .radial__labels {
   position: absolute;
   inset: 0;
@@ -931,6 +973,8 @@
 }
 .radial__label-head {
   display: flex;
+  min-width: 0;
+  max-width: 22cqw;
   align-items: baseline;
   gap: var(--space-1h);
 }
@@ -938,6 +982,19 @@
   color: var(--text);
   font-size: clamp(var(--font-size-2xs), 1.7cqw, var(--font-size-xs));
   font-weight: 500;
+}
+/* A long agent or session name ran across its neighbours' nodes. The head (name and
+   status) and the title each stop short of the next orbit slot (8 nodes sit about 27%
+   of the box apart) and end in an ellipsis; the full text is the title attribute, so
+   these lines take the pointer again. */
+.radial__label-name,
+.radial__label-sub,
+.radial__label-title {
+  min-width: 0;
+  max-width: 22cqw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: auto;
 }
 .radial__label-sub {
   color: var(--text-muted);
@@ -999,6 +1056,11 @@
   border: 1.5px solid var(--ink);
   background: var(--paper);
   box-shadow: 0 0 0 2px var(--selection-soft);
+}
+.radial__legend-dot--sat {
+  width: 5px;
+  height: 5px;
+  background: var(--ink);
 }
 .radial__legend-line {
   width: 14px;
@@ -1260,6 +1322,18 @@
   font-size: var(--font-size-2xs);
   opacity: 0.7;
 }
+/* A running sub-agent (ADR 0038), start to NOW, stacked along the bar's foot: at most three,
+   1px at a 2px pitch, so they fill the bottom 5px and never cross the centred label. */
+.bar__thread {
+  position: absolute;
+  height: 1px;
+  border-radius: var(--radius-sm);
+  background: var(--ink);
+}
+.bar--blocked .bar__thread,
+.bar--selected .bar__thread {
+  background: var(--paper);
+}
 .mark {
   position: absolute;
   width: 9px;
@@ -1268,6 +1342,15 @@
   background: var(--paper);
   transform: translate(-50%, 0) rotate(45deg);
   animation: ov-blink 1.3s ease-in-out infinite;
+}
+/* A sub-agent's newest activity: a still, round dot — the blinking diamond stays the denial alarm. */
+.mark--subagent {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ink);
+  transform: translate(-50%, 0);
+  animation: none;
 }
 .timeline__now {
   position: absolute;

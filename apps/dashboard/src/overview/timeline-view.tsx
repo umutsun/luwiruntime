@@ -4,6 +4,7 @@ import {
   emptyProjectsLabel,
   layoutTimeline,
   NOW_FRACTION,
+  subagentCount,
   TIMELINE_WINDOWS,
   type Focus,
   type Overview,
@@ -148,7 +149,11 @@ export function TimelineView({
                       type="button"
                       className={`bar bar--${item.session.tone}${state}`}
                       style={placement}
-                      title={`${item.session.agentName} · ${item.session.statusLabel} · ${item.duration}`}
+                      title={`${item.session.agentName} · ${item.session.statusLabel} · ${item.duration}${
+                        item.session.subagents.length > 0
+                          ? ` · ${subagentCount(item.session.subagents.length)} running`
+                          : ''
+                      }`}
                       aria-pressed={item.selected}
                       aria-label={`Focus session ${item.session.id}`}
                       onClick={() => onFocus({ kind: 'session', id: item.session.id })}
@@ -156,8 +161,25 @@ export function TimelineView({
                       <span className="bar__init">{item.session.initials}</span>
                       <span className="bar__task">
                         {item.session.taskSummary ?? item.session.statusLabel}
+                        {item.session.subagents.length > 0
+                          ? ` · ${subagentCount(item.session.subagents.length)}`
+                          : ''}
                       </span>
                       <span className="bar__dur">{item.duration}</span>
+                      {item.threads.map((thread, threadIndex) => (
+                        <span
+                          key={thread.key}
+                          className="bar__thread"
+                          title={thread.title}
+                          style={{
+                            // Track fractions, re-based on the bar; the bar clips what falls outside.
+                            left: pct((thread.x0 - item.x0) / (item.x1 - item.x0)),
+                            width: pct((thread.x1 - thread.x0) / (item.x1 - item.x0)),
+                            // A 2 px pitch: the model caps a bar at three, all under its label.
+                            bottom: `${String(threadIndex * 2)}px`,
+                          }}
+                        />
+                      ))}
                     </button>
                   ) : (
                     <button
@@ -176,7 +198,7 @@ export function TimelineView({
                 {lane.marks.map((mark) => (
                   <span
                     key={mark.key}
-                    className="mark"
+                    className={`mark mark--${mark.kind}`}
                     title={mark.title}
                     style={{
                       left: pct(mark.x),

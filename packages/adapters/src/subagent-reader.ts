@@ -35,6 +35,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const AGENT_FILE = /^agent-([A-Za-z0-9]{1,64})\.jsonl$/u;
 const WORKFLOW_DIR = /^[A-Za-z0-9_-]{1,64}$/u;
 const META_MAX_BYTES = 4096;
+/** The first records carry the start; a head read this long finds one past a large first prompt. */
+const HEAD_BYTES = 16_384;
 /** A final record can outgrow the tail (88 KB measured); one wider read finds it. */
 const WIDE_TAIL_BYTES = 262_144;
 // A text block can precede a tool_use whose input streams for minutes (p99.9 185 s over the
@@ -43,7 +45,13 @@ const WIDE_TAIL_BYTES = 262_144;
 const SETTLED_MS = 180_000;
 const STATE_ORDER = { running: 0, quiet: 1, finished: 2 } as const;
 
-type Candidate = { agentId: string; workflowId?: string; directory: string; modifiedAtMs: number };
+type Candidate = {
+  agentId: string;
+  workflowId?: string;
+  directory: string;
+  modifiedAtMs: number;
+  createdAtMs?: number;
+};
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -67,6 +75,24 @@ function parse(line: string): JsonRecord | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The last instant `timestampSchema` holds: a later year serialises as `+010000-…`. */
+const MAX_TIMESTAMP_MS = 253_402_300_799_999;
+
+/** An epoch-ms time as an ISO string the protocol accepts, else undefined (NaN included). */
+function isoAt(ms: number): string | undefined {
+  return ms >= 0 && ms <= MAX_TIMESTAMP_MS ? new Date(ms).toISOString() : undefined;
+}
+
+/** The first record's `timestamp`, normalised; a head with none leaves the start out. */
+function firstTimestamp(lines: readonly string[]): string | undefined {
+  for (const line of lines) {
+    const stamp = parse(line)?.['timestamp'];
+    const iso = typeof stamp === 'string' ? isoAt(Date.parse(stamp)) : undefined;
+    if (iso !== undefined) return iso;
+  }
+  return undefined;
 }
 
 /** A record's `message.content` blocks of one type; only ids and names are read from them. */
@@ -151,7 +177,8 @@ export async function listNativeSubagents(
       const agentId = entry.isDirectory ? undefined : AGENT_FILE.exec(entry.name)?.[1];
       if (agentId === undefined) continue;
       const stat = await fileSystem.stat(`${directory}/${entry.name}`);
-      if (stat === undefined) continue;
+      // `lastActivityAt` is this time, so one the protocol cannot hold would fail the listing.
+      if (stat === undefined || isoAt(stat.modifiedAtMs) === undefined) continue;
       const key = `${workflowId ?? ''}/${agentId}`;
       const known = candidates.get(key);
       if (known !== undefined && known.modifiedAtMs >= stat.modifiedAtMs) continue;
@@ -160,6 +187,7 @@ export async function listNativeSubagents(
         ...(workflowId === undefined ? {} : { workflowId }),
         directory,
         modifiedAtMs: stat.modifiedAtMs,
+        ...(stat.createdAtMs === undefined ? {} : { createdAtMs: stat.createdAtMs }),
       });
     }
   };
@@ -218,6 +246,7 @@ export async function listNativeSubagents(
     const metaRead = await fileSystem.readLines(`${stem}.meta.json`, META_MAX_BYTES);
     const meta = metaRead === undefined ? undefined : parse(metaRead.lines.join('\n'));
     const records = await tailRecords(`${stem}.jsonl`);
+    const head = await fileSystem.readLines(`${stem}.jsonl`, HEAD_BYTES);
 
     let toolName: string | undefined;
     let cwd: string | undefined;
@@ -235,6 +264,11 @@ export async function listNativeSubagents(
         ? 'running'
         : 'quiet';
     const fields = {
+      // A workflow agent's first record holds its whole prompt and the timestamp after it,
+      // past the head read (24 KB measured): then the file's creation time stands in.
+      startedAt:
+        firstTimestamp(head?.lines ?? []) ??
+        (candidate.createdAtMs === undefined ? undefined : isoAt(candidate.createdAtMs)),
       workflowId: candidate.workflowId,
       agentType: clean(meta?.['agentType'], 100),
       description: clean(meta?.['description'], 200),

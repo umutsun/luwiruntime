@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createConfigMutations } from './api/config-mutations.js';
 import type { AgentMessage } from './api/messages-scope.js';
+import type { ProjectSubagentsResponse } from '@luwi/protocol/browser';
+import type { ResourceState } from './components/panel.js';
 import { DashboardApp } from './app.js';
 import { buildPulseSnapshot, type PulseInput } from './pulse/model.js';
 import { createActivityState } from './realtime/activity-store.js';
@@ -1118,5 +1120,105 @@ describe('shell controls', () => {
     );
     expect(within(ticker()).getByText('project.updated')).toBeTruthy();
     expect(within(ticker()).queryByText(/PAUSED/)).toBeNull();
+  });
+});
+
+describe('running sub-agents poll (ADR 0038)', () => {
+  const twoProjects = (status = 'thinking', presence: 'online' | 'offline' = 'online') => {
+    const value = input();
+    value.projects = {
+      state: 'ready',
+      data: [
+        { id: 'p1', name: 'Alpha', localPath: 'C:/a' },
+        { id: 'p2', name: 'Beta', localPath: 'C:/b' },
+      ],
+    };
+    value.sessions = {
+      state: 'ready',
+      data: [
+        session('s1', { projectId: 'p1' }),
+        session('s2', { projectId: 'p2', status, presence }),
+      ],
+    };
+    return value;
+  };
+  const listing = (
+    projectId: string,
+    sessionId: string,
+    state: 'running' | 'finished',
+  ): ResourceState<ProjectSubagentsResponse> => ({
+    state: 'ready',
+    data: {
+      projectId,
+      truncated: false,
+      observedAt: '2026-08-05T08:00:00.000Z',
+      sessions: [
+        {
+          sessionId,
+          status: 'observed',
+          truncated: false,
+          observedAt: '2026-08-05T08:00:00.000Z',
+          subagents: [
+            {
+              agentId: 'x1',
+              state,
+              description: 'Review the diff',
+              lastActivityAt: '2026-08-05T07:59:30.000Z',
+            },
+          ],
+        },
+      ],
+    },
+  });
+  const settle = () => act(() => vi.advanceTimersByTimeAsync(0));
+
+  it('reads on mount and every 15 s, never on a snapshot refresh, and drops an unavailable project', async () => {
+    vi.useFakeTimers();
+    const load = vi.fn((projectId: string) =>
+      Promise.resolve(
+        projectId === 'p1' ? listing('p1', 's1', 'running') : listing('p2', 's2', 'finished'),
+      ),
+    );
+    const view = shell(twoProjects(), { loadProjectSubagents: load });
+    await settle();
+    expect(load.mock.calls.map((call) => call[0]).sort()).toEqual(['p1', 'p2']);
+    expect(screen.getByText(/ · 1 sub-agent$/u)).toBeTruthy();
+
+    const refreshed = twoProjects();
+    refreshed.snapshotAt = '2026-08-05T08:00:05.000Z';
+    view.rerender(
+      <DashboardApp
+        snapshot={buildPulseSnapshot(refreshed)}
+        websocketState="live"
+        onRetry={vi.fn()}
+        now={now}
+        loadProjectSubagents={load}
+      />,
+    );
+    await settle();
+    expect(load).toHaveBeenCalledTimes(2);
+
+    load.mockImplementation(() => Promise.resolve({ state: 'unavailable' }));
+    await act(() => vi.advanceTimersByTimeAsync(15_000));
+    expect(load).toHaveBeenCalledTimes(4);
+    expect(screen.queryByText(/sub-agent/u)).toBeNull();
+  });
+
+  it('keeps a project whose only session runs a sub-agent on the overview when quiet ones are hidden', async () => {
+    vi.useFakeTimers();
+    window.localStorage.setItem('luwi.projects', JSON.stringify({ hidden: [], hideQuiet: true }));
+    shell(twoProjects('disconnected', 'offline'), {
+      loadProjectSubagents: (projectId: string) =>
+        Promise.resolve(
+          projectId === 'p2' ? listing('p2', 's2', 'running') : { state: 'unavailable' as const },
+        ),
+    });
+    await settle();
+    expect(screen.getByRole('button', { name: 'Focus project Beta' })).toBeTruthy();
+    expect(screen.getByText(/disconnected · .* · 1 sub-agent$/u)).toBeTruthy();
+    // The PROJECTS menu agrees with the filter: running a sub-agent is not QUIET.
+    fireEvent.click(screen.getByRole('button', { name: 'Project scope' }));
+    const beta = screen.getByRole('button', { name: 'Show Beta' });
+    expect(beta.querySelector('.menu__hint')?.textContent).toBe('1 SUB-AGENT');
   });
 });

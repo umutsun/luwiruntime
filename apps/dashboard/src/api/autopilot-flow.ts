@@ -17,6 +17,12 @@ export type FlowTask = {
   agentId: string | undefined;
   state: Task['state'];
   verdict: NonNullable<Task['verification']>['verdict'];
+  /**
+   * The last refused dispatch, so a task that waits says why rather than looking idle.
+   * Absent when the task was approved, dispatched or requeued after it: the daemon
+   * never clears the record, so an older refusal is history, not the current reason.
+   */
+  lastDenial?: { reason: string; detail: string; at: string };
 };
 export type FlowGoal = {
   id: string;
@@ -34,6 +40,17 @@ export type AutopilotFlow = { goals: FlowGoal[]; more: number };
 
 const GOAL_TERMINAL = new Set<Goal['state']>(['achieved', 'failed', 'abandoned']);
 const MAX_GOALS = 4;
+
+/** The task's last refusal, unless a later approval, dispatch or requeue superseded it. */
+function currentDenial(task: Task): FlowTask['lastDenial'] {
+  const denial = task.lastDenial;
+  if (denial === undefined) return undefined;
+  const deniedMs = Date.parse(denial.at);
+  const superseded = [task.approval?.at, task.dispatchedAt, task.lastRedispatch?.at].some(
+    (at) => at !== undefined && Date.parse(at) > deniedMs,
+  );
+  return superseded ? undefined : { reason: denial.reason, detail: denial.detail, at: denial.at };
+}
 
 /**
  * One project's autopilot flow (ADR 0035): the active goals and, under each, its
@@ -90,17 +107,21 @@ export async function loadAutopilotFlow(
     acceptanceCriteria: goal.acceptanceCriteria,
     state: goal.state,
     ...(goal.escalation === undefined ? {} : { question: goal.escalation.question }),
-    tasks: goalTasks(goal).map((task) => ({
-      id: task.id,
-      kind: task.kind,
-      title: task.title,
-      brief: task.brief,
-      paths: task.paths,
-      ...(task.doneCriteria === undefined ? {} : { doneCriteria: task.doneCriteria }),
-      agentId: task.agentId,
-      state: task.state,
-      verdict: task.verification?.verdict,
-    })),
+    tasks: goalTasks(goal).map((task) => {
+      const lastDenial = currentDenial(task);
+      return {
+        id: task.id,
+        kind: task.kind,
+        title: task.title,
+        brief: task.brief,
+        paths: task.paths,
+        ...(task.doneCriteria === undefined ? {} : { doneCriteria: task.doneCriteria }),
+        agentId: task.agentId,
+        state: task.state,
+        verdict: task.verification?.verdict,
+        ...(lastDenial === undefined ? {} : { lastDenial }),
+      };
+    }),
   }));
   return { state: 'ready', data: { goals, more: Math.max(0, active.length - goals.length) } };
 }

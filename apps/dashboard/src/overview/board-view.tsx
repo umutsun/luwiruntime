@@ -2,6 +2,7 @@ import { abbreviateSha, formatRelativeTime } from '../components/format.js';
 import {
   emptyProjectsLabel,
   planTiles,
+  subagentCount,
   type Focus,
   type Overview,
   type OverviewProject,
@@ -156,20 +157,27 @@ export function BoardView({
                 </span>
               </div>
               <div className="tile__chips">
-                {project.sessions.map((session) => (
-                  <span
-                    key={session.id}
-                    className={`chip${session.tone === 'blocked' ? ' chip--blocked' : ''}`}
-                    title={`${session.agentName} · ${session.statusLabel}${session.taskSummary === undefined ? '' : ` · ${session.taskSummary}`}`}
-                  >
-                    <span className={`chip__dot tone--${session.tone}`} aria-hidden="true" />
-                    {session.agentName}
-                    <span className="chip__age">
-                      {session.statusLabel} ·{' '}
-                      {formatRelativeTime(session.startedAt, overview.nowMs)}
+                {project.sessions.map((session) => {
+                  const subagents =
+                    session.subagents.length > 0
+                      ? ` · ${subagentCount(session.subagents.length)}`
+                      : '';
+                  return (
+                    <span
+                      key={session.id}
+                      className={`chip${session.tone === 'blocked' ? ' chip--blocked' : ''}`}
+                      title={`${session.agentName} · ${session.statusLabel}${session.taskSummary === undefined ? '' : ` · ${session.taskSummary}`}${subagents}`}
+                    >
+                      <span className={`chip__dot tone--${session.tone}`} aria-hidden="true" />
+                      <span className="chip__name">{session.agentName}</span>
+                      <span className="chip__age">
+                        {session.statusLabel} ·{' '}
+                        {formatRelativeTime(session.startedAt, overview.nowMs)}
+                        {subagents}
+                      </span>
                     </span>
-                  </span>
-                ))}
+                  );
+                })}
               </div>
               <div className="tile__foot">
                 <span className="tile__meta">{metaOf(project)}</span>
