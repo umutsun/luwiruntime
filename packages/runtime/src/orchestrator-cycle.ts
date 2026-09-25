@@ -85,9 +85,31 @@ export function planCycle(state: CycleState): CycleAction[] {
     if (goal.state === 'plan_review' || goal.state === 'blocked' || goal.state === 'proposed')
       continue;
 
-    const startedAt =
-      goal.usage.startedAt === undefined ? undefined : Date.parse(goal.usage.startedAt);
-    if (startedAt !== undefined && state.nowMs - startedAt > goal.budget.maxWallClockMs) {
+    // The wall clock runs from the start or the operator's last act on the goal (an answer, a
+    // plan decision — goal-state resets startedAt — or a task approval or rejection), and stops
+    // while a task the current plan can still use — one in taskIds, or a review of one — awaits
+    // the operator's gate. A gated review of work a replan dropped serves no plan and stops nothing.
+    // ponytail: while one task waits at the gate, parallel work of the same goal is unchecked
+    // until the operator acts, bounded only by each task's own timeout.
+    const goalTasks = state.tasks.filter((task) => task.goalId === goal.id);
+    const inPlan = (id: string | undefined): boolean =>
+      id !== undefined && goal.taskIds.includes(id);
+    const clockStartMs =
+      goal.usage.startedAt === undefined
+        ? undefined
+        : Math.max(
+            Date.parse(goal.usage.startedAt),
+            ...goalTasks.map((task) =>
+              task.approval === undefined ? 0 : Date.parse(task.approval.at),
+            ),
+          );
+    if (
+      clockStartMs !== undefined &&
+      !goalTasks.some(
+        (task) => task.state === 'awaiting_approval' && (inPlan(task.id) || inPlan(task.reviewOf)),
+      ) &&
+      state.nowMs - clockStartMs > goal.budget.maxWallClockMs
+    ) {
       actions.push({
         type: 'escalate',
         goalId: goal.id,

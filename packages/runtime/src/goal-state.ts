@@ -1,4 +1,10 @@
-import type { Goal, GoalEscalation, GoalRetrospective, GoalState } from '@luwi/protocol';
+import {
+  goalBudgetSchema,
+  type Goal,
+  type GoalEscalation,
+  type GoalRetrospective,
+  type GoalState,
+} from '@luwi/protocol';
 
 /**
  * The goal lifecycle (ADR 0035) as a pure transition function. The operator's
@@ -27,6 +33,10 @@ export type GoalTransitionResult =
   | { status: 'invalid'; from: GoalState; transition: GoalTransition['kind']; reason: string };
 
 const TERMINAL: ReadonlySet<GoalState> = new Set(['achieved', 'failed', 'abandoned']);
+
+/** The schema's own maximum, so an answer never writes a budget the record would refuse. */
+const REPLAN_CEILING =
+  goalBudgetSchema.shape.maxReplans.unwrap().maxValue ?? Number.POSITIVE_INFINITY;
 
 export function isTerminalGoalState(state: GoalState): boolean {
   return TERMINAL.has(state);
@@ -65,19 +75,26 @@ export function applyGoalTransition(
             planVersion: goal.planVersion + 1,
             taskIds: transition.taskIds,
             ...(transition.rationale === undefined ? {} : { planRationale: transition.rationale }),
+            // The plan judgment carried the operator's answer; the plan consumes it.
+            answer: undefined,
             usage: { ...goal.usage, tasks: goal.usage.tasks + transition.taskIds.length },
           },
           now,
         ),
       };
+    // A plan decision, like an answer, is the operator acting on the goal: the wall clock
+    // (usage.startedAt) restarts. Both are reachable only through the daemon's operator paths.
     case 'plan_approved':
       if (goal.state !== 'plan_review') return invalid(goal, transition, 'no plan is under review');
-      return { status: 'ok', goal: next(goal, { state: 'running' }, now) };
+      return {
+        status: 'ok',
+        goal: next(goal, { state: 'running', usage: { ...goal.usage, startedAt: now } }, now),
+      };
     case 'plan_rejected': {
       if (goal.state !== 'plan_review') return invalid(goal, transition, 'no plan is under review');
       // The rejection note is the guidance for the next plan; it counts as a replan.
-      const replans = goal.usage.replans + 1;
-      if (replans > goal.budget.maxReplans) {
+      const usage = { ...goal.usage, replans: goal.usage.replans + 1, startedAt: now };
+      if (usage.replans > goal.budget.maxReplans) {
         return {
           status: 'ok',
           goal: next(
@@ -85,7 +102,7 @@ export function applyGoalTransition(
             {
               state: 'blocked',
               taskIds: [],
-              usage: { ...goal.usage, replans },
+              usage,
               escalation: {
                 reason: 'budget_exhausted',
                 question: `The plan was rejected and the replan budget (${String(goal.budget.maxReplans)}) is spent. Answer with guidance to allow one more plan, or abandon the goal.`,
@@ -103,7 +120,7 @@ export function applyGoalTransition(
           {
             state: 'planning',
             taskIds: [],
-            usage: { ...goal.usage, replans },
+            usage,
             answer: {
               text: transition.note ?? 'The plan was rejected without a note.',
               at: now,
@@ -130,11 +147,22 @@ export function applyGoalTransition(
           now,
         ),
       };
-    case 'answer':
+    case 'answer': {
       if (goal.state !== 'blocked')
         return invalid(goal, transition, 'the goal is not waiting on an answer');
-      // Back to planning when there is no plan to continue, otherwise running;
-      // the cycle runs a replan judgment with the answer in context either way.
+      // Budgets are never raised by a session: only the operator's (or its policy-named proxy's) answer extends them.
+      // An answer to a running goal is consumed by a replan judgment, and a budget answer may need
+      // one after planning: leave at least one replan, even after a rejection counted past it.
+      const replansSpent =
+        (goal.escalation?.reason === 'budget_exhausted' || goal.taskIds.length > 0) &&
+        goal.usage.replans >= goal.budget.maxReplans;
+      const maxReplans = Math.max(goal.budget.maxReplans, goal.usage.replans) + 1;
+      if (replansSpent && maxReplans > REPLAN_CEILING) {
+        return invalid(goal, transition, 'the replan budget is at its ceiling; abandon the goal');
+      }
+      // Back to planning when there is no plan to continue, otherwise running; the
+      // cycle's next plan or replan judgment carries the answer and consumes it.
+      // The operator acted, so the wall clock restarts.
       return {
         status: 'ok',
         goal: next(
@@ -143,10 +171,13 @@ export function applyGoalTransition(
             state: goal.taskIds.length === 0 ? 'planning' : 'running',
             escalation: undefined,
             answer: { text: transition.text, at: now, by: transition.by },
+            usage: { ...goal.usage, startedAt: now },
+            ...(replansSpent ? { budget: { ...goal.budget, maxReplans } } : {}),
           },
           now,
         ),
       };
+    }
     case 'abandon':
       if (isTerminalGoalState(goal.state))
         return invalid(goal, transition, 'the goal is already over');

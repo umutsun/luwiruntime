@@ -324,6 +324,83 @@ describe('planCycle', () => {
     ]);
   });
 
+  describe('the wall clock runs from the start or the operator’s last act on the goal', () => {
+    const since = (at: string): Goal =>
+      goal({
+        taskIds: ['t1'],
+        usage: {
+          tasks: 1,
+          reworks: 0,
+          replans: 0,
+          judgments: 1,
+          invalidJudgments: 0,
+          startedAt: at,
+        },
+      });
+    const exhausted = expect.objectContaining({ reason: 'budget_exhausted' });
+    const reviewing = task('t1', {
+      state: 'done',
+      verification: { checks: [], reviewTaskId: 'r1' },
+    });
+    // A review task is not in goal.taskIds; it still belongs to the goal.
+    const review = (overrides: Partial<Task>): Task =>
+      task('r1', {
+        kind: 'review',
+        reviewOf: 't1',
+        agentId: 'codex',
+        createdAt: '2026-09-17T06:00:00.000Z',
+        ...overrides,
+      });
+    const approvedAt = (at: string) => ({ decision: 'approved', at, by: 'operator' }) as const;
+
+    it('stops while a review awaits approval, and restarts at the approval', () => {
+      // 4 h 05 min since the start against a 4 h budget, 4 h of it a review at the gate.
+      const running = since('2026-09-17T05:55:00.000Z');
+      const waiting = review({ state: 'awaiting_approval' });
+      expect(planCycle(state({ goals: [running], tasks: [reviewing, waiting] }))).toEqual([]);
+      const approved = review({
+        state: 'approved',
+        approval: approvedAt('2026-09-17T09:59:00.000Z'),
+      });
+      expect(planCycle(state({ goals: [running], tasks: [reviewing, approved] }))).toEqual([
+        { type: 'dispatch', taskId: 'r1', goalId: 'goal-1' },
+      ]);
+    });
+
+    it('does not stop for a gated review of work the current plan dropped', () => {
+      // A replan dropped t1 from taskIds; its review r1 still waits at the gate and serves no plan.
+      const running = { ...since('2026-09-17T05:55:00.000Z'), taskIds: ['t3'] };
+      const orphan = review({ state: 'awaiting_approval' });
+      expect(
+        planCycle(state({ goals: [running], tasks: [reviewing, orphan, task('t3')] })),
+      ).toContainEqual(exhausted);
+    });
+
+    it('counts a gate the operator never acted on: a replan cancelled it', () => {
+      const cancelled = task('t1', { state: 'cancelled', createdAt: '2026-09-17T06:00:00.000Z' });
+      const running = { ...since('2026-09-17T05:55:00.000Z'), taskIds: ['t2'] };
+      expect(planCycle(state({ goals: [running], tasks: [cancelled, task('t2')] }))).toContainEqual(
+        exhausted,
+      );
+    });
+
+    it('restarts at a late approval, so autonomous work stays bounded between operator acts', () => {
+      // 3.9 h of autonomous work, a review gated at 05:54, approved at 4.0 h (06:00).
+      const running = since('2026-09-17T02:00:00.000Z');
+      const dispatched = review({
+        state: 'dispatched',
+        createdAt: '2026-09-17T05:54:00.000Z',
+        approval: approvedAt('2026-09-17T06:00:00.000Z'),
+      });
+      const at = (iso: string) =>
+        planCycle(
+          state({ nowMs: Date.parse(iso), goals: [running], tasks: [reviewing, dispatched] }),
+        );
+      expect(at('2026-09-17T10:00:00.000Z')).not.toContainEqual(exhausted);
+      expect(at('2026-09-17T10:06:00.000Z')).toContainEqual(exhausted);
+    });
+  });
+
   it('summarizes an ended goal without a retrospective, and respects the hourly judgment cap', () => {
     const ended = goal({ state: 'achieved', terminalAt: nowIso });
     expect(planCycle(state({ goals: [ended], tasks: [] }))).toEqual([

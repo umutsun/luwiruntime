@@ -329,3 +329,52 @@ Deviations measured, and their disposition:
   reviewer was not run live: the recorded `codex.exe` path is version-stamped and had rotated, and
   its MCP config points at the `0.2.0` launcher. None of these are autopilot defects; they are the
   cost of proving an old branch against a moved-on machine.
+
+## Amendment 2026-09-25: operator wait and answered budgets
+
+Measured on goal `988f43e9`: 5.5 minutes of real work, then a supervised review task sat in
+`awaiting_approval` for almost four hours. The goal's 240-minute wall clock ran out while it waited
+on the human. It parked `blocked` with `budget_exhausted`, and no answer could release it. The
+`answer` transition left `usage.startedAt` and the budget unchanged, so the next cycle saw the same
+overrun and blocked the goal again, discarding the answer. The same reason covers a spent replan
+budget. Its question promises "one more replan", but the bridge and the `replan` transition both
+refuse one, so that answer looped too.
+
+The rules below are pure policy in `@luwi/runtime`. No stored record changes shape, and `luwi_v1`
+stays at v14. A first draft subtracted operator-wait intervals from the elapsed time. The review
+showed that intervals approximated from task timestamps either missed waits or double-counted them,
+and could hide a runaway goal, so this simpler definition replaced it.
+
+- **The wall clock measures autonomous time: since the goal started, or since the operator last
+  acted on it.**
+  - These operator acts restart the clock: approving or rejecting a plan, approving or rejecting a
+    gated task, and answering a blocked goal.
+  - The plan and answer transitions set `usage.startedAt` to the moment of the act. A task decision
+    counts through its `approval.at`, because the planner takes the latest of `startedAt` and the
+    goal's task approvals (review and rework tasks included).
+  - While a task the current plan can still use is `awaiting_approval`, the check is not run at
+    all: a task in `taskIds`, or a review of one. The goal is waiting on the operator. Until the
+    operator acts, other in-flight tasks of the same goal are bounded only by their own task
+    timeouts. A gated review of work that a replan dropped serves no plan. It does not stop the
+    clock, or it would stop it for good.
+  - The budget still stops a goal that runs `maxWallClockMs` without anyone looking at it, which is
+    what it exists for.
+- **The operator's answer to a budget block extends that budget.**
+  - Any answer restarts the clock.
+  - If the replan budget is spent, `maxReplans` rises to one more than the replans already used, so
+    at least one replan is left. This also covers a plan rejected over budget, which records one
+    replan beyond the budget. It applies to any answer to a goal that has a plan, whatever the
+    block, because that answer is consumed by a replan judgment. Without it the replan would block
+    the goal again at once.
+  - Past the schema ceiling the answer is refused with a reason. It is not accepted only to loop
+    again.
+  - "Lowered but never raised by a session" still holds. Only the operator, or the proxy its policy
+    names, acts or answers, and the answer carries the operator's decision to spend more.
+- **The `plan` transition clears `answer`,** as `replan` already did. The plan judgment has already
+  received it. Before this, an answer given while planning cost one extra replan once the goal was
+  running.
+
+Not changed, and recorded here: an answer still triggers a replan judgment with the answer in
+context. The daemon's keep-set for a replan admits only tasks in `goal.taskIds`, and a review task is
+never in it. A replan that keeps an in-flight review is therefore refused as `GOAL_PLAN_INVALID`.
+That is a separate defect, left for its own change.
