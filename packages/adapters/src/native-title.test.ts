@@ -32,6 +32,9 @@ function fakeStore(files: Record<string, string>): TranscriptFileSystem {
       const content = files[path];
       return content === undefined ? undefined : { lines: content.split('\n'), truncated: false };
     },
+    async readTail() {
+      return undefined;
+    },
   };
 }
 
@@ -63,6 +66,7 @@ describe('findNativeSessionTitle', () => {
       },
       stat: base.stat,
       readLines: base.readLines,
+      readTail: base.readTail,
     };
     const found = await findNativeSessionTitle(store, root, 'native-1', path);
     expect(found?.title).toBe('Renamed');

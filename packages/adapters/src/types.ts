@@ -40,14 +40,20 @@ export type TranscriptFileStat = {
  * Deliberately separate from `AdapterFileSystem`: directory listing and stat are
  * useless to every existing adapter and to both daemon config services, and
  * widening the shared interface would make four unrelated call sites carry
- * operations they never invoke. There is no offset read — a scan re-reads a file
- * whole, and correctness comes from ingest-side deduplication rather than from
- * remembering a byte position.
+ * operations they never invoke. Ingest has no offset read — a scan re-reads a
+ * file whole, and correctness comes from ingest-side deduplication rather than
+ * from remembering a byte position. `readTail` exists only for the subagent
+ * listing (ADR 0038), whose state is decided by a file's last record.
  */
 export interface TranscriptFileSystem {
   listDirectory(path: string): Promise<TranscriptDirectoryEntry[] | undefined>;
   stat(path: string): Promise<TranscriptFileStat | undefined>;
   readLines(
+    path: string,
+    maxBytes: number,
+  ): Promise<{ lines: string[]; truncated: boolean } | undefined>;
+  /** The last `maxBytes` of a file; a partial first line is dropped when truncated. */
+  readTail(
     path: string,
     maxBytes: number,
   ): Promise<{ lines: string[]; truncated: boolean } | undefined>;

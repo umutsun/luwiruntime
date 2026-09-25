@@ -319,6 +319,50 @@ describe('Overview drill-down and ticker', () => {
     expect(loadSessionUsage).toHaveBeenCalledWith('s1', expect.anything());
   });
 
+  it("lists the focused session's own sub-agents as read-only rows", async () => {
+    const loadSessionSubagents = vi.fn().mockResolvedValue({
+      state: 'ready',
+      data: {
+        sessionId: 's1',
+        status: 'observed',
+        subagents: [
+          {
+            agentId: 'agent-1',
+            description: 'Scan the leases',
+            state: 'running',
+            lastActivityAt: minutesAgo(2),
+            lastToolName: 'Grep',
+          },
+        ],
+        truncated: true,
+        observedAt: minutesAgo(0),
+      },
+    });
+    render(
+      <Overview
+        snapshot={buildPulseSnapshot(input())}
+        events={events}
+        nowMs={NOW}
+        view="board"
+        focus={{ kind: 'session', id: 's1' }}
+        following
+        pendingCount={0}
+        realtime="live"
+        onFocus={vi.fn()}
+        onInspect={vi.fn()}
+        loadSessionSubagents={loadSessionSubagents}
+      />,
+    );
+    const section = await screen.findByRole('region', { name: 'Sub-agents' });
+    expect(await within(section).findByText('Scan the leases')).toBeTruthy();
+    expect(within(section).getByText('Sub-agents · 1 running')).toBeTruthy();
+    expect(within(section).getByText('running · 2m ago · Grep')).toBeTruthy();
+    expect(within(section).getByText('more not shown')).toBeTruthy();
+    // Read-only: nothing in the section is a control.
+    expect(within(section).queryAllByRole('button')).toEqual([]);
+    expect(loadSessionSubagents).toHaveBeenCalledWith('s1', expect.anything());
+  });
+
   it('streams the newest events and says when it is paused', () => {
     subject('board', { following: false, pendingCount: 2 });
     const ticker = screen.getByRole('log', { name: 'Realtime stream' });

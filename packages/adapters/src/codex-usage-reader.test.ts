@@ -29,6 +29,9 @@ function store(lines: unknown[]): TranscriptFileSystem {
         ? { lines: lines.map((line) => JSON.stringify(line)), truncated: false }
         : undefined;
     },
+    async readTail() {
+      return undefined;
+    },
   };
 }
 

@@ -1,4 +1,12 @@
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  listNativeSubagents,
+  NodeTranscriptFileSystem,
+  type TranscriptFileSystem,
+} from '@luwi/adapters';
 
 import {
   agentDefinitionCollectionSchema,
@@ -100,6 +108,10 @@ import {
   nativeDeclarationRequestSchema,
   nativeDeclarationResponseSchema,
   sessionNativeRefResponseSchema,
+  projectSubagentsResponseSchema,
+  sessionSubagentsResponseSchema,
+  type SessionSubagentsResponse,
+  type SessionView,
   type HealthResponse,
   projectCollectionResponseSchema,
   projectDiscoveryResponseSchema,
@@ -227,6 +239,8 @@ export type BuildDaemonOptions = {
   resources?: () => Promise<RuntimeResourcesResponse>;
   /** Filesystem read of graphify's output; defaults to `readGraphifyKnowledge` so tests can stub it. */
   readKnowledgeGraph?: (localPath: string) => Promise<KnowledgeDocument | null>;
+  /** A session's native subagents (ADR 0038), null for an unknown session; defaults to `createSessionSubagentsReader`. */
+  readSessionSubagents?: (sessionId: string) => Promise<SessionSubagentsResponse | null>;
   /** One-level directory discovery for `GET /projects/discover`; defaults to the runtime's, so tests can stub it. */
   projectDiscovery?: ProjectDiscoveryService;
   lifecycle?: {
@@ -235,6 +249,36 @@ export type BuildDaemonOptions = {
     schedule?: (action: () => void) => void;
   };
 };
+
+/**
+ * Reads a session's Claude Code subagents from its native transcript directory
+ * on each call (ADR 0038): no Redis, no event, nothing stored. Identity comes
+ * from the session's native binding, never from a path.
+ */
+export function createSessionSubagentsReader(input: {
+  sessions: Pick<SessionService, 'get' | 'getNativeRef'>;
+  projectsRoot: string;
+  fileSystem?: TranscriptFileSystem;
+}): (sessionId: string) => Promise<SessionSubagentsResponse | null> {
+  const fileSystem = input.fileSystem ?? new NodeTranscriptFileSystem();
+  return async (sessionId) => {
+    if ((await input.sessions.get(sessionId)) === null) return null;
+    const ref = await input.sessions.getNativeRef(sessionId);
+    const nowMs = Date.now();
+    const observedAt = new Date(nowMs).toISOString();
+    if (ref === null || ref.adapterId !== 'claude-code') {
+      const status = ref === null ? 'unbound' : 'unsupported';
+      return { sessionId, status, subagents: [], truncated: false, observedAt };
+    }
+    const listing = await listNativeSubagents({
+      fileSystem,
+      projectsRoot: input.projectsRoot,
+      nativeSessionId: ref.nativeSessionId,
+      nowMs,
+    });
+    return { sessionId, status: 'observed', ...listing, observedAt };
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -678,6 +722,72 @@ export function buildDaemon(options: BuildDaemonOptions): DaemonApp {
           ((localPath: string) => readGraphifyKnowledge({ localPath }));
         const document = await read(project.canonicalPath);
         return knowledgeGraphResponseSchema.parse(projectKnowledgeGraph(document));
+      });
+    });
+    // Read-only listing of a session's native subagents (ADR 0038), read from disk per
+    // request and never stored. Only the response carries `description`; nothing here logs it.
+    const readSessionSubagents =
+      options.readSessionSubagents ??
+      createSessionSubagentsReader({
+        sessions: services.sessions,
+        projectsRoot: join(options.config.nativeHome ?? homedir(), '.claude', 'projects'),
+      });
+    app.get('/api/v1/sessions/:sessionId/subagents', async (request) => {
+      const { sessionId } = parseRequestInput(sessionParamsSchema, request.params);
+      const listing = await withCurrentRead(() => readSessionSubagents(sessionId));
+      if (listing === null) {
+        throw new ApplicationError('SESSION_NOT_FOUND', 'The session was not found.', 404);
+      }
+      return sessionSubagentsResponseSchema.parse(listing);
+    });
+    const MAX_SUBAGENT_SESSIONS = 20;
+    const MAX_SUBAGENT_CANDIDATES = 100;
+    const RECENT_SESSION_MS = 86_400_000;
+    app.get('/api/v1/projects/:projectId/subagents', async (request) => {
+      const { projectId } = parseRequestInput(projectParamsSchema, request.params);
+      return withCurrentRead(async () => {
+        if ((await services.projects.get(projectId)) === null) {
+          throw new ApplicationError('PROJECT_NOT_FOUND', 'The project was not found.', 404);
+        }
+        const nowMs = now().getTime();
+        const over = (session: SessionView) =>
+          session.status === 'completed' || session.status === 'disconnected';
+        // A GUI session whose LUWI presence ended can still be writing its transcript, and a
+        // subagent's state comes from those files, so a bound session seen in the last day is
+        // read too — once per native session, since one conversation re-attaches many times.
+        const recent = (await services.sessions.list(projectId))
+          .filter(
+            (session) =>
+              !over(session) || nowMs - Date.parse(session.lastHeartbeatAt) <= RECENT_SESSION_MS,
+          )
+          .sort(
+            (a, b) =>
+              b.lastHeartbeatAt.localeCompare(a.lastHeartbeatAt) ||
+              b.startedAt.localeCompare(a.startedAt),
+          );
+        const candidates = recent.slice(0, MAX_SUBAGENT_CANDIDATES);
+        const refs = await Promise.all(
+          candidates.map((session) => services.sessions.getNativeRef(session.id)),
+        );
+        const nativeSeen = new Set<string>();
+        const chosen = candidates.filter((session, index) => {
+          const ref = refs[index] ?? null;
+          if (ref === null || ref.adapterId !== 'claude-code') return !over(session);
+          if (nativeSeen.has(ref.nativeSessionId)) return false;
+          nativeSeen.add(ref.nativeSessionId);
+          return true;
+        });
+        const listings = await Promise.all(
+          chosen.slice(0, MAX_SUBAGENT_SESSIONS).map((session) => readSessionSubagents(session.id)),
+        );
+        return projectSubagentsResponseSchema.parse({
+          projectId,
+          // A session closed between the list and its read is skipped, not an error.
+          sessions: listings.filter((listing) => listing !== null),
+          truncated:
+            chosen.length > MAX_SUBAGENT_SESSIONS || recent.length > MAX_SUBAGENT_CANDIDATES,
+          observedAt: now().toISOString(),
+        });
       });
     });
     app.get('/api/v1/events', async (request) => {

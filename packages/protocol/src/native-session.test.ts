@@ -6,6 +6,8 @@ import {
   nativeSessionBindingSchema,
   nativeSessionLinkSchema,
   nativeSessionRefSchema,
+  projectSubagentsResponseSchema,
+  sessionSubagentsResponseSchema,
 } from './native-session.js';
 
 const timestamp = '2026-08-11T00:00:00.000Z';
@@ -198,5 +200,72 @@ describe('native session link', () => {
     expect(nativeSessionLinkSchema.safeParse({ ...link, transcriptPath: 'C:/x' }).success).toBe(
       false,
     );
+  });
+});
+
+describe('session subagents response', () => {
+  const subagent = {
+    agentId: 'a0b1c2',
+    workflowId: 'wf-1',
+    agentType: 'general-purpose',
+    description: 'A0 admin prep refactor',
+    state: 'running',
+    lastActivityAt: timestamp,
+    lastToolName: 'Bash',
+    workingDirectory: 'C:/wt/a0',
+    gitBranch: 'lane/a0',
+  };
+  const listing = {
+    sessionId: 'session-1',
+    status: 'observed',
+    subagents: [subagent],
+    truncated: false,
+    observedAt: timestamp,
+  };
+
+  it('carries an observed listing and an honest unbound or unsupported answer', () => {
+    expect(sessionSubagentsResponseSchema.parse(listing).subagents).toHaveLength(1);
+    for (const status of ['unbound', 'unsupported']) {
+      expect(
+        sessionSubagentsResponseSchema.safeParse({ ...listing, status, subagents: [] }).success,
+      ).toBe(true);
+    }
+    expect(
+      projectSubagentsResponseSchema.parse({
+        projectId: 'project-1',
+        sessions: [listing],
+        truncated: false,
+        observedAt: timestamp,
+      }).sessions,
+    ).toHaveLength(1);
+  });
+
+  it('rejects an unknown state or field, and a listing past its bound', () => {
+    expect(
+      sessionSubagentsResponseSchema.safeParse({
+        ...listing,
+        subagents: [{ ...subagent, state: 'stopped' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      sessionSubagentsResponseSchema.safeParse({
+        ...listing,
+        subagents: [{ ...subagent, prompt: 'text' }],
+      }).success,
+    ).toBe(false);
+    expect(
+      sessionSubagentsResponseSchema.safeParse({
+        ...listing,
+        subagents: Array.from({ length: 51 }, () => subagent),
+      }).success,
+    ).toBe(false);
+    expect(
+      projectSubagentsResponseSchema.safeParse({
+        projectId: 'project-1',
+        sessions: Array.from({ length: 21 }, () => listing),
+        truncated: true,
+        observedAt: timestamp,
+      }).success,
+    ).toBe(false);
   });
 });

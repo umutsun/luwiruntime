@@ -6,6 +6,7 @@ import type { CoordinatorMutations } from '../api/coordinator-mutations.js';
 import type { KnowledgeGraph } from '../api/knowledge-scope.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
+import type { SessionSubagentsResponse } from '@luwi/protocol/browser';
 import type { ResourceState } from '../components/panel.js';
 import { ProjectAutopilot } from '../components/project-autopilot.js';
 import { useToast } from '../components/toast.js';
@@ -24,6 +25,7 @@ import {
   resolveFocus,
   type AutopilotStatusState,
   type Focus,
+  type SessionSubagentsState,
   type SessionUsageState,
 } from './model.js';
 import { RadialView } from './radial-view.js';
@@ -57,6 +59,7 @@ export function Overview({
   onFocus,
   onInspect,
   loadSessionUsage,
+  loadSessionSubagents,
   loadKnowledge,
   loadAutopilot,
   coordinatorMutations,
@@ -84,6 +87,11 @@ export function Overview({
     sessionId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<SessionUsage>>;
+  /** Reads a focused session's own sub-agents (ADR 0038); absent hides the section. */
+  loadSessionSubagents?: (
+    sessionId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<SessionSubagentsResponse>>;
   /** Reads one project's knowledge graph for the Knowledge lens; absent renders it unavailable. */
   loadKnowledge?: (
     projectId: string,
@@ -130,6 +138,29 @@ export function Overview({
     });
     return () => controller.abort();
   }, [loadSessionUsage, focusedSessionId, snapshot.snapshotAt]);
+  // The session's own sub-agents (ADR 0038), read the same way: on focus and on
+  // every refresh, because they start and finish while the session runs.
+  const [sessionSubagents, setSessionSubagents] = useState<{
+    sessionId: string;
+    state: SessionSubagentsState;
+  }>();
+  useEffect(() => {
+    if (loadSessionSubagents === undefined || focusedSessionId === undefined) {
+      setSessionSubagents(undefined);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setSessionSubagents((current) =>
+      current?.sessionId === focusedSessionId
+        ? current
+        : { sessionId: focusedSessionId, state: { state: 'loading' } },
+    );
+    void loadSessionSubagents(focusedSessionId, { signal: controller.signal }).then((state) => {
+      if (controller.signal.aborted) return;
+      setSessionSubagents({ sessionId: focusedSessionId, state });
+    });
+    return () => controller.abort();
+  }, [loadSessionSubagents, focusedSessionId, snapshot.snapshotAt]);
   // The autopilot mode read (ADR 0035), for the project the owner drills into.
   // Re-read on refresh like usage — the mode changes on operator action, and the
   // coordinator's presence changes as sessions come and go.
@@ -159,9 +190,10 @@ export function Overview({
     () =>
       panelFor(overview, resolved, realtime, {
         ...(sessionUsage === undefined ? {} : { sessionUsage }),
+        ...(sessionSubagents === undefined ? {} : { sessionSubagents }),
         ...(autopilot === undefined ? {} : { autopilot }),
       }),
-    [overview, resolved, realtime, sessionUsage, autopilot],
+    [overview, resolved, realtime, sessionUsage, sessionSubagents, autopilot],
   );
   // The coordinator switch (ADR 0035), from the session panel the owner drills
   // into. One request at a time; the outcome is stated in words and cleared

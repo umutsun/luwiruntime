@@ -646,6 +646,29 @@ measured standalone). Order, the node/edge caps, the null-skip and the per-recor
 all preserved, so the read API that shares this path only gets faster. This is a second restart
 after the first deploy.
 
+**ADR 0038 and the budget amendment (2026-09-25).** In the hybrid mode the owner chose on
+2026-09-24, an interactive Claude Code session orchestrates its own in-process subagents, and LUWI
+saw none of them. The only trace was the leases the parent took.
+
+`GET /api/v1/sessions/:id/subagents` and `GET /api/v1/projects/:id/subagents` now list them read-only
+from `<projectsRoot>/<dir>/<nativeSessionId>/subagents/**` via `listNativeSubagents`
+(`@luwi/adapters`). The `TranscriptFileSystem` seam gained `readTail`. Nothing is persisted. The
+`meta.json` description is the one text field returned, and it is never stored or logged. The
+results show in the drill-down's Sub-agents section and in the cockpit, which shows running rows
+only.
+
+Traps:
+
+- Measured over 2182 transcripts, only 13% end in `end_turn`. Workflow agents end in the
+  tool_result of their `StructuredOutput` call, whose line can be up to about 200 KB long. The
+  state rule and the 256 KiB tail retry exist for that.
+- Fastify answers 414, not 400, to a path parameter longer than 100 characters.
+
+The ADR 0035 amendment redefines the goal wall clock as time since the goal started or since the
+operator last acted: plan approve/reject, task approve/reject, or answer. The check pauses while a
+task awaits approval. A budget answer now extends the budget, and `plan` clears `answer`. A first
+draft that subtracted wait intervals was dropped after review. No `luwi_v1` change.
+
 `apps/daemon/src/app.ts` is the canonical route list (80+ endpoints). `AGENTS.md` §10 lists the
 initial subset only.
 

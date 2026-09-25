@@ -22,6 +22,7 @@ import type { PulseFreshness } from './api/refresh-state.js';
 import type { RuntimeResources } from './api/runtime-resources.js';
 import type { ProjectDiscoveryResult } from './api/project-discovery.js';
 import type { SessionUsage } from './api/session-usage.js';
+import type { SessionSubagentsResponse } from '@luwi/protocol/browser';
 import { BrandMark } from './components/brand-mark.js';
 import { ConfirmDialog } from './components/confirm-dialog.js';
 import { DetailDrawer } from './components/detail-drawer.js';
@@ -262,6 +263,7 @@ export function DashboardApp({
   loadSubgraph,
   loadResources,
   loadSessionUsage,
+  loadSessionSubagents,
   loadKnowledge,
   loadAutopilot,
   loadProjectDiscovery,
@@ -329,6 +331,11 @@ export function DashboardApp({
     sessionId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<SessionUsage>>;
+  /** Absent hides a focused session's Sub-agents section (ADR 0038). */
+  loadSessionSubagents?: (
+    sessionId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<SessionSubagentsResponse>>;
   /** Reads one project's knowledge graph for the overview's Knowledge lens. */
   loadKnowledge?: (
     projectId: string,
@@ -942,6 +949,7 @@ export function DashboardApp({
             onFocus={changeFocus}
             onInspect={openInspector}
             {...(loadSessionUsage === undefined ? {} : { loadSessionUsage })}
+            {...(loadSessionSubagents === undefined ? {} : { loadSessionSubagents })}
             {...(loadKnowledge === undefined ? {} : { loadKnowledge })}
             {...(loadAutopilot === undefined ? {} : { loadAutopilot })}
             {...(coordinatorMutations === undefined ? {} : { coordinatorMutations })}

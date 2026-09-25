@@ -65,6 +65,10 @@ class MemoryTranscriptFileSystem implements TranscriptFileSystem {
     }
     return { lines, truncated: false };
   }
+
+  async readTail(): Promise<undefined> {
+    return undefined; // ingest never tails a file
+  }
 }
 
 function assistantLine(fields: {

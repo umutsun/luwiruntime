@@ -78,7 +78,10 @@ export {
   nativeSessionKindSchema,
   nativeSessionLinkSchema,
   nativeSessionRefSchema,
+  nativeSubagentSchema,
+  projectSubagentsResponseSchema,
   sessionNativeRefResponseSchema,
+  sessionSubagentsResponseSchema,
 } from './native-session.js';
 export type {
   NativeDeclarationOutcome,
@@ -88,7 +91,10 @@ export type {
   NativeSessionKind,
   NativeSessionLink,
   NativeSessionRef,
+  NativeSubagent,
+  ProjectSubagentsResponse,
   SessionNativeRefResponse,
+  SessionSubagentsResponse,
 } from './native-session.js';
 export {
   healthResponseSchema,

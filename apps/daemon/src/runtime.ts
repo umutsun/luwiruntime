@@ -60,7 +60,12 @@ import {
   NodeTranscriptFileSystem,
 } from '@luwi/adapters';
 
-import { buildDaemon, type BuildDaemonOptions, type DaemonApp } from './app.js';
+import {
+  buildDaemon,
+  createSessionSubagentsReader,
+  type BuildDaemonOptions,
+  type DaemonApp,
+} from './app.js';
 import {
   closeWithinDeadline,
   createBackgroundWorkTracker,
@@ -1001,7 +1006,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
   // Reads the developer's native transcripts and attributes each request's
   // tokens to the session that held the native session at that instant. The
   // root follows nativeHome so a fixture run stays isolated from the real
-  // ~/.claude tree.
+  // ~/.claude tree. The subagent listing (ADR 0038) reads the same root.
+  const claudeTranscriptRoot = join(config.nativeHome ?? homedir(), '.claude', 'projects');
   const transcriptIngestService = createTranscriptIngestService({
     reader: createTranscriptReader({
       fileSystem: new NodeTranscriptFileSystem(),
@@ -1032,7 +1038,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
       projectSessionFileChanges: (changes) =>
         intelligenceService.projectSessionFileChanges(changes),
     },
-    transcriptRoot: join(config.nativeHome ?? homedir(), '.claude', 'projects'),
+    transcriptRoot: claudeTranscriptRoot,
     adapterId: 'claude-code',
   });
   const transcriptIngestTick = createTranscriptIngestTick({
@@ -1368,6 +1374,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
           localPath,
           outputRelativePath: config.graphifyOutputPath ?? GRAPHIFY_OUTPUT_RELATIVE_PATH,
         }),
+      readSessionSubagents: createSessionSubagentsReader({
+        sessions: sessionService,
+        projectsRoot: claudeTranscriptRoot,
+        fileSystem: titleStore,
+      }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
       runtimeInstanceId,
       runtimeState: () => readiness.state,

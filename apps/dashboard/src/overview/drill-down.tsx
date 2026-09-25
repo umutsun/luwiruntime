@@ -168,6 +168,34 @@ export function DrillDown({
         <div className="drill__autopilot">{autopilotControl}</div>
       )}
 
+      {/* A session's own sub-agents (ADR 0038): read-only rows, never focus targets —
+          they are not LUWI sessions, so there is nothing to drill into. */}
+      {panel.subagents === undefined ? null : (
+        <section className="drill__list" aria-label="Sub-agents">
+          <p className="drill__section-label">{panel.subagents.label}</p>
+          {panel.subagents.rows.length === 0 ? (
+            <p className="drill__empty">{panel.subagents.empty}</p>
+          ) : (
+            <ul className="drill__subagents">
+              {panel.subagents.rows.map((row) => (
+                <li key={row.id} className="drill__subagent">
+                  <span className={`drill__status tone--${row.tone}`}>
+                    <span className="drill__status-dot" aria-hidden="true" />
+                  </span>
+                  <span className="drill__row-text">
+                    <span className="drill__row-title" title={row.title}>
+                      {row.title}
+                    </span>
+                    <span className="drill__row-sub">{row.meta}</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {panel.subagents.truncated ? <p className="drill__empty">more not shown</p> : null}
+        </section>
+      )}
+
       <div className="drill__trend">
         <p className="drill__section-label">{panel.trend.label}</p>
         {panel.trend.buckets.length === 0 ? (

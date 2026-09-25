@@ -841,7 +841,7 @@ describe('panelFor', () => {
       { k: 'Commits', v: '7 recent' },
       // "N new" fits one fact card line; the full "untracked" wording is the hover detail.
       { k: 'State', v: '3 new', detail: '3 untracked' },
-      { k: 'Tags', v: '2' },
+      // No Tags fact: the owner dropped it (2026-09-25), so HEAD/Commits/State fill one row.
       // No coordinator read in this fixture: the role reads as free (ADR 0035).
       { k: 'Coordinator', v: 'none' },
       // No autopilot read passed in this fixture: the mode fact reads as a dash (ADR 0035).
@@ -957,6 +957,82 @@ describe('panelFor', () => {
     });
     // Only a session offers its id to copy; the project head names the project.
     expect(panelFor(overview(), { kind: 'project', id: 'p1' }, 'live').copyId).toBeUndefined();
+  });
+
+  it("lists a session's own sub-agents read-only, in honest words when there are none", () => {
+    const focus = { kind: 'session', id: 's-think' } as const;
+    const listing = (over: Record<string, unknown> = {}) => ({
+      sessionId: 's-think',
+      state: {
+        state: 'ready' as const,
+        data: {
+          sessionId: 's-think',
+          status: 'observed' as const,
+          subagents: [
+            {
+              agentId: 'agent-7f3a9c',
+              workflowId: '5c1e2d7a-99aa-4bcd-8e1f',
+              agentType: 'reviewer',
+              description: 'Review the lease diff',
+              state: 'running' as const,
+              lastActivityAt: minutesAgo(3),
+              lastToolName: 'Grep',
+              workingDirectory: 'C:\\work\\alpha-project',
+            },
+            {
+              agentId: 'bb91e0',
+              agentType: 'explorer',
+              state: 'finished' as const,
+              lastActivityAt: minutesAgo(40),
+            },
+            { agentId: 'cc02', state: 'quiet' as const, lastActivityAt: minutesAgo(90) },
+          ],
+          truncated: false,
+          observedAt: minutesAgo(0),
+          ...over,
+        },
+      },
+    });
+    const section = (sessionSubagents: unknown) =>
+      panelFor(overview(), focus, 'live', {
+        sessionSubagents: sessionSubagents as never,
+      }).subagents;
+
+    expect(section(listing())).toEqual({
+      label: 'Sub-agents · 1 running',
+      rows: [
+        {
+          id: 'agent-7f3a9c',
+          title: 'Review the lease diff',
+          meta: 'running · 3m ago · Grep · alpha-project · workflow 5c1e2d7a',
+          tone: 'working',
+        },
+        { id: 'bb91e0', title: 'explorer', meta: 'finished · 40m ago', tone: 'done' },
+        { id: 'cc02', title: 'agent cc02', meta: 'quiet · 1h ago', tone: 'quiet' },
+      ],
+      truncated: false,
+    });
+    expect(section(listing({ truncated: true }))?.truncated).toBe(true);
+    // Observed with nothing running inside it: said, never a fabricated row.
+    expect(section(listing({ subagents: [] }))).toEqual({
+      label: 'Sub-agents',
+      rows: [],
+      empty: 'none',
+      truncated: false,
+    });
+    // No native binding, or one the reader does not support: not observed.
+    expect(section(listing({ status: 'unbound', subagents: [] }))?.empty).toBe('not observed');
+    expect(section(listing({ status: 'unsupported', subagents: [] }))?.empty).toBe('not observed');
+    expect(section({ sessionId: 's-think', state: { state: 'loading' } })?.empty).toBe(
+      'loading\u2026',
+    );
+    expect(section({ sessionId: 's-think', state: { state: 'unavailable' } })?.empty).toBe(
+      'unavailable',
+    );
+    // Another session's listing is never shown under this one.
+    expect(section({ ...listing(), sessionId: 's-blocked' })?.rows).toEqual([]);
+    // No reader wired: no section at all.
+    expect(panelFor(overview(), focus, 'live').subagents).toBeUndefined();
   });
 
   it('describes an agent across its projects and marks an id no definition covers', () => {

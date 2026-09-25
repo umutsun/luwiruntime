@@ -424,6 +424,59 @@ describe('LuwiBotChat cockpit', () => {
     expect(screen.queryByText('reviewer')).toBeNull(); // idle → summarized, not listed
   });
 
+  it('lists only running sub-agents under their session and counts the rest', async () => {
+    const at = new Date(Date.now() - 3 * 60_000).toISOString();
+    const listing = (sessionId: string, subagents: unknown[]) => ({
+      sessionId,
+      status: 'observed',
+      subagents,
+      truncated: false,
+      observedAt: at,
+    });
+    const loadProjectSubagents = vi.fn().mockResolvedValue({
+      state: 'ready',
+      data: {
+        projectId: 'p1',
+        sessions: [
+          listing('0f1e2d3c-aaaa-bbbb', [
+            {
+              agentId: 'x1',
+              description: 'Map the routes',
+              state: 'running',
+              lastActivityAt: at,
+              lastToolName: 'Grep',
+            },
+            { agentId: 'x2', agentType: 'reviewer', state: 'finished', lastActivityAt: at },
+            { agentId: 'x3', agentType: 'mapper', state: 'quiet', lastActivityAt: at },
+          ]),
+          listing('55550000-dddd', [
+            { agentId: 'y1', agentType: 'auditor', state: 'finished', lastActivityAt: at },
+          ]),
+          listing('99990000-cccc', []),
+        ],
+        truncated: false,
+        observedAt: at,
+      },
+    });
+    // No agent activity and no goal: the sub-agents alone must not leave the widget empty.
+    open({ loadAutopilotFlow: flowReady({ goals: [], more: 0 }), loadProjectSubagents });
+    const section = await screen.findByRole('region', { name: 'Sub-agents' });
+    expect(within(section).getByText('Sub-agents · 1 running · 2 finished · 1 quiet')).toBeTruthy();
+    expect(within(section).getByText('Session 0f1e2d3c')).toBeTruthy();
+    // A session with nothing running is only counted, never listed.
+    expect(within(section).queryByText('Session 55550000')).toBeNull();
+    expect(within(section).queryByText('Session 99990000')).toBeNull();
+    expect(within(section).getByText('Map the routes')).toBeTruthy();
+    expect(within(section).getByText('running · 3m ago · Grep')).toBeTruthy();
+    for (const hidden of ['reviewer', 'mapper', 'auditor']) {
+      expect(within(section).queryByText(hidden)).toBeNull();
+    }
+    expect(loadProjectSubagents).toHaveBeenCalledWith('p1', expect.anything());
+    // The live context is collapsible even though only sub-agents fill it.
+    fireEvent.click(screen.getByRole('button', { name: 'Hide live context' }));
+    expect(screen.queryByRole('region', { name: 'Sub-agents' })).toBeNull();
+  });
+
   it('marks the launcher offline and refuses to open a dead cockpit', async () => {
     window.location.hash = '#/pulse/p1';
     render(<LuwiBotChat loadAutopilotFlow={flowReady({ goals: [], more: 0 })} />);

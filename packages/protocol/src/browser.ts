@@ -37,6 +37,15 @@ export {
 } from './intelligence.js';
 export { leaseCollectionSchema } from './lease.js';
 export {
+  projectSubagentsResponseSchema,
+  sessionSubagentsResponseSchema,
+} from './native-session.js';
+export type {
+  NativeSubagent,
+  ProjectSubagentsResponse,
+  SessionSubagentsResponse,
+} from './native-session.js';
+export {
   autopilotCollectionSchema,
   autopilotModeResponseSchema,
   autopilotModeSchema,

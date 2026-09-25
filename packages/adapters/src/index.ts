@@ -41,6 +41,8 @@ export { createTranscriptReader } from './transcript-reader.js';
 export { createCodexUsageReader } from './codex-usage-reader.js';
 export { ccdSessionsDir, findNativeSessionTitle } from './native-title.js';
 export { findCodexThreadName } from './codex-title.js';
+export { listNativeSubagents } from './subagent-reader.js';
+export type { ListNativeSubagentsInput, NativeSubagentListing } from './subagent-reader.js';
 export type {
   TranscriptReader,
   TranscriptReaderOptions,

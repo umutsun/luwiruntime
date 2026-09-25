@@ -10,7 +10,7 @@ import type { StatusTone } from '../components/status-chip.js';
 import type { AgentMessage } from '../api/messages-scope.js';
 import type { SessionUsage } from '../api/session-usage.js';
 import type { ResourceState } from '../components/panel.js';
-import type { AutopilotMode } from '@luwi/protocol/browser';
+import type { AutopilotMode, SessionSubagentsResponse } from '@luwi/protocol/browser';
 import type {
   ClientKind,
   CountValue,
@@ -997,10 +997,14 @@ export type SessionUsageState = { state: 'loading' } | ResourceState<SessionUsag
 /** The per-project autopilot read, in the states the drill-down must tell apart. */
 export type AutopilotStatusState = { state: 'loading' } | ResourceState<AutopilotStatus>;
 export type AutopilotFlowState = { state: 'loading' } | ResourceState<AutopilotFlow>;
+/** The per-session sub-agent read (ADR 0038), in the states the drill-down must tell apart. */
+export type SessionSubagentsState = { state: 'loading' } | ResourceState<SessionSubagentsResponse>;
 
 export type PanelExtras = {
   /** Present only when the shell reads usage on focus; absent leaves the facts as dashes. */
   sessionUsage?: { sessionId: string; state: SessionUsageState };
+  /** Present only when the shell reads sub-agents on a session focus; absent hides the section. */
+  sessionSubagents?: { sessionId: string; state: SessionSubagentsState };
   /** Present only when the shell reads autopilot on a project focus (ADR 0035). */
   autopilot?: { projectId: string; state: AutopilotStatusState };
   /** Present only when the shell reads the autopilot goal/task flow on a project focus. */
@@ -1114,8 +1118,88 @@ export type PanelModel = {
   facts: Array<{ k: string; v: string; detail?: string }>;
   trend: { label: string; buckets: number[]; from: string; to: string };
   list: { label: string; rows: OverviewSession[]; empty: string; selectedId?: string };
+  /** A session's own sub-agents (ADR 0038), read-only; present only when the shell reads them. */
+  subagents?: SubagentSection;
   links: PanelLink[];
 };
+
+export type SubagentRow = {
+  id: string;
+  title: string;
+  meta: string;
+  tone: 'working' | 'done' | 'quiet';
+};
+/** `empty` is the honest word shown when there are no rows to list. */
+export type SubagentSection = {
+  label: string;
+  rows: SubagentRow[];
+  empty?: string;
+  truncated: boolean;
+};
+
+const SUBAGENT_TONES: Record<
+  SessionSubagentsResponse['subagents'][number]['state'],
+  SubagentRow['tone']
+> = {
+  running: 'working',
+  finished: 'done',
+  quiet: 'quiet',
+};
+
+/** What a sub-agent is doing, in the words its transcript gave, else its type, else its id. */
+export const subagentTitle = (agent: SessionSubagentsResponse['subagents'][number]): string =>
+  agent.description ?? agent.agentType ?? `agent ${abbreviateId(agent.agentId)}`;
+
+/** The last segment of a path in either separator, so a Windows directory reads as its name. */
+const baseName = (path: string): string => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
+
+/**
+ * The sub-agents one session runs inside itself (ADR 0038). They are not LUWI
+ * sessions, so they only appear when a read of the session's native transcript
+ * found them: each row states what the transcript said and nothing more, and
+ * an empty listing is named — none observed, not observed at all, still
+ * loading, or unreadable — rather than drawn as an empty list.
+ */
+export function subagentSection(
+  extras: PanelExtras,
+  sessionId: string,
+  nowMs: number,
+): SubagentSection | undefined {
+  if (extras.sessionSubagents === undefined) return undefined;
+  const read =
+    extras.sessionSubagents.sessionId === sessionId ? extras.sessionSubagents.state : undefined;
+  const empty = (word: string): SubagentSection => ({
+    label: 'Sub-agents',
+    rows: [],
+    empty: word,
+    truncated: false,
+  });
+  if (read === undefined) return empty('—');
+  if (read.state === 'loading') return empty('loading…');
+  if (read.state === 'unavailable') return empty('unavailable');
+  if (read.state === 'not-observed' || read.data.status !== 'observed') {
+    return empty('not observed');
+  }
+  const { subagents, truncated } = read.data;
+  if (subagents.length === 0) return { ...empty('none'), truncated };
+  const running = subagents.filter((agent) => agent.state === 'running').length;
+  return {
+    label: `Sub-agents · ${String(running)} running`,
+    rows: subagents.map((agent) => ({
+      id: agent.agentId,
+      title: subagentTitle(agent),
+      meta: [
+        agent.state,
+        formatRelativeTime(agent.lastActivityAt, nowMs),
+        ...(agent.lastToolName === undefined ? [] : [agent.lastToolName]),
+        ...(agent.workingDirectory === undefined ? [] : [baseName(agent.workingDirectory)]),
+        ...(agent.workflowId === undefined ? [] : [`workflow ${abbreviateId(agent.workflowId)}`]),
+      ].join(' · '),
+      tone: SUBAGENT_TONES[agent.state],
+    })),
+    truncated,
+  };
+}
 
 /**
  * Why a session is blocked, as far as the retained stream can say.
@@ -1175,7 +1259,6 @@ function gitFacts(project: OverviewProject): Array<{ k: string; v: string; detai
       { k: 'HEAD', v: word },
       { k: 'Commits', v: word },
       { k: 'State', v: word },
-      { k: 'Tags', v: word },
     ];
   }
   const git = project.git.data;
@@ -1193,7 +1276,7 @@ function gitFacts(project: OverviewProject): Array<{ k: string; v: string; detai
           v: `${String(git.untrackedCount)} new`,
           detail: `${String(git.untrackedCount)} untracked`,
         },
-    { k: 'Tags', v: String(git.tagCount) },
+    // No Tags fact (owner, 2026-09-25): it took a whole row for one number.
   ];
 }
 
@@ -1429,6 +1512,7 @@ export function panelFor(
     // first and then the target becomes claimable. A terminal session gets no
     // control: it cannot hold the role.
     const roleFree = coordinator.holderId === undefined;
+    const subagents = subagentSection(extras, session.id, nowMs);
     const roleLink: PanelLink[] = holdsRole
       ? [
           {
@@ -1477,6 +1561,7 @@ export function panelFor(
         empty: 'No other sessions in this project',
         selectedId: session.id,
       },
+      ...(subagents === undefined ? {} : { subagents }),
       links: [{ kind: 'inspect-session', label: 'Inspect', id: session.id }, ...roleLink],
     };
   }

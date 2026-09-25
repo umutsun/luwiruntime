@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 
 import type { AutopilotFlow, FlowGoal, FlowTask } from '../api/autopilot-flow.js';
 import type { AgentActivity } from '../api/agent-activity.js';
-import { autopilotFlowPanel, type FlowPanel } from '../overview/model.js';
+import type { ProjectSubagentsResponse, SessionSubagentsResponse } from '@luwi/protocol/browser';
+import { autopilotFlowPanel, subagentTitle, type FlowPanel } from '../overview/model.js';
 import { parseRoute } from '../routing.js';
 import { agenticStages, involvement } from './agentic-flow.js';
+import { abbreviateId, formatRelativeTime } from './format.js';
 import { cockpitStatus } from './luwibot-cockpit.js';
 import { StatusChip } from './status-chip.js';
 import { ProjectGoalForm } from './project-goal-form.js';
@@ -71,6 +73,11 @@ type LuwiBotChatProps = {
     projectId: string,
     options?: { signal?: AbortSignal },
   ) => Promise<ResourceState<AgentActivity[]>>;
+  /** GET reader for the sub-agents a project's sessions run (ADR 0038); absent hides them. */
+  loadProjectSubagents?: (
+    projectId: string,
+    options?: { signal?: AbortSignal },
+  ) => Promise<ResourceState<ProjectSubagentsResponse>>;
   /**
    * The autopilot-enabled projects, so the cockpit can surface the one doing work
    * when none is focused. Absent leaves the cockpit focus-only.
@@ -123,6 +130,13 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   // a "start a goal" form can post to the right project when none is running.
   const [activeProjectId, setActiveProjectId] = useState<string>();
   const [activity, setActivity] = useState<AgentActivity[]>([]);
+  // The project's sessions with their own sub-agents, and the wall time of that
+  // poll, so "3m ago" is measured from when the listing was read.
+  const [subagents, setSubagents] = useState<{
+    sessions: SessionSubagentsResponse[];
+    truncated: boolean;
+    nowMs: number;
+  }>();
   // The live context (agents + goal) can be collapsed to give the chat room.
   const [contextOpen, setContextOpen] = useState(true);
   const [confirmAction, setConfirmAction] = useState<ConfirmableAction>();
@@ -244,11 +258,13 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   useEffect(() => {
     const load = props.loadAutopilotFlow;
     const loadActivity = props.loadAgentActivity;
+    const loadSubagents = props.loadProjectSubagents;
     if (load === undefined) {
       setFlow(undefined);
       setTarget(undefined);
       setFlowGoals([]);
       setActivity([]);
+      setSubagents(undefined);
       return;
     }
     const loadProjects = props.loadAutopilotProjects;
@@ -269,13 +285,15 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
           setTarget(undefined);
           setFlowGoals([]);
           setActivity([]);
+          setSubagents(undefined);
           setActiveProjectId(undefined);
         }
         return;
       }
-      const [flowResult, activityResult] = await Promise.all([
+      const [flowResult, activityResult, subagentsResult] = await Promise.all([
         load(projectId, signal),
         loadActivity ? loadActivity(projectId, signal) : Promise.resolve(undefined),
+        loadSubagents ? loadSubagents(projectId, signal) : Promise.resolve(undefined),
       ]);
       if (cancelled) return;
       setActiveProjectId(projectId);
@@ -298,6 +316,17 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
             },
       );
       setActivity(activityResult?.state === 'ready' ? activityResult.data : []);
+      setSubagents(
+        subagentsResult?.state === 'ready'
+          ? {
+              sessions: subagentsResult.data.sessions,
+              truncated:
+                subagentsResult.data.truncated ||
+                subagentsResult.data.sessions.some((session) => session.truncated),
+              nowMs: Date.now(),
+            }
+          : undefined,
+      );
     };
     void run();
     const timer = window.setInterval(() => void run(), 5_000);
@@ -309,7 +338,12 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
       window.clearInterval(timer);
       window.removeEventListener('hashchange', onHash);
     };
-  }, [props.loadAutopilotFlow, props.loadAgentActivity, props.loadAutopilotProjects]);
+  }, [
+    props.loadAutopilotFlow,
+    props.loadAgentActivity,
+    props.loadProjectSubagents,
+    props.loadAutopilotProjects,
+  ]);
 
   // Smart pills: ask LuwiBot for goal suggestions once per surfaced project while it
   // has no running goal, over the same chat socket (a distinct kind, no HTTP). Cleared
@@ -405,7 +439,21 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
   // collapsed): a warning pulse when a goal awaits a gate, green while work is
   // actually live, dim otherwise — so it changes as the fleet does, not on the
   // socket. A merely queued goal with idle agents reads dim, not busy.
-  const working = activity.some((agent) => agent.working);
+  // Only running sub-agents are listed, under their session; the finished and
+  // quiet ones are only counted, so a long session does not bury the goal.
+  const subagentCounts = { running: 0, finished: 0, quiet: 0 };
+  for (const session of subagents?.sessions ?? []) {
+    for (const agent of session.subagents) subagentCounts[agent.state] += 1;
+  }
+  const subagentsLabel = [
+    'Sub-agents',
+    `${String(subagentCounts.running)} running`,
+    ...(['finished', 'quiet'] as const)
+      .filter((state) => subagentCounts[state] > 0)
+      .map((state) => `${String(subagentCounts[state])} ${state}`),
+  ].join(' · ');
+  const hasSubagents = subagentCounts.running + subagentCounts.finished + subagentCounts.quiet > 0;
+  const working = activity.some((agent) => agent.working) || subagentCounts.running > 0;
   const running = target?.state === 'running' || target?.state === 'planning';
   const tone: { dot: 'alert' | 'busy' | 'calm'; title: string } =
     target?.state === 'plan_review' || target?.state === 'blocked'
@@ -460,7 +508,7 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
               aria-hidden="true"
             />
             <span className="luwibot__title">{headline}</span>
-            {activity.length > 0 || target !== undefined ? (
+            {activity.length > 0 || hasSubagents || target !== undefined ? (
               <button
                 type="button"
                 className="luwibot__collapse"
@@ -519,6 +567,44 @@ function LuwiBotChatPanel(props: LuwiBotChatProps) {
                       </li>
                     ))}
                 </ul>
+              ) : null}
+            </section>
+          )}
+          {!contextOpen || subagents === undefined || !hasSubagents ? null : (
+            <section className="luwibot-activity" aria-label="Sub-agents">
+              <p className="luwibot-activity__label">{subagentsLabel}</p>
+              {subagents.sessions.map((session) => {
+                const live = session.subagents.filter((agent) => agent.state === 'running');
+                return live.length === 0 ? null : (
+                  <div key={session.sessionId}>
+                    <p className="luwibot-activity__session">
+                      Session {abbreviateId(session.sessionId)}
+                    </p>
+                    <ul className="luwibot-activity__list">
+                      {live.map((agent) => (
+                        <li key={agent.agentId} className="luwibot-activity__row">
+                          <span
+                            className="luwibot-activity__dot luwibot-activity__dot--working"
+                            aria-hidden="true"
+                          />
+                          <span className="luwibot-activity__agent" title={subagentTitle(agent)}>
+                            {subagentTitle(agent)}
+                          </span>
+                          <span className="luwibot-activity__state">
+                            {[
+                              agent.state,
+                              formatRelativeTime(agent.lastActivityAt, subagents.nowMs),
+                              ...(agent.lastToolName === undefined ? [] : [agent.lastToolName]),
+                            ].join(' · ')}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+              {subagents.truncated ? (
+                <p className="luwibot-activity__session">more not shown</p>
               ) : null}
             </section>
           )}

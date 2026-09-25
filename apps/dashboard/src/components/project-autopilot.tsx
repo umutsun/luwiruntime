@@ -78,7 +78,6 @@ export function ProjectAutopilot({
 
   return (
     <section aria-label="Autopilot mode">
-      <h4>Autopilot</h4>
       {status === undefined ? (
         <p className="coordinator-note">Reading autopilot…</p>
       ) : ready === undefined ? (

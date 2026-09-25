@@ -24,6 +24,7 @@ import { loadSubgraph, type GraphRoot, type SubgraphBounds } from './api/graph-e
 import { loadRuntimeResources } from './api/runtime-resources.js';
 import { loadProjectDiscovery } from './api/project-discovery.js';
 import { loadSessionUsage } from './api/session-usage.js';
+import { loadProjectSubagents, loadSessionSubagents } from './api/session-subagents.js';
 import {
   intelligenceResourceKeys,
   intelligenceResourcesForEvent,
@@ -147,6 +148,12 @@ const fetchResources = (options?: { signal?: AbortSignal }) =>
 /** Same reason: the overview's usage effect keys on this identity. */
 const fetchSessionUsage = (sessionId: string, options?: { signal?: AbortSignal }) =>
   loadSessionUsage(client, sessionId, options);
+/** Same reason: the overview's sub-agent effect keys on this identity. */
+const fetchSessionSubagents = (sessionId: string, options?: { signal?: AbortSignal }) =>
+  loadSessionSubagents(client, sessionId, options);
+/** Same reason: the LuwiBot widget's poll effect keys on this identity. */
+const fetchProjectSubagents = (projectId: string, options?: { signal?: AbortSignal }) =>
+  loadProjectSubagents(client, projectId, options);
 /** Same reason: the Knowledge lens's read effect keys on this identity. */
 const fetchKnowledge = (projectId: string, options?: { signal?: AbortSignal }) =>
   loadKnowledgeScope(client, projectId, options);
@@ -603,6 +610,7 @@ function DashboardRoute() {
       loadSubgraph={fetchSubgraph}
       loadResources={fetchResources}
       loadSessionUsage={fetchSessionUsage}
+      loadSessionSubagents={fetchSessionSubagents}
       loadKnowledge={fetchKnowledge}
       loadAutopilot={fetchAutopilotStatus}
       loadProjectDiscovery={loadProjectDiscovery}
@@ -625,6 +633,7 @@ createRoot(root).render(
       <LuwiBotChat
         loadAutopilotFlow={fetchAutopilotFlow}
         loadAgentActivity={fetchAgentActivity}
+        loadProjectSubagents={fetchProjectSubagents}
         loadAutopilotProjects={fetchAutopilotProjects}
         goalMutations={goalMutations}
       />

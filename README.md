@@ -445,6 +445,21 @@ evidence types a response attached. Nothing re-dispatches on its own and nothing
 evidence; the repository-external flow script declares the link and asks its verifier to attach
 what it ran.
 
+**Sub-agents (ADR 0038):** a Claude Code session that runs its own subagents is observable.
+`GET /api/v1/sessions/:sessionId/subagents` and `GET /api/v1/projects/:projectId/subagents` read
+the session's native transcript directory on demand. For each subagent they list the task
+description, the agent type, an inferred state (`running`, `finished` or `quiet`), the last
+activity, the last tool name and the working directory. The overview's session drill-down and the
+LuwiBot cockpit show them. Only sessions that declared their native identity can be listed. The
+state is a heuristic over the transcript. LUWI stores nothing from these reads and controls none of
+these agents.
+
+**Goal wall clock (ADR 0035 amendment, 2026-09-25):** a goal's `maxWallClockMs` measures time since
+the goal started or since the operator last acted on it. Approving or rejecting a plan or a gated
+task, or answering, restarts it. The check pauses while a task awaits approval, so a supervised
+goal no longer runs out of budget while it waits on a human. Answering a `budget_exhausted` block
+extends the budget, and leaves at least one replan when the replan budget is spent.
+
 ## Architecture and security
 
 Redis is the only runtime datastore. It is the operational database, durable event bus,

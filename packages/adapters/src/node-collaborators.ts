@@ -246,33 +246,55 @@ export class NodeTranscriptFileSystem implements TranscriptFileSystem {
     path: string,
     maxBytes: number,
   ): Promise<{ lines: string[]; truncated: boolean } | undefined> {
-    let file: Awaited<ReturnType<typeof open>> | undefined;
-    try {
-      file = await open(path, 'r');
-      const stats = await file.stat();
-      const bytesToRead = Math.min(stats.size, maxBytes);
-      const buffer = Buffer.alloc(bytesToRead);
-      let offset = 0;
-      while (offset < buffer.length) {
-        const { bytesRead } = await file.read(buffer, offset, buffer.length - offset, offset);
-        if (bytesRead === 0) break;
-        offset += bytesRead;
-      }
+    const read = await readWindow(path, maxBytes, false);
+    // The final line of a byte-bounded read may be partial by construction.
+    if (read?.truncated) read.lines.pop();
+    return read;
+  }
 
-      const truncated = stats.size > maxBytes;
-      const content = buffer.subarray(0, offset).toString('utf8');
-      const lines = content.split('\n');
-      if (truncated) {
-        // The final line of a byte-bounded read may be partial by construction.
-        lines.pop();
-      }
-      return { lines, truncated };
-    } catch (error) {
-      if (isMissingOrForbidden(error)) return undefined;
-      throw error;
-    } finally {
-      await file?.close();
+  async readTail(
+    path: string,
+    maxBytes: number,
+  ): Promise<{ lines: string[]; truncated: boolean } | undefined> {
+    const read = await readWindow(path, maxBytes, true);
+    // A truncated tail carries the byte before its window: the first split
+    // element is then either a partial line or '' (a line starting exactly at
+    // the edge), and either way it is not a whole line.
+    if (read?.truncated) read.lines.shift();
+    return read;
+  }
+}
+
+/**
+ * Reads at most `maxBytes` from the start of a file, or from its end when
+ * `fromEnd` — plus, when a tail window starts mid-file, the one byte before it.
+ */
+async function readWindow(
+  path: string,
+  maxBytes: number,
+  fromEnd: boolean,
+): Promise<{ lines: string[]; truncated: boolean } | undefined> {
+  let file: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    file = await open(path, 'r');
+    const stats = await file.stat();
+    const start = fromEnd ? Math.max(0, stats.size - maxBytes - 1) : 0;
+    const buffer = Buffer.alloc(fromEnd ? stats.size - start : Math.min(stats.size, maxBytes));
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await file.read(buffer, offset, buffer.length - offset, start + offset);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
     }
+    return {
+      lines: buffer.subarray(0, offset).toString('utf8').split('\n'),
+      truncated: stats.size > maxBytes,
+    };
+  } catch (error) {
+    if (isMissingOrForbidden(error)) return undefined;
+    throw error;
+  } finally {
+    await file?.close();
   }
 }
 

@@ -1561,6 +1561,15 @@ a.ticker__detail:hover {
 .drill__autopilot {
   padding: var(--space-2) var(--space-5h) 0;
 }
+/* No heading: the switch names itself. It spans the fact grid's width with equal
+   segments, so it sits in proportion with the cards above it. */
+.drill__autopilot .segmented {
+  display: flex;
+}
+.drill__autopilot .segmented__option {
+  flex: 1 1 0;
+  justify-content: center;
+}
 .drill__trend {
   padding: var(--space-3h) var(--space-5h) var(--space-1);
 }
@@ -1916,4 +1925,19 @@ a.ticker__detail:hover {
   .stats {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
+}
+
+/* ---- a session's own sub-agents (ADR 0038): the drill row's anatomy, read-only */
+.drill__subagents {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.drill__subagent {
+  display: grid;
+  align-items: center;
+  gap: var(--space-3);
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: var(--space-2h) 0;
+  border-top: 1px solid var(--border);
 }

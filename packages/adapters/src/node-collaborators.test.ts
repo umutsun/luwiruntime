@@ -167,6 +167,31 @@ describe('NodeTranscriptFileSystem', () => {
 
     expect(result).toEqual({ lines: [], truncated: true });
   });
+
+  it('reads the tail of a file and drops the partial first line when truncated', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'luwi-transcript-tail-'));
+    temporaryDirectories.push(directory);
+    const transcript = join(directory, 'agent.jsonl');
+    await writeFile(transcript, 'first-line\nsecond\nthird\n', 'utf8');
+    const fileSystem = new NodeTranscriptFileSystem();
+
+    // The last 10 bytes are "ond\nthird\n": "ond" is a partial line and is dropped.
+    expect(await fileSystem.readTail(transcript, 10)).toEqual({
+      lines: ['third', ''],
+      truncated: true,
+    });
+    // The last 13 bytes are "second\nthird\n": a line that starts exactly at the
+    // window's edge is whole and survives.
+    expect(await fileSystem.readTail(transcript, 13)).toEqual({
+      lines: ['second', 'third', ''],
+      truncated: true,
+    });
+    expect(await fileSystem.readTail(transcript, 1_000)).toEqual({
+      lines: ['first-line', 'second', 'third', ''],
+      truncated: false,
+    });
+    expect(await fileSystem.readTail(join(directory, 'missing.jsonl'), 10)).toBeUndefined();
+  });
 });
 
 describe('SpawnCommandRunner', () => {

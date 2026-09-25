@@ -98,6 +98,42 @@ export const sessionNativeRefResponseSchema = z.strictObject({
   native: nativeSessionRefSchema.nullable(),
 });
 
+/**
+ * One Claude Code subagent a session is running, read on demand from its native
+ * transcript and never stored (ADR 0038). `state` is inferred from the last
+ * record; `description` is the only text read out of a transcript's files.
+ */
+export const nativeSubagentSchema = z.strictObject({
+  agentId: z.string().min(1).max(64),
+  workflowId: z.string().min(1).max(64).optional(),
+  agentType: z.string().max(100).optional(),
+  description: z.string().max(200).optional(),
+  state: z.enum(['running', 'finished', 'quiet']),
+  lastActivityAt: timestampSchema,
+  lastToolName: z.string().max(100).optional(),
+  workingDirectory: z.string().max(1024).optional(),
+  gitBranch: z.string().max(255).optional(),
+});
+
+export const sessionSubagentsResponseSchema = z.strictObject({
+  sessionId: identifierSchema,
+  /** `unbound`: no native binding; `unsupported`: a binding that is not Claude Code's. */
+  status: z.enum(['observed', 'unbound', 'unsupported']),
+  subagents: z.array(nativeSubagentSchema).max(50),
+  truncated: z.boolean(),
+  observedAt: timestampSchema,
+});
+
+export const projectSubagentsResponseSchema = z.strictObject({
+  projectId: identifierSchema,
+  sessions: z.array(sessionSubagentsResponseSchema).max(20),
+  truncated: z.boolean(),
+  observedAt: timestampSchema,
+});
+
+export type NativeSubagent = z.infer<typeof nativeSubagentSchema>;
+export type SessionSubagentsResponse = z.infer<typeof sessionSubagentsResponseSchema>;
+export type ProjectSubagentsResponse = z.infer<typeof projectSubagentsResponseSchema>;
 export type NativeSessionRef = z.infer<typeof nativeSessionRefSchema>;
 export type SessionNativeRefResponse = z.infer<typeof sessionNativeRefResponseSchema>;
 export type NativeSessionKind = z.infer<typeof nativeSessionKindSchema>;

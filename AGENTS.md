@@ -1327,7 +1327,17 @@ assign, unassign, scan). No new key, event type, Function or endpoint; LUWI stil
 `SKILL.md`. ADR 0037 then put `retryOf` on the message record (a declared re-dispatch link the
 daemon validates and records, never acts on) and moved `luwi_v1` to v13 for the record-shape
 change; the Delivery tile states re-dispatched and evidence-backed exchanges as facts, with the
-repository-external flow script as the only producer.
+repository-external flow script as the only producer. ADR 0038 then made a session's native
+subagents visible, read-only and on demand: `GET /api/v1/sessions/:sessionId/subagents` and
+`GET /api/v1/projects/:projectId/subagents` read the Claude Code transcript directory through
+`listNativeSubagents` in `@luwi/adapters`. They return, per subagent, its type, the `meta.json`
+task description, an inferred state (`running` / `finished` / `quiet`), last activity, last tool
+name, working directory and branch. Nothing is persisted, no Redis key or event is added, and
+nothing is controlled. The description is the one text field returned, and it is never stored or
+logged; every bound that cuts the listing sets `truncated`. The same day an amendment to ADR 0035
+redefined the goal wall clock as time since the goal started or since the operator last acted on
+it. Time waiting on an approval no longer exhausts a goal, and an answer to a budget block now
+extends it. That is pure `@luwi/runtime` policy, so `luwi_v1` stays at v14.
 
 **Every other prohibition below still stands.** Do not begin automatic drift reconciliation (the
 unbuilt desired-state loop — not the implemented interrupted-apply recovery that answers

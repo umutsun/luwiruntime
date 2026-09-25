@@ -92,6 +92,7 @@ function createFileSystem(files: Record<string, FakeFile>): TranscriptFileSystem
       if (truncated) lines.pop();
       return { lines, truncated };
     },
+    readTail: async () => undefined,
   };
 }
 
@@ -495,6 +496,7 @@ describe('codex disk native identity', () => {
       listDirectory,
       stat: vi.fn(async () => undefined),
       readLines: vi.fn(async () => undefined),
+      readTail: vi.fn(async () => undefined),
     };
     await expect(
       resolveNativeIdentityFromDisk('claude-code', { ...base, fileSystem }),
@@ -512,6 +514,7 @@ describe('codex disk native identity', () => {
       },
       stat: async () => undefined,
       readLines: async () => undefined,
+      readTail: async () => undefined,
     };
     await expect(
       resolveNativeIdentityFromDisk('codex', { ...base, fileSystem }),
