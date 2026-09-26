@@ -998,6 +998,25 @@ function parseSessionHash(reply: unknown): AgentSession | null {
   return agentSessionSchema.parse(normalized);
 }
 
+/**
+ * Relabels a parse failure, and nothing else. Callers read Redis outside it, so a
+ * transport fault — a node-redis `TimeoutError` from a wedged client — reaches them
+ * as itself instead of reading as corrupt data.
+ */
+function parseProjection<Value>(entity: string, parse: () => Value): Value {
+  try {
+    return parse();
+  } catch (error) {
+    if (error instanceof RedisRepositoryError) {
+      throw error;
+    }
+    throw new RedisRepositoryError(
+      'REDIS_DATA_INVALID',
+      `Redis contains an invalid ${entity} projection.`,
+    );
+  }
+}
+
 function stringArray(reply: unknown, entity: string): string[] {
   if (!Array.isArray(reply) || !reply.every((value) => typeof value === 'string')) {
     throw new RedisRepositoryError(
@@ -1053,17 +1072,8 @@ export function createRuntimeRepository(options: {
     },
 
     async getProject(projectId) {
-      try {
-        return parseProjectHash(await client.sendCommand(['HGETALL', keys.project(projectId)]));
-      } catch (error) {
-        if (error instanceof RedisRepositoryError) {
-          throw error;
-        }
-        throw new RedisRepositoryError(
-          'REDIS_DATA_INVALID',
-          'Redis contains an invalid project projection.',
-        );
-      }
+      const reply = await client.sendCommand(['HGETALL', keys.project(projectId)]);
+      return parseProjection('project', () => parseProjectHash(reply));
     },
 
     async listProjects() {
@@ -1380,28 +1390,17 @@ export function createRuntimeRepository(options: {
     },
 
     async getSession(sessionId) {
-      try {
-        const session = parseSessionHash(
-          await client.sendCommand(['HGETALL', keys.session(sessionId)]),
-        );
-        if (session === null) {
-          return null;
-        }
-        const terminal = session.status === 'completed' || session.status === 'disconnected';
-        const presenceReply = terminal
-          ? 0
-          : await client.sendCommand(['EXISTS', keys.sessionPresence(sessionId)]);
-        const presence = Number(presenceReply) === 1 && !terminal ? 'online' : 'offline';
-        return sessionViewSchema.parse({ ...session, presence });
-      } catch (error) {
-        if (error instanceof RedisRepositoryError) {
-          throw error;
-        }
-        throw new RedisRepositoryError(
-          'REDIS_DATA_INVALID',
-          'Redis contains an invalid session projection.',
-        );
+      const reply = await client.sendCommand(['HGETALL', keys.session(sessionId)]);
+      const session = parseProjection('session', () => parseSessionHash(reply));
+      if (session === null) {
+        return null;
       }
+      const terminal = session.status === 'completed' || session.status === 'disconnected';
+      const presenceReply = terminal
+        ? 0
+        : await client.sendCommand(['EXISTS', keys.sessionPresence(sessionId)]);
+      const presence = Number(presenceReply) === 1 && !terminal ? 'online' : 'offline';
+      return parseProjection('session', () => sessionViewSchema.parse({ ...session, presence }));
     },
 
     async listSessions(projectId) {

@@ -1,3 +1,4 @@
+import { TimeoutError } from 'redis';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -678,4 +679,66 @@ describe('listProjects poison tolerance', () => {
       /invalid project projection/i,
     );
   });
+});
+
+/**
+ * Only a parse failure is evidence about the data. A transport fault — the node-redis
+ * `TimeoutError` a wedged client raised hundreds of times on 2026-09-25 — must reach
+ * the caller as itself: relabelled `REDIS_DATA_INVALID` it pointed the diagnosis at
+ * data corruption that did not exist. It must not become `REDIS_UNAVAILABLE` either:
+ * the daemon answers that with a recovery cycle.
+ */
+describe('single-record reads relabel only invalid data', () => {
+  const keys = createRedisKeys();
+  const makeRepository = (handle: (command: string[]) => unknown) =>
+    createRuntimeRepository({
+      client: new RoutingCommandClient(handle),
+      keys,
+      functions: createFunctionRegistry(),
+    });
+
+  it.each(['getProject', 'getSession'] as const)(
+    'passes a %s transport timeout through unrelabelled',
+    async (read) => {
+      const timeout = new TimeoutError();
+      const repository = makeRepository(() => {
+        throw timeout;
+      });
+
+      await expect(repository[read]('id-1')).rejects.toBe(timeout);
+    },
+  );
+
+  it('passes a getSession timeout on the presence read through unrelabelled', async () => {
+    const timeout = new TimeoutError();
+    const repository = makeRepository((command) => {
+      if (command[0] === 'HGETALL') {
+        return {
+          id: 'id-1',
+          agentId: 'codex-sim',
+          projectId: 'project-1',
+          status: 'idle',
+          workingDirectory: 'C:/workspace/luwi',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          lastHeartbeatAt: '2026-01-01T00:00:00.000Z',
+          metadata: '{}',
+        };
+      }
+      throw timeout;
+    });
+
+    await expect(repository.getSession('id-1')).rejects.toBe(timeout);
+  });
+
+  it.each(['getProject', 'getSession'] as const)(
+    'still relabels a malformed %s hash as REDIS_DATA_INVALID',
+    async (read) => {
+      const repository = makeRepository(() => ({ id: 'id-1', metadata: '{}' }));
+
+      await expect(repository[read]('id-1')).rejects.toMatchObject({
+        code: 'REDIS_DATA_INVALID',
+        message: expect.stringMatching(/invalid (project|session) projection/),
+      });
+    },
+  );
 });
