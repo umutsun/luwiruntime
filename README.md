@@ -946,6 +946,9 @@ when the same canonical local path already exists. It never merges metadata on c
 Only runtime state `ready` accepts mutations. Redis or ownership loss changes the runtime to
 `degraded`; health returns 503 and mutations return `RUNTIME_NOT_READY` until owned recovery
 finishes. Projection/history reads also return 503 while current Redis state is unavailable.
+A connection that stays open but has only timed out commands for 15 s counts as lost: it is
+destroyed and owned recovery reconnects it. Shutdown closes Redis connections without a `QUIT`
+round trip, so a stuck connection cannot keep the daemon from releasing ownership.
 
 ## Development and verification
 

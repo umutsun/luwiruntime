@@ -456,5 +456,35 @@ describe.skipIf(testRedisUrl === undefined || !sharedFunctionsAllowed)(
       expect(runtime.runtimeState()).toBe('stopped');
       await delay(10);
     });
+
+    it('finishes shutdown and releases ownership when a connection would never answer its close', async () => {
+      // 2026-09-25: QUIT sat forever behind a wedged write queue, so shutdown never
+      // reached the owner release and the next start was refused until a manual DEL.
+      const wedged = connections();
+      const command = Object.create(wedged.command) as ManagedRedisConnection;
+      command.quit = () => new Promise<string>(() => undefined);
+      runtime = await startDaemon({
+        config,
+        logger: false,
+        runtimeInstanceId: 'runtime-wedged-close',
+        keys,
+        functionRegistry: registry,
+        connections: { ...wedged, command },
+      });
+      expect(runtime.runtimeState()).toBe('ready');
+
+      const outcome = await Promise.race([
+        runtime.shutdown.shutdown('SIGTERM').then(() => 'stopped'),
+        delay(5_000, 'hung'),
+      ]);
+      runtime.shutdown.dispose();
+
+      expect(outcome).toBe('stopped');
+      expect(runtime.runtimeState()).toBe('stopped');
+      const probe = createManagedRedisConnection({ url: testRedisUrl ?? '' });
+      await probe.connect();
+      await expect(probe.sendCommand(['EXISTS', keys.daemonOwner])).resolves.toBe(0);
+      probe.disconnect();
+    });
   },
 );

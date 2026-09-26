@@ -493,17 +493,11 @@ async function connect(connection: ManagedRedisConnection): Promise<void> {
   await connection.connect();
 }
 
-async function closeConnection(connection: ManagedRedisConnection): Promise<void> {
-  if (!connection.isOpen) {
-    return;
-  }
-  try {
-    await connection.quit();
-  } catch {
-    connection.disconnect();
-  }
-}
-
+/**
+ * Every close is a socket destroy, never QUIT: node-redis gives a queued QUIT no command
+ * timeout and a written command no reply timeout, so on 2026-09-25 a QUIT stuck behind a
+ * wedged write queue held shutdown forever, short of the owner release. Callers drain first.
+ */
 function abortConnection(connection: ManagedRedisConnection): void {
   if (connection.isOpen) {
     connection.disconnect();
@@ -1337,10 +1331,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
           Math.max(0, deadline - Date.now()),
         );
       }
-      await closeConnection(connections.relay);
-      await closeConnection(connections.command);
+      abortConnection(connections.relay);
+      abortConnection(connections.command);
       await ownership.release().catch(() => false);
-      await closeConnection(connections.admin);
+      abortConnection(connections.admin);
       if (readiness.state === 'draining') {
         readiness.transitionTo('stopped');
       }
@@ -1697,11 +1691,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<RunningD
     await relay.stop().catch(() => undefined);
     await app?.close().catch(() => undefined);
     await ownership.release().catch(() => false);
-    await Promise.all([
-      closeConnection(connections.relay),
-      closeConnection(connections.command),
-      closeConnection(connections.admin),
-    ]);
+    abortConnection(connections.relay);
+    abortConnection(connections.command);
+    abortConnection(connections.admin);
     if (readiness.state === 'starting' || readiness.state === 'recovering') {
       readiness.transitionTo('stopped');
     }

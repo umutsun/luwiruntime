@@ -1,4 +1,6 @@
-import { createClient } from 'redis';
+import { performance } from 'node:perf_hooks';
+
+import { createClient, ErrorReply, TimeoutError } from 'redis';
 
 import { RedisRepositoryError, type RedisCommandClient } from './runtime-repository.js';
 
@@ -14,7 +16,37 @@ export interface ManagedRedisConnection extends RedisCommandClient {
 export type ManagedRedisConnectionOptions = {
   url: string;
   connectTimeoutMs?: number;
+  /**
+   * How long a connection may do nothing but time out before it is treated as lost.
+   * node-redis times a command out only while it is still unwritten, so an unbroken run of
+   * timeouts means the client has stopped writing, and nothing inside it will recover: it
+   * stays `isReady` on a healthy socket and never emits `error` (measured 2026-09-25, when
+   * a corrupted write queue timed every command out for 36 minutes). Healthy stalls on that
+   * daemon completed a command within ~0.2 s of their first timeout.
+   */
+  stalledAfterMs?: number;
   onError?: (error: Error) => void;
+};
+
+export interface NodeRedisClientLike {
+  readonly isOpen: boolean;
+  readonly isReady: boolean;
+  on(event: 'error', listener: (error: Error) => void): unknown;
+  connect(): Promise<unknown>;
+  quit(): Promise<string>;
+  disconnect(): Promise<void>;
+  destroy(): void;
+  sendCommand(arguments_: string[]): Promise<unknown>;
+}
+
+export type ManagedRedisConnectionDependencies = {
+  createClient: (options: Parameters<typeof createClient>[0]) => NodeRedisClientLike;
+  now: () => number;
+};
+
+const defaultDependencies: ManagedRedisConnectionDependencies = {
+  createClient: (options) => createClient(options) as unknown as NodeRedisClientLike,
+  now: () => performance.now(),
 };
 
 function isConnectionFailure(error: unknown): boolean {
@@ -33,15 +65,19 @@ function isConnectionFailure(error: unknown): boolean {
 
 export function createManagedRedisConnection(
   options: ManagedRedisConnectionOptions,
+  dependencies: ManagedRedisConnectionDependencies = defaultDependencies,
 ): ManagedRedisConnection {
-  const client = createClient({
+  const client = dependencies.createClient({
     url: options.url,
     socket: {
       connectTimeout: options.connectTimeoutMs ?? 2_000,
       reconnectStrategy: false,
     },
   });
-  client.on('error', options.onError ?? (() => undefined));
+  const onError = options.onError ?? (() => undefined);
+  const stalledAfterMs = options.stalledAfterMs ?? 15_000;
+  let timingOutSince: number | undefined;
+  client.on('error', onError);
   const managed: ManagedRedisConnection = {
     get isOpen() {
       return client.isOpen;
@@ -54,14 +90,32 @@ export function createManagedRedisConnection(
       return managed;
     },
     async connect() {
+      timingOutSince = undefined;
       await client.connect();
     },
     quit: () => client.quit(),
-    disconnect: () => client.disconnect(),
+    disconnect: () => void client.disconnect(),
     async sendCommand(arguments_) {
       try {
-        return await client.sendCommand([...arguments_]);
+        const reply = await client.sendCommand([...arguments_]);
+        timingOutSince = undefined;
+        return reply;
       } catch (error) {
+        if (error instanceof ErrorReply) {
+          timingOutSince = undefined;
+        }
+        if (error instanceof TimeoutError && client.isOpen) {
+          const now = dependencies.now();
+          timingOutSince ??= now;
+          if (now - timingOutSince >= stalledAfterMs) {
+            // Destroying drops the stuck queue and clears isReady, so the owner's
+            // recovery reconnects instead of treating a ready client as healthy.
+            timingOutSince = undefined;
+            client.destroy();
+            onError(new Error(`Redis commands stalled for ${stalledAfterMs} ms.`));
+            throw new RedisRepositoryError('REDIS_UNAVAILABLE', 'Redis is unavailable.');
+          }
+        }
         if (!client.isReady || isConnectionFailure(error)) {
           throw new RedisRepositoryError('REDIS_UNAVAILABLE', 'Redis is unavailable.');
         }
